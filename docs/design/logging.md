@@ -61,11 +61,20 @@ fmt 提供 `format_to_n`，将输出限制在指定容量内，并返回未截�
 
 管理对象构造仅建立空状态。初始化按 `max_loggers` 预分配 Logger 注册表和错误槽；创建 Logger 时通过无异常分配取得固定缓冲及队列资源，失败返回 `kResourceExhausted`，并回收本次已取得的资源。线程创建使用 `pthread_create`，失败保存返回的错误码，不使用 `std::thread` 的异常路径。
 
+### 配置
+
+| 配置 | 字段与默认值 |
+| --- | --- |
+| `LogConfig` | 最多 16 个 Logger，每通道 64 KiB 批缓冲，空闲轮询间隔 1 ms；可指定独立的退出错误回调及上下文 |
+| `LoggerConfig` | `name` 为模块名，`file_path` 为目标文件；默认 1 MiB 队列、运行时最低 `INFO`；`min_interval_ns = 0` 关闭限频，`max_file_bytes = 0` 关闭轮转 |
+
+模块名最多 64 字节，不含空字符或换行。文件父目录须已存在，目标须为普通文件；同一管理对象内，一个文件只能由一个 Logger 持有，路径别名、符号链接及硬链接指向同一文件时拒绝重复创建。
+
 ### 初始化与 Logger 创建
 
 1. 主线程构造 `LogManager`，调用 `Initialize()` 启动后台日志线程并等待就绪。成功初始化后进入运行状态，同一对象不重复初始化。
 2. 主线程通过 `CreateLogger()` 创建 Logger 及其定长格式化缓冲，并向后台提交资源准备请求。
-3. 后台日志线程申请或映射该 Logger 的队列存储，完成初始化与消费端注册；准备完成后，`CreateLogger()` 才返回成功结果和稳定借用指针。
+3. 后台日志线程申请该 Logger 的队列存储，完成初始化与消费端注册；准备完成后，`CreateLogger()` 才返回成功结果和稳定借用指针。
 
 主线程中的使用示意：
 
@@ -75,6 +84,9 @@ auto init_status = log_manager.Initialize(log_config);
 if (!init_status.ok()) {
   return ReportStartupError(init_status);
 }
+LoggerConfig logger_config;
+logger_config.name = "strategy";
+logger_config.file_path = "logs/strategy.log";
 auto logger_result = log_manager.CreateLogger(logger_config);
 if (!logger_result.status.ok()) {
   return ReportStartupError(logger_result.status);
@@ -98,6 +110,8 @@ return ReportShutdownResult(shutdown_result);
 全部已入队日志完成写入和同步，且未锁存不可恢复错误时，才报告收尾成功。`ShutdownResult` 返回固定大小摘要，包含最终 `Status`、首个失败的阶段和通道、错误数量及最终日志计数；各通道的错误详情保存在初始化时预分配的槽位中。运行期及收尾期不可恢复的队列、文件写入、同步或关闭错误均锁存，完成健康通道收尾与资源清理后返回失败。
 
 显式 `Shutdown()` 允许主线程取得结果。析构执行相同收尾，失败时通过独立的无异常错误出口报告；该出口不再写回当前日志系统。收尾及保存错误结果不申请内存。
+
+关闭完成后，`channel_error(index)` 可读取对应通道的首个错误、阶段和错误数量；错误槽保留到管理对象析构。
 
 ## 处理流程
 
@@ -151,7 +165,7 @@ flowchart TB
 
 拷贝①并发布完成后，Logger 的格式化缓冲即可复用；拷贝②完成后，相应队列空间可复用。后台批缓冲中的字节保留到对应文件写入完成。原始参数只在本次前台调用期间使用，不转移所有权。
 
-`LogManager` 持有 Logger 实例和后台日志线程。后台日志线程负责队列内存的申请或映射，并在各端停止访问后回收；`SpscQueue` 视图仅借用该内存。后台还管理批缓冲、文件句柄及日志文件的创建、关闭与轮转。
+`LogManager` 持有 Logger 实例和后台日志线程。后台日志线程负责队列内存的申请，并在各端停止访问后回收；`SpscQueue` 视图仅借用该内存。后台还管理批缓冲、文件句柄及日志文件的创建、关闭与轮转。
 
 被编译期裁剪的调用不进入运行时流程；前置检查不通过时不求值参数。调用者保证同一 Logger 的串行使用。后台保留同一 Logger 的消息顺序；不同 Logger 的文件位置不作为业务因果顺序依据，需要重建业务顺序的日志携带显式业务序号。
 
@@ -196,9 +210,11 @@ Logger 的非原子占用标记防止自身重入，在参数求值前设置，�
 
 载荷为完成格式化的最终日志文本，以换行符结尾，字节长度不超过 `kMaxLogBytes`。`fmt::format_to_n` 限制写入范围，超长时保留前缀，在 UTF-8 字符边界回退，为 ` [truncated]` 与换行留出位置，再按实际长度写入。初始化时保证缓冲容量足以容纳标记和换行。
 
+`kMaxLogBytes = 1024`。行头包含 Unix 纳秒时间、级别、当前调用线程 ID、模块名及源码位置；正文中的换行、回车、反斜杠及控制字节转义，保证一条记录只占一个物理行。截断同时保持 UTF-8 字符和转义序列完整。
+
 日志入口使用 `consteval LogFormat<Args...>`，同时检查参数类型和项目格式语法。初版只开放 `{}`、`{{`、`}}`；允许基本整数、`bool`、`char`、默认格式的 `float`、`double`、有长度字符串视图及字符串字面量。运行期格式字符串、宽度和精度规格、locale 及任意自定义 formatter 在编译期拒绝；业务类型先转换成允许的标量或定长文本，裸字符串指针先转换成有长度视图。
 
-输入字符串长度按构建配置 `kMaxLogInputBytes` 检查，检查失败在调用 fmt 前丢弃并计数；该上限独立于输出记录容量。`format_to_n` 仍计算未截断总长度，因此输出容量不能代替输入规模限制。格式字面量长度、参数数量和允许输入长度的总上界也须避免长度计算溢出。[格式化接口](https://fmt.dev/latest/api/)
+单个输入字符串最多 `kMaxLogInputBytes = 65536` 字节，格式字面量最多 1024 字节，参数最多 16 个。输入长度检查失败在调用 fmt 前丢弃并计数，该上限独立于输出记录容量。`format_to_n` 仍计算未截断总长度，因此输出容量不能代替输入规模限制。格式字面量长度、参数数量和允许输入长度的总上界也须避免长度计算溢出。[格式化接口](https://fmt.dev/latest/api/)
 
 fmt 与调用方统一使用 `FMT_USE_EXCEPTIONS=0` 和无异常编译选项。fmt 内部格式错误会终止进程，属于程序契约违例；不描述为可恢复的格式化失败。正常调用通过编译期约束和输入预检避免进入该路径。[fmt 无异常错误路径](https://github.com/fmtlib/fmt/blob/12.1.0/include/fmt/format.h#L155-L160)
 
@@ -212,7 +228,7 @@ fmt 与调用方统一使用 `FMT_USE_EXCEPTIONS=0` 和无异常编译选项。f
 
 ### 外部队列存储
 
-`LogManager::CreateLogger()` 协调后台为该 Logger 准备独立的连续定长队列区域。后台日志线程申请存储、执行独占初始化并建立两端视图，完成后才允许调用方使用 Logger。动态内存由后台申请，共享内存由后台创建或接入已有映射；SpscQueue 不负责这些资源的生命周期。
+`LogManager::CreateLogger()` 协调后台为该 Logger 准备独立的连续定长队列区域。后台日志线程申请内存、执行独占初始化并建立两端视图，完成后才允许调用方使用 Logger。两端停止访问后由后台释放内存；SpscQueue 仅借用该区域。
 
 Logger 格式化缓冲与队列存储是独立区域，日志路径的 `TryWrite` 复制载荷后不保留 Logger 缓冲的引用。初始化时验证 `queue.max_payload_size() >= kMaxLogBytes`。
 
@@ -235,13 +251,15 @@ Logger 格式化缓冲与队列存储是独立区域，日志路径的 `TryWrite
 
 文件部分写入时保留未写出的批缓冲字节；采用异步 I/O 时，缓冲保持有效直到操作完成。轮转由后台执行，关闭旧文件前完成其缓冲写入和持久化同步；进程退出时由 `LogManager` 统一执行最终收尾。压缩、采集和远程上传交给独立任务。
 
+文件后端采用 POSIX 批量写入，处理部分写入及 `EINTR`。启用大小轮转时以完整记录为边界，旧文件归档为 `file_path.<序号>`，跳过已有归档；单条记录超过阈值时允许单个文件超限。重启以追加方式打开当前文件，不删除归档。
+
 ## 过载与故障
 
 总空间或回绕所需连续空间不足的调用计入 `queue_dropped_records_total`，格式化前的输入上界检查拒绝计入 `input_rejected_records_total`，自身重入计入 `reentrant_records_total`，其他队列错误导致的拒绝计入 `queue_errors_total`。各类失败按首次命中原因互斥计数，级别过滤和主动限频不计入丢失。
 
 成功入队的截断日志另计 `truncated_records_total`，是成功入队数的子集，不加入失败求和；截断后写入失败只按对应失败原因计数。监控只读各 Logger 的无锁原子计数，不重置；Logger 停用后数值保留到最终汇总完成。
 
-输入预检失败不发布帧，不在调用路径拼接报错文本或同步输出。队列损坏不触发调用线程重初始化，资源回收须等两端停止。后台单独报告文件写入错误及进展时间，磁盘满或停顿不触发前台接管写入。
+输入预检失败不发布帧，不在调用路径拼接报错文本或同步输出。队列损坏不触发调用线程重初始化，资源回收须等两端停止。`Logger::backend_status()` 提供后台首个错误、阶段及最近一次成功写入的单调时钟纳秒时间；尚未写入时该时间为零。磁盘满或停顿不触发前台接管写入。
 
 ### 关键业务记录
 
@@ -271,4 +289,4 @@ Logger 格式化缓冲与队列存储是独立区域，日志路径的 `TryWrite
 
 日志层依赖 fmt，SpscQueue 依赖 C++20 标准库与经过验证的平台原子支持。二者由 `yquant_base` 提供，队列不依赖日志或格式化模块。
 
-队列字节容量、最大日志载荷和编译期级别属于构建配置；文件目录、轮转和运行时级别属于启动配置。
+最大日志载荷、输入及格式限制为编译期常量；`YQUANT_LOG_COMPILED_LEVEL` 为 CMake 构建选项，控制公开宏 `YQ_LOG_COMPILED_LEVEL`。队列容量、Logger 数量、批缓冲、文件、轮转及运行时级别属于启动配置。

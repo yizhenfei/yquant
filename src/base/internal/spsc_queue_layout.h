@@ -10,18 +10,16 @@
 namespace yquant::base::internal {
 
 inline constexpr std::size_t kSpscAlignment = 128;
-inline constexpr std::uint32_t kSpscLayoutVersion = 3;
-inline constexpr std::uint64_t kSpscMagic = 0x5951535053435133ULL;
+inline constexpr std::uint32_t kSpscLayoutVersion = 4;
+inline constexpr std::uint64_t kSpscMagic = 0x5951535053435134ULL;
 inline constexpr std::size_t kSpscFrameHeaderBytes = 4;
 inline constexpr std::uint32_t kSpscWrapMarker =
     std::numeric_limits<std::uint32_t>::max();
 
-// Only fixed-size, pointer-free state is placed in the shared region.
+// Only fixed-size, pointer-free state is placed in the queue storage.
 struct alignas(kSpscAlignment) SpscMetadata {
   std::uint64_t magic = 0;
   std::uint32_t version = 0;
-  std::uint32_t byte_order = 0;
-  std::uint64_t abi_tag = 0;
   std::uint64_t data_offset = 0;
   std::uint64_t capacity = 0;
 };

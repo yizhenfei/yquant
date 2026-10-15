@@ -23,56 +23,8 @@ using internal::SpscMetadata;
 
 static_assert(SpscQueue::required_alignment() == internal::kSpscAlignment);
 
-constexpr std::uint32_t NativeByteOrder() noexcept {
-  return std::endian::native == std::endian::little ? 1 : 2;
-}
-
-constexpr std::uint64_t MixAbi(std::uint64_t hash,
-                               std::uint64_t value) noexcept {
-  for (unsigned int i = 0; i < 8; ++i) {
-    hash = (hash ^ (value & 0xff)) * 1099511628211ULL;
-    value >>= 8;
-  }
-  return hash;
-}
-
-// A conservative compatibility fingerprint, never a cross-toolchain guarantee.
-constexpr std::uint64_t AbiTag() noexcept {
-  auto hash = MixAbi(14695981039346656037ULL, NativeByteOrder());
-  hash = MixAbi(hash, sizeof(void*));
-  hash = MixAbi(hash, sizeof(std::atomic<std::uint64_t>));
-  hash = MixAbi(hash, alignof(std::atomic<std::uint64_t>));
-#if defined(__clang__)
-  hash = MixAbi(hash, 1);
-  hash = MixAbi(hash, __clang_major__);
-  hash = MixAbi(hash, __clang_minor__);
-  hash = MixAbi(hash, __clang_patchlevel__);
-#elif defined(__GNUC__)
-  hash = MixAbi(hash, 2);
-  hash = MixAbi(hash, __GNUC__);
-  hash = MixAbi(hash, __GNUC_MINOR__);
-  hash = MixAbi(hash, __GNUC_PATCHLEVEL__);
-#endif
-#if defined(__apple_build_version__)
-  hash = MixAbi(hash, __apple_build_version__);
-#endif
-#if defined(_LIBCPP_VERSION)
-  hash = MixAbi(hash, 1);
-  hash = MixAbi(hash, _LIBCPP_VERSION);
-#elif defined(__GLIBCXX__)
-  hash = MixAbi(hash, 2);
-  hash = MixAbi(hash, __GLIBCXX__);
-#endif
-#if defined(__GXX_ABI_VERSION)
-  hash = MixAbi(hash, __GXX_ABI_VERSION);
-#endif
-  return hash;
-}
-
 constexpr bool PlatformSupported() noexcept {
-  return std::atomic<std::uint64_t>::is_always_lock_free &&
-         (std::endian::native == std::endian::little ||
-          std::endian::native == std::endian::big);
+  return std::atomic<std::uint64_t>::is_always_lock_free;
 }
 
 SpscStatus CheckStorage(std::span<std::byte> memory) noexcept {
@@ -137,8 +89,6 @@ SpscStatus SpscQueue::Initialize(std::span<std::byte> memory,
   auto* control = ::new (static_cast<void*>(memory.data())) SpscControlBlock{};
   control->metadata.magic = internal::kSpscMagic;
   control->metadata.version = internal::kSpscLayoutVersion;
-  control->metadata.byte_order = NativeByteOrder();
-  control->metadata.abi_tag = AbiTag();
   control->metadata.data_offset = kSpscDataOffset;
   control->metadata.capacity = capacity;
   return SpscStatus::kSuccess;
@@ -159,8 +109,7 @@ SpscStatus SpscQueue::Attach(std::span<std::byte> memory, Role role) noexcept {
   std::memcpy(&metadata, memory.data(), sizeof(metadata));
   if (metadata.magic != internal::kSpscMagic ||
       metadata.version != internal::kSpscLayoutVersion ||
-      metadata.byte_order != NativeByteOrder() ||
-      metadata.abi_tag != AbiTag() || metadata.data_offset != kSpscDataOffset) {
+      metadata.data_offset != kSpscDataOffset) {
     return SpscStatus::kIncompatibleLayout;
   }
   auto required = RequiredBytes(metadata.capacity);

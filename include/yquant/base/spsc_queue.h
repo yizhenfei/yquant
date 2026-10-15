@@ -29,7 +29,7 @@ enum class SpscStatus {
 };
 
 // A non-owning endpoint for a queue in externally managed, aligned storage.
-// Exactly one producer and one consumer may access the shared region. Each
+// Exactly one producer and one consumer may access the queue storage. Each
 // endpoint and its outstanding borrow must be used serially by its owner.
 class SpscQueue final {
  public:
@@ -113,7 +113,7 @@ class SpscQueue final {
   }
   [[nodiscard]] static SizeResult RequiredBytes(
       std::uint64_t capacity) noexcept;
-  // Requires exclusive access. Constructs shared state but does not bind a
+  // Requires exclusive access. Constructs queue state but does not bind a
   // view.
   [[nodiscard]] static SpscStatus Initialize(std::span<std::byte> memory,
                                              std::uint64_t capacity) noexcept;
@@ -132,7 +132,7 @@ class SpscQueue final {
   [[nodiscard]] ReserveResult TryReserve(std::size_t max_payload_size) noexcept;
   [[nodiscard]] AcquireResult TryAcquire() noexcept;
 
-  // Copy buffers must not overlap the shared queue region. These operations can
+  // Copy buffers must not overlap the queue storage. These operations can
   // publish/reclaim tail padding even when no data frame is written/read.
   [[nodiscard]] SpscStatus TryWrite(
       std::span<const std::byte> payload) noexcept;

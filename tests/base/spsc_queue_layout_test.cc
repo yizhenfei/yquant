@@ -24,7 +24,7 @@ void SetHeader(std::byte* destination, std::uint32_t value) {
 }
 
 TEST(SpscQueueMetadataTest, RejectsEveryIncompatibleMetadataField) {
-  for (int field = 0; field < 6; ++field) {
+  for (int field = 0; field < 4; ++field) {
     SCOPED_TRACE(field);
     alignas(128) std::array<std::byte, 448> memory{};
     ASSERT_EQ(SpscQueue::Initialize(memory, 64), SpscStatus::kSuccess);
@@ -37,15 +37,9 @@ TEST(SpscQueueMetadataTest, RejectsEveryIncompatibleMetadataField) {
         ++control->metadata.version;
         break;
       case 2:
-        ++control->metadata.byte_order;
-        break;
-      case 3:
-        ++control->metadata.abi_tag;
-        break;
-      case 4:
         ++control->metadata.data_offset;
         break;
-      case 5:
+      case 3:
         control->metadata.capacity = 63;
         break;
     }
@@ -57,7 +51,7 @@ TEST(SpscQueueMetadataTest, RejectsEveryIncompatibleMetadataField) {
   }
 }
 
-TEST(SpscQueueMetadataTest, RejectsValidLayoutInIncompleteMapping) {
+TEST(SpscQueueMetadataTest, RejectsValidLayoutInIncompleteStorage) {
   alignas(128) std::array<std::byte, 448> memory{};
   ASSERT_EQ(SpscQueue::Initialize(memory, 64), SpscStatus::kSuccess);
   SpscQueue view;

@@ -15,7 +15,7 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 | 生产环境 | Linux | x86_64 |
 | 开发环境 | macOS | arm64、x86_64 |
 
-生产环境执行构建、功能、并发及跨进程共享内存验收；开发环境支持本机构建、功能测试和调试。
+生产环境执行构建、功能及并发验收；开发环境支持本机构建、功能测试和调试。
 
 ## 项目目录
 
@@ -28,7 +28,7 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 
 ## 构建与测试
 
-需要 CMake 3.21 或更高版本、Ninja 和支持 C++20 的编译器。测试依赖固定版本的 GoogleTest，由 CMake 获取并以无异常配置构建。
+需要 CMake 3.21 或更高版本、Ninja 和支持 C++20 的编译器。日志依赖 fmt，测试依赖 GoogleTest；二者由 CMake 获取固定版本并以无异常配置构建。
 
 ```sh
 cmake --preset debug
@@ -37,6 +37,8 @@ ctest --preset debug
 ```
 
 `release`、`asan` 和 `tsan` 使用相同的配置、构建与测试命令。ASan 同时启用 UBSan，TSan 使用独立构建目录。仅构建基础库时可设置 `-DBUILD_TESTING=OFF`。
+
+日志接口位于 `yquant/base/logging.h`。Debug 默认编译保留 DEBUG 及以上级别，其他构建保留 INFO 及以上；可在配置时使用 `-DYQUANT_LOG_COMPILED_LEVEL=TRACE` 等选项调整。
 
 ## 工程方案
 
