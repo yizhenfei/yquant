@@ -75,7 +75,7 @@ CMakePresets.json
 
 第三方依赖由 `cmake/` 中的 `FetchContent` 声明集中管理，固定完整 Git commit 或归档 URL 与 SHA256。fmt 为生产依赖，GoogleTest 仅由测试程序使用。依赖不跟随浮动分支，不自动切换到未固定版本的系统安装。[FetchContent](https://cmake.org/cmake/help/latest/module/FetchContent.html)
 
-建议提供以下 presets：
+构建提供以下 presets：
 
 | Preset | 配置 |
 | --- | --- |

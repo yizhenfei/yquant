@@ -19,8 +19,24 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 
 ## 项目目录
 
+- `include/yquant/base/`：基础组件公开头文件。
+- `src/base/`：基础组件及内部实现。
+- `tests/base/`：基础组件测试。
+- `cmake/`：依赖与编译配置。
 - `docs/design/`：架构与组件设计。
 - `docs/research/`：系统研究资料与记录。
+
+## 构建与测试
+
+需要 CMake 3.21 或更高版本、Ninja 和支持 C++20 的编译器。测试依赖固定版本的 GoogleTest，由 CMake 获取并以无异常配置构建。
+
+```sh
+cmake --preset debug
+cmake --build --preset debug
+ctest --preset debug
+```
+
+`release`、`asan` 和 `tsan` 使用相同的配置、构建与测试命令。ASan 同时启用 UBSan，TSan 使用独立构建目录。仅构建基础库时可设置 `-DBUILD_TESTING=OFF`。
 
 ## 工程方案
 
