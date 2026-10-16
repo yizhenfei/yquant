@@ -57,6 +57,8 @@ include/yquant/base/        公开头文件
 src/base/                  组件实现
 src/base/internal/         内部辅助实现及平台适配
 tests/base/                单元与集成测试
+tests/cmake/               构建与测试数据准备流程验证
+test_data/                 外部测试数据与下载缓存，不纳入 Git
 cmake/                     依赖、编译选项与工具链配置
 docs/design/               组件设计
 CMakeLists.txt
@@ -89,6 +91,12 @@ ASan 与 TSan 使用独立构建目录，不合并到同一个程序。依赖版
 ## 验证工具与检查
 
 单元与集成测试使用 GoogleTest，由 CTest 调度，以 `gtest_discover_tests()` 注册。测试框架使用无异常构建。并发测试复用组件设计中的验收条件。[GoogleTest CMake 集成](https://google.github.io/googletest/quickstart-cmake.html)
+
+外部测试数据由 `cmake/DownloadTestData.cmake` 统一准备，可独立执行或通过 `download_test_data` 构建目标调用。数据默认存入不纳入 Git 的 `test_data/`，不同构建配置共用缓存；`YQUANT_TEST_DATA_DIR` 可配置绝对路径，并作为环境变量传给测试程序。来源、存储路径和 SHA256 由 `cmake/TestDataManifest.cmake` 固定。
+
+CTest 的 `TestData.Prepare` 通过 fixture 在功能、并发及编译检查前校验数据。有效文件直接复用，缺失或损坏时优先从已校验的归档恢复，归档不可用时才下载。下载和解压使用临时路径，CSV 校验通过后原子发布；进程间文件锁防止不同 preset 或手动下载同时修改缓存。准备失败时依赖该 fixture 的测试不运行。下载器自身的回归测试使用本地微型归档，覆盖缓存恢复与失败路径。
+
+GoogleTest 的 `PRE_TEST` 发现步骤先于 fixture 执行；测试枚举及全局初始化不读取外部数据，数据读取放在测试执行阶段。
 
 | 验证环境 | 检查内容 |
 | --- | --- |

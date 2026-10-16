@@ -23,6 +23,7 @@ include(cmake/PlatformChecks.cmake)
 include(CTest)
 include(cmake/Dependencies.cmake)
 find_package(Threads REQUIRED)
+include(cmake/TestData.cmake)
 
 add_library(yquant_base STATIC
   src/base/spsc_queue.cc
@@ -68,7 +69,7 @@ if(BUILD_TESTING)
   gtest_discover_tests(spsc_queue_test
     DISCOVERY_MODE PRE_TEST
     DISCOVERY_TIMEOUT 30
-    PROPERTIES TIMEOUT 60)
+    PROPERTIES ${yquant_test_properties})
 
   # Isolate replacement global new/delete from the other test executable.
   add_executable(spsc_queue_allocation_test
@@ -80,7 +81,7 @@ if(BUILD_TESTING)
   gtest_discover_tests(spsc_queue_allocation_test
     DISCOVERY_MODE PRE_TEST
     DISCOVERY_TIMEOUT 30
-    PROPERTIES TIMEOUT 60)
+    PROPERTIES ${yquant_test_properties})
 
   add_executable(logging_test tests/base/logging_test.cc)
   target_include_directories(logging_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -89,7 +90,7 @@ if(BUILD_TESTING)
   gtest_discover_tests(logging_test
     DISCOVERY_MODE PRE_TEST
     DISCOVERY_TIMEOUT 30
-    PROPERTIES TIMEOUT 60)
+    PROPERTIES ${yquant_test_properties})
 
   add_executable(logging_allocation_test tests/base/logging_allocation_test.cc)
   target_link_libraries(logging_allocation_test PRIVATE
@@ -99,7 +100,7 @@ if(BUILD_TESTING)
   gtest_discover_tests(logging_allocation_test
     DISCOVERY_MODE PRE_TEST
     DISCOVERY_TIMEOUT 30
-    PROPERTIES TIMEOUT 60)
+    PROPERTIES ${yquant_test_properties})
 
   include(cmake/LoggingCompileTests.cmake)
 endif()

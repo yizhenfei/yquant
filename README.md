@@ -38,6 +38,16 @@ ctest --preset debug
 
 `release`、`asan` 和 `tsan` 使用相同的配置、构建与测试命令。ASan 同时启用 UBSan，TSan 使用独立构建目录。仅构建基础库时可设置 `-DBUILD_TESTING=OFF`。
 
+测试运行前由 CTest 检查外部测试数据，缺失或校验失败时自动准备。数据与下载缓存默认位于 `test_data/`，不纳入 Git；各 preset 共用此目录。首次准备需要联网下载约 112.5 MB 的官方压缩包，之后仅校验本地文件。也可以在测试前单独执行统一下载命令：
+
+```sh
+cmake -P cmake/DownloadTestData.cmake
+```
+
+已配置构建目录时，也可执行 `cmake --build --preset debug --target download_test_data`。修改存储位置时，配置阶段传入 `-DYQUANT_TEST_DATA_DIR=/absolute/path`；独立下载命令使用同名 `-D` 参数，并放在 `-P` 前。测试程序可通过环境变量 `YQUANT_TEST_DATA_DIR` 取得配置后的目录。
+
+当前数据集是 [DolphinDB 股票回放样本](https://github.com/dolphindb/Tutorials_CN/blob/master/stock_market_replay.md)中的快照文件，保存为 `test_data/dolphindb/2020-12-31/snapshot.csv`。实际文件包含 2020-12-31 的 100 只深市 A 股、367,171 条十档盘口快照，买卖一价量字段为 `BidPX1`、`BidSize1`、`OfferPX1`、`OfferSize1`。下载来源与归档、CSV 的 SHA256 固定在 `cmake/TestDataManifest.cmake`；已有归档可用于离线恢复缺失或损坏的 CSV。
+
 日志接口位于 `yquant/base/logging.h`。Debug 默认编译保留 DEBUG 及以上级别，其他构建保留 INFO 及以上；可在配置时使用 `-DYQUANT_LOG_COMPILED_LEVEL=TRACE` 等选项调整。
 
 ## 工程方案
