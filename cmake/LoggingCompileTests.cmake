@@ -19,5 +19,5 @@ foreach(compile_case RANGE 0 7)
       "-DEXPECT_SUCCESS=${expect_success}"
       -P "${PROJECT_SOURCE_DIR}/cmake/CheckLoggingCompile.cmake")
   set_tests_properties(LoggingCompile.Case${compile_case}
-    PROPERTIES TIMEOUT 60)
+    PROPERTIES ${yquant_test_properties})
 endforeach()
