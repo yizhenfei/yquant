@@ -24,6 +24,40 @@ include(CTest)
 include(cmake/Dependencies.cmake)
 find_package(Threads REQUIRED)
 
+add_library(yquant_strategy_api INTERFACE)
+add_library(yquant::strategy_api ALIAS yquant_strategy_api)
+target_include_directories(yquant_strategy_api INTERFACE
+  "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>")
+target_link_libraries(yquant_strategy_api INTERFACE yquant_compile_options)
+
+add_library(yquant_strategyd_runtime STATIC
+  src/strategyd/strategy_library.cc
+  src/strategyd/strategy_runtime.cc)
+target_include_directories(yquant_strategyd_runtime PUBLIC
+  "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(yquant_strategyd_runtime PUBLIC yquant::strategy_api
+  PRIVATE ${CMAKE_DL_LIBS})
+target_compile_options(yquant_strategyd_runtime PRIVATE
+  -Wall -Wextra -Wpedantic)
+
+add_executable(yquant_strategyd src/strategyd/main.cc)
+target_link_libraries(yquant_strategyd PRIVATE
+  yquant_strategyd_runtime Threads::Threads)
+target_compile_options(yquant_strategyd PRIVATE -Wall -Wextra -Wpedantic)
+set_target_properties(yquant_strategyd PROPERTIES
+  OUTPUT_NAME yquant-strategyd
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+add_library(lifecycle_strategy MODULE
+  examples/strategies/lifecycle_strategy.cc)
+target_link_libraries(lifecycle_strategy PRIVATE yquant::strategy_api)
+target_compile_options(lifecycle_strategy PRIVATE -Wall -Wextra -Wpedantic)
+set_target_properties(lifecycle_strategy PROPERTIES
+  PREFIX ""
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/strategies"
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN YES)
+
 add_library(yquant_base STATIC
   src/base/spsc_queue.cc
   src/base/logging.cc
@@ -102,4 +136,5 @@ if(BUILD_TESTING)
     PROPERTIES TIMEOUT 60)
 
   include(cmake/LoggingCompileTests.cmake)
+  include(cmake/StrategydTests.cmake)
 endif()
