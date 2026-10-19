@@ -52,7 +52,7 @@ class FixtureConfig final : public StrategyConfig {
 
  protected:
   ErrorCode LoadParameters(std::string_view json,
-                           ConfigError* error) noexcept override {
+                           ConfigError& error) noexcept override {
     Emit('P');
     if constexpr (YQUANT_TEST_PLUGIN_MODE != 13) {
       return StrategyConfig::LoadParameters(json, error);
@@ -62,7 +62,7 @@ class FixtureConfig final : public StrategyConfig {
     simdjson::dom::object object;
     if (parser.parse(json.data(), json.size()).get(root) ||
         root.get_object().get(object)) {
-      error->Set("", "expected an object");
+      error.Set("", "expected an object");
       return ErrorCode::kInvalidArgument;
     }
     bool has_qty = false;
@@ -75,14 +75,14 @@ class FixtureConfig final : public StrategyConfig {
       if (field.key == "quote_qty") {
         if (field.value.get_int64().get(quote_qty) || quote_qty <= 0 ||
             quote_qty > 100) {
-          error->Set("quote_qty", "expected an integer from 1 to 100");
+          error.Set("quote_qty", "expected an integer from 1 to 100");
           return ErrorCode::kInvalidArgument;
         }
         has_qty = true;
       } else if (field.key == "large_value") {
         if (field.value.get_int64().get(large_value) ||
             large_value != 9007199254740993LL) {
-          error->Set("large_value", "expected exact integer 9007199254740993");
+          error.Set("large_value", "expected exact integer 9007199254740993");
           return ErrorCode::kInvalidArgument;
         }
         has_large = true;
@@ -90,20 +90,20 @@ class FixtureConfig final : public StrategyConfig {
         if (field.value.get_string().get(label) || label.empty() ||
             label.size() >= sizeof(label_) ||
             label.find('\0') != std::string_view::npos) {
-          error->Set("label", "expected a nonempty string of at most 63 bytes");
+          error.Set("label", "expected a nonempty string of at most 63 bytes");
           return ErrorCode::kInvalidArgument;
         }
         has_label = true;
       } else {
-        error->Set(field.key, "unknown parameter");
+        error.Set(field.key, "unknown parameter");
         return ErrorCode::kInvalidArgument;
       }
     }
     if (!has_qty || !has_label || !has_large) {
-      error->Set(!has_qty     ? "quote_qty"
-                 : !has_label ? "label"
-                              : "large_value",
-                 "required parameter missing");
+      error.Set(!has_qty     ? "quote_qty"
+                : !has_label ? "label"
+                             : "large_value",
+                "required parameter missing");
       return ErrorCode::kInvalidArgument;
     }
     quote_qty_ = quote_qty;
@@ -163,21 +163,21 @@ class FixtureStrategy final : public Strategy {
   FixtureConfig config_;
 };
 
-ErrorCode Create(Strategy** strategy) noexcept {
+ErrorCode Create(Strategy*& strategy) noexcept {
   Emit('C');
   if constexpr (YQUANT_TEST_PLUGIN_MODE == 6) {
-    *strategy = nullptr;
+    strategy = nullptr;
     return ErrorCode::kInvalidArgument;
   }
   if constexpr (YQUANT_TEST_PLUGIN_MODE == 7) {
-    *strategy = nullptr;
+    strategy = nullptr;
     return ErrorCode::kOk;
   }
-  *strategy = new (std::nothrow) FixtureStrategy;
+  strategy = new (std::nothrow) FixtureStrategy;
   if constexpr (YQUANT_TEST_PLUGIN_MODE == 8) {
     return ErrorCode::kInvalidArgument;
   }
-  return *strategy != nullptr ? ErrorCode::kOk : ErrorCode::kResourceExhausted;
+  return strategy != nullptr ? ErrorCode::kOk : ErrorCode::kResourceExhausted;
 }
 
 void Destroy(Strategy* strategy) noexcept {
@@ -187,7 +187,7 @@ void Destroy(Strategy* strategy) noexcept {
 
 [[maybe_unused]] const StrategyPlugin plugin = {
     YQUANT_TEST_PLUGIN_MODE == 2
-        ? yquant::strategy::kStrategyPluginAbiVersion + 1
+        ? yquant::strategy::kStrategyPluginAbiVersion - 1
         : yquant::strategy::kStrategyPluginAbiVersion,
     YQUANT_TEST_PLUGIN_MODE == 3
         ? 0U

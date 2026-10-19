@@ -56,9 +56,9 @@ void PrintRuntimeFailure(const StrategyRuntime& runtime, const Status& status,
                runtime.strategy_id());
 }
 
-bool PrepareTerminationSignals(sigset_t* signals) noexcept {
-  if (sigemptyset(signals) != 0 || sigaddset(signals, SIGINT) != 0 ||
-      sigaddset(signals, SIGTERM) != 0) {
+bool PrepareTerminationSignals(sigset_t& signals) noexcept {
+  if (sigemptyset(&signals) != 0 || sigaddset(&signals, SIGINT) != 0 ||
+      sigaddset(&signals, SIGTERM) != 0) {
     const int error = errno;
     PrintFailure("signal_setup", ErrorCode::kIoError,
                  "could not prepare termination signal set", error);
@@ -66,7 +66,7 @@ bool PrepareTerminationSignals(sigset_t* signals) noexcept {
   }
 
   // Block before loading user code so any threads it creates inherit the mask.
-  const int mask_error = pthread_sigmask(SIG_BLOCK, signals, nullptr);
+  const int mask_error = pthread_sigmask(SIG_BLOCK, &signals, nullptr);
   if (mask_error != 0) {
     PrintFailure("signal_setup", ErrorCode::kIoError,
                  "could not block termination signals", mask_error);
@@ -117,7 +117,7 @@ int main(int argc, char* argv[]) {
     return 2;
   }
   sigset_t termination_signals;
-  if (!PrepareTerminationSignals(&termination_signals)) {
+  if (!PrepareTerminationSignals(termination_signals)) {
     return 1;
   }
 

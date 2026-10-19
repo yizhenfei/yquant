@@ -58,7 +58,7 @@ base::Status StrategyRuntime::Handle(LoadAndStart command) noexcept {
   }
 
   const auto* plugin = library_.plugin();
-  const base::ErrorCode create_result = plugin->create(&instance_);
+  const base::ErrorCode create_result = plugin->create(instance_);
   if ((create_result == base::ErrorCode::kOk) != (instance_ != nullptr)) {
     SetError({base::ErrorCode::kCorrupt, {}}, "create",
              "strategy factory returned inconsistent status and instance");
@@ -75,7 +75,7 @@ base::Status StrategyRuntime::Handle(LoadAndStart command) noexcept {
   strategy::StrategyConfig& config = instance_->config();
   const base::ErrorCode initialize_result =
       config.Initialize(config_loader.strategy_id(),
-                        config_loader.parameters_json(), &config_error);
+                        config_loader.parameters_json(), config_error);
   if (initialize_result != base::ErrorCode::kOk) {
     // Plugins report paths relative to parameters. Copy both parts before
     // destroying the instance or releasing its library.

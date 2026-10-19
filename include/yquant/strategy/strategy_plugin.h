@@ -9,7 +9,7 @@
 
 namespace yquant::strategy {
 
-inline constexpr std::uint32_t kStrategyPluginAbiVersion = 2;
+inline constexpr std::uint32_t kStrategyPluginAbiVersion = 3;
 
 // Descriptor and function pointers remain valid while the library is open.
 // Host and plugin must use compatible C++ ABIs and the same interface version.
@@ -17,9 +17,10 @@ struct StrategyPlugin {
   std::uint32_t abi_version;
   std::uint32_t struct_size;
 
-  // Set *out to a destroyable instance on success and nullptr on failure.
+  // out is a required output slot; its stored pointer may be null.
+  // Sets out to a destroyable instance on success and nullptr on failure.
   // Any nonnull output, including on error, must be recoverable with destroy().
-  base::ErrorCode (*create)(Strategy** out) noexcept;
+  base::ErrorCode (*create)(Strategy*& out) noexcept;
   void (*destroy)(Strategy* instance) noexcept;
 };
 

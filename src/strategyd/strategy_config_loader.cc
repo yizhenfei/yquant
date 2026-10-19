@@ -16,16 +16,16 @@ namespace {
 using JsonType = simdjson::ondemand::json_type;
 
 base::Status JsonError(simdjson::error_code code, std::string_view path,
-                       strategy::ConfigError* error) noexcept {
-  error->Set(path, simdjson::error_message(code));
+                       strategy::ConfigError& error) noexcept {
+  error.Set(path, simdjson::error_message(code));
   return {code == simdjson::MEMALLOC ? base::ErrorCode::kResourceExhausted
                                      : base::ErrorCode::kInvalidArgument,
           {}};
 }
 
 base::Status Invalid(std::string_view path, std::string_view reason,
-                     strategy::ConfigError* error) noexcept {
-  error->Set(path, reason);
+                     strategy::ConfigError& error) noexcept {
+  error.Set(path, reason);
   return {base::ErrorCode::kInvalidArgument, {}};
 }
 
@@ -149,6 +149,7 @@ struct KeyEntry {
 
 class JsonValidator {
  public:
+  // error must be non-null and point to an object that outlives this validator.
   explicit JsonValidator(strategy::ConfigError* error) noexcept
       : error_(error) {}
   ~JsonValidator() noexcept { std::free(keys_); }
@@ -175,7 +176,7 @@ class JsonValidator {
   }
 
   base::Status ValidateRoot(simdjson::ondemand::object object,
-                            strategy::StrategyId* strategy_id) noexcept {
+                            strategy::StrategyId& strategy_id) noexcept {
     const std::size_t object_id = next_object_id_++;
     bool has_id = false;
     bool has_parameters = false;
@@ -183,17 +184,17 @@ class JsonValidator {
       simdjson::ondemand::field field;
       simdjson::error_code json_error = std::move(field_result).get(field);
       if (json_error) {
-        return JsonError(json_error, "$", error_);
+        return JsonError(json_error, "$", *error_);
       }
       std::string_view key;
       json_error = field.unescaped_key().get(key);
       if (json_error) {
-        return JsonError(json_error, "$", error_);
+        return JsonError(json_error, "$", *error_);
       }
       if (!InsertKey(object_id, key)) {
         const ConfigPath path = FieldPath({}, key);
         const auto result =
-            Invalid(path.view(), "duplicate object key", error_);
+            Invalid(path.view(), "duplicate object key", *error_);
         error_->truncated |= path.truncated;
         return result;
       }
@@ -201,9 +202,9 @@ class JsonValidator {
         std::string_view value;
         json_error = field.value().get_string().get(value);
         if (json_error) {
-          return JsonError(json_error, "strategy_id", error_);
+          return JsonError(json_error, "strategy_id", *error_);
         }
-        const base::ErrorCode result = strategy_id->Assign(value);
+        const base::ErrorCode result = strategy_id.Assign(value);
         if (result != base::ErrorCode::kOk) {
           error_->Set("strategy_id",
                       "must contain 1 to 64 UTF-8 bytes without NUL");
@@ -214,10 +215,10 @@ class JsonValidator {
         JsonType type;
         json_error = field.value().type().get(type);
         if (json_error) {
-          return JsonError(json_error, "parameters", error_);
+          return JsonError(json_error, "parameters", *error_);
         }
         if (type != JsonType::object) {
-          return Invalid("parameters", "must be a JSON object", error_);
+          return Invalid("parameters", "must be a JSON object", *error_);
         }
         const base::Status result =
             ValidateValue(field.value(), "parameters", 2);
@@ -227,16 +228,16 @@ class JsonValidator {
         has_parameters = true;
       } else {
         const ConfigPath path = FieldPath({}, key);
-        const auto result = Invalid(path.view(), "unknown root field", error_);
+        const auto result = Invalid(path.view(), "unknown root field", *error_);
         error_->truncated |= path.truncated;
         return result;
       }
     }
     if (!has_id) {
-      return Invalid("strategy_id", "required field is missing", error_);
+      return Invalid("strategy_id", "required field is missing", *error_);
     }
     if (!has_parameters) {
-      return Invalid("parameters", "required field is missing", error_);
+      return Invalid("parameters", "required field is missing", *error_);
     }
     return {};
   }
@@ -269,35 +270,35 @@ class JsonValidator {
     JsonType type;
     simdjson::error_code json_error = value.type().get(type);
     if (json_error) {
-      return JsonError(json_error, path, error_);
+      return JsonError(json_error, path, *error_);
     }
     if ((type == JsonType::object || type == JsonType::array) &&
         depth > kMaxConfigDepth) {
-      return Invalid(path, "maximum JSON nesting depth is 64", error_);
+      return Invalid(path, "maximum JSON nesting depth is 64", *error_);
     }
     switch (type) {
       case JsonType::object: {
         simdjson::ondemand::object object;
         json_error = value.get_object().get(object);
         if (json_error) {
-          return JsonError(json_error, path, error_);
+          return JsonError(json_error, path, *error_);
         }
         const std::size_t object_id = next_object_id_++;
         for (auto field_result : object) {
           simdjson::ondemand::field field;
           json_error = std::move(field_result).get(field);
           if (json_error) {
-            return JsonError(json_error, path, error_);
+            return JsonError(json_error, path, *error_);
           }
           std::string_view key;
           json_error = field.unescaped_key().get(key);
           if (json_error) {
-            return JsonError(json_error, path, error_);
+            return JsonError(json_error, path, *error_);
           }
           const ConfigPath child_path = FieldPath(path, key);
           if (!InsertKey(object_id, key)) {
             const auto result =
-                Invalid(child_path.view(), "duplicate object key", error_);
+                Invalid(child_path.view(), "duplicate object key", *error_);
             error_->truncated |= child_path.truncated;
             return result;
           }
@@ -314,14 +315,14 @@ class JsonValidator {
         simdjson::ondemand::array array;
         json_error = value.get_array().get(array);
         if (json_error) {
-          return JsonError(json_error, path, error_);
+          return JsonError(json_error, path, *error_);
         }
         std::size_t index = 0;
         for (auto value_result : array) {
           simdjson::ondemand::value child;
           json_error = std::move(value_result).get(child);
           if (json_error) {
-            return JsonError(json_error, path, error_);
+            return JsonError(json_error, path, *error_);
           }
           const ConfigPath child_path = IndexPath(path, index++);
           const base::Status result =
@@ -350,14 +351,14 @@ class JsonValidator {
       }
       case JsonType::number:
         if (!IsJsonNumber(value.raw_json_token())) {
-          return Invalid(path, "invalid JSON number", error_);
+          return Invalid(path, "invalid JSON number", *error_);
         }
         // The enclosing iterator consumes this validated scalar on increment.
         return {};
       case JsonType::unknown:
-        return Invalid(path, "invalid JSON value", error_);
+        return Invalid(path, "invalid JSON value", *error_);
     }
-    return json_error ? JsonError(json_error, path, error_) : base::Status{};
+    return json_error ? JsonError(json_error, path, *error_) : base::Status{};
   }
 
   strategy::ConfigError* error_;
@@ -367,9 +368,9 @@ class JsonValidator {
 };
 
 base::Status Validate(char* source, std::size_t size, std::size_t capacity,
-                      strategy::StrategyId* strategy_id,
-                      std::string_view* parameters,
-                      strategy::ConfigError* error) noexcept {
+                      strategy::StrategyId& strategy_id,
+                      std::string_view& parameters,
+                      strategy::ConfigError& error) noexcept {
   simdjson::ondemand::parser parser;
   simdjson::error_code json_error = parser.allocate(size, kMaxConfigDepth + 4);
   if (json_error) {
@@ -385,7 +386,7 @@ base::Status Validate(char* source, std::size_t size, std::size_t capacity,
   if (json_error) {
     return JsonError(json_error, "$", error);
   }
-  JsonValidator validator(error);
+  JsonValidator validator(&error);
   base::Status result = validator.Allocate(size);
   if (!result.ok()) {
     return result;
@@ -412,11 +413,11 @@ base::Status Validate(char* source, std::size_t size, std::size_t capacity,
       return JsonError(json_error, "$", error);
     }
     if (key == "parameters") {
-      json_error = field.value().raw_json().get(*parameters);
+      json_error = field.value().raw_json().get(parameters);
       if (json_error) {
         return JsonError(json_error, "parameters", error);
       }
-      *parameters = TrimEnd(*parameters);
+      parameters = TrimEnd(parameters);
       return {};
     }
   }
@@ -438,7 +439,7 @@ base::Status StrategyConfigLoader::Load(const char* path) noexcept {
   Reset();
   error_.Clear();
   if (path == nullptr || path[0] == '\0') {
-    return Invalid("$", "configuration file path must not be empty", &error_);
+    return Invalid("$", "configuration file path must not be empty", error_);
   }
   std::FILE* file = std::fopen(path, "rb");
   if (file == nullptr) {
@@ -471,12 +472,11 @@ base::Status StrategyConfigLoader::Load(const char* path) noexcept {
   }
   if (size > kMaxConfigFileBytes) {
     Reset();
-    return Invalid("$", "configuration file exceeds the 1 MiB limit", &error_);
+    return Invalid("$", "configuration file exceeds the 1 MiB limit", error_);
   }
   std::memset(source_ + size, 0, simdjson::SIMDJSON_PADDING);
-  const base::Status result =
-      Validate(source_, size, kSourceCapacity, &strategy_id_, &parameters_json_,
-               &error_);
+  const base::Status result = Validate(source_, size, kSourceCapacity,
+                                       strategy_id_, parameters_json_, error_);
   if (!result.ok()) {
     Reset();
   }

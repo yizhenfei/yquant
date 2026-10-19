@@ -26,12 +26,12 @@ class CapturingConfig final : public StrategyConfig {
 
  protected:
   ErrorCode LoadParameters(std::string_view json,
-                           ConfigError* error) noexcept override {
+                           ConfigError& error) noexcept override {
     ++calls;
     id_during_load = strategy_id();
     parameters = json;
     if (result != ErrorCode::kOk) {
-      error->Set("quantity", "quantity must be positive");
+      error.Set("quantity", "quantity must be positive");
     }
     return result;
   }
@@ -78,7 +78,7 @@ TEST(StrategyConfigTest, InitializesCommonIdBeforeParametersAndOnlyOnce) {
   EXPECT_FALSE(config.ready());
   EXPECT_TRUE(config.strategy_id().empty());
   std::string json = R"({"label":"owned"})";
-  ASSERT_EQ(config.Initialize(MakeId(), json, &error), ErrorCode::kOk);
+  ASSERT_EQ(config.Initialize(MakeId(), json, error), ErrorCode::kOk);
   EXPECT_TRUE(config.ready());
   EXPECT_EQ(config.id_during_load, "test-strategy");
   EXPECT_EQ(config.strategy_id(), "test-strategy");
@@ -86,7 +86,7 @@ TEST(StrategyConfigTest, InitializesCommonIdBeforeParametersAndOnlyOnce) {
   EXPECT_STREQ(error.message, "");
   json.assign(json.size(), 'x');
   EXPECT_EQ(config.parameters, R"({"label":"owned"})");
-  EXPECT_EQ(config.Initialize(MakeId("other"), "{}", &error),
+  EXPECT_EQ(config.Initialize(MakeId("other"), "{}", error),
             ErrorCode::kInvalidState);
   EXPECT_EQ(config.calls, 1);
   EXPECT_EQ(config.strategy_id(), "test-strategy");
@@ -97,53 +97,41 @@ TEST(StrategyConfigTest, FailedInitializationCannotBeRetried) {
   CapturingConfig config;
   config.result = ErrorCode::kInvalidArgument;
   ConfigError error;
-  EXPECT_EQ(config.Initialize(MakeId(), "{}", &error),
+  EXPECT_EQ(config.Initialize(MakeId(), "{}", error),
             ErrorCode::kInvalidArgument);
   EXPECT_FALSE(config.ready());
   EXPECT_STREQ(error.field_path, "quantity");
   EXPECT_STREQ(error.message, "quantity must be positive");
   config.result = ErrorCode::kOk;
-  EXPECT_EQ(config.Initialize(MakeId(), "{}", &error),
-            ErrorCode::kInvalidState);
+  EXPECT_EQ(config.Initialize(MakeId(), "{}", error), ErrorCode::kInvalidState);
   EXPECT_FALSE(config.ready());
   EXPECT_EQ(config.calls, 1);
-}
-
-TEST(StrategyConfigTest, NullDiagnosticConsumesInitializationAttempt) {
-  CapturingConfig config;
-  EXPECT_EQ(config.Initialize(MakeId(), "{}", nullptr),
-            ErrorCode::kInvalidArgument);
-  EXPECT_FALSE(config.ready());
-  EXPECT_EQ(config.calls, 0);
-  ConfigError error;
-  EXPECT_EQ(config.Initialize(MakeId(), "{}", &error),
-            ErrorCode::kInvalidState);
-  EXPECT_EQ(config.calls, 0);
+  EXPECT_STREQ(error.field_path, "quantity");
+  EXPECT_STREQ(error.message, "quantity must be positive");
 }
 
 TEST(StrategyConfigTest, EmptyIdFailsBeforeCallingTheParameterLoader) {
   CapturingConfig config;
   ConfigError error;
-  EXPECT_EQ(config.Initialize(StrategyId{}, "{}", &error),
+  EXPECT_EQ(config.Initialize(StrategyId{}, "{}", error),
             ErrorCode::kInvalidArgument);
   EXPECT_FALSE(config.ready());
   EXPECT_EQ(config.calls, 0);
   EXPECT_STREQ(error.field_path, "strategy_id");
-  EXPECT_EQ(config.Initialize(MakeId(), "{}", &error),
-            ErrorCode::kInvalidState);
+  EXPECT_EQ(config.Initialize(MakeId(), "{}", error), ErrorCode::kInvalidState);
 }
 
 TEST(StrategyConfigTest, DefaultParametersAcceptOnlyEmptyObjects) {
   for (std::string_view json : {"{}", " { \n\t } "}) {
     StrategyConfig config;
     ConfigError error;
-    EXPECT_EQ(config.Initialize(MakeId(), json, &error), ErrorCode::kOk);
+    EXPECT_EQ(config.Initialize(MakeId(), json, error), ErrorCode::kOk);
     EXPECT_TRUE(config.ready());
   }
   for (std::string_view json : {R"({"unexpected":1})", "[]", "null", ""}) {
     StrategyConfig config;
     ConfigError error;
-    EXPECT_EQ(config.Initialize(MakeId(), json, &error),
+    EXPECT_EQ(config.Initialize(MakeId(), json, error),
               ErrorCode::kInvalidArgument);
     EXPECT_FALSE(config.ready());
     EXPECT_NE(std::strlen(error.message), 0U);

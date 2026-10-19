@@ -21,8 +21,8 @@ using yquant::strategy::StrategyPlugin;
 constexpr std::size_t kMaxStartupMessageBytes = 128;
 
 ErrorCode ParseError(simdjson::error_code result, std::string_view path,
-                     ConfigError* error) noexcept {
-  error->Set(path, simdjson::error_message(result));
+                     ConfigError& error) noexcept {
+  error.Set(path, simdjson::error_message(result));
   return result == simdjson::MEMALLOC ? ErrorCode::kResourceExhausted
                                       : ErrorCode::kInvalidArgument;
 }
@@ -35,10 +35,10 @@ class LifecycleConfig final : public StrategyConfig {
 
  protected:
   ErrorCode LoadParameters(std::string_view parameters_json,
-                           ConfigError* error) noexcept override {
+                           ConfigError& error) noexcept override {
     simdjson::padded_string input(parameters_json);
     if (input.data() == nullptr) {
-      error->Set("", "could not allocate parameter input");
+      error.Set("", "could not allocate parameter input");
       return ErrorCode::kResourceExhausted;
     }
     simdjson::dom::parser parser;
@@ -61,11 +61,11 @@ class LifecycleConfig final : public StrategyConfig {
     bool has_startup_message = false;
     for (const auto field : object) {
       if (field.key != "startup_message") {
-        error->Set(field.key, "unknown parameter");
+        error.Set(field.key, "unknown parameter");
         return ErrorCode::kInvalidArgument;
       }
       if (has_startup_message) {
-        error->Set(field.key, "duplicate parameter");
+        error.Set(field.key, "duplicate parameter");
         return ErrorCode::kInvalidArgument;
       }
       if (const auto result = field.value.get_string().get(startup_message);
@@ -75,13 +75,13 @@ class LifecycleConfig final : public StrategyConfig {
       has_startup_message = true;
     }
     if (!has_startup_message) {
-      error->Set("startup_message", "required parameter is missing");
+      error.Set("startup_message", "required parameter is missing");
       return ErrorCode::kInvalidArgument;
     }
     if (startup_message.empty() ||
         startup_message.size() > kMaxStartupMessageBytes ||
         startup_message.find('\0') != std::string_view::npos) {
-      error->Set("startup_message", "must contain 1 to 128 bytes without NUL");
+      error.Set("startup_message", "must contain 1 to 128 bytes without NUL");
       return ErrorCode::kInvalidArgument;
     }
 
@@ -128,16 +128,13 @@ class LifecycleStrategy final : public Strategy {
   State state_ = State::kIdle;
 };
 
-ErrorCode CreateStrategy(Strategy** output) noexcept {
-  if (output == nullptr) {
-    return ErrorCode::kInvalidArgument;
-  }
-  *output = nullptr;
+ErrorCode CreateStrategy(Strategy*& output) noexcept {
+  output = nullptr;
   auto* strategy = new (std::nothrow) LifecycleStrategy;
   if (strategy == nullptr) {
     return ErrorCode::kResourceExhausted;
   }
-  *output = strategy;
+  output = strategy;
   return ErrorCode::kOk;
 }
 

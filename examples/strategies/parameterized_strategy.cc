@@ -16,8 +16,8 @@ using yquant::strategy::StrategyConfig;
 using yquant::strategy::StrategyPlugin;
 
 ErrorCode ParseError(simdjson::error_code result, std::string_view path,
-                     ConfigError* error) noexcept {
-  error->Set(path, simdjson::error_message(result));
+                     ConfigError& error) noexcept {
+  error.Set(path, simdjson::error_message(result));
   return result == simdjson::MEMALLOC ? ErrorCode::kResourceExhausted
                                       : ErrorCode::kInvalidArgument;
 }
@@ -29,12 +29,12 @@ class ParameterizedConfig final : public StrategyConfig {
 
  protected:
   ErrorCode LoadParameters(std::string_view parameters_json,
-                           ConfigError* error) noexcept override {
+                           ConfigError& error) noexcept override {
     // The parser and padded input are initialization-only storage. No JSON
     // views escape this call, including decoded object keys.
     simdjson::padded_string input(parameters_json);
     if (input.data() == nullptr) {
-      error->Set("", "could not allocate parameter input");
+      error.Set("", "could not allocate parameter input");
       return ErrorCode::kResourceExhausted;
     }
     simdjson::dom::parser parser;
@@ -62,7 +62,7 @@ class ParameterizedConfig final : public StrategyConfig {
       // same field. Do not coerce strings or floating-point values to integers.
       if (field.key == "quote_qty") {
         if (has_quote_qty) {
-          error->Set(field.key, "duplicate parameter");
+          error.Set(field.key, "duplicate parameter");
           return ErrorCode::kInvalidArgument;
         }
         if (const auto result = field.value.get_int64().get(quote_qty);
@@ -72,7 +72,7 @@ class ParameterizedConfig final : public StrategyConfig {
         has_quote_qty = true;
       } else if (field.key == "max_position") {
         if (has_max_position) {
-          error->Set(field.key, "duplicate parameter");
+          error.Set(field.key, "duplicate parameter");
           return ErrorCode::kInvalidArgument;
         }
         if (const auto result = field.value.get_int64().get(max_position);
@@ -81,24 +81,24 @@ class ParameterizedConfig final : public StrategyConfig {
         }
         has_max_position = true;
       } else {
-        error->Set(field.key, "unknown parameter");
+        error.Set(field.key, "unknown parameter");
         return ErrorCode::kInvalidArgument;
       }
     }
     if (!has_quote_qty) {
-      error->Set("quote_qty", "required parameter is missing");
+      error.Set("quote_qty", "required parameter is missing");
       return ErrorCode::kInvalidArgument;
     }
     if (!has_max_position) {
-      error->Set("max_position", "required parameter is missing");
+      error.Set("max_position", "required parameter is missing");
       return ErrorCode::kInvalidArgument;
     }
     if (quote_qty <= 0) {
-      error->Set("quote_qty", "must be greater than zero");
+      error.Set("quote_qty", "must be greater than zero");
       return ErrorCode::kInvalidArgument;
     }
     if (max_position < quote_qty) {
-      error->Set("max_position", "must be at least quote_qty");
+      error.Set("max_position", "must be at least quote_qty");
       return ErrorCode::kInvalidArgument;
     }
 
@@ -145,16 +145,13 @@ class ParameterizedStrategy final : public Strategy {
   State state_ = State::kIdle;
 };
 
-ErrorCode CreateStrategy(Strategy** output) noexcept {
-  if (output == nullptr) {
-    return ErrorCode::kInvalidArgument;
-  }
-  *output = nullptr;
+ErrorCode CreateStrategy(Strategy*& output) noexcept {
+  output = nullptr;
   auto* strategy = new (std::nothrow) ParameterizedStrategy;
   if (strategy == nullptr) {
     return ErrorCode::kResourceExhausted;
   }
-  *output = strategy;
+  output = strategy;
   return ErrorCode::kOk;
 }
 

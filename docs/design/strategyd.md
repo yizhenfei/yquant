@@ -71,7 +71,7 @@ virtual ~Strategy() noexcept = default;
 StrategyPlugin:
     abi_version: uint32                         # kStrategyPluginAbiVersion
     struct_size: uint32                         # 描述符字节数
-    create(Strategy** out) noexcept -> ErrorCode
+    create(Strategy*& out) noexcept -> ErrorCode
     destroy(Strategy* instance) noexcept
 
 extern "C" YQuantGetStrategyPlugin() noexcept -> const StrategyPlugin*
@@ -79,7 +79,7 @@ extern "C" YQuantGetStrategyPlugin() noexcept -> const StrategyPlugin*
 
 宿主先检查入口返回值非空、`abi_version == kStrategyPluginAbiVersion`、`struct_size == sizeof(StrategyPlugin)`，以及 `create`、`destroy` 均非空，再调用工厂。
 
-宿主在调用 `create()` 前将输出指针初始化为空。工厂成功时返回 `kOk` 和非空实例；失败时释放本次临时资源，返回错误码并将输出指针置空。用户策略可在创建阶段使用 `new (std::nothrow)`，分配失败返回 `kResourceExhausted`。
+宿主在调用 `create()` 前将保存实例的指针变量初始化为 `nullptr`，通过 `Strategy*&` 交给工厂填写。调用方必须提供这个输出变量，变量中的指针值允许为空。工厂成功时返回 `kOk` 和非空实例；失败时释放本次临时资源，返回错误码并将输出变量设为 `nullptr`。用户策略可在创建阶段使用 `new (std::nothrow)`，分配失败返回 `kResourceExhausted`。
 
 工厂写入输出的任何非空实例都必须可由 `destroy()` 回收。返回码与指针不一致时，宿主报告插件协议错误；若指针非空，先销毁再释放动态库句柄，不调用 `OnStart()`。
 
@@ -87,7 +87,7 @@ extern "C" YQuantGetStrategyPlugin() noexcept -> const StrategyPlugin*
 
 描述符和工厂函数指针由动态库持有，只在动态库句柄有效期间使用。宿主在 `destroy()` 返回后清空实例引用，再释放动态库句柄；释放后不再访问描述符、工厂函数或实例的虚函数。
 
-入口使用 C linkage 固定符号名，生命周期接口仍依赖 C++ ABI。密集开发期间，宿主与所有策略始终采用最新 SDK 和 ABI，同步重新编译，不维护旧 ABI 的兼容实现。接口的虚函数布局或描述符布局变化时更新 `kStrategyPluginAbiVersion`，加载器只接受与自身版本一致的策略动态库。
+入口使用 C linkage 固定符号名，生命周期接口仍依赖 C++ ABI。密集开发期间，宿主与所有策略始终采用最新 SDK 和 ABI，同步重新编译，不维护旧 ABI 的兼容实现。公共接口的签名或布局变化时更新 `kStrategyPluginAbiVersion`，加载器只接受与自身版本一致的策略动态库。
 
 宿主与策略使用相同目标平台和架构、兼容的编译器与标准库构建；验收使用同一工程和同一构建 preset。
 

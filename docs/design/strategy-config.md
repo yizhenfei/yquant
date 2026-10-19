@@ -48,12 +48,12 @@ class StrategyConfig {
   [[nodiscard]] base::ErrorCode Initialize(
       const StrategyId& strategy_id,
       std::string_view parameters_json,
-      ConfigError* error) noexcept;
+      ConfigError& error) noexcept;
 
  protected:
   [[nodiscard]] virtual base::ErrorCode LoadParameters(
       std::string_view parameters_json,
-      ConfigError* error) noexcept;
+      ConfigError& error) noexcept;
 };
 ```
 
@@ -65,15 +65,15 @@ class StrategyConfig {
 Initialize(strategy_id, parameters_json, error):
     如果已经尝试过初始化，返回状态错误
     标记已经尝试初始化
-    如果 error 为空，返回参数错误
-    保存 strategy_id
     清空 error
+    如果 strategy_id 为空，返回参数错误
+    保存 strategy_id
     result = LoadParameters(parameters_json, error)
     ready = result 成功
     return result
 ```
 
-每个配置对象只允许一次初始化尝试，失败后也不重试。成功后配置保持不变；完整配置只在 `ready() == true` 时用于策略运行。`LoadParameters()` 执行期间已经可以读取公共 ID。
+每个配置对象只允许一次初始化尝试，失败后也不重试；重复调用返回状态错误，不修改配置或诊断。成功后配置保持不变；完整配置只在 `ready() == true` 时用于策略运行。`LoadParameters()` 执行期间已经可以读取公共 ID。
 
 基类的 `LoadParameters()` 默认只接受空对象。无自定义参数的策略可直接持有 `StrategyConfig`，不必再定义派生类。
 
@@ -90,7 +90,7 @@ class MarketMakingConfig final : public StrategyConfig {
  protected:
   base::ErrorCode LoadParameters(
       std::string_view parameters_json,
-      ConfigError* error) noexcept override;
+      ConfigError& error) noexcept override;
 
  private:
   std::int64_t quote_qty_ = 0;
@@ -186,7 +186,7 @@ flowchart TD
 
 ### 校验失败与诊断
 
-宿主提供固定容量的 `ConfigError`，保存字段路径和原因。`ConfigError*` 为必传非空参数，仅在当前调用期间可写，配置对象不得保存这个指针；传入空指针返回 `kInvalidArgument`。派生配置类报告相对于 `parameters` 的字段路径，宿主添加前缀后输出，例如 `parameters.quote_qty: 必须大于 0`。
+宿主提供固定容量的 `ConfigError`，保存字段路径和原因。`Initialize()` 和 `LoadParameters()` 通过 `ConfigError&` 接收这个必须提供的输出对象，仅在当前调用期间借用，配置对象不得保存其引用或地址。首次初始化尝试先清空诊断，再执行校验。派生配置类报告相对于 `parameters` 的字段路径，宿主添加前缀后输出，例如 `parameters.quote_qty: 必须大于 0`。
 
 错误内容复制到宿主持有的存储，不借用文件缓冲或动态库中的字符串。需要在销毁实例后输出的 ID 和诊断也先复制，再执行收尾。错误描述超出容量时标记截断，保留错误码。
 
@@ -209,7 +209,7 @@ flowchart TD
 
 JSON 解析使用固定版本的 simdjson `5.0.4`，关闭异常接口及线程支持，宿主和示例策略分别私有链接其静态实现。依赖版本与归档哈希由 `cmake/Dependencies.cmake` 固定。宿主完整遍历配置检查语法和重复键，再从原始缓冲提取 `parameters`，将解析器和重复键检查的临时存储在加载结束时释放。
 
-新增 `config()` 虚函数时更新 `kStrategyPluginAbiVersion`，宿主和所有策略按最新 SDK 同步重新编译。加载器在创建实例和调用配置访问器之前校验版本一致性，不提供旧 ABI 的兼容路径。描述符的 `create()`、`destroy()` 协议保持不变。
+公共接口的签名或布局变化时更新 `kStrategyPluginAbiVersion`，宿主和所有策略按最新 SDK 同步重新编译。加载器在创建实例和调用配置访问器之前校验版本一致性，不提供旧 ABI 的兼容路径。工厂通过 `Strategy*&` 接收必须提供的输出变量，创建与销毁协议见[动态库入口与对象所有权](strategyd.md#动态库入口与对象所有权)。
 
 ## 验证标准
 
@@ -221,7 +221,7 @@ JSON 解析使用固定版本的 simdjson `5.0.4`，关闭异常接口及线程�
 | 无自定义参数 | 基类配置接受空对象，包含未知参数时拒绝 |
 | 强类型参数 | 派生类正确读取整数等字段，缺项、未知项、数值溢出和组合约束失败给出对应路径；整数不经过浮点数中转 |
 | 生命周期策略参数 | `startup_message` 为必填字符串，解码后 1 至 128 字节且无内嵌 NUL；缺项、错误类型、空字符串、超长及未知参数均拒绝，启动时输出配置中的消息 |
-| 一次初始化 | 成功或失败后再次初始化均返回状态错误，成功配置不被覆盖 |
+| 一次初始化 | 成功或失败后再次初始化均返回状态错误，配置及已有诊断不被修改 |
 | 生命周期 | 配置全部校验后才调用 `OnStart()`；配置失败直接销毁，无启动或停止回调 |
 | 存储生命周期 | 初始化后释放原始 JSON 缓冲，配置中的 ID、字符串和容器仍可正确读取，销毁后无残留引用 |
 | 诊断生命周期 | 实例销毁和动态库句柄释放后，宿主仍可输出字段路径及原因 |
