@@ -2,6 +2,7 @@
 #define YQUANT_STRATEGY_STRATEGY_H_
 
 #include "yquant/base/status.h"
+#include "yquant/strategy/strategy_config.h"
 
 namespace yquant::strategy {
 
@@ -9,6 +10,9 @@ namespace yquant::strategy {
 class Strategy {
  public:
   virtual ~Strategy() noexcept = default;
+
+  // Always return the same owned configuration object for this instance.
+  virtual StrategyConfig& config() noexcept = 0;
 
   // On failure, roll back startup resources and remain safe to destroy.
   [[nodiscard]] virtual base::ErrorCode OnStart() noexcept = 0;

@@ -2,6 +2,7 @@
 #define YQUANT_STRATEGYD_STRATEGY_RUNTIME_H_
 
 #include <cstddef>
+#include <string_view>
 
 #include "strategyd/strategy_library.h"
 #include "yquant/base/status.h"
@@ -13,6 +14,7 @@ enum class RuntimeState { kIdle, kStarting, kRunning, kStopping, kFinished };
 
 struct LoadAndStart {
   const char* library_path;
+  const char* config_path;
 };
 
 struct Stop {};
@@ -32,6 +34,10 @@ class StrategyRuntime {
   [[nodiscard]] base::Status Handle(Stop command) noexcept;
 
   [[nodiscard]] RuntimeState state() const noexcept { return state_; }
+  // Owns a copy so diagnostics can identify a strategy after destruction.
+  [[nodiscard]] std::string_view strategy_id() const noexcept {
+    return strategy_id_.view();
+  }
   // Diagnostics remain valid until the next command. Cleanup keeps the first
   // failure encountered by the current command.
   [[nodiscard]] const char* error_stage() const noexcept {
@@ -49,6 +55,7 @@ class StrategyRuntime {
 
   static constexpr std::size_t kErrorDetailSize = 1024;
   StrategyLibrary library_;
+  strategy::StrategyId strategy_id_;
   strategy::Strategy* instance_ = nullptr;
   RuntimeState state_ = RuntimeState::kIdle;
   bool started_ = false;

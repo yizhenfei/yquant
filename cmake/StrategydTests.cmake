@@ -2,7 +2,7 @@ function(yquant_add_strategy_fixture name mode)
   add_library(strategyd_fixture_${name} MODULE
     tests/strategyd/strategy_fixture.cc)
   target_link_libraries(strategyd_fixture_${name} PRIVATE
-    yquant::strategy_api yquant_compile_options)
+    yquant::strategy_api yquant_compile_options simdjson::simdjson)
   target_compile_definitions(strategyd_fixture_${name} PRIVATE
     YQUANT_TEST_PLUGIN_MODE=${mode})
   target_compile_options(strategyd_fixture_${name} PRIVATE
@@ -26,6 +26,7 @@ yquant_add_strategy_fixture(start_fail 9)
 yquant_add_strategy_fixture(stop_fail 10)
 yquant_add_strategy_fixture(null_plugin 11)
 yquant_add_strategy_fixture(missing_dependency 12)
+yquant_add_strategy_fixture(typed 13)
 
 add_library(strategyd_fixture_dependency SHARED
   tests/strategyd/missing_dependency.cc)
@@ -42,20 +43,33 @@ set_target_properties(strategyd_fixture_missing_dependency PROPERTIES
   INSTALL_RPATH "${strategy_dependency_rpath}")
 
 add_executable(yquant_strategyd_test
+  tests/strategyd/strategy_config_test.cc
+  tests/strategyd/strategy_config_loader_test.cc
   tests/strategyd/strategy_runtime_test.cc
   tests/strategyd/strategyd_process_test.cc)
 target_include_directories(yquant_strategyd_test PRIVATE src)
 target_link_libraries(yquant_strategyd_test PRIVATE
   yquant_strategyd_runtime GTest::gtest_main yquant_compile_options)
 target_compile_options(yquant_strategyd_test PRIVATE -Wall -Wextra -Wpedantic)
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/test_data")
+foreach(config IN ITEMS lifecycle typed)
+  configure_file("tests/strategyd/configs/${config}.json"
+    "${CMAKE_BINARY_DIR}/test_data/${config}.json" COPYONLY)
+endforeach()
 target_compile_definitions(yquant_strategyd_test PRIVATE
   YQUANT_TEST_STRATEGYD_PATH="$<TARGET_FILE:yquant_strategyd>"
-  YQUANT_TEST_EXAMPLE_PATH="$<TARGET_FILE:lifecycle_strategy>")
-add_dependencies(yquant_strategyd_test yquant_strategyd lifecycle_strategy)
+  YQUANT_TEST_EXAMPLE_PATH="$<TARGET_FILE:lifecycle_strategy>"
+  YQUANT_TEST_EXAMPLE_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/lifecycle_strategy.json"
+  YQUANT_TEST_PARAMETERIZED_EXAMPLE_PATH="$<TARGET_FILE:parameterized_strategy>"
+  YQUANT_TEST_PARAMETERIZED_EXAMPLE_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/parameterized_strategy.json"
+  YQUANT_TEST_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/lifecycle.json"
+  YQUANT_TEST_TYPED_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/typed.json")
+add_dependencies(yquant_strategyd_test
+  yquant_strategyd lifecycle_strategy parameterized_strategy)
 
 foreach(name IN ITEMS good no_entry bad_abi bad_size no_create no_destroy
     create_fail create_null create_inconsistent start_fail stop_fail null_plugin
-    missing_dependency)
+    missing_dependency typed)
   string(TOUPPER "${name}" upper_name)
   target_compile_definitions(yquant_strategyd_test PRIVATE
     YQUANT_TEST_PLUGIN_${upper_name}_PATH="$<TARGET_FILE:strategyd_fixture_${name}>")

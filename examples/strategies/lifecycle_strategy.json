@@ -1,0 +1,6 @@
+{
+  "strategy_id": "lifecycle-example",
+  "parameters": {
+    "startup_message": "lifecycle strategy started"
+  }
+}

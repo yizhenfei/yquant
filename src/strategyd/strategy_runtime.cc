@@ -2,6 +2,8 @@
 
 #include <cstdio>
 
+#include "strategyd/strategy_config_loader.h"
+
 namespace yquant::strategyd {
 
 StrategyRuntime::~StrategyRuntime() noexcept {
@@ -34,6 +36,20 @@ base::Status StrategyRuntime::Handle(LoadAndStart command) noexcept {
   }
 
   state_ = RuntimeState::kStarting;
+  StrategyConfigLoader config_loader;
+  const base::Status config_result = config_loader.Load(command.config_path);
+  if (!config_result.ok()) {
+    char detail[kErrorDetailSize];
+    std::snprintf(detail, sizeof(detail), "%s: %s%s",
+                  config_loader.error().field_path,
+                  config_loader.error().message,
+                  config_loader.error().truncated ? " [truncated]" : "");
+    SetError(config_result, "config", detail);
+    Cleanup();
+    return result_;
+  }
+  strategy_id_ = config_loader.strategy_id();
+
   const base::Status open_result = library_.Open(command.library_path);
   if (!open_result.ok()) {
     SetError(open_result, library_.error_stage(), library_.error_detail());
@@ -54,6 +70,37 @@ base::Status StrategyRuntime::Handle(LoadAndStart command) noexcept {
     Cleanup();
     return result_;
   }
+
+  strategy::ConfigError config_error;
+  strategy::StrategyConfig& config = instance_->config();
+  const base::ErrorCode initialize_result =
+      config.Initialize(config_loader.strategy_id(),
+                        config_loader.parameters_json(), &config_error);
+  if (initialize_result != base::ErrorCode::kOk) {
+    // Plugins report paths relative to parameters. Copy both parts before
+    // destroying the instance or releasing its library.
+    char detail[kErrorDetailSize];
+    const char* separator = config_error.field_path[0] == '\0' ? "" : ".";
+    std::snprintf(detail, sizeof(detail), "parameters%s%s: %s%s", separator,
+                  config_error.field_path,
+                  config_error.message[0] != '\0'
+                      ? config_error.message
+                      : "strategy configuration initialization failed",
+                  config_error.truncated ? " [truncated]" : "");
+    SetError({initialize_result, {}}, "initialize", detail);
+    config_loader.Reset();
+    Cleanup();
+    return result_;
+  }
+  if (!config.ready()) {
+    SetError({base::ErrorCode::kCorrupt, {}}, "initialize",
+             "strategy configuration did not become ready");
+    config_loader.Reset();
+    Cleanup();
+    return result_;
+  }
+  // JSON views are initialization-only. OnStart must use owned typed fields.
+  config_loader.Reset();
 
   const base::ErrorCode start_result = instance_->OnStart();
   if (start_result != base::ErrorCode::kOk) {

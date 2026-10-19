@@ -31,12 +31,13 @@ target_include_directories(yquant_strategy_api INTERFACE
 target_link_libraries(yquant_strategy_api INTERFACE yquant_compile_options)
 
 add_library(yquant_strategyd_runtime STATIC
+  src/strategyd/strategy_config_loader.cc
   src/strategyd/strategy_library.cc
   src/strategyd/strategy_runtime.cc)
 target_include_directories(yquant_strategyd_runtime PUBLIC
   "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(yquant_strategyd_runtime PUBLIC yquant::strategy_api
-  PRIVATE ${CMAKE_DL_LIBS})
+  PRIVATE simdjson::simdjson ${CMAKE_DL_LIBS})
 target_compile_options(yquant_strategyd_runtime PRIVATE
   -Wall -Wextra -Wpedantic)
 
@@ -48,15 +49,22 @@ set_target_properties(yquant_strategyd PROPERTIES
   OUTPUT_NAME yquant-strategyd
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
-add_library(lifecycle_strategy MODULE
-  examples/strategies/lifecycle_strategy.cc)
-target_link_libraries(lifecycle_strategy PRIVATE yquant::strategy_api)
-target_compile_options(lifecycle_strategy PRIVATE -Wall -Wextra -Wpedantic)
-set_target_properties(lifecycle_strategy PROPERTIES
-  PREFIX ""
-  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/strategies"
-  CXX_VISIBILITY_PRESET hidden
-  VISIBILITY_INLINES_HIDDEN YES)
+function(yquant_add_strategy_example name)
+  add_library(${name} MODULE examples/strategies/${name}.cc)
+  target_link_libraries(${name} PRIVATE yquant::strategy_api)
+  target_compile_options(${name} PRIVATE -Wall -Wextra -Wpedantic)
+  set_target_properties(${name} PROPERTIES
+    PREFIX ""
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/strategies"
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN YES)
+  configure_file(examples/strategies/${name}.json
+    "${CMAKE_BINARY_DIR}/strategies/${name}.json" COPYONLY)
+endfunction()
+yquant_add_strategy_example(lifecycle_strategy)
+yquant_add_strategy_example(parameterized_strategy)
+target_link_libraries(lifecycle_strategy PRIVATE simdjson::simdjson)
+target_link_libraries(parameterized_strategy PRIVATE simdjson::simdjson)
 
 add_library(yquant_base STATIC
   src/base/spsc_queue.cc

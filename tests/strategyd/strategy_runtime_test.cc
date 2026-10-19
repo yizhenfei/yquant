@@ -1,15 +1,15 @@
 #include "strategyd/strategy_runtime.h"
 
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <cerrno>
 #include <cstdlib>
 #include <string>
 
-#include <fcntl.h>
-#include <unistd.h>
-
 #include "gtest/gtest.h"
+#include "test_config_file.h"
 #include "yquant/base/status.h"
 
 namespace yquant::strategyd {
@@ -85,18 +85,29 @@ TEST(StrategyRuntimeTest, StartsStopsAndRejectsASecondLoad) {
   ASSERT_TRUE(events.valid());
   StrategyRuntime runtime;
   EXPECT_EQ(runtime.state(), RuntimeState::kIdle);
-  ASSERT_TRUE(runtime.Handle(LoadAndStart{YQUANT_TEST_PLUGIN_GOOD_PATH}).ok());
+  ASSERT_TRUE(runtime
+                  .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_GOOD_PATH,
+                                       YQUANT_TEST_CONFIG_PATH})
+                  .ok());
   EXPECT_EQ(runtime.state(), RuntimeState::kRunning);
-  EXPECT_EQ(runtime.Handle(LoadAndStart{YQUANT_TEST_PLUGIN_GOOD_PATH}).code,
+  EXPECT_EQ(runtime.strategy_id(), "test-lifecycle");
+  EXPECT_EQ(runtime
+                .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_GOOD_PATH,
+                                     YQUANT_TEST_CONFIG_PATH})
+                .code,
             base::ErrorCode::kInvalidState);
   EXPECT_EQ(runtime.state(), RuntimeState::kRunning);
-  EXPECT_EQ(events.Read(), "CS");
+  EXPECT_EQ(events.Read(), "CPS");
 
   ASSERT_TRUE(runtime.Handle(Stop{}).ok());
   EXPECT_EQ(runtime.state(), RuntimeState::kFinished);
+  EXPECT_EQ(runtime.strategy_id(), "test-lifecycle");
   ExpectLifecycle(events.Read(), "TD");
   EXPECT_TRUE(runtime.Handle(Stop{}).ok());
-  EXPECT_EQ(runtime.Handle(LoadAndStart{YQUANT_TEST_PLUGIN_GOOD_PATH}).code,
+  EXPECT_EQ(runtime
+                .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_GOOD_PATH,
+                                     YQUANT_TEST_CONFIG_PATH})
+                .code,
             base::ErrorCode::kInvalidState);
   EXPECT_TRUE(events.Read().empty());
 }
@@ -106,7 +117,10 @@ TEST(StrategyRuntimeTest, StopBeforeLoadFinishesWithoutLoading) {
   ASSERT_TRUE(runtime.Handle(Stop{}).ok());
   EXPECT_EQ(runtime.state(), RuntimeState::kFinished);
   EXPECT_TRUE(runtime.Handle(Stop{}).ok());
-  EXPECT_EQ(runtime.Handle(LoadAndStart{YQUANT_TEST_PLUGIN_GOOD_PATH}).code,
+  EXPECT_EQ(runtime
+                .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_GOOD_PATH,
+                                     YQUANT_TEST_CONFIG_PATH})
+                .code,
             base::ErrorCode::kInvalidState);
 }
 
@@ -115,10 +129,12 @@ TEST(StrategyRuntimeTest, DestructorStopsAnActiveStrategy) {
   ASSERT_TRUE(events.valid());
   {
     StrategyRuntime runtime;
-    ASSERT_TRUE(
-        runtime.Handle(LoadAndStart{YQUANT_TEST_PLUGIN_GOOD_PATH}).ok());
+    ASSERT_TRUE(runtime
+                    .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_GOOD_PATH,
+                                         YQUANT_TEST_CONFIG_PATH})
+                    .ok());
   }
-  ExpectLifecycle(events.Read(), "CSTD");
+  ExpectLifecycle(events.Read(), "CPSTD");
 }
 
 TEST(StrategyRuntimeTest, DestroysBeforeReleasingTheLibraryReference) {
@@ -133,12 +149,15 @@ TEST(StrategyRuntimeTest, DestroysBeforeReleasingTheLibraryReference) {
   EXPECT_TRUE(probe_events.empty() || probe_events == "U");
 
   StrategyRuntime runtime;
-  ASSERT_TRUE(runtime.Handle(LoadAndStart{YQUANT_TEST_PLUGIN_GOOD_PATH}).ok());
+  ASSERT_TRUE(runtime
+                  .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_GOOD_PATH,
+                                       YQUANT_TEST_CONFIG_PATH})
+                  .ok());
   ASSERT_TRUE(runtime.Handle(Stop{}).ok());
   const std::string lifecycle = events.Read();
-  ExpectLifecycle(lifecycle, "CSTD");
+  ExpectLifecycle(lifecycle, "CPSTD");
   if (probe_events == "U") {
-    EXPECT_EQ(lifecycle, "CSTDU");
+    EXPECT_EQ(lifecycle, "CPSTDU");
   }
 }
 
@@ -146,7 +165,7 @@ TEST(StrategyRuntimeTest, RejectsEmptyPathsAndFinishes) {
   const char* paths[] = {nullptr, ""};
   for (const char* path : paths) {
     StrategyRuntime runtime;
-    EXPECT_EQ(runtime.Handle(LoadAndStart{path}).code,
+    EXPECT_EQ(runtime.Handle(LoadAndStart{path, YQUANT_TEST_CONFIG_PATH}).code,
               base::ErrorCode::kInvalidArgument);
     EXPECT_EQ(runtime.state(), RuntimeState::kFinished);
     EXPECT_STREQ(runtime.error_stage(), "path");
@@ -166,7 +185,9 @@ TEST_P(InvalidPluginTest, FailsAndReleasesOwnedResources) {
   EventPipe events;
   ASSERT_TRUE(events.valid());
   StrategyRuntime runtime;
-  EXPECT_FALSE(runtime.Handle(LoadAndStart{GetParam().path}).ok());
+  EXPECT_FALSE(
+      runtime.Handle(LoadAndStart{GetParam().path, YQUANT_TEST_CONFIG_PATH})
+          .ok());
   EXPECT_EQ(runtime.state(), RuntimeState::kFinished);
   ExpectLifecycle(events.Read(), GetParam().events);
   EXPECT_TRUE(runtime.Handle(Stop{}).ok());
@@ -182,20 +203,16 @@ INSTANTIATE_TEST_SUITE_P(
         InvalidPlugin{"NullDescriptor", YQUANT_TEST_PLUGIN_NULL_PLUGIN_PATH,
                       ""},
         InvalidPlugin{"WrongAbi", YQUANT_TEST_PLUGIN_BAD_ABI_PATH, ""},
-        InvalidPlugin{"ShortDescriptor", YQUANT_TEST_PLUGIN_BAD_SIZE_PATH,
-                      ""},
-        InvalidPlugin{"MissingCreate", YQUANT_TEST_PLUGIN_NO_CREATE_PATH,
-                      ""},
-        InvalidPlugin{"MissingDestroy", YQUANT_TEST_PLUGIN_NO_DESTROY_PATH,
-                      ""},
+        InvalidPlugin{"ShortDescriptor", YQUANT_TEST_PLUGIN_BAD_SIZE_PATH, ""},
+        InvalidPlugin{"MissingCreate", YQUANT_TEST_PLUGIN_NO_CREATE_PATH, ""},
+        InvalidPlugin{"MissingDestroy", YQUANT_TEST_PLUGIN_NO_DESTROY_PATH, ""},
         InvalidPlugin{"CreateFailure", YQUANT_TEST_PLUGIN_CREATE_FAIL_PATH,
                       "C"},
-        InvalidPlugin{"NullInstance", YQUANT_TEST_PLUGIN_CREATE_NULL_PATH,
-                      "C"},
+        InvalidPlugin{"NullInstance", YQUANT_TEST_PLUGIN_CREATE_NULL_PATH, "C"},
         InvalidPlugin{"InconsistentFactory",
                       YQUANT_TEST_PLUGIN_CREATE_INCONSISTENT_PATH, "CD"},
         InvalidPlugin{"StartFailure", YQUANT_TEST_PLUGIN_START_FAIL_PATH,
-                      "CSD"}),
+                      "CPSD"}),
     [](const ::testing::TestParamInfo<InvalidPlugin>& info) {
       return info.param.name;
     });
@@ -204,14 +221,157 @@ TEST(StrategyRuntimeTest, StopFailureStillDestroysAndCloses) {
   EventPipe events;
   ASSERT_TRUE(events.valid());
   StrategyRuntime runtime;
-  ASSERT_TRUE(
-      runtime.Handle(LoadAndStart{YQUANT_TEST_PLUGIN_STOP_FAIL_PATH}).ok());
+  ASSERT_TRUE(runtime
+                  .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_STOP_FAIL_PATH,
+                                       YQUANT_TEST_CONFIG_PATH})
+                  .ok());
   EXPECT_EQ(runtime.Handle(Stop{}).code, base::ErrorCode::kInvalidArgument);
   EXPECT_STREQ(runtime.error_stage(), "stop");
   EXPECT_EQ(runtime.state(), RuntimeState::kFinished);
-  ExpectLifecycle(events.Read(), "CSTD");
+  ExpectLifecycle(events.Read(), "CPSTD");
   EXPECT_TRUE(runtime.Handle(Stop{}).ok());
   EXPECT_TRUE(events.Read().empty());
+}
+
+TEST(StrategyRuntimeTest, RejectsConfigurationBeforeLoadingTheLibrary) {
+  EventPipe events;
+  ASSERT_TRUE(events.valid());
+  testing::ConfigFile config(R"({"strategy_id":"x","parameters":[]})");
+  ASSERT_TRUE(config.valid());
+  StrategyRuntime runtime;
+  EXPECT_FALSE(
+      runtime.Handle(LoadAndStart{YQUANT_TEST_PLUGIN_GOOD_PATH, config.path()})
+          .ok());
+  EXPECT_STREQ(runtime.error_stage(), "config");
+  EXPECT_EQ(runtime.state(), RuntimeState::kFinished);
+  EXPECT_TRUE(events.Read().empty());
+  EXPECT_TRUE(runtime.Handle(Stop{}).ok());
+}
+
+TEST(StrategyRuntimeTest, MissingConfigPathsNeverCreateTheStrategy) {
+  EventPipe events;
+  ASSERT_TRUE(events.valid());
+  for (const char* path :
+       {static_cast<const char*>(nullptr), "", "/yquant-no-such-config.json"}) {
+    StrategyRuntime runtime;
+    EXPECT_FALSE(
+        runtime.Handle(LoadAndStart{YQUANT_TEST_PLUGIN_GOOD_PATH, path}).ok());
+    EXPECT_EQ(runtime.state(), RuntimeState::kFinished);
+    EXPECT_TRUE(events.Read().empty());
+  }
+}
+
+TEST(StrategyRuntimeTest, InitializesTypedParametersBeforeStartAndOwnsValues) {
+  EventPipe events;
+  ASSERT_TRUE(events.valid());
+  testing::ConfigFile config(
+      R"({"strategy_id":"typed","parameters":{"quote_qty":7,)"
+      R"("label":"owned \u006cabel","large_value":9007199254740993}})");
+  ASSERT_TRUE(config.valid());
+  StrategyRuntime runtime;
+  ASSERT_TRUE(
+      runtime.Handle(LoadAndStart{YQUANT_TEST_PLUGIN_TYPED_PATH, config.path()})
+          .ok())
+      << runtime.error_detail();
+  EXPECT_EQ(events.Read(), "CPS");
+  EXPECT_EQ(runtime.state(), RuntimeState::kRunning);
+  ASSERT_TRUE(runtime.Handle(Stop{}).ok());
+  ExpectLifecycle(events.Read(), "TD");
+}
+
+struct InvalidParameters {
+  const char* name;
+  const char* parameters;
+  const char* error_field;
+};
+
+class InvalidParametersTest
+    : public ::testing::TestWithParam<InvalidParameters> {};
+
+// Each CTest case loads one strategy, matching the production process.
+TEST_P(InvalidParametersTest, DestroysWithoutStartOrStop) {
+  const auto& test_case = GetParam();
+  EventPipe events;
+  ASSERT_TRUE(events.valid());
+  const std::string json =
+      std::string(R"({"strategy_id":"typed","parameters":)") +
+      test_case.parameters + '}';
+  testing::ConfigFile config(json);
+  ASSERT_TRUE(config.valid());
+  StrategyRuntime runtime;
+  EXPECT_EQ(
+      runtime.Handle(LoadAndStart{YQUANT_TEST_PLUGIN_TYPED_PATH, config.path()})
+          .code,
+      base::ErrorCode::kInvalidArgument);
+  EXPECT_EQ(runtime.state(), RuntimeState::kFinished);
+  EXPECT_STREQ(runtime.error_stage(), "initialize");
+  EXPECT_EQ(runtime.strategy_id(), "typed");
+  EXPECT_NE(std::string(runtime.error_detail())
+                .find(std::string("parameters.") + test_case.error_field),
+            std::string::npos);
+  ExpectLifecycle(events.Read(), "CPD");
+  EXPECT_TRUE(runtime.Handle(Stop{}).ok());
+  EXPECT_EQ(runtime.strategy_id(), "typed");
+  EXPECT_TRUE(events.Read().empty());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ParameterFailures, InvalidParametersTest,
+    ::testing::Values(
+        InvalidParameters{
+            "MissingQuantity",
+            R"({"label":"owned label","large_value":9007199254740993})",
+            "quote_qty"},
+        InvalidParameters{"MissingLabel",
+                          R"({"quote_qty":1,"large_value":9007199254740993})",
+                          "label"},
+        InvalidParameters{"MissingLargeValue",
+                          R"({"quote_qty":1,"label":"owned label"})",
+                          "large_value"},
+        InvalidParameters{"QuantityString",
+                          R"({"quote_qty":"1","label":"owned label",)"
+                          R"("large_value":9007199254740993})",
+                          "quote_qty"},
+        InvalidParameters{"QuantityFraction",
+                          R"({"quote_qty":1.5,"label":"owned label",)"
+                          R"("large_value":9007199254740993})",
+                          "quote_qty"},
+        InvalidParameters{"QuantityZero",
+                          R"({"quote_qty":0,"label":"owned label",)"
+                          R"("large_value":9007199254740993})",
+                          "quote_qty"},
+        InvalidParameters{"QuantityAboveLimit",
+                          R"({"quote_qty":101,"label":"owned label",)"
+                          R"("large_value":9007199254740993})",
+                          "quote_qty"},
+        InvalidParameters{
+            "LabelNumber",
+            R"({"quote_qty":1,"label":7,"large_value":9007199254740993})",
+            "label"},
+        InvalidParameters{"IntegerOverflow",
+                          R"({"quote_qty":1,"label":"owned label",)"
+                          R"("large_value":9223372036854775808})",
+                          "large_value"},
+        InvalidParameters{"UnknownParameter",
+                          R"({"quote_qty":1,"label":"owned label",)"
+                          R"("large_value":9007199254740993,"extra":1})",
+                          "extra"}),
+    [](const ::testing::TestParamInfo<InvalidParameters>& info) {
+      return info.param.name;
+    });
+
+TEST(StrategyRuntimeTest, DefaultConfigRejectsUnexpectedParameters) {
+  EventPipe events;
+  ASSERT_TRUE(events.valid());
+  testing::ConfigFile config(
+      R"({"strategy_id":"plain","parameters":{"unexpected":1}})");
+  ASSERT_TRUE(config.valid());
+  StrategyRuntime runtime;
+  EXPECT_FALSE(
+      runtime.Handle(LoadAndStart{YQUANT_TEST_PLUGIN_GOOD_PATH, config.path()})
+          .ok());
+  EXPECT_STREQ(runtime.error_stage(), "initialize");
+  ExpectLifecycle(events.Read(), "CPD");
 }
 
 }  // namespace

@@ -1,3 +1,10 @@
+#include <fcntl.h>
+#include <poll.h>
+#include <spawn.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <cerrno>
 #include <chrono>
 #include <csignal>
@@ -8,14 +15,8 @@
 #include <system_error>
 #include <vector>
 
-#include <fcntl.h>
-#include <poll.h>
-#include <spawn.h>
-#include <sys/socket.h>
-#include <sys/wait.h>
-#include <unistd.h>
-
 #include "gtest/gtest.h"
+#include "test_config_file.h"
 
 extern char** environ;
 
@@ -36,8 +37,8 @@ int CreateReleaseChannel(int* fds) {
   }
 #ifdef SO_NOSIGPIPE
   const int enabled = 1;
-  if (setsockopt(fds[1], SOL_SOCKET, SO_NOSIGPIPE, &enabled,
-                 sizeof(enabled)) != 0) {
+  if (setsockopt(fds[1], SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) !=
+      0) {
     return -1;
   }
 #endif
@@ -125,11 +126,11 @@ class ChildProcess {
     posix_spawn_file_actions_t actions;
     int error = posix_spawn_file_actions_init(&actions);
     if (error == 0) {
-      error = posix_spawn_file_actions_adddup2(&actions, output[1],
-                                             STDOUT_FILENO);
+      error =
+          posix_spawn_file_actions_adddup2(&actions, output[1], STDOUT_FILENO);
       if (error == 0) {
         error = posix_spawn_file_actions_adddup2(&actions, output[1],
-                                               STDERR_FILENO);
+                                                 STDERR_FILENO);
       }
       for (int fd : {output[0], output[1], events[0], release[1]}) {
         if (error == 0) {
@@ -169,7 +170,9 @@ class ChildProcess {
         [&] { return events_.find(event) != std::string::npos; });
   }
 
-  bool Wait() { return ObserveUntil([&] { return pid_ < 0; }); }
+  bool Wait() {
+    return ObserveUntil([&] { return pid_ < 0; });
+  }
 
   bool Signal(int signal) { return pid_ > 0 && kill(pid_, signal) == 0; }
 
@@ -275,8 +278,105 @@ TEST(StrategydProcessTest, HelpExitsSuccessfullyWithoutLoading) {
 
 TEST(StrategydProcessTest, LoadsTheExampleStrategy) {
   ChildProcess child;
-  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_EXAMPLE_PATH}), 0);
+  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_EXAMPLE_PATH, "--config",
+                         YQUANT_TEST_EXAMPLE_CONFIG_PATH}),
+            0);
   ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
+  EXPECT_NE(child.output().find("lifecycle_strategy: startup_message="
+                                "lifecycle strategy started\n"),
+            std::string::npos);
+  ASSERT_TRUE(child.Signal(SIGTERM));
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 0) << child.output();
+}
+
+TEST(StrategydProcessTest, LifecycleExampleUsesDecodedCustomStartupMessage) {
+  testing::ConfigFile config(
+      R"({"strategy_id":"lifecycle-custom","parameters":)"
+      R"({"startup_message":"\u7b56\u7565: \"custom\" \\ path"}})");
+  ASSERT_TRUE(config.valid());
+  ChildProcess child;
+  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_EXAMPLE_PATH, "--config",
+                         config.path()}),
+            0);
+  ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
+  EXPECT_NE(child.output().find("lifecycle_strategy: startup_message="
+                                "策略: \"custom\" \\ path\n"),
+            std::string::npos);
+  EXPECT_NE(child.output().find("strategy_id=lifecycle-custom"),
+            std::string::npos);
+  ASSERT_TRUE(child.Signal(SIGTERM));
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 0) << child.output();
+}
+
+TEST(StrategydProcessTest, LifecycleExampleAccepts128ByteStartupMessage) {
+  const std::string message = std::string(125, 'x') + "策";
+  ASSERT_EQ(message.size(), 128U);
+  testing::ConfigFile config(
+      R"({"strategy_id":"lifecycle-limit","parameters":{"startup_message":")" +
+      message + R"("}})");
+  ASSERT_TRUE(config.valid());
+  ChildProcess child;
+  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_EXAMPLE_PATH, "--config",
+                         config.path()}),
+            0);
+  ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
+  EXPECT_NE(child.output().find(
+                "lifecycle_strategy: startup_message=" + message + '\n'),
+            std::string::npos);
+  ASSERT_TRUE(child.Signal(SIGTERM));
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 0) << child.output();
+}
+
+TEST(StrategydProcessTest, LifecycleExampleRejectsInvalidStartupParameters) {
+  const struct {
+    const char* name;
+    std::string parameters;
+    const char* field;
+  } cases[] = {
+      {"MissingMessage", "{}", "startup_message"},
+      {"MessageWrongType", R"({"startup_message":7})", "startup_message"},
+      {"MessageEmpty", R"({"startup_message":""})", "startup_message"},
+      {"Message129Bytes",
+       R"({"startup_message":")" + std::string(126, 'x') + "策" + R"("})",
+       "startup_message"},
+      {"MessageContainsNul", R"({"startup_message":"a\u0000b"})",
+       "startup_message"},
+      {"UnknownParameter", R"({"startup_message":"valid","unexpected":1})",
+       "unexpected"},
+  };
+  for (const auto& test_case : cases) {
+    SCOPED_TRACE(test_case.name);
+    testing::ConfigFile config(
+        std::string(R"({"strategy_id":"lifecycle-invalid","parameters":)") +
+        test_case.parameters + '}');
+    ASSERT_TRUE(config.valid());
+    ChildProcess child;
+    ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_EXAMPLE_PATH, "--config",
+                           config.path()}),
+              0);
+    ASSERT_TRUE(child.Wait()) << child.output();
+    EXPECT_EQ(child.exit_code(), 1) << child.output();
+    EXPECT_NE(child.output().find("stage=initialize"), std::string::npos);
+    EXPECT_NE(child.output().find(std::string("parameters.") + test_case.field),
+              std::string::npos);
+    EXPECT_EQ(child.output().find("Running"), std::string::npos);
+    EXPECT_EQ(child.output().find("lifecycle_strategy: startup_message="),
+              std::string::npos);
+  }
+}
+
+TEST(StrategydProcessTest, LoadsTheParameterizedExampleStrategy) {
+  ChildProcess child;
+  ASSERT_EQ(
+      child.Start({"--strategy", YQUANT_TEST_PARAMETERIZED_EXAMPLE_PATH,
+                   "--config", YQUANT_TEST_PARAMETERIZED_EXAMPLE_CONFIG_PATH}),
+      0);
+  ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
+  EXPECT_NE(child.output().find("strategy_id=parameterized-example"),
+            std::string::npos);
   ASSERT_TRUE(child.Signal(SIGTERM));
   ASSERT_TRUE(child.Wait()) << child.output();
   EXPECT_EQ(child.exit_code(), 0) << child.output();
@@ -291,30 +391,34 @@ TEST(StrategydProcessTest, LoadsRelativeToTheWorkingDirectory) {
   ASSERT_FALSE(error) << error.message();
   ASSERT_TRUE(relative_path.is_relative());
   ChildProcess child;
-  ASSERT_EQ(child.Start({"--strategy", relative_path.string()}), 0);
+  ASSERT_EQ(child.Start({"--strategy", relative_path.string(), "--config",
+                         YQUANT_TEST_CONFIG_PATH}),
+            0);
   ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
   ASSERT_TRUE(child.Signal(SIGTERM));
   ASSERT_TRUE(child.Wait()) << child.output();
   EXPECT_EQ(child.exit_code(), 0) << child.output();
-  ExpectCompletedLifecycle(child.events(), "CSTD");
+  ExpectCompletedLifecycle(child.events(), "CPSTD");
 }
 
 TEST(StrategydProcessTest, LoadsAPathWithSpacesAndNoExtension) {
   TemporaryDirectory directory;
   ASSERT_TRUE(directory.valid());
-  const auto path = std::filesystem::path(directory.path()) /
-                    "strategy with spaces";
+  const auto path =
+      std::filesystem::path(directory.path()) / "strategy with spaces";
   std::error_code error;
-  ASSERT_TRUE(std::filesystem::copy_file(YQUANT_TEST_PLUGIN_GOOD_PATH, path,
-                                        error))
+  ASSERT_TRUE(
+      std::filesystem::copy_file(YQUANT_TEST_PLUGIN_GOOD_PATH, path, error))
       << error.message();
   ChildProcess child;
-  ASSERT_EQ(child.Start({"--strategy", path.string()}), 0);
+  ASSERT_EQ(child.Start({"--strategy", path.string(), "--config",
+                         YQUANT_TEST_CONFIG_PATH}),
+            0);
   ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
   ASSERT_TRUE(child.Signal(SIGTERM));
   ASSERT_TRUE(child.Wait()) << child.output();
   EXPECT_EQ(child.exit_code(), 0) << child.output();
-  ExpectCompletedLifecycle(child.events(), "CSTD");
+  ExpectCompletedLifecycle(child.events(), "CPSTD");
 }
 
 TEST(StrategydProcessTest, MissingDependencyFailsBeforeCreatingTheStrategy) {
@@ -326,7 +430,9 @@ TEST(StrategydProcessTest, MissingDependencyFailsBeforeCreatingTheStrategy) {
       YQUANT_TEST_PLUGIN_MISSING_DEPENDENCY_PATH, path, error))
       << error.message();
   ChildProcess child;
-  ASSERT_EQ(child.Start({"--strategy", path.string()}), 0);
+  ASSERT_EQ(child.Start({"--strategy", path.string(), "--config",
+                         YQUANT_TEST_CONFIG_PATH}),
+            0);
   ASSERT_TRUE(child.Wait()) << child.output();
   EXPECT_EQ(child.exit_code(), 1) << child.output();
   EXPECT_NE(child.output().find("stage=dlopen"), std::string::npos);
@@ -346,10 +452,18 @@ TEST(StrategydProcessTest, InvalidArgumentsExitWithUsageError) {
       {},
       {"--strategy"},
       {"--strategy", ""},
+      {"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH},
+      {"--config"},
+      {"--config", ""},
+      {"--config", YQUANT_TEST_CONFIG_PATH},
+      {"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--config"},
+      {"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--config", ""},
       {"--unknown"},
       {"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "unexpected"},
       {"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--strategy",
-       YQUANT_TEST_PLUGIN_GOOD_PATH},
+       YQUANT_TEST_PLUGIN_GOOD_PATH, "--config", YQUANT_TEST_CONFIG_PATH},
+      {"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--config",
+       YQUANT_TEST_CONFIG_PATH, "--config", YQUANT_TEST_CONFIG_PATH},
   };
   for (const auto& arguments : invalid_arguments) {
     SCOPED_TRACE(::testing::PrintToString(arguments));
@@ -366,12 +480,14 @@ class StopSignalTest : public ::testing::TestWithParam<int> {};
 
 TEST_P(StopSignalTest, StopsAndDestroysARealDynamicStrategy) {
   ChildProcess child;
-  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH}), 0);
+  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--config",
+                         YQUANT_TEST_CONFIG_PATH}),
+            0);
   ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
   ASSERT_TRUE(child.Signal(GetParam()));
   ASSERT_TRUE(child.Wait()) << child.output();
   EXPECT_EQ(child.exit_code(), 0) << child.output();
-  ExpectCompletedLifecycle(child.events(), "CSTD");
+  ExpectCompletedLifecycle(child.events(), "CPSTD");
 }
 
 INSTANTIATE_TEST_SUITE_P(PosixSignals, StopSignalTest,
@@ -379,13 +495,16 @@ INSTANTIATE_TEST_SUITE_P(PosixSignals, StopSignalTest,
 
 TEST(StrategydProcessTest, StopSignalDuringStartIsHandledAfterStartReturns) {
   ChildProcess child;
-  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH}, true), 0);
+  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--config",
+                         YQUANT_TEST_CONFIG_PATH},
+                        true),
+            0);
   ASSERT_TRUE(child.WaitForEvent('S')) << child.output();
   ASSERT_TRUE(child.Signal(SIGTERM));
   ASSERT_TRUE(child.ReleaseStart());
   ASSERT_TRUE(child.Wait()) << child.output();
   EXPECT_EQ(child.exit_code(), 0) << child.output();
-  ExpectCompletedLifecycle(child.events(), "CSTD");
+  ExpectCompletedLifecycle(child.events(), "CPSTD");
 }
 
 TEST(StrategydProcessTest, LoadAndStartFailuresExitWithRuntimeError) {
@@ -397,12 +516,14 @@ TEST(StrategydProcessTest, LoadAndStartFailuresExitWithRuntimeError) {
       {YQUANT_TEST_PLUGIN_NO_ENTRY_PATH, ""},
       {YQUANT_TEST_PLUGIN_BAD_ABI_PATH, ""},
       {YQUANT_TEST_PLUGIN_CREATE_FAIL_PATH, "C"},
-      {YQUANT_TEST_PLUGIN_START_FAIL_PATH, "CSD"},
+      {YQUANT_TEST_PLUGIN_START_FAIL_PATH, "CPSD"},
   };
   for (const auto& test_case : cases) {
     SCOPED_TRACE(test_case.path);
     ChildProcess child;
-    ASSERT_EQ(child.Start({"--strategy", test_case.path}), 0);
+    ASSERT_EQ(child.Start({"--strategy", test_case.path, "--config",
+                           YQUANT_TEST_CONFIG_PATH}),
+              0);
     ASSERT_TRUE(child.Wait()) << child.output();
     EXPECT_EQ(child.exit_code(), 1) << child.output();
     EXPECT_FALSE(child.output().empty());
@@ -412,12 +533,111 @@ TEST(StrategydProcessTest, LoadAndStartFailuresExitWithRuntimeError) {
 
 TEST(StrategydProcessTest, StopFailureStillDestroysAndReturnsRuntimeError) {
   ChildProcess child;
-  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_STOP_FAIL_PATH}), 0);
+  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_STOP_FAIL_PATH,
+                         "--config", YQUANT_TEST_CONFIG_PATH}),
+            0);
   ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
   ASSERT_TRUE(child.Signal(SIGTERM));
   ASSERT_TRUE(child.Wait()) << child.output();
   EXPECT_EQ(child.exit_code(), 1) << child.output();
-  ExpectCompletedLifecycle(child.events(), "CSTD");
+  ExpectCompletedLifecycle(child.events(), "CPSTD");
+}
+
+TEST(StrategydProcessTest, AcceptsConfigBeforeStrategyAndRelativeConfigPath) {
+  std::error_code error;
+  const auto working_directory = std::filesystem::current_path(error);
+  ASSERT_FALSE(error) << error.message();
+  const auto config = std::filesystem::relative(YQUANT_TEST_CONFIG_PATH,
+                                                working_directory, error);
+  ASSERT_FALSE(error) << error.message();
+  ChildProcess child;
+  ASSERT_EQ(child.Start({"--config", config.string(), "--strategy",
+                         YQUANT_TEST_PLUGIN_GOOD_PATH}),
+            0);
+  ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
+  ASSERT_TRUE(child.Signal(SIGTERM));
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 0) << child.output();
+  ExpectCompletedLifecycle(child.events(), "CPSTD");
+}
+
+TEST(StrategydProcessTest, AcceptsConfigPathsWithSpaces) {
+  TemporaryDirectory directory;
+  ASSERT_TRUE(directory.valid());
+  const auto path =
+      std::filesystem::path(directory.path()) / "config with spaces";
+  std::error_code error;
+  ASSERT_TRUE(std::filesystem::copy_file(YQUANT_TEST_CONFIG_PATH, path, error))
+      << error.message();
+  ChildProcess child;
+  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--config",
+                         path.string()}),
+            0);
+  ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
+  ASSERT_TRUE(child.Signal(SIGTERM));
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 0) << child.output();
+  ExpectCompletedLifecycle(child.events(), "CPSTD");
+}
+
+TEST(StrategydProcessTest, ConfigValidationPrecedesLibraryLoading) {
+  testing::ConfigFile config(
+      R"({"strategy_id":"x","parameters":{},"unexpected":1})");
+  ASSERT_TRUE(config.valid());
+  ChildProcess child;
+  ASSERT_EQ(child.Start({"--strategy", "/yquant-no-such-strategy.so",
+                         "--config", config.path()}),
+            0);
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 1) << child.output();
+  EXPECT_NE(child.output().find("stage=config"), std::string::npos);
+  EXPECT_NE(child.output().find(config.path()), std::string::npos);
+  EXPECT_EQ(child.output().find("stage=dlopen"), std::string::npos);
+  EXPECT_TRUE(child.events().empty());
+}
+
+TEST(StrategydProcessTest, ReportsMissingConfigWithoutCreatingTheStrategy) {
+  ChildProcess child;
+  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--config",
+                         "/yquant-no-such-config.json"}),
+            0);
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 1) << child.output();
+  EXPECT_NE(child.output().find("/yquant-no-such-config.json"),
+            std::string::npos);
+  EXPECT_NE(child.output().find("stage=config"), std::string::npos);
+  EXPECT_TRUE(child.events().empty());
+}
+
+TEST(StrategydProcessTest, InitializesTypedConfigFromARealJsonFile) {
+  ChildProcess child;
+  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_TYPED_PATH,
+                         "--config", YQUANT_TEST_TYPED_CONFIG_PATH}),
+            0);
+  ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
+  ASSERT_TRUE(child.Signal(SIGTERM));
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 0) << child.output();
+  ExpectCompletedLifecycle(child.events(), "CPSTD");
+}
+
+TEST(StrategydProcessTest, ParameterErrorsRemainReadableAfterPluginCleanup) {
+  testing::ConfigFile config(
+      R"({"strategy_id":"bad-parameters","parameters":{"quote_qty":0}})");
+  ASSERT_TRUE(config.valid());
+  ChildProcess child;
+  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_TYPED_PATH,
+                         "--config", config.path()}),
+            0);
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 1) << child.output();
+  EXPECT_NE(child.output().find("stage=initialize"), std::string::npos);
+  EXPECT_NE(child.output().find("strategy_id=bad-parameters"),
+            std::string::npos);
+  EXPECT_NE(child.output().find("parameters.quote_qty"), std::string::npos);
+  EXPECT_NE(child.output().find("expected an integer from 1 to 100"),
+            std::string::npos);
+  ExpectCompletedLifecycle(child.events(), "CPD");
 }
 
 }  // namespace
