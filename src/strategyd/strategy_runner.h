@@ -9,6 +9,7 @@
 #include "strategyd/event_loop_environment.h"
 #include "strategyd/market_data.h"
 #include "strategyd/mock_market_data_source.h"
+#include "strategyd/shm_market_data_source.h"
 #include "strategyd/strategy_context.h"
 #include "strategyd/strategy_library.h"
 #include "yquant/base/status.h"
@@ -32,8 +33,9 @@ struct Stop {};
 class StrategyRunner {
  public:
   // Optional dependencies are borrowed until destruction. Defaults use the
-  // host's steady clock and synchronous mock source; environment is optional
-  // for startup cancellation, but Run() requires an explicit environment.
+  // host's steady clock and a source selected by configuration; environment is
+  // optional for startup cancellation, but Run() requires an explicit
+  // environment.
   explicit StrategyRunner(const MonotonicClock* clock = nullptr,
                           MarketDataSource* source = nullptr,
                           EventLoopEnvironment* environment = nullptr) noexcept;
@@ -52,6 +54,7 @@ class StrategyRunner {
   // callback. On stop or failure, completes cleanup before returning; an
   // invalid state returns kInvalidState without changing resources.
   [[nodiscard]] base::Status Run(EventLoopEnvironment& environment) noexcept;
+  // Earliest quote or cold-maintenance deadline; absent when neither is due.
   std::optional<std::uint64_t> next_deadline() const noexcept;
   // Saturating total of structurally valid old/duplicate quotes ignored during
   // this run. Retained after Stop so host diagnostics can report it.
@@ -107,8 +110,10 @@ class StrategyRunner {
   // Own the service before constructing the context that borrows it.
   MarketDataImpl market_data_;
   StrategyContextImpl context_;
-  MockMarketDataSource default_source_;
-  MarketDataSource& source_;
+  MockMarketDataSource mock_source_;
+  ShmMarketDataSource shm_source_;
+  // An injected source overrides config-based transport selection.
+  MarketDataSource* source_;
   EventLoopEnvironment* startup_environment_;
   StrategyLibrary library_;
   strategy::StrategyId strategy_id_;

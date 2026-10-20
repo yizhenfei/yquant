@@ -41,6 +41,19 @@ class MarketDataSource {
       std::uint64_t now, model::QuoteTick& out) noexcept = 0;
   // Empty means idle without a scheduled event; <= current time means ready.
   virtual std::optional<std::uint64_t> next_deadline() const noexcept = 0;
+  // Poll-driven transports may remain idle at an already-due deadline. The
+  // host checks termination between bounded batches, including empty reads.
+  virtual bool is_poll_driven() const noexcept { return false; }
+  // Cold maintenance runs once between bounded batches. It may perform I/O or
+  // allocate, but must not wait for new data or invoke callbacks. A failure is
+  // terminal for the current source; the host calls Stop before returning it.
+  [[nodiscard]] virtual base::Status Service(std::uint64_t) noexcept {
+    return {};
+  }
+  // The host includes this deadline in its wait, even without subscriptions.
+  virtual std::optional<std::uint64_t> next_service_deadline() const noexcept {
+    return std::nullopt;
+  }
   // Idempotent synchronous cleanup, safe before activation and after errors.
   // Must end all borrowed input access even when returning an error.
   [[nodiscard]] virtual base::Status Stop() noexcept = 0;

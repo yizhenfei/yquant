@@ -1,0 +1,150 @@
+# 行情进程设计
+
+`yquant-marketd` 接收行情并向下游发布。进程通过配置组装输入和输出，单机接入、共享内存中继和跨机中继共用同一条处理管线。
+
+## 行情管线
+
+```text
+Source → model::QuoteTick → Publisher[]
+```
+
+`Source` 负责获取数据并形成完整报价，`Publisher` 负责向下游提供报价。`MarketdRunner` 管理组件生命周期，串行执行轮询和发布。接入或中继由组件组合形成。
+
+| 输入适配器 | 数据来源 | 行为 |
+| --- | --- | --- |
+| `mock` | 模拟行情配置 | 复用模拟源，订阅配置中的全部品种 |
+| `shm` | 另一条本机共享内存流 | 独立读取游标，从连接后的新事件开始 |
+| `tcp` | 上游 `marketd` | 非阻塞接收标准报价帧 |
+
+| 输出适配器 | 下游 | 行为 |
+| --- | --- | --- |
+| `shm` | 本机多个 `strategyd` 或其他 `marketd` | 共享内存广播环，一次写入、各订阅端独立读取 |
+| `tcp` | 多个远端 `marketd` | 监听数字 IPv4 地址，按连接分发标准报价帧 |
+
+单个进程配置一个输入和 1 至 8 个输出。不同进程均运行相同的可执行程序：
+
+```text
+单机
+mock → marketd → shm → strategyd × N
+
+跨机
+mock → marketd → tcp → marketd → shm → strategyd × N
+                       └─────→ marketd → shm → strategyd × N
+```
+
+多机部署由一台行情机器和多台策略机器组成，每台策略机器运行一个本机 `marketd`。生产部署为每个 `strategyd` 分配一个 CPU 核心，行情接收和分发另行预留核心；CPU 亲和性由启动环境设置。
+
+模拟输入用于开发和集成验收。实盘适配器在 `Source` 边界增加，不改变输出协议或策略接口。
+
+## 报价与时间
+
+统一报价使用 [QuoteTick](../../include/yquant/model/quote_tick.h)，品种标识和单位遵循[行情驱动设计](market-data.md)。中继保留 `source_id`、`instrument_id`、品种报价序号和 UTC 事件时间；共享内存流序号独立递增。
+
+`receive_time_ns` 属于所在进程的单调时钟域，不通过共享内存报价帧或 TCP 帧透传。`strategyd` 接收时用本进程时钟重新赋值，因此策略计算的报价年龄表示接收到回调之间的时间。跨进程或跨机器传输延迟需要单独测量。
+
+[QuoteCodec](../../include/yquant/md/quote_codec.h) 编解码固定 80 字节的小端帧。帧包含 magic、版本、固定长度、来源、品种、序号、事件时间、买卖一价量和标志位；保留字节为零。编码逐字段进行，避免复制 C++ 结构体填充。共享内存事件外层的来源、品种、序号和时间必须与帧一致，解码失败保留调用方输出。
+
+## 配置
+
+启动参数：
+
+```sh
+yquant-marketd --config /path/to/marketd.json
+yquant-marketd --config /path/to/marketd.json --check-config
+yquant-marketd --config /path/to/marketd.json --max-events 100
+```
+
+`--check-config` 读取并校验配置，不创建发布者或发现入口。`--max-events` 在成功向所有输出提交指定数量的报价后停止；TCP 提交表示进入连接发送路径，不包含接收端处理确认。
+
+配置拒绝未知字段、重复键、错误类型、超长路径和不支持的组合。所有配置完成校验后才初始化输出；初始化失败会清理本次已获得的资源。
+
+### 模拟输入与本机广播
+
+```json
+{
+  "source": {"adapter": "mock", "config": "mock_source.json"},
+  "publishers": [
+    {"adapter": "shm", "runtime_directory": "/tmp/yquant-md",
+     "stream": "quotes", "capacity": 16384, "max_payload_size": 80}
+  ]
+}
+```
+
+`source.config` 相对主配置文件所在目录解析。模拟行情配置包含来源、间隔和标的报价，格式与 `strategyd` 模拟源一致，示例见 [mock_source.json](../../examples/marketd/mock_source.json)。
+
+共享内存输出的容量为 2 的幂，默认 1024；载荷上限默认 256 字节，本报价帧要求至少 80 字节，组件上限为 4096 字节。运行目录必须使用当前用户拥有的绝对路径，组和其他用户不可写入。
+
+### 共享内存输入
+
+```json
+{
+  "source": {"adapter": "shm", "runtime_directory": "/tmp/yquant-md",
+             "stream": "quotes"},
+  "publishers": [
+    {"adapter": "shm", "runtime_directory": "/tmp/yquant-relay",
+     "stream": "quotes"}
+  ]
+}
+```
+
+同一共享内存端点不能同时用作本进程输入和输出，也不能配置重复的共享内存输出。多个进程组成的反馈环由部署配置避免。
+
+### TCP 分发与接收
+
+行情机器输出配置：
+
+```json
+{
+  "source": {"adapter": "mock", "config": "mock_source.json"},
+  "publishers": [
+    {"adapter": "tcp", "address": "0.0.0.0", "port": 19100,
+     "max_clients": 16}
+  ]
+}
+```
+
+策略机器输入配置：
+
+```json
+{
+  "source": {"adapter": "tcp", "address": "192.0.2.10", "port": 19100},
+  "publishers": [
+    {"adapter": "shm", "runtime_directory": "/tmp/yquant-md",
+     "stream": "quotes"}
+  ]
+}
+```
+
+地址使用数字 IPv4，进程配置中的输入和输出端口均为 1 至 65535。`TcpPublisher` 组件接口允许端口零，由系统分配，供独立组件测试使用。每个 TCP 输出支持 1 至 16 个客户端，默认 16。允许远端输入和本机监听使用相同端口；本机直接反馈及重叠监听器被拒绝。
+
+## 执行与关闭
+
+启动顺序为配置校验、输入初始化、输出初始化，全部成功后输出 `Running`。运行器每轮服务所有输出，最多处理 64 条事件，再检查停止信号。模拟源只在间隔到期时产出，网络操作使用非阻塞套接字和固定工作预算。
+
+共享内存输出每 250 ms 更新一次心跳；输入在控制周期检查发布者健康状态。发现新代次立即停止旧代次交付，缺口也终止当前管线。发布者停滞或停止时，先交付仍完整的已提交事件，再报告上游故障。
+
+SIGINT、SIGTERM、有限事件计数及错误退出均关闭输入和全部输出。共享内存正常关闭发布停止状态，移除自身发现入口并保留稳定锁文件。源失败或格式损坏返回非零退出码，保留阶段和具体原因供监督进程处理。进程不跨代次静默重连。
+
+## 输出隔离
+
+共享内存输出使用[共享内存订阅发布协议](shared-memory-pubsub.md)，慢策略通过独立游标检测覆盖，不阻塞其他读者。
+
+TCP 输出为每个客户端预分配 64 帧队列，保存部分发送进度。网络拥塞导致单个队列满时断开该客户端，其他连接和其他输出保持推进；接收端遇到断流会终止其管线。空闲断开的连接在控制服务时释放，不等待下一条行情。
+
+TCP 首次接入只提供后续行情，不提供历史回放。正常关闭也不等待无限背压下的远端确认；接收端必须将断流视为状态恢复边界。RDMA、DPDK 和组播可作为后续输入或输出实现，在相同管线边界评估。
+
+## 策略接入
+
+`strategyd` 的宿主行情配置选择 `adapter: "shm"`，保留来源和品种定义。用户策略继续通过 `MarketData::SubscribeQuotes` 订阅，通过 `OnTick` 消费，保持缓存更新早于回调的契约。
+
+策略共享内存输入维护自己的过滤器和游标，逐条读取匹配报价。缺口、非法帧、源标识不匹配、发布者停止或更换代次均报告错误并停止策略。空读的 `poll_interval_us` 默认为 0；设为正数时仅在无积压事件时等待该间隔。
+
+宿主每 250 ms 执行冷路径维护，等待时间取行情与维护的最早截止时间。即使没有订阅或配置了较长空读间隔，也会继续检查发布者健康状态。原模拟源和不订阅行情的策略保留原生命周期行为。
+
+## 验证
+
+- 配置校验覆盖所有适配器、重复字段、反馈、资源上限和无效配置无输出副作用。
+- 编码测试覆盖字段往返、保留字节、错误版本、输出不变及进程时钟隔离。
+- 共享内存测试覆盖多读者、覆盖缺口、发布者重启、不同映射地址和并发完整性。
+- TCP 测试覆盖多个客户端、碎片与连续帧、慢客户端隔离、空闲断开和非法输入。
+- 进程测试覆盖一个 `marketd` 向两个 `strategyd` 广播，以及 `marketd → TCP → marketd → SHM → strategyd`。

@@ -12,8 +12,13 @@
 namespace yquant::strategyd {
 
 inline constexpr std::size_t kMaxMarketDataInstruments = 64;
+inline constexpr std::size_t kMaxRuntimeDirectoryLength = 4095;
+inline constexpr std::size_t kMaxStreamNameLength = 64;
 
-// Owns the initial two-sided quote and bounded alternating price increment.
+enum class MarketDataAdapter { kMock, kShm };
+
+// Owns one instrument definition and optional mock quote seed. Quote values
+// remain zero when the adapter reads SHM instead of generating mock data.
 struct MockInstrumentConfig {
   model::InstrumentDefinition instrument;
   std::int64_t bid_price = 0;
@@ -27,7 +32,13 @@ struct MockInstrumentConfig {
 // elements are active. Stored values remain usable after JSON is released.
 struct MarketDataConfig {
   model::SourceId source_id;
+  MarketDataAdapter adapter = MarketDataAdapter::kMock;
   std::uint64_t interval_ns = 0;
+  // SHM endpoint values are owned, NUL-terminated strings. A zero poll interval
+  // continuously polls; positive intervals wait only after an empty read.
+  char runtime_directory[kMaxRuntimeDirectoryLength + 1] = {};
+  char stream[kMaxStreamNameLength + 1] = {};
+  std::uint64_t poll_interval_ns = 0;
   std::size_t instrument_count = 0;
   std::array<MockInstrumentConfig, kMaxMarketDataInstruments> instruments;
 };
@@ -37,8 +48,8 @@ struct MarketDataConfig {
 [[nodiscard]] base::Status ValidateMarketDataConfig(
     const MarketDataConfig& config, strategy::ConfigError& error) noexcept;
 
-// Loads strict mock-source JSON. No parser, source views or heap allocations
-// survive Load(). Methods are serialized by the owning host thread.
+// Loads strict mock/SHM source JSON. No parser, source views or heap
+// allocations survive Load(). Methods are serialized by the owning host thread.
 class MarketDataConfigLoader {
  public:
   // Replaces the previous configuration. Failure leaves config() empty and

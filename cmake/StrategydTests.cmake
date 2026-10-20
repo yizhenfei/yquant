@@ -55,6 +55,7 @@ add_executable(yquant_strategyd_test
   tests/strategyd/market_model_test.cc
   tests/strategyd/market_data_config_test.cc
   tests/strategyd/mock_market_data_source_test.cc
+  tests/strategyd/shm_market_data_source_test.cc
   tests/strategyd/market_runner_test.cc
   tests/strategyd/strategy_context_test.cc
   tests/strategyd/strategy_config_test.cc

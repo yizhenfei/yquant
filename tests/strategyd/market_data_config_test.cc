@@ -181,5 +181,69 @@ TEST(MarketDataConfigTest,
   EXPECT_EQ(loader.config().instruments[0].instrument.symbol_view(), "600000");
 }
 
+std::string ShmJson() {
+  // Place instruments before adapter to exercise order-independent schema.
+  return R"({"source_id":1,"instruments":[)"
+         R"({"venue":"SSE","symbol":"600000","price_decimals":2}],)"
+         R"("runtime_directory":"/tmp/yquant","stream":"quotes.main",)"
+         R"("adapter":"shm"})";
+}
+
+TEST(MarketDataConfigTest, LoadsShmDictionaryAndOptionalPollInterval) {
+  ConfigFile file(ShmJson());
+  ASSERT_TRUE(file.valid());
+  MarketDataConfigLoader loader;
+  ASSERT_TRUE(loader.Load(file.path()).ok()) << loader.error().message;
+  EXPECT_EQ(loader.config().adapter, MarketDataAdapter::kShm);
+  EXPECT_STREQ(loader.config().runtime_directory, "/tmp/yquant");
+  EXPECT_STREQ(loader.config().stream, "quotes.main");
+  EXPECT_EQ(loader.config().poll_interval_ns, 0U);
+  EXPECT_EQ(loader.config().interval_ns, 0U);
+  ASSERT_EQ(loader.config().instrument_count, 1U);
+  EXPECT_EQ(loader.config().instruments[0].instrument.symbol_view(), "600000");
+  EXPECT_EQ(loader.config().instruments[0].bid_price, 0);
+  ConfigFile interval(Replace(ShmJson(), "\"adapter\":\"shm\"",
+                              "\"adapter\":\"shm\",\"poll_interval_us\":25"));
+  ASSERT_TRUE(interval.valid());
+  ASSERT_TRUE(loader.Load(interval.path()).ok()) << loader.error().message;
+  EXPECT_EQ(loader.config().poll_interval_ns, 25000U);
+}
+
+TEST(MarketDataConfigTest, RejectsInvalidShmSchemaAndMixedAdapterFields) {
+  constexpr InvalidField kCases[] = {
+      {"RelativePath", "/tmp/yquant", "tmp/yquant"},
+      {"ParentPath", "/tmp/yquant", "/tmp/../yquant"},
+      {"NulPath", "/tmp/yquant", R"(/tmp/yquant\u0000other)"},
+      {"InvalidStream", "quotes.main", "quotes/main"},
+      {"StreamPrefix", "quotes.main", ".quotes"},
+      {"EmptyStream", "quotes.main", ""},
+      {"MissingStream", "\"stream\":\"quotes.main\",", ""},
+      {"MissingDirectory", "\"runtime_directory\":\"/tmp/yquant\",", ""},
+      {"MockInterval", "\"adapter\":\"shm\"",
+       "\"adapter\":\"shm\",\"interval_ms\":1"},
+      {"MockPrice", "\"price_decimals\":2",
+       "\"price_decimals\":2,\"bid_price\":0"},
+      {"PollNegative", "\"adapter\":\"shm\"",
+       "\"adapter\":\"shm\",\"poll_interval_us\":-1"},
+      {"PollOverflow", "\"adapter\":\"shm\"",
+       "\"adapter\":\"shm\",\"poll_interval_us\":60000001"},
+      {"PollType", "\"adapter\":\"shm\"",
+       "\"adapter\":\"shm\",\"poll_interval_us\":1.5"},
+  };
+  MarketDataConfigLoader loader;
+  for (const auto& item : kCases) {
+    SCOPED_TRACE(item.name);
+    ConfigFile file(Replace(ShmJson(), item.from, item.to));
+    ASSERT_TRUE(file.valid());
+    EXPECT_FALSE(loader.Load(file.path()).ok());
+    EXPECT_NE(loader.error().message[0], '\0');
+    EXPECT_EQ(loader.config().instrument_count, 0U);
+  }
+  ConfigFile mixed(Replace(Json(), "\"adapter\":\"mock\"",
+                           "\"adapter\":\"mock\",\"poll_interval_us\":0"));
+  ASSERT_TRUE(mixed.valid());
+  EXPECT_FALSE(loader.Load(mixed.path()).ok());
+}
+
 }  // namespace
 }  // namespace yquant::strategyd

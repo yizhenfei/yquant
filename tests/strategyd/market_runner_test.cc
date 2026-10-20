@@ -103,6 +103,7 @@ class ControlledSource final : public MarketDataSource {
   bool fail_poll = false;
   bool fail_stop = false;
   bool repeat_sequence = false;
+  bool poll_driven_idle = false;
   int prepare_calls = 0;
   int start_calls = 0;
   int poll_calls = 0;
@@ -141,6 +142,7 @@ class ControlledSource final : public MarketDataSource {
     if (fail_poll) {
       return {MarketDataPollState::kError, Fail("injected poll failure")};
     }
+    if (poll_driven_idle) return {};
     if (scripted_) {
       if (exhausted()) {
         return {MarketDataPollState::kIdle, {}};
@@ -166,6 +168,8 @@ class ControlledSource final : public MarketDataSource {
     return active_ && !exhausted() ? std::optional<std::uint64_t>{0}
                                    : std::nullopt;
   }
+
+  bool is_poll_driven() const noexcept override { return poll_driven_idle; }
 
   base::Status Stop() noexcept override {
     ++stop_calls;
@@ -546,6 +550,28 @@ TEST(MarketRunnerTest, ReadySourceChecksStopAfterOneBoundedBatch) {
                    ("CPS" + std::string(64, 'Q') + "TD").c_str());
 }
 
+TEST(MarketRunnerTest, BusyPollingIdleChecksStopWithoutWaitingOrCorruption) {
+  QuoteEventPipe events;
+  ASSERT_TRUE(events.valid());
+  ControlledSource source;
+  source.poll_driven_idle = true;
+  TestEventLoopEnvironment loop;
+  loop.source = &source;
+  loop.stop_after_polls = 3;
+  StrategyRunner runner(nullptr, &source);
+  ASSERT_TRUE(runner
+                  .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_QUOTES_PATH,
+                                       YQUANT_TEST_QUOTE_CONFIG_PATH,
+                                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
+                  .ok());
+  ASSERT_TRUE(runner.Run(loop).ok()) << runner.error_detail();
+  EXPECT_EQ(source.poll_calls, 3);
+  EXPECT_EQ(loop.wait_calls, 0);
+  EXPECT_GE(loop.check_calls, 4);
+  EXPECT_EQ(source.stop_calls, 1);
+  ExpectQuoteTrace(events.Read(), "CPSTD");
+}
+
 TEST(MarketRunnerTest, StopAfterSourceActivationDoesNotBeginPolling) {
   QuoteEventPipe events;
   ASSERT_TRUE(events.valid());
@@ -565,6 +591,106 @@ TEST(MarketRunnerTest, StopAfterSourceActivationDoesNotBeginPolling) {
   EXPECT_EQ(source.stop_calls, 1);
   ExpectQuoteTrace(events.Read(), "CPSTD");
 }
+
+// Maintenance deadlines must wake a waiting host even when no quote is due.
+class MaintenanceSource final : public MarketDataSource {
+ public:
+  std::optional<std::uint64_t> quote_deadline;
+  int poll_calls = 0;
+  int stop_calls = 0;
+
+  base::Status Prepare(const MarketDataConfig&) noexcept override { return {}; }
+  base::Status Start(std::span<const model::InstrumentId>,
+                     std::uint64_t) noexcept override {
+    return {};
+  }
+  MarketDataPollResult Poll(std::uint64_t,
+                            model::QuoteTick&) noexcept override {
+    ++poll_calls;
+    return {MarketDataPollState::kError, {ErrorCode::kInternalError, {}}};
+  }
+  std::optional<std::uint64_t> next_deadline() const noexcept override {
+    return quote_deadline;
+  }
+  base::Status Service(std::uint64_t now) noexcept override {
+    return now < 100 ? base::Status{} : base::Status{ErrorCode::kIoError, {}};
+  }
+  std::optional<std::uint64_t> next_service_deadline() const noexcept override {
+    return 100;
+  }
+  base::Status Stop() noexcept override {
+    ++stop_calls;
+    return {};
+  }
+  const char* error_detail() const noexcept override {
+    return "injected maintenance failure";
+  }
+};
+
+class MaintenanceClock final : public MonotonicClock {
+ public:
+  std::uint64_t now = 0;
+  std::uint64_t Now() const noexcept override { return now; }
+};
+
+class MaintenanceEnvironment final : public EventLoopEnvironment {
+ public:
+  explicit MaintenanceEnvironment(MaintenanceClock& clock) : clock_(clock) {}
+  base::Status CheckStop(bool& out) noexcept override {
+    out = false;
+    return {};
+  }
+  base::Status Wait(std::optional<std::uint64_t> timeout) noexcept override {
+    if (!timeout || *timeout != 100 || wait_calls != 0)
+      return {ErrorCode::kInternalError, {}};
+    ++wait_calls;
+    clock_.now += *timeout;
+    return {};
+  }
+  int wait_calls = 0;
+
+ private:
+  MaintenanceClock& clock_;
+};
+
+struct MaintenanceDeadline {
+  const char* name;
+  std::optional<std::uint64_t> quote_deadline;
+};
+
+class MaintenanceDeadlineTest
+    : public ::testing::TestWithParam<MaintenanceDeadline> {};
+
+TEST_P(MaintenanceDeadlineTest, ServicesBeforeQuoteDeadlineOrIndefiniteWait) {
+  QuoteEventPipe events;
+  ASSERT_TRUE(events.valid());
+  MaintenanceSource source;
+  source.quote_deadline = GetParam().quote_deadline;
+  MaintenanceClock clock;
+  MaintenanceEnvironment environment(clock);
+  StrategyRunner runner(&clock, &source);
+  ASSERT_TRUE(runner
+                  .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_QUOTES_PATH,
+                                       YQUANT_TEST_QUOTE_CONFIG_PATH,
+                                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
+                  .ok());
+  EXPECT_EQ(runner.next_deadline(), 100U);
+  EXPECT_EQ(runner.Run(environment).code, ErrorCode::kIoError);
+  EXPECT_STREQ(runner.error_stage(), "market_data_service");
+  EXPECT_STREQ(runner.error_detail(), "injected maintenance failure");
+  EXPECT_EQ(source.poll_calls, 0);
+  EXPECT_EQ(source.stop_calls, 1);
+  EXPECT_EQ(environment.wait_calls, 1);
+  ExpectQuoteTrace(events.Read(), "CPSTD");
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    MaintenanceDeadlines, MaintenanceDeadlineTest,
+    ::testing::Values(MaintenanceDeadline{"DistantQuote", 1000},
+                      MaintenanceDeadline{"NoQuote", std::nullopt}),
+    [](const ::testing::TestParamInfo<MaintenanceDeadline>& info) {
+      return info.param.name;
+    });
 
 struct LoopFailure {
   const char* name;

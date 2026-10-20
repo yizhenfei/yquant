@@ -31,19 +31,47 @@ target_include_directories(yquant_strategy_api INTERFACE
   "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>")
 target_link_libraries(yquant_strategy_api INTERFACE yquant_compile_options)
 
-add_library(yquant_strategyd_runtime STATIC
+add_library(yquant_md STATIC
+  src/md/event_codec.cc
+  src/md/quote_codec.cc
+  src/md/shm_pubsub.cc
+  src/md/shm_segment.cc)
+add_library(yquant::md ALIAS yquant_md)
+target_include_directories(yquant_md PUBLIC
+  "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
+  PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(yquant_md PUBLIC yquant_compile_options Threads::Threads)
+target_compile_options(yquant_md PRIVATE -Wall -Wextra -Wpedantic)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_library(YQUANT_RT_LIBRARY rt)
+  if(YQUANT_RT_LIBRARY)
+    target_link_libraries(yquant_md PRIVATE ${YQUANT_RT_LIBRARY})
+  endif()
+endif()
+
+# Both daemons reuse host configuration, mock input and termination handling.
+add_library(yquant_host_support STATIC
   src/strategyd/json_config_document.cc
   src/strategyd/market_data_config.cc
   src/strategyd/mock_market_data_source.cc
+  src/strategyd/termination_signals.cc)
+target_include_directories(yquant_host_support PUBLIC
+  "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(yquant_host_support PUBLIC yquant::strategy_api
+  PRIVATE simdjson::simdjson Threads::Threads)
+target_compile_options(yquant_host_support PRIVATE -Wall -Wextra -Wpedantic)
+
+add_library(yquant_strategyd_runtime STATIC
+  src/strategyd/shm_market_data_source.cc
   src/strategyd/strategy_config_loader.cc
   src/strategyd/market_data.cc
   src/strategyd/strategy_library.cc
-  src/strategyd/strategy_runner.cc
-  src/strategyd/termination_signals.cc)
+  src/strategyd/strategy_runner.cc)
 target_include_directories(yquant_strategyd_runtime PUBLIC
   "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(yquant_strategyd_runtime PUBLIC yquant::strategy_api
-  PRIVATE simdjson::simdjson Threads::Threads ${CMAKE_DL_LIBS})
+target_link_libraries(yquant_strategyd_runtime PUBLIC
+  yquant::strategy_api yquant_host_support
+  PRIVATE yquant::md simdjson::simdjson Threads::Threads ${CMAKE_DL_LIBS})
 target_compile_options(yquant_strategyd_runtime PRIVATE
   -Wall -Wextra -Wpedantic)
 
@@ -53,6 +81,25 @@ target_link_libraries(yquant_strategyd PRIVATE
 target_compile_options(yquant_strategyd PRIVATE -Wall -Wextra -Wpedantic)
 set_target_properties(yquant_strategyd PROPERTIES
   OUTPUT_NAME yquant-strategyd
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+add_library(yquant_marketd_runtime STATIC
+  src/marketd/adapters.cc
+  src/marketd/config.cc
+  src/marketd/runner.cc
+  src/marketd/tcp_transport.cc)
+target_include_directories(yquant_marketd_runtime PUBLIC
+  "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(yquant_marketd_runtime PUBLIC
+  yquant::md yquant_host_support
+  PRIVATE simdjson::simdjson Threads::Threads)
+target_compile_options(yquant_marketd_runtime PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(yquant_marketd src/marketd/main.cc)
+target_link_libraries(yquant_marketd PRIVATE yquant_marketd_runtime)
+target_compile_options(yquant_marketd PRIVATE -Wall -Wextra -Wpedantic)
+set_target_properties(yquant_marketd PROPERTIES
+  OUTPUT_NAME yquant-marketd
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 function(yquant_add_strategy_example name)
@@ -75,6 +122,13 @@ target_link_libraries(parameterized_strategy PRIVATE simdjson::simdjson)
 target_link_libraries(quote_observer_strategy PRIVATE simdjson::simdjson)
 configure_file(examples/strategies/mock_market_data.json
   "${CMAKE_BINARY_DIR}/strategies/mock_market_data.json" COPYONLY)
+configure_file(examples/strategies/shm_market_data.json
+  "${CMAKE_BINARY_DIR}/strategies/shm_market_data.json" COPYONLY)
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/marketd")
+foreach(config IN ITEMS mock_source local tcp_source tcp_relay)
+  configure_file("examples/marketd/${config}.json"
+    "${CMAKE_BINARY_DIR}/marketd/${config}.json" COPYONLY)
+endforeach()
 
 add_library(yquant_base STATIC
   src/base/spsc_queue.cc
@@ -155,6 +209,7 @@ if(BUILD_TESTING)
 
   include(cmake/LoggingCompileTests.cmake)
   include(cmake/StrategydTests.cmake)
+  include(cmake/MarketdTests.cmake)
 
   # Keep replacement global allocation functions isolated from other tests.
   add_executable(market_data_allocation_test

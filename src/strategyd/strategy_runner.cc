@@ -13,7 +13,7 @@ StrategyRunner::StrategyRunner(const MonotonicClock* clock,
     : clock_(clock != nullptr ? *clock : default_clock_),
       market_data_(clock_),
       context_(clock_, market_data_),
-      source_(source != nullptr ? *source : default_source_),
+      source_(source),
       startup_environment_(environment) {}
 
 StrategyRunner::~StrategyRunner() noexcept {
@@ -106,12 +106,17 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
       Cleanup();
       return result_;
     }
+    if (source_ == nullptr) {
+      source_ = market_loader.config().adapter == MarketDataAdapter::kShm
+                    ? static_cast<MarketDataSource*>(&shm_source_)
+                    : static_cast<MarketDataSource*>(&mock_source_);
+    }
     // Prepare may acquire resources before reporting failure; Stop is safe
     // even when preparation did not finish.
     source_prepared_ = true;
-    const auto prepare_status = source_.Prepare(market_loader.config());
+    const auto prepare_status = source_->Prepare(market_loader.config());
     if (!prepare_status.ok()) {
-      SetError(prepare_status, "market_data_prepare", source_.error_detail());
+      SetError(prepare_status, "market_data_prepare", source_->error_detail());
       Cleanup();
       return result_;
     }
@@ -205,9 +210,9 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
   }
   if (source_prepared_) {
     const auto status =
-        source_.Start(market_data_.subscriptions(), clock_.Now());
+        source_->Start(market_data_.subscriptions(), clock_.Now());
     if (!status.ok()) {
-      SetError(status, "market_data_start", source_.error_detail());
+      SetError(status, "market_data_start", source_->error_detail());
       Cleanup();
       return result_;
     }
@@ -235,9 +240,12 @@ base::Status StrategyRunner::Handle(Stop) noexcept {
 }
 
 std::optional<std::uint64_t> StrategyRunner::next_deadline() const noexcept {
-  return state_ == RunnerState::kRunning && source_started_
-             ? source_.next_deadline()
-             : std::nullopt;
+  if (state_ != RunnerState::kRunning || !source_started_) return std::nullopt;
+  const auto quote = source_->next_deadline();
+  const auto service = source_->next_service_deadline();
+  if (!quote) return service;
+  if (!service) return quote;
+  return *quote < *service ? quote : service;
 }
 
 base::Status StrategyRunner::DispatchQuote(
@@ -284,24 +292,24 @@ base::Status StrategyRunner::ProcessBatch() noexcept {
   }
   for (std::size_t count = 0;
        source_started_ && count < kMaxMarketDataBatchSize; ++count) {
-    const auto deadline = next_deadline();
+    const auto deadline = source_->next_deadline();
     const auto now = clock_.Now();
     if (!deadline || *deadline > now) {
       break;
     }
     model::QuoteTick tick;
-    const auto poll = source_.Poll(now, tick);
+    const auto poll = source_->Poll(now, tick);
     if (poll.state == MarketDataPollState::kError || !poll.status.ok()) {
       const auto status = poll.status.ok()
                               ? base::Status{base::ErrorCode::kCorrupt, {}}
                               : poll.status;
-      SetError(status, "market_data_poll", source_.error_detail());
+      SetError(status, "market_data_poll", source_->error_detail());
       Cleanup();
       return result_;
     }
     if (poll.state == MarketDataPollState::kIdle) {
-      const auto next = source_.next_deadline();
-      if (next && *next <= clock_.Now()) {
+      const auto next = source_->next_deadline();
+      if (!source_->is_poll_driven() && next && *next <= clock_.Now()) {
         SetError({base::ErrorCode::kCorrupt, {}}, "market_data_poll",
                  "idle source retained an already-due deadline");
         Cleanup();
@@ -342,6 +350,14 @@ base::Status StrategyRunner::Run(EventLoopEnvironment& environment) noexcept {
       return result_;
     }
     const auto now = clock_.Now();
+    if (source_started_) {
+      const auto serviced = source_->Service(now);
+      if (!serviced.ok()) {
+        SetError(serviced, "market_data_service", source_->error_detail());
+        Cleanup();
+        return result_;
+      }
+    }
     const auto deadline = next_deadline();
     if (!deadline || *deadline > now) {
       const auto timeout = deadline
@@ -371,8 +387,8 @@ void StrategyRunner::Cleanup() noexcept {
   source_started_ = false;
   if (source_prepared_) {
     source_prepared_ = false;
-    const auto status = source_.Stop();
-    SetError(status, "market_data_stop", source_.error_detail());
+    const auto status = source_->Stop();
+    SetError(status, "market_data_stop", source_->error_detail());
   }
   if (started_) {
     // Clear first so cleanup never calls OnStop more than once.
