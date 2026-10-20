@@ -16,13 +16,16 @@ class Trading {
   // True only during running business callbacks with a configured adapter;
   // does not promise valid parameters or available capacity.
   virtual bool accepting_orders() const noexcept = 0;
-  // Atomically reserves buy cash or sellable shares, registers PendingNew and
-  // a queued request, then sets out. kOk does
-  // not mean broker acceptance. Failure changes neither state, queue nor out.
+  // Atomically registers PendingNew and a queued request, then sets out. kOk
+  // means local acceptance, not gateway risk approval or broker acceptance.
+  // In-process mock trading also reserves local cash/shares here. With a remote
+  // tradingd, final reservation belongs to the shared gateway; insufficient
+  // resources are reported asynchronously as an order rejection. Local failure
+  // changes neither state, queue nor out.
   // Returns kInvalidState outside running business callbacks, kUnsupported
   // without an adapter, kInvalidArgument for bad parameters or amount overflow,
-  // or kResourceExhausted for insufficient available cash/shares or exhausted
-  // order/request storage and IDs. Failure preserves reservations and balances.
+  // or kResourceExhausted for exhausted order/request storage and IDs (also
+  // insufficient cash/shares with the in-process adapter).
   [[nodiscard]] virtual base::ErrorCode SubmitOrder(
       const model::OrderRequest& request,
       model::ClientOrderId& out) noexcept = 0;
@@ -35,12 +38,15 @@ class Trading {
   // Includes terminal orders until teardown. Unknown IDs preserve out.
   [[nodiscard]] virtual bool TryGetOrder(
       model::ClientOrderId id, model::OrderSnapshot& out) const noexcept = 0;
-  // Copies configured cash, including pending buy reservations. Disabled
-  // service returns false and preserves out.
+  // Copies the latest cash view, including confirmed buy reservations. With a
+  // remote gateway this is shared account state and may lag local requests or
+  // other clients; callbacks observe the account view paired with their event.
+  // Disabled service returns false and preserves out.
   [[nodiscard]] virtual bool TryGetCash(
       model::CashSnapshot& out) const noexcept = 0;
-  // Known instruments omitted from bootstrap return a zero position. Disabled
-  // service or unknown instrument returns false without modifying out.
+  // Copies the latest account position, with the same freshness rules as cash.
+  // Known omitted instruments return zero. Disabled service or unknown
+  // instrument returns false without modifying out.
   [[nodiscard]] virtual bool TryGetPosition(
       model::InstrumentId id, model::PositionSnapshot& out) const noexcept = 0;
 };

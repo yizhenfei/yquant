@@ -18,6 +18,7 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 
 核心策略进程命名为 `yquant-strategyd`。
 行情进程命名为 `yquant-marketd`。
+共享交易网关命名为 `yquant-tradingd`。
 
 ## 目标平台
 
@@ -38,6 +39,8 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 - `src/strategyd/`：策略进程与动态库加载实现。
 - `src/md/`：共享内存映射、seqlock 协议和报价编解码。
 - `src/marketd/`：行情进程、配置、输入与输出适配器。
+- `src/tradingd/`：共享账户交易网关、跨机协议与 TCP 连接。
+- `examples/tradingd/`：共享交易网关与策略客户端配置。
 - `examples/marketd/`：本机分发、TCP 中继、历史回放与录制配置。
 - `examples/strategies/`：用户策略动态库示例。
 - `tests/base/`：基础组件测试。
@@ -116,7 +119,25 @@ cmake -P cmake/DownloadTestData.cmake
 
 `--trading-config` 为可选的宿主交易配置，使用时必须同时提供行情配置作为标的字典。示例在首次有效卖一报价提交 200 股买单，默认 `fill` 模式按 100 股、100 股两笔成交，输出 `order_lifecycle: terminal state=filled cumulative=200 leaves=0`。成交后进程继续运行，停止时输出 `order_lifecycle: stopped fills=2 filled_qty=200 state=filled`。
 
-将交易配置的 `mode` 改为 `working`，等到 `order_lifecycle: working` 后发送停止信号，可验证宿主自动撤单和排空。交易接口、配置及收尾规则见[交易执行与模拟柜台](docs/design/trading.md)。交易服务同时提供持仓与资金查询，买单预占资金，卖单预占可卖持仓。
+将交易配置的 `mode` 改为 `working`，等到 `order_lifecycle: working` 后发送停止信号，可验证宿主自动撤单和排空。交易接口、配置及收尾规则见[交易执行与账户账本](docs/design/trading.md)。交易服务同时提供持仓与资金查询，买单预占资金，卖单预占可卖持仓。
+
+多个策略共享一个账户时，先启动网关：
+
+```sh
+./build/debug/bin/yquant-tradingd --config ./build/debug/tradingd/local.json
+```
+
+再启动策略客户端：
+
+```sh
+./build/debug/bin/yquant-strategyd \
+  --strategy ./build/debug/strategies/shared_account_strategy.so \
+  --config ./build/debug/strategies/shared_account_strategy.json \
+  --market-data-config ./build/debug/strategies/mock_market_data.json \
+  --trading-config ./build/debug/tradingd/client_1.json
+```
+
+另一个策略使用 `client_2.json`。跨机时修改服务端监听地址和客户端目标地址，各客户端保持不同身份。`tradingd` 统一检查与预占账户资源，向所属策略回送委托与成交，并推送共享账户快照。首版使用模拟柜台，协议、停止与故障边界见[共享交易网关](docs/design/tradingd.md)。
 
 ## 行情进程
 
@@ -166,7 +187,8 @@ cmake --build --preset debug --target download_test_data
 - [行情进程设计](docs/design/marketd.md)：可配置行情管线、本机广播和跨机中继。
 - [行情回放与录制](docs/design/market-data-replay.md)：真实 CSV 转换、回放时序和异步录制格式。
 - [共享内存行情订阅发布组件](docs/design/shared-memory-pubsub.md)：seqlock、独立游标、覆盖缺口和重启隔离。
-- [交易执行与模拟柜台](docs/design/trading.md)：限价委托、撤单与异步回报的执行闭环。
+- [交易执行与账户账本](docs/design/trading.md)：限价委托、撤单与异步回报的执行闭环。
+- [共享交易网关](docs/design/tradingd.md)：多机策略共享账户、订单归属、TCP 协议和断线收尾。
 - [一档双边做市策略](docs/design/bbo-market-making.md)：策略伪代码、所需数据与回调语义。
 
 ## 参考系统与资料

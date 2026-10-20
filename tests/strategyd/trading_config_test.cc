@@ -1,6 +1,7 @@
 #include "strategyd/trading_config.h"
 
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -340,5 +341,120 @@ TEST(TradingConfigTest, TypedAccountValidationChecksReservationsAndBounds) {
   EXPECT_STREQ(error.field_path, "initial_positions[0].symbol");
 }
 
+}  // namespace
+}  // namespace yquant::strategyd
+
+namespace yquant::strategyd {
+namespace {
+constexpr std::string_view kRemoteJson =
+    R"({"adapter":"tcp","address":"127.0.0.1","port":19200,)"
+    R"("client_id":7,"token":"strategy-7"})";
+
+TEST(TradingConfigTest, LoadsRemoteEndpointAndDefaultTimeouts) {
+  ConfigFile file(kRemoteJson);
+  TradingConfigLoader loader;
+  ASSERT_TRUE(loader.Load(file.path()).ok()) << loader.error().message;
+  EXPECT_EQ(loader.config().adapter, TradingAdapterKind::kTcp);
+  EXPECT_STREQ(loader.config().remote.endpoint.address, "127.0.0.1");
+  EXPECT_EQ(loader.config().remote.endpoint.port, 19200);
+  EXPECT_EQ(loader.config().remote.client_id, 7U);
+  EXPECT_STREQ(loader.config().remote.token, "strategy-7");
+  EXPECT_EQ(loader.config().remote.connect_timeout_ns, 5000000000ULL);
+  EXPECT_EQ(loader.config().remote.heartbeat_timeout_ns, 5000000000ULL);
+  EXPECT_EQ(loader.config().shutdown_timeout_ns, 5000000000ULL);
+}
+
+TEST(TradingConfigTest, RemoteSchemaIsIndependentOfKeyOrderAndMockAccount) {
+  ConfigFile file(
+      R"({"shutdown_timeout_ms":60000,"token":"abc","client_id":1,)"
+      R"("port":65535,"connect_timeout_ms":1,"heartbeat_timeout_ms":60000,)"
+      R"("address":"192.168.1.1","adapter":"tcp"})");
+  TradingConfigLoader loader;
+  ASSERT_TRUE(loader.Load(file.path()).ok()) << loader.error().message;
+  EXPECT_EQ(loader.config().remote.connect_timeout_ns, 1000000U);
+  EXPECT_EQ(loader.config().remote.heartbeat_timeout_ns, 60000000000ULL);
+  EXPECT_EQ(loader.config().shutdown_timeout_ns, 60000000000ULL);
+  for (const auto* field :
+       {"mode", "initial_cash", "initial_positions", "report_interval_ms"}) {
+    const std::string extra =
+        std::string(kRemoteJson).substr(0, kRemoteJson.size() - 1) + ",\"" +
+        field + "\":" +
+        (std::string_view(field) == "mode"                ? "\"fill\""
+         : std::string_view(field) == "initial_positions" ? "[]"
+                                                          : "1") +
+        '}';
+    ConfigFile invalid(extra);
+    EXPECT_FALSE(loader.Load(invalid.path()).ok()) << field;
+    EXPECT_STREQ(loader.error().field_path, field);
+  }
+}
+
+struct BadRemoteConfig {
+  const char* name;
+  const char* before;
+  const char* after;
+  const char* field;
+};
+class BadRemoteTradingConfigTest
+    : public ::testing::TestWithParam<BadRemoteConfig> {};
+
+TEST_P(BadRemoteTradingConfigTest, RejectsInvalidRemoteFields) {
+  const auto item = GetParam();
+  std::string json(kRemoteJson);
+  json.replace(json.find(item.before), std::strlen(item.before), item.after);
+  ConfigFile file(json);
+  TradingConfigLoader loader;
+  EXPECT_FALSE(loader.Load(file.path()).ok());
+  EXPECT_STREQ(loader.error().field_path, item.field);
+  EXPECT_EQ(loader.config().adapter, TradingAdapterKind::kMock);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    RemoteSchema, BadRemoteTradingConfigTest,
+    ::testing::Values(
+        BadRemoteConfig{"MissingAddress", "\"address\":\"127.0.0.1\",", "",
+                        "address"},
+        BadRemoteConfig{"MissingPort", "\"port\":19200,", "", "port"},
+        BadRemoteConfig{"MissingClient", "\"client_id\":7,", "", "client_id"},
+        BadRemoteConfig{"MissingToken", ",\"token\":\"strategy-7\"", "",
+                        "token"},
+        BadRemoteConfig{"WildcardAddress", "127.0.0.1", "0.0.0.0", "address"},
+        BadRemoteConfig{"DnsAddress", "127.0.0.1", "localhost", "address"},
+        BadRemoteConfig{"ZeroPort", "19200", "0", "port"},
+        BadRemoteConfig{"BigPort", "19200", "65536", "port"},
+        BadRemoteConfig{"ZeroClient", "\"client_id\":7", "\"client_id\":0",
+                        "client_id"},
+        BadRemoteConfig{"EmptyToken", "strategy-7", "", "token"},
+        BadRemoteConfig{"TokenSpace", "strategy-7", "a b", "token"},
+        BadRemoteConfig{"ZeroConnect",
+                        "\"adapter\":", "\"connect_timeout_ms\":0,\"adapter\":",
+                        "connect_timeout_ms"},
+        BadRemoteConfig{"FractionalHeartbeat", "\"adapter\":",
+                        "\"heartbeat_timeout_ms\":1.0,\"adapter\":",
+                        "heartbeat_timeout_ms"}),
+    [](const ::testing::TestParamInfo<BadRemoteConfig>& info) {
+      return info.param.name;
+    });
+
+TEST(TradingConfigTest,
+     TypedRemoteValidationChecksTerminatedFieldsAndTimeouts) {
+  TradingConfig config;
+  config.adapter = TradingAdapterKind::kTcp;
+  config.remote.client_id = 1;
+  std::memcpy(config.remote.token, "token", 6);
+  strategy::ConfigError error;
+  EXPECT_TRUE(ValidateTradingConfig(config, error).ok());
+  config.remote.connect_timeout_ns = UINT64_MAX;
+  EXPECT_FALSE(ValidateTradingConfig(config, error).ok());
+  EXPECT_STREQ(error.field_path, "connect_timeout_ms");
+  config.remote.connect_timeout_ns = 5000000000ULL;
+  config.remote.heartbeat_timeout_ns = 0;
+  EXPECT_FALSE(ValidateTradingConfig(config, error).ok());
+  EXPECT_STREQ(error.field_path, "heartbeat_timeout_ms");
+  config.remote.heartbeat_timeout_ns = 5000000000ULL;
+  std::memset(config.remote.token, 'x', sizeof(config.remote.token));
+  EXPECT_FALSE(ValidateTradingConfig(config, error).ok());
+  EXPECT_STREQ(error.field_path, "token");
+}
 }  // namespace
 }  // namespace yquant::strategyd
