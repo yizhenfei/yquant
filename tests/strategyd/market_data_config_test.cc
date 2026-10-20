@@ -7,6 +7,7 @@
 #include "gtest/gtest.h"
 #include "strategyd/json_config_document.h"
 #include "test_config_file.h"
+#include "yquant/model/identifiers.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -135,8 +136,9 @@ TEST(MarketDataConfigTest, RequiresAnInstrumentArrayWithOneTo64DistinctItems) {
     std::string items;
     for (std::size_t i = 0; i < count; ++i) {
       if (i != 0) items += ',';
-      char symbol[7];
-      std::snprintf(symbol, sizeof(symbol), "%06zu", i);
+      char symbol[model::kSymbolLength + 1];
+      std::snprintf(symbol, sizeof(symbol), "%0*zu",
+                    static_cast<int>(model::kSymbolLength), i);
       items += Replace(std::string(kInstrument), "600000", symbol);
     }
     ConfigFile file(Json(items));

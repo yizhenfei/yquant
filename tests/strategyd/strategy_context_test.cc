@@ -2,6 +2,7 @@
 
 #include "gtest/gtest.h"
 #include "strategyd/market_data.h"
+#include "yquant/model/identifiers.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -27,7 +28,7 @@ MarketDataConfig ContextConfig() {
         model::MakeInstrumentId("SSE", symbols[index], item.instrument.id),
         ErrorCode::kOk);
     item.instrument.venue = model::Venue::kSse;
-    for (std::size_t digit = 0; digit < 6; ++digit) {
+    for (std::size_t digit = 0; digit < model::kSymbolLength; ++digit) {
       item.instrument.symbol[digit] = symbols[index][digit];
     }
     item.instrument.price_decimals = 2;
