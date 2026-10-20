@@ -1,0 +1,10 @@
+{
+  "adapter": "tcp",
+  "address": "127.0.0.1",
+  "port": 19200,
+  "client_id": 1,
+  "token": "yquant-local-demo",
+  "connect_timeout_ms": 5000,
+  "heartbeat_timeout_ms": 5000,
+  "shutdown_timeout_ms": 5000
+}

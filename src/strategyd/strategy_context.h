@@ -18,22 +18,26 @@ class StrategyContextImpl final : public strategy::StrategyContext {
   StrategyContextImpl(const MonotonicClock& clock,
                       strategy::MarketData& market_data,
                       strategy::Trading& trading) noexcept
-      : clock_(clock), market_data_(market_data), trading_(trading) {}
+      : clock_(clock), market_data_(market_data), trading_(&trading) {}
+
+  // Selects the run's service before loading the strategy. The selected
+  // service must outlive this context and cannot change during callbacks.
+  void SetTrading(strategy::Trading& trading) noexcept { trading_ = &trading; }
 
   std::uint64_t Now() const noexcept override { return clock_.Now(); }
   strategy::MarketData& market_data() noexcept override { return market_data_; }
   const strategy::MarketData& market_data() const noexcept override {
     return market_data_;
   }
-  strategy::Trading& trading() noexcept override { return trading_; }
+  strategy::Trading& trading() noexcept override { return *trading_; }
   const strategy::Trading& trading() const noexcept override {
-    return trading_;
+    return *trading_;
   }
 
  private:
   const MonotonicClock& clock_;
   strategy::MarketData& market_data_;
-  strategy::Trading& trading_;
+  strategy::Trading* trading_;
 };
 
 }  // namespace yquant::strategyd

@@ -10,6 +10,7 @@
 #include "strategyd/market_data.h"
 #include "strategyd/mock_market_data_source.h"
 #include "strategyd/mock_trading_adapter.h"
+#include "strategyd/remote_trading.h"
 #include "strategyd/shm_market_data_source.h"
 #include "strategyd/strategy_context.h"
 #include "strategyd/strategy_library.h"
@@ -141,6 +142,8 @@ class StrategyRunner {
   // Own the service before constructing the context that borrows it.
   MarketDataImpl market_data_;
   TradingImpl trading_;
+  RemoteTrading remote_trading_;
+  TradingRuntime* trading_runtime_ = &trading_;
   StrategyContextImpl context_;
   MockMarketDataSource mock_source_;
   ShmMarketDataSource shm_source_;
@@ -157,13 +160,14 @@ class StrategyRunner {
   bool source_started_ = false;
   bool trading_prepared_ = false;
   bool trading_started_ = false;
+  bool remote_trading_selected_ = false;
   bool callback_active_ = false;
   bool stop_requested_ = false;
   bool callbacks_enabled_ = true;
   bool drain_viable_ = true;
   bool prefer_market_ = true;
   bool prefer_local_ = true;
-  std::uint64_t shutdown_timeout_ns_ = 5000000000ULL;
+  std::uint64_t shutdown_timeout_ns_ = kDefaultTradingTimeoutNs;
   std::optional<std::uint64_t> shutdown_deadline_;
   std::uint64_t ignored_quote_count_ = 0;
   base::Status result_;

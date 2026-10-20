@@ -15,6 +15,7 @@ StrategyRunner::StrategyRunner(const MonotonicClock* clock,
     : clock_(clock != nullptr ? *clock : default_clock_),
       market_data_(clock_),
       trading_(clock_, market_data_),
+      remote_trading_(clock_, market_data_),
       context_(clock_, market_data_, trading_),
       source_(source),
       trading_adapter_(trading_adapter != nullptr ? *trading_adapter
@@ -103,6 +104,7 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
     return result_;
   }
 
+  MarketDataConfig dictionary;
   if (command.market_data_config_path != nullptr) {
     MarketDataConfigLoader market_loader;
     const auto status = market_loader.Load(command.market_data_config_path);
@@ -111,6 +113,7 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
       Finalize();
       return result_;
     }
+    dictionary = market_loader.config();
     if (source_ == nullptr) {
       source_ = market_loader.config().adapter == MarketDataAdapter::kShm
                     ? static_cast<MarketDataSource*>(&shm_source_)
@@ -154,34 +157,51 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
     }
     shutdown_timeout_ns_ = trading_loader.config().shutdown_timeout_ns;
     trading_prepared_ = true;
-    const auto prepared = trading_adapter_.Prepare(trading_loader.config());
-    if (!prepared.ok()) {
-      SetError(prepared, "trading_prepare", trading_adapter_.error_detail());
-      Finalize();
-      return result_;
-    }
-    const auto started = trading_adapter_.Start(clock_.Now());
-    if (!started.ok()) {
-      SetError(started, "trading_start", trading_adapter_.error_detail());
-      Finalize();
-      return result_;
-    }
-    trading_started_ = true;
-    if (CancelStartupIfRequested()) {
-      return result_;
-    }
-    TradingAccountSnapshot account;
-    const auto snapshot = trading_adapter_.ReadAccountSnapshot(account);
-    if (!snapshot.ok()) {
-      SetError(snapshot, "trading_account", trading_adapter_.error_detail());
-      Finalize();
-      return result_;
-    }
-    const auto configured = trading_.Configure(account);
-    if (!configured.ok()) {
-      SetError(configured, "trading_account", trading_.error_detail());
-      Finalize();
-      return result_;
+    remote_trading_selected_ =
+        trading_loader.config().adapter == TradingAdapterKind::kTcp;
+    if (remote_trading_selected_) {
+      trading_runtime_ = &remote_trading_;
+      context_.SetTrading(*trading_runtime_);
+      const auto initialized =
+          remote_trading_.Init(trading_loader.config(), dictionary);
+      if (!initialized.ok()) {
+        SetError(initialized, "trading_connect",
+                 remote_trading_.error_detail());
+        Finalize();
+        return result_;
+      }
+      trading_started_ = true;
+    } else {
+      const auto prepared = trading_adapter_.Prepare(trading_loader.config());
+      if (!prepared.ok()) {
+        SetError(prepared, "trading_prepare", trading_adapter_.error_detail());
+        Finalize();
+        return result_;
+      }
+      const auto started = trading_adapter_.Start(clock_.Now());
+      if (!started.ok()) {
+        SetError(started, "trading_start", trading_adapter_.error_detail());
+        Finalize();
+        return result_;
+      }
+      trading_started_ = true;
+      if (CancelStartupIfRequested()) {
+        return result_;
+      }
+      TradingAccountSnapshot account;
+      const auto snapshot = trading_adapter_.ReadAccountSnapshot(account);
+      if (!snapshot.ok()) {
+        SetError(snapshot, "trading_account", trading_adapter_.error_detail());
+        Finalize();
+        return result_;
+      }
+      const auto configured = trading_.Configure(account);
+      if (!configured.ok()) {
+        SetError(configured, "trading_account",
+                 trading_runtime_->error_detail());
+        Finalize();
+        return result_;
+      }
     }
   }
   if (CancelStartupIfRequested()) {
@@ -275,7 +295,7 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
     return result_;
   }
   state_ = RunnerState::kRunning;
-  trading_.SetRunning(true);
+  trading_runtime_->SetRunning(true);
   return result_;
 }
 
@@ -359,8 +379,9 @@ std::optional<std::uint64_t> StrategyRunner::next_deadline() const noexcept {
     IncludeDeadline(deadline, source_->next_service_deadline());
   }
   if (trading_started_) {
-    IncludeDeadline(deadline, trading_.next_deadline());
-    IncludeDeadline(deadline, trading_adapter_.next_deadline());
+    IncludeDeadline(deadline, trading_runtime_->next_deadline());
+    if (!remote_trading_selected_)
+      IncludeDeadline(deadline, trading_adapter_.next_deadline());
   }
   IncludeDeadline(deadline, shutdown_deadline_);
   return deadline;
@@ -369,11 +390,11 @@ std::optional<std::uint64_t> StrategyRunner::next_deadline() const noexcept {
 void StrategyRunner::BeginCallback(CallbackPhase phase) noexcept {
   callback_active_ = true;
   market_data_.BeginCallback(phase);
-  trading_.BeginCallback(phase);
+  trading_runtime_->BeginCallback(phase);
 }
 
 void StrategyRunner::EndCallback() noexcept {
-  trading_.EndCallback();
+  trading_runtime_->EndCallback();
   market_data_.EndCallback();
   callback_active_ = false;
 }
@@ -395,7 +416,7 @@ void StrategyRunner::EnterStopping() noexcept {
   }
   state_ = RunnerState::kStopping;
   stop_requested_ = false;
-  trading_.BeginStopping();
+  trading_runtime_->BeginStopping();
   const auto now = clock_.Now();
   if (shutdown_timeout_ns_ > std::numeric_limits<std::uint64_t>::max() - now) {
     SetError({base::ErrorCode::kResourceExhausted, {}}, "trading_drain",
@@ -424,8 +445,9 @@ void StrategyRunner::StopAfterError(bool can_drain) noexcept {
 }
 
 bool StrategyRunner::IsDrained() const noexcept {
-  return trading_.is_drained() &&
-         (!trading_started_ || trading_adapter_.is_drained());
+  return trading_runtime_->is_drained() &&
+         (!trading_started_ || remote_trading_selected_ ||
+          trading_adapter_.is_drained());
 }
 
 bool StrategyRunner::FinishStoppingIfReady() noexcept {
@@ -556,17 +578,31 @@ StrategyRunner::QuotePollResult StrategyRunner::PollQuote() noexcept {
 
 bool StrategyRunner::PollTrading() noexcept {
   const auto now = clock_.Now();
-  const bool local = trading_.has_local_updates();
-  const bool remote = IsDue(trading_adapter_.next_deadline(), now);
+  const bool local = trading_runtime_->has_local_updates();
+  const bool remote =
+      IsDue(remote_trading_selected_ ? trading_runtime_->next_deadline()
+                                     : trading_adapter_.next_deadline(),
+            now);
   TradingDispatch dispatch;
   if (local && (!remote || prefer_local_)) {
     prefer_local_ = false;
-    const auto code = trading_.ApplyLocalUpdate(dispatch);
+    const auto code = trading_runtime_->ApplyLocalUpdate(dispatch);
     if (code != base::ErrorCode::kOk) {
-      SetError({code, {}}, "trading_local_update", trading_.error_detail());
+      SetError({code, {}}, "trading_local_update",
+               trading_runtime_->error_detail());
       StopAfterError(false);
       return false;
     }
+  } else if (remote_trading_selected_) {
+    prefer_local_ = true;
+    bool event = false;
+    const auto polled = remote_trading_.Poll(now, dispatch, event);
+    if (!polled.ok()) {
+      SetError(polled, "trading_poll", remote_trading_.error_detail());
+      StopAfterError(false);
+      return false;
+    }
+    if (!event) return true;
   } else {
     prefer_local_ = true;
     TradingEvent event;
@@ -594,11 +630,12 @@ bool StrategyRunner::PollTrading() noexcept {
       StopAfterError(false);
       return false;
     }
-    const auto applied = trading_.ApplyEvent(event, dispatch);
+    const auto applied = trading_runtime_->ApplyEvent(event, dispatch);
     if (applied != base::ErrorCode::kOk) {
       ReportUnapplied(event);
-      SetOrderError({applied, {}}, "trading_event", trading_.error_detail(),
-                    event.client_order_id, event.report_sequence);
+      SetOrderError({applied, {}}, "trading_event",
+                    trading_runtime_->error_detail(), event.client_order_id,
+                    event.report_sequence);
       StopAfterError(false);
       return false;
     }
@@ -613,8 +650,11 @@ void StrategyRunner::ProcessBatch() noexcept {
     const bool market = !market_idle && state_ == RunnerState::kRunning &&
                         source_started_ && IsDue(source_->next_deadline(), now);
     const bool trading =
-        trading_started_ && (trading_.has_local_updates() ||
-                             IsDue(trading_adapter_.next_deadline(), now));
+        trading_started_ &&
+        (trading_runtime_->has_local_updates() ||
+         IsDue(remote_trading_selected_ ? trading_runtime_->next_deadline()
+                                        : trading_adapter_.next_deadline(),
+               now));
     if (!market && !trading) {
       return;
     }
@@ -654,17 +694,17 @@ base::Status StrategyRunner::Run(EventLoopEnvironment& environment) noexcept {
       }
     }
     if (state_ == RunnerState::kStopping && trading_started_) {
-      const auto scheduled = trading_.ScheduleStopping(clock_.Now());
+      const auto scheduled = trading_runtime_->ScheduleStopping(clock_.Now());
       if (!scheduled.ok()) {
-        SetError(scheduled, "trading_drain", trading_.error_detail());
+        SetError(scheduled, "trading_drain", trading_runtime_->error_detail());
         StopAfterError(false);
       }
     }
     if (trading_started_ && drain_viable_) {
       const auto sent =
-          trading_.ProcessRequests(trading_adapter_, clock_.Now());
+          trading_runtime_->ProcessRequests(trading_adapter_, clock_.Now());
       if (!sent.ok()) {
-        SetError(sent, "trading_send", trading_.error_detail());
+        SetError(sent, "trading_send", trading_runtime_->error_detail());
         StopAfterError(false);
       }
     }
@@ -693,9 +733,10 @@ base::Status StrategyRunner::Run(EventLoopEnvironment& environment) noexcept {
 
 void StrategyRunner::ReportUnconfirmed() const noexcept {
   bool reported_cash = false;
-  for (std::size_t index = 0; index < trading_.order_count(); ++index) {
+  for (std::size_t index = 0; index < trading_runtime_->order_count();
+       ++index) {
     model::OrderSnapshot order;
-    if (!trading_.TryGetOrder({index + 1}, order)) {
+    if (!trading_runtime_->TryGetOrder({index + 1}, order)) {
       continue;
     }
     const bool terminal = order.state == model::OrderState::kFilled ||
@@ -706,7 +747,7 @@ void StrategyRunner::ReportUnconfirmed() const noexcept {
     }
     if (!reported_cash) {
       model::CashSnapshot cash;
-      if (trading_.TryGetCash(cash)) {
+      if (trading_runtime_->TryGetCash(cash)) {
         std::fprintf(stderr,
                      "yquant-strategyd: cash_balance=%lld reserved=%lld "
                      "available=%lld unit=micro_yuan\n",
@@ -732,7 +773,7 @@ void StrategyRunner::ReportUnconfirmed() const noexcept {
         static_cast<unsigned>(order.cancel_pending),
         static_cast<unsigned long long>(order.cancel_request_id.value));
     model::PositionSnapshot position;
-    if (trading_.TryGetPosition(order.instrument_id, position)) {
+    if (trading_runtime_->TryGetPosition(order.instrument_id, position)) {
       std::fprintf(stderr,
                    "yquant-strategyd: instrument_id=%llu total_qty=%lld "
                    "available_qty=%lld reserved_qty=%lld\n",
@@ -749,7 +790,7 @@ void StrategyRunner::Finalize() noexcept {
     return;
   }
   state_ = RunnerState::kStopping;
-  trading_.SetRunning(false);
+  trading_runtime_->SetRunning(false);
   source_started_ = false;
   if (source_prepared_) {
     source_prepared_ = false;
@@ -775,10 +816,12 @@ void StrategyRunner::Finalize() noexcept {
   trading_started_ = false;
   if (trading_prepared_) {
     trading_prepared_ = false;
-    const auto stopped = trading_adapter_.Stop();
-    SetError(stopped, "trading_stop", trading_adapter_.error_detail());
+    if (!remote_trading_selected_) {
+      const auto stopped = trading_adapter_.Stop();
+      SetError(stopped, "trading_stop", trading_adapter_.error_detail());
+    }
   }
-  trading_.Reset();
+  trading_runtime_->Reset();
   market_data_.Reset();
   state_ = RunnerState::kFinished;
 }

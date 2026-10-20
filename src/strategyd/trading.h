@@ -8,6 +8,7 @@
 #include "strategyd/market_data.h"
 #include "strategyd/trading_account.h"
 #include "strategyd/trading_limits.h"
+#include "strategyd/trading_runtime.h"
 #include "yquant/model/trading_event.h"
 #include "yquant/strategy/trading.h"
 
@@ -15,22 +16,13 @@ namespace yquant::strategyd {
 class TradingAdapter;
 struct TradingEvent;
 
-// One fully committed source/local event, copied for serial callback dispatch.
-// An old source event succeeds with both notification flags false.
-struct TradingDispatch {
-  model::OrderUpdate update;
-  model::Fill fill;
-  bool notify_order = false;
-  bool has_fill = false;
-};
-
 // Single-thread order ledger. Large storage is allocated once in Configure;
 // the small owner is embedded in Runner. All dependencies outlive this owner.
-class TradingImpl final : public strategy::Trading {
+class TradingImpl final : public TradingRuntime {
  public:
   TradingImpl(const MonotonicClock& clock,
               const MarketDataImpl& market_data) noexcept;
-  ~TradingImpl() noexcept;
+  ~TradingImpl() noexcept override;
   TradingImpl(const TradingImpl&) = delete;
   TradingImpl& operator=(const TradingImpl&) = delete;
   // Validates and copies bootstrap before allocating fixed storage. IDs must
@@ -40,12 +32,12 @@ class TradingImpl final : public strategy::Trading {
   [[nodiscard]] base::Status Configure(
       const TradingAccountSnapshot& account) noexcept;
   // Frees owned storage outside callbacks; invalidates order/account queries.
-  void Reset() noexcept;
-  void SetRunning(bool running) noexcept { running_ = running; }
-  void BeginCallback(CallbackPhase phase) noexcept { phase_ = phase; }
-  void EndCallback() noexcept { phase_ = CallbackPhase::kNone; }
+  void Reset() noexcept override;
+  void SetRunning(bool running) noexcept override { running_ = running; }
+  void BeginCallback(CallbackPhase phase) noexcept override { phase_ = phase; }
+  void EndCallback() noexcept override { phase_ = CallbackPhase::kNone; }
   // Closes request acceptance and starts a bounded cancellation scan once.
-  void BeginStopping() noexcept;
+  void BeginStopping() noexcept override;
 
   bool accepting_orders() const noexcept override;
   [[nodiscard]] base::ErrorCode SubmitOrder(
@@ -65,27 +57,28 @@ class TradingImpl final : public strategy::Trading {
 
   // Sends/removes each request at most once, marking attempted before Send.
   // While stopping, new orders become queued local cancellations instead.
-  [[nodiscard]] base::Status ProcessRequests(TradingAdapter& adapter,
-                                             std::uint64_t now,
-                                             std::size_t limit = 64) noexcept;
+  [[nodiscard]] base::Status ProcessRequests(
+      TradingAdapter& adapter, std::uint64_t now,
+      std::size_t limit = 64) noexcept override;
   // Scans a bounded number of slots for automatic cancels, preserving progress
   // on a full queue. Rejected cancels wait at least 10ms before retrying.
   [[nodiscard]] base::Status ScheduleStopping(
-      std::uint64_t now, std::size_t max_scan = 64) noexcept;
+      std::uint64_t now, std::size_t max_scan = 64) noexcept override;
   // Immediate local work is represented by zero; otherwise the next retry.
-  std::optional<std::uint64_t> next_deadline() const noexcept;
-  bool has_local_updates() const noexcept;
-  bool is_drained() const noexcept;
-  std::size_t order_count() const noexcept;
-  const char* error_detail() const noexcept { return error_detail_; }
+  std::optional<std::uint64_t> next_deadline() const noexcept override;
+  bool has_local_updates() const noexcept override;
+  bool is_drained() const noexcept override;
+  std::size_t order_count() const noexcept override;
+  const char* error_detail() const noexcept override { return error_detail_; }
 
   // Validates before atomically committing an event. Failure preserves ledger
   // and out, copying a diagnostic. Successful dispatch values own all data.
-  [[nodiscard]] base::ErrorCode ApplyEvent(const TradingEvent& event,
-                                           TradingDispatch& out) noexcept;
+  [[nodiscard]] base::ErrorCode ApplyEvent(
+      const TradingEvent& event, TradingDispatch& out) noexcept override;
   // Commits one queued CanceledBeforeSend event, retaining report sequence.
   // Empty input returns kInvalidState and preserves out and ledger.
-  [[nodiscard]] base::ErrorCode ApplyLocalUpdate(TradingDispatch& out) noexcept;
+  [[nodiscard]] base::ErrorCode ApplyLocalUpdate(
+      TradingDispatch& out) noexcept override;
 
  private:
   struct Storage;

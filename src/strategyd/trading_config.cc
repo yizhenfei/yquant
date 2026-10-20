@@ -1,9 +1,11 @@
 #include "strategyd/trading_config.h"
 
+#include <arpa/inet.h>
 #include <simdjson.h>
 
 #include <array>
 #include <cstdio>
+#include <cstring>
 #include <string_view>
 #include <utility>
 
@@ -151,12 +153,18 @@ base::Status Parse(const JsonConfigDocument& source, TradingConfig& config,
   simdjson::ondemand::object root;
   json_error = document.get_object().get(root);
   if (json_error) return JsonError(json_error, "$", error);
-  constexpr std::array<std::string_view, 6> kFields = {"adapter",
-                                                       "mode",
-                                                       "report_interval_ms",
-                                                       "shutdown_timeout_ms",
-                                                       "initial_cash",
-                                                       "initial_positions"};
+  constexpr std::array<std::string_view, 12> kFields = {"adapter",
+                                                        "mode",
+                                                        "report_interval_ms",
+                                                        "shutdown_timeout_ms",
+                                                        "initial_cash",
+                                                        "initial_positions",
+                                                        "address",
+                                                        "port",
+                                                        "client_id",
+                                                        "token",
+                                                        "connect_timeout_ms",
+                                                        "heartbeat_timeout_ms"};
   std::uint32_t seen = 0;
   for (auto field_result : root) {
     simdjson::ondemand::field field;
@@ -169,48 +177,92 @@ base::Status Parse(const JsonConfigDocument& source, TradingConfig& config,
     while (position < kFields.size() && key != kFields[position]) ++position;
     if (position == kFields.size()) return Invalid(key, "unknown field", error);
     seen |= 1U << position;
-    if (position < 2) {
+    if (position == 0 || position == 1 || position == 6 || position == 9) {
       std::string_view value;
       json_error = field.value().get_string().get(value);
       if (json_error) return JsonError(json_error, key, error);
       if (position == 0) {
-        if (value != "mock")
-          return Invalid(key, "only mock is supported", error);
-      } else if (value == "fill") {
-        config.mode = MockTradingMode::kFill;
-      } else if (value == "working") {
-        config.mode = MockTradingMode::kWorking;
-      } else if (value == "reject") {
-        config.mode = MockTradingMode::kReject;
+        if (value == "mock")
+          config.adapter = TradingAdapterKind::kMock;
+        else if (value == "tcp")
+          config.adapter = TradingAdapterKind::kTcp;
+        else
+          return Invalid(key, "must be mock or tcp", error);
+      } else if (position == 1) {
+        if (value == "fill")
+          config.mode = MockTradingMode::kFill;
+        else if (value == "working")
+          config.mode = MockTradingMode::kWorking;
+        else if (value == "reject")
+          config.mode = MockTradingMode::kReject;
+        else
+          return Invalid(key, "must be fill, working or reject", error);
       } else {
-        return Invalid(key, "must be fill, working or reject", error);
+        char* output = position == 6 ? config.remote.endpoint.address
+                                     : config.remote.token;
+        const auto capacity = position == 6
+                                  ? sizeof(config.remote.endpoint.address)
+                                  : sizeof(config.remote.token);
+        if (value.empty() || value.size() >= capacity ||
+            value.find('\0') != std::string_view::npos)
+          return Invalid(key, "string is empty or exceeds field capacity",
+                         error);
+        std::memcpy(output, value.data(), value.size());
+        output[value.size()] = '\0';
       }
-    } else if (position < 4) {
+    } else if (position == 2 || position == 3 || position == 10 ||
+               position == 11) {
       std::uint64_t milliseconds;
       json_error = field.value().get_uint64().get(milliseconds);
       if (json_error) return JsonError(json_error, key, error);
-      if (milliseconds < 1 || milliseconds > 60000) {
+      if (milliseconds < kMinimumTradingDurationMs ||
+          milliseconds > kMaximumTradingDurationMs)
         return Invalid(key, "must be an integer from 1 to 60000", error);
-      }
-      const auto duration = milliseconds * 1000000;
+      const auto duration = milliseconds * kTradingNanosecondsPerMillisecond;
       if (position == 2)
         config.report_interval_ns = duration;
-      else
+      else if (position == 3)
         config.shutdown_timeout_ns = duration;
+      else if (position == 10)
+        config.remote.connect_timeout_ns = duration;
+      else
+        config.remote.heartbeat_timeout_ns = duration;
     } else if (position == 4) {
       json_error =
           field.value().get_int64().get(config.initial_account.cash_balance);
       if (json_error) return JsonError(json_error, key, error);
-    } else {
+    } else if (position == 5) {
       const auto status =
           ParsePositions(field.value(), config.initial_account, error);
       if (!status.ok()) return status;
+    } else {
+      std::uint64_t value;
+      json_error = field.value().get_uint64().get(value);
+      if (json_error) return JsonError(json_error, key, error);
+      if (position == 7) {
+        if (value == 0 || value > UINT16_MAX)
+          return Invalid(key, "must be from 1 to 65535", error);
+        config.remote.endpoint.port = static_cast<std::uint16_t>(value);
+      } else {
+        config.remote.client_id = value;
+      }
     }
   }
+  constexpr std::uint32_t kMockFields = (1U << 6) - 1;
+  constexpr std::uint32_t kTcpRequired =
+      (1U << 0) | (1U << 6) | (1U << 7) | (1U << 8) | (1U << 9);
+  constexpr std::uint32_t kTcpAllowed =
+      kTcpRequired | (1U << 3) | (1U << 10) | (1U << 11);
+  const bool tcp = config.adapter == TradingAdapterKind::kTcp;
+  const auto required = tcp ? kTcpRequired : kMockFields;
+  const auto allowed = tcp ? kTcpAllowed : kMockFields;
   for (std::size_t position = 0; position < kFields.size(); ++position) {
-    if ((seen & (1U << position)) == 0) {
+    const auto bit = 1U << position;
+    if ((seen & bit) != 0 && (allowed & bit) == 0)
+      return Invalid(kFields[position], "field is not allowed for this adapter",
+                     error);
+    if ((required & bit) != 0 && (seen & bit) == 0)
       return Invalid(kFields[position], "required field is missing", error);
-    }
   }
   return {};
 }
@@ -220,23 +272,60 @@ base::Status Parse(const JsonConfigDocument& source, TradingConfig& config,
 base::Status ValidateTradingConfig(const TradingConfig& config,
                                    strategy::ConfigError& error) noexcept {
   error.Clear();
-  if (config.mode != MockTradingMode::kFill &&
-      config.mode != MockTradingMode::kWorking &&
-      config.mode != MockTradingMode::kReject) {
-    return Invalid("mode", "must be fill, working or reject", error);
-  }
-  constexpr std::uint64_t kMinimum = 1000000;
-  constexpr std::uint64_t kMaximum = 60000000000ULL;
-  if (config.report_interval_ns < kMinimum ||
-      config.report_interval_ns > kMaximum) {
-    return Invalid("report_interval_ms", "must be from 1 to 60000 milliseconds",
-                   error);
-  }
+  constexpr std::uint64_t kMinimum =
+      kMinimumTradingDurationMs * kTradingNanosecondsPerMillisecond;
+  constexpr std::uint64_t kMaximum =
+      kMaximumTradingDurationMs * kTradingNanosecondsPerMillisecond;
   if (config.shutdown_timeout_ns < kMinimum ||
-      config.shutdown_timeout_ns > kMaximum) {
+      config.shutdown_timeout_ns > kMaximum)
     return Invalid("shutdown_timeout_ms",
                    "must be from 1 to 60000 milliseconds", error);
+  if (config.adapter == TradingAdapterKind::kTcp) {
+    const auto& remote = config.remote;
+    in_addr address;
+    if (std::memchr(remote.endpoint.address, '\0',
+                    sizeof(remote.endpoint.address)) == nullptr ||
+        ::inet_pton(AF_INET, remote.endpoint.address, &address) != 1 ||
+        address.s_addr == INADDR_ANY)
+      return Invalid("address", "requires a nonzero numeric IPv4 address",
+                     error);
+    if (remote.endpoint.port == 0)
+      return Invalid("port", "must be from 1 to 65535", error);
+    if (remote.client_id == 0)
+      return Invalid("client_id", "must be nonzero", error);
+    const auto* end = static_cast<const char*>(
+        std::memchr(remote.token, '\0', sizeof(remote.token)));
+    if (end == nullptr || end == remote.token)
+      return Invalid("token", "requires 1 to 64 printable ASCII bytes", error);
+    for (const char* item = remote.token; item != end; ++item) {
+      if (*item < '!' || *item > '~')
+        return Invalid("token", "requires 1 to 64 printable ASCII bytes",
+                       error);
+    }
+    if (remote.connect_timeout_ns < kMinimum ||
+        remote.connect_timeout_ns > kMaximum)
+      return Invalid("connect_timeout_ms",
+                     "must be from 1 to 60000 milliseconds", error);
+    if (remote.heartbeat_timeout_ns < kMinimum ||
+        remote.heartbeat_timeout_ns > kMaximum)
+      return Invalid("heartbeat_timeout_ms",
+                     "must be from 1 to 60000 milliseconds", error);
+    if (config.initial_account.cash_balance != 0 ||
+        config.initial_account.position_count != 0)
+      return Invalid("initial_cash", "remote account is owned by tradingd",
+                     error);
+    return {};
   }
+  if (config.adapter != TradingAdapterKind::kMock)
+    return Invalid("adapter", "must be mock or tcp", error);
+  if (config.mode != MockTradingMode::kFill &&
+      config.mode != MockTradingMode::kWorking &&
+      config.mode != MockTradingMode::kReject)
+    return Invalid("mode", "must be fill, working or reject", error);
+  if (config.report_interval_ns < kMinimum ||
+      config.report_interval_ns > kMaximum)
+    return Invalid("report_interval_ms", "must be from 1 to 60000 milliseconds",
+                   error);
   const auto& account = config.initial_account;
   if (account.cash_balance < 0) {
     return Invalid("initial_cash",

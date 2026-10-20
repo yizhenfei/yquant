@@ -61,8 +61,17 @@ target_link_libraries(yquant_host_support PUBLIC yquant::strategy_api
   PRIVATE simdjson::simdjson Threads::Threads)
 target_compile_options(yquant_host_support PRIVATE -Wall -Wextra -Wpedantic)
 
+add_library(yquant_trading_wire STATIC
+  src/tradingd/protocol.cc
+  src/tradingd/connection.cc)
+target_include_directories(yquant_trading_wire PUBLIC "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(yquant_trading_wire PUBLIC
+  yquant::strategy_api Threads::Threads)
+target_compile_options(yquant_trading_wire PRIVATE -Wall -Wextra -Wpedantic)
+
 add_library(yquant_strategyd_runtime STATIC
   src/strategyd/mock_trading_adapter.cc
+  src/strategyd/remote_trading.cc
   src/strategyd/shm_market_data_source.cc
   src/strategyd/strategy_config_loader.cc
   src/strategyd/market_data.cc
@@ -73,7 +82,7 @@ add_library(yquant_strategyd_runtime STATIC
 target_include_directories(yquant_strategyd_runtime PUBLIC
   "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(yquant_strategyd_runtime PUBLIC
-  yquant::strategy_api yquant_host_support
+  yquant::strategy_api yquant_host_support yquant_trading_wire
   PRIVATE yquant::md simdjson::simdjson Threads::Threads ${CMAKE_DL_LIBS})
 target_compile_options(yquant_strategyd_runtime PRIVATE
   -Wall -Wextra -Wpedantic)
@@ -84,6 +93,21 @@ target_link_libraries(yquant_strategyd PRIVATE
 target_compile_options(yquant_strategyd PRIVATE -Wall -Wextra -Wpedantic)
 set_target_properties(yquant_strategyd PROPERTIES
   OUTPUT_NAME yquant-strategyd
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+add_library(yquant_tradingd_runtime STATIC
+  src/tradingd/config.cc
+  src/tradingd/server.cc)
+target_include_directories(yquant_tradingd_runtime PUBLIC "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(yquant_tradingd_runtime PUBLIC
+  yquant_strategyd_runtime yquant_trading_wire
+  PRIVATE simdjson::simdjson Threads::Threads)
+target_compile_options(yquant_tradingd_runtime PRIVATE -Wall -Wextra -Wpedantic)
+add_executable(yquant_tradingd src/tradingd/main.cc)
+target_link_libraries(yquant_tradingd PRIVATE yquant_tradingd_runtime)
+target_compile_options(yquant_tradingd PRIVATE -Wall -Wextra -Wpedantic)
+set_target_properties(yquant_tradingd PROPERTIES
+  OUTPUT_NAME yquant-tradingd
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 add_library(yquant_marketd_runtime STATIC
@@ -124,10 +148,12 @@ yquant_add_strategy_example(lifecycle_strategy)
 yquant_add_strategy_example(parameterized_strategy)
 yquant_add_strategy_example(quote_observer_strategy)
 yquant_add_strategy_example(order_lifecycle_strategy)
+yquant_add_strategy_example(shared_account_strategy)
 target_link_libraries(lifecycle_strategy PRIVATE simdjson::simdjson)
 target_link_libraries(parameterized_strategy PRIVATE simdjson::simdjson)
 target_link_libraries(quote_observer_strategy PRIVATE simdjson::simdjson)
 target_link_libraries(order_lifecycle_strategy PRIVATE simdjson::simdjson)
+target_link_libraries(shared_account_strategy PRIVATE simdjson::simdjson)
 configure_file(examples/strategies/mock_market_data.json
   "${CMAKE_BINARY_DIR}/strategies/mock_market_data.json" COPYONLY)
 configure_file(examples/strategies/shm_market_data.json
@@ -139,6 +165,11 @@ foreach(config IN ITEMS mock_source local tcp_source tcp_relay record_local
                         replay_recording)
   configure_file("examples/marketd/${config}.json"
     "${CMAKE_BINARY_DIR}/marketd/${config}.json" COPYONLY)
+endforeach()
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/tradingd")
+foreach(config IN ITEMS local client_1 client_2)
+  configure_file("examples/tradingd/${config}.json"
+    "${CMAKE_BINARY_DIR}/tradingd/${config}.json" COPYONLY)
 endforeach()
 configure_file(examples/marketd/replay_csv.json.in
   "${CMAKE_BINARY_DIR}/marketd/replay_csv.json" @ONLY)
@@ -227,6 +258,7 @@ if(BUILD_TESTING)
   include(cmake/LoggingCompileTests.cmake)
   include(cmake/StrategydTests.cmake)
   include(cmake/MarketdTests.cmake)
+  include(cmake/TradingdTests.cmake)
 
   # Keep replacement global allocation functions isolated from other tests.
   add_executable(market_data_allocation_test
