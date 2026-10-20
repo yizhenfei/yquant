@@ -1,0 +1,17 @@
+{
+  "source_id": 1,
+  "adapter": "mock",
+  "interval_ms": 1,
+  "instruments": [
+    {
+      "venue": "SSE",
+      "symbol": "600000",
+      "price_decimals": 2,
+      "bid_price": 1000,
+      "bid_qty": 100,
+      "ask_price": 1001,
+      "ask_qty": 200,
+      "price_step": 1
+    }
+  ]
+}

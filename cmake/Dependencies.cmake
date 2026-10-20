@@ -15,6 +15,27 @@ FetchContent_MakeAvailable(fmt)
 target_link_libraries(fmt PUBLIC yquant_compile_options)
 target_compile_definitions(fmt PUBLIC FMT_USE_EXCEPTIONS=0)
 
+# simdjson 5.0.4, used only during strategy configuration initialization.
+FetchContent_Declare(simdjson
+  URL https://codeload.github.com/simdjson/simdjson/tar.gz/refs/tags/v5.0.4
+  URL_HASH SHA256=827417bcf88309df170962e7bd1b4b4a4992d5d4e5cb82a0442ada9530e916d2)
+set(SIMDJSON_DEVELOPER_MODE OFF CACHE BOOL "" FORCE)
+set(SIMDJSON_INSTALL OFF CACHE BOOL "" FORCE)
+set(SIMDJSON_EXCEPTIONS OFF CACHE BOOL "" FORCE)
+set(SIMDJSON_ENABLE_THREADS OFF CACHE BOOL "" FORCE)
+set(SIMDJSON_STATIC_REFLECTION_MODE OFF CACHE STRING "" FORCE)
+function(yquant_make_simdjson_available)
+  # Each plugin links its own implementation, without a shared runtime ABI.
+  set(BUILD_SHARED_LIBS OFF)
+  FetchContent_MakeAvailable(simdjson)
+endfunction()
+yquant_make_simdjson_available()
+target_link_libraries(simdjson PUBLIC yquant_compile_options)
+set_target_properties(simdjson PROPERTIES
+  POSITION_INDEPENDENT_CODE ON
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN YES)
+
 if(BUILD_TESTING)
   # GoogleTest v1.16.0. Pin the complete commit for reproducible builds.
   FetchContent_Declare(googletest

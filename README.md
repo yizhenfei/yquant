@@ -8,6 +8,16 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 
 日志等基础组件统一组织在 `yquant_base` 静态库中，供上层模块复用。
 
+## 程序命名
+
+项目中的所有程序统一采用 `yquant-$name[d]` 命名：
+
+- `yquant-` 为统一前缀。
+- `$name` 代表程序名称。
+- 常驻服务进程在名称末尾加 `d`，其他程序不加此后缀。
+
+核心策略进程命名为 `yquant-strategyd`。
+
 ## 目标平台
 
 | 用途 | 操作系统 | CPU 架构 |
@@ -20,15 +30,20 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 ## 项目目录
 
 - `include/yquant/base/`：基础组件公开头文件。
+- `include/yquant/model/`：来源与标的标识、标的定义和一档报价。
+- `include/yquant/strategy/`：策略生命周期、强类型配置与动态库协议。
 - `src/base/`：基础组件及内部实现。
+- `src/strategyd/`：策略进程与动态库加载实现。
+- `examples/strategies/`：用户策略动态库示例。
 - `tests/base/`：基础组件测试。
+- `tests/strategyd/`：策略运行时与进程集成测试。
 - `cmake/`：依赖与编译配置。
 - `docs/design/`：架构与组件设计。
 - `docs/research/`：系统研究资料与记录。
 
 ## 构建与测试
 
-需要 CMake 3.21 或更高版本、Ninja 和支持 C++20 的编译器。日志依赖 fmt，测试依赖 GoogleTest；二者由 CMake 获取固定版本并以无异常配置构建。
+需要 CMake 3.21 或更高版本、Ninja 和支持 C++20 的编译器。日志依赖 fmt，配置解析依赖 simdjson，测试依赖 GoogleTest；依赖由 CMake 获取固定版本并以无异常配置构建。
 
 ```sh
 cmake --preset debug
@@ -36,7 +51,7 @@ cmake --build --preset debug
 ctest --preset debug
 ```
 
-`release`、`asan` 和 `tsan` 使用相同的配置、构建与测试命令。ASan 同时启用 UBSan，TSan 使用独立构建目录。仅构建基础库时可设置 `-DBUILD_TESTING=OFF`。
+`release`、`asan` 和 `tsan` 使用相同的配置、构建与测试命令。ASan 同时启用 UBSan，TSan 使用独立构建目录。不构建测试程序时可设置 `-DBUILD_TESTING=OFF`；只构建基础库时使用 `cmake --build --preset debug --target yquant_base`。
 
 测试运行前由 CTest 检查外部测试数据，缺失或校验失败时自动准备。数据与下载缓存默认位于 `test_data/`，不纳入 Git；各 preset 共用此目录。首次准备需要联网下载约 112.5 MB 的官方压缩包，之后仅校验本地文件。也可以在测试前单独执行统一下载命令：
 
@@ -50,6 +65,39 @@ cmake -P cmake/DownloadTestData.cmake
 
 日志接口位于 `yquant/base/logging.h`。Debug 默认编译保留 DEBUG 及以上级别，其他构建保留 INFO 及以上；可在配置时使用 `-DYQUANT_LOG_COMPILED_LEVEL=TRACE` 等选项调整。
 
+## 策略进程
+
+`yquant-strategyd` 读取 JSON 配置，加载用户策略动态库，在配置全部校验成功后调用 `OnStart(context)`。行情源读取、缓存更新及 `OnTick(context, tick)` 均在主线程执行。收到停止信号后，同步停止行情源，调用 `OnStop(context)`、销毁实例并释放动态库句柄。
+
+构建后运行生命周期策略示例：
+
+```sh
+./build/debug/bin/yquant-strategyd \
+  --strategy ./build/debug/strategies/lifecycle_strategy.so \
+  --config ./build/debug/strategies/lifecycle_strategy.json
+```
+
+`--strategy` 和 `--config` 均为必填参数，顺序不限。启动成功后输出 `Running` 和策略 ID。使用 `Ctrl+C` 或向进程发送 `SIGTERM` 停止，使用 `--help` 查看参数。路径以启动工作目录为基准；动态库文件名后缀由 CMake 的本机 `MODULE` 配置决定。
+
+生命周期示例的 `LifecycleConfig` 派生自 `StrategyConfig`，读取必填字符串 `parameters.startup_message`，将解码后 1 至 128 字节、无内嵌 NUL 的内容保存在自身定长存储中，拒绝未知参数。配套配置将消息设为 `lifecycle strategy started`，`OnStart` 读取该参数并输出 `lifecycle_strategy: startup_message=lifecycle strategy started`。
+
+用户策略继承 `yquant::strategy::Strategy`，导出 `YQuantGetStrategyPlugin()`，通过描述符提供创建和销毁函数。回调通过 `context.market_data()` 访问标的、订阅及快照，通过 `context.Now()` 查询单调时间。示例位于 [lifecycle_strategy.cc](examples/strategies/lifecycle_strategy.cc)，接口及所有权约定见[策略进程与动态策略加载设计](docs/design/strategyd.md)。
+
+配置文件包含 `strategy_id` 和 `parameters`。框架校验公共字段，策略内嵌的 `StrategyConfig` 派生对象解析自定义参数；无自定义参数时使用基类并填写空对象。配置 ID 为 1 至 64 字节的 UTF-8 字符串，文件上限为 1 MiB，JSON 容器嵌套最多 64 层。
+
+强类型参数示例见 [parameterized_strategy.cc](examples/strategies/parameterized_strategy.cc) 和[配套配置](examples/strategies/parameterized_strategy.json)。构建后将上述命令的动态库与配置文件名都换成 `parameterized_strategy` 即可运行；配置约定见[策略配置设计](docs/design/strategy-config.md)。
+
+使用模拟行情驱动观察策略：
+
+```sh
+./build/debug/bin/yquant-strategyd \
+  --strategy ./build/debug/strategies/quote_observer_strategy.so \
+  --config ./build/debug/strategies/quote_observer_strategy.json \
+  --market-data-config ./build/debug/strategies/mock_market_data.json
+```
+
+`--market-data-config` 为可选的宿主行情配置。示例使用来源 `1`，每 100 ms 生成 `SSE/600000` 的一档报价；策略通过 `parameters.source_id` 选择来源。首次行情输出 `quote_observer: first quote received`，停止时输出 `ticks`、`last_sequence` 和 `max_age_ns` 汇总。省略行情配置时，两个不订阅行情的示例仍可运行。标识、订阅及模拟规则见[行情驱动设计](docs/design/market-data.md)。
+
 ## 工程方案
 
 - [工程组织与验证方案](docs/design/engineering.md)：平台、错误处理、构建依赖与测试工具方案。
@@ -58,6 +106,10 @@ cmake -P cmake/DownloadTestData.cmake
 
 - [日志选型与设计](docs/design/logging.md)：异步日志库对比、队列策略与验证标准。
 - [SPSC 队列设计](docs/design/spsc-queue.md)：低延迟内存消息队列设计。
+- [策略进程与动态策略加载设计](docs/design/strategyd.md)：生命周期接口、动态库协议与命令执行流程。
+- [策略配置设计](docs/design/strategy-config.md)：JSON 分层、强类型配置与启动校验。
+- [行情驱动与策略事件循环](docs/design/market-data.md)：一档报价、策略上下文、模拟行情源与事件分派。
+- [一档双边做市策略](docs/design/bbo-market-making.md)：策略伪代码、所需数据与回调语义。
 
 ## 参考系统与资料
 

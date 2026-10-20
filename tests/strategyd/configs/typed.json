@@ -1,0 +1,8 @@
+{
+  "strategy_id": "test-typed",
+  "parameters": {
+    "quote_qty": 7,
+    "label": "owned label",
+    "large_value": 9007199254740993
+  }
+}
