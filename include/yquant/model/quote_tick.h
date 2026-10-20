@@ -8,17 +8,37 @@
 
 namespace yquant::model {
 
+// Bit flags for QuoteTick::flags.
+// Each enumerator must be a distinct power of two (one bit per flag).
+// Use SetQuoteFlag() to set or clear a flag, and HasQuoteFlag() to query it.
 enum class QuoteFlag : std::uint8_t {
+  // bid_price and bid_qty describe a present bid, even if bid_price is zero.
   kBidValid = 1,
+  // ask_price and ask_qty describe a present ask, even if ask_price is zero.
   kAskValid = 2,
+  // The source permits trading. Nontradable snapshots are still delivered.
   kTradable = 4,
+  // event_time_ns is available; zero is valid when this bit is set.
   kEventTimeValid = 8,
 };
 
+// Mask of supported QuoteTick::flags bits; all other bits must be zero.
 inline constexpr std::uint8_t kKnownQuoteFlags = 0x0f;
 
+// Returns whether the specified QuoteFlag bit is set in flags.
 constexpr bool HasQuoteFlag(std::uint8_t flags, QuoteFlag flag) noexcept {
   return (flags & static_cast<std::uint8_t>(flag)) != 0;
+}
+
+// Sets flag when enabled is true and clears it otherwise; preserves other bits.
+constexpr void SetQuoteFlag(std::uint8_t& flags, QuoteFlag flag,
+                            bool enabled = true) noexcept {
+  const auto mask = static_cast<std::uint8_t>(flag);
+  if (enabled) {
+    flags |= mask;
+  } else {
+    flags &= static_cast<std::uint8_t>(~mask);
+  }
 }
 
 // Self-contained, copyable top-of-book snapshot from one configured source.
@@ -40,6 +60,10 @@ struct QuoteTick {
   std::int64_t bid_qty = 0;
   std::int64_t ask_price = 0;
   std::int64_t ask_qty = 0;
+  // For a snapshot with both sides present:
+  //   SetQuoteFlag(flags, QuoteFlag::kBidValid);
+  //   SetQuoteFlag(flags, QuoteFlag::kAskValid);
+  // Test presence with HasQuoteFlag(flags, QuoteFlag::kBidValid).
   std::uint8_t flags = 0;
 
   friend constexpr bool operator==(const QuoteTick&,
