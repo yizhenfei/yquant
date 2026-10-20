@@ -195,5 +195,68 @@ TEST_F(ConfigTest, FailedReloadClearsPreviouslyValidConfiguration) {
   EXPECT_NE(std::strstr(loader_.error().field_path, "source.config"), nullptr);
 }
 
+TEST_F(ConfigTest, ResolvesReplayAndRecordingPathsWithoutOpeningFiles) {
+  ASSERT_TRUE(
+      Load(
+          R"({"speed":2.5,"adapter":"replay","path":"history.csv",)"
+          R"("format":"dolphindb_csv","source_id":7,"price_decimals":4})",
+          R"([{"adapter":"record","path":"quotes.yqr","queue_capacity":4096}])")
+          .ok())
+      << loader_.error().message;
+  const auto& config = loader_.config();
+  EXPECT_EQ(config.source.adapter, Adapter::kReplay);
+  EXPECT_EQ(config.source.replay.format, ReplayFormat::kDolphinDbCsv);
+  EXPECT_STREQ(config.source.replay.path,
+               directory_.File("history.csv").c_str());
+  EXPECT_EQ(config.source.replay.speed, 2.5);
+  EXPECT_EQ(config.source.replay.source_id.value, 7U);
+  EXPECT_EQ(config.source.replay.price_decimals, 4U);
+  EXPECT_EQ(config.publishers[0].adapter, Adapter::kRecord);
+  EXPECT_STREQ(config.publishers[0].record.path,
+               directory_.File("quotes.yqr").c_str());
+  EXPECT_EQ(config.publishers[0].record.queue_capacity, 4096U);
+  EXPECT_FALSE(std::filesystem::exists(directory_.File("quotes.yqr")));
+}
+
+TEST_F(ConfigTest, LoadsRecordingReplayAndRejectsFileSchemaViolations) {
+  const std::string output = R"([{"adapter":"record","path":"new.yqr"}])";
+  const std::string recording =
+      R"({"adapter":"replay","path":"old.yqr","format":"recording"})";
+  ASSERT_TRUE(Load(recording, output).ok());
+  EXPECT_EQ(loader_.config().source.replay.speed, 1.0);
+  EXPECT_EQ(loader_.config().publishers[0].record.queue_capacity, 1048576U);
+  for (
+      const auto source :
+      {R"({"adapter":"replay","path":"x"})",
+       R"({"adapter":"replay","path":"x","format":"unknown"})",
+       R"({"adapter":"replay","path":"x","format":"dolphindb_csv"})",
+       R"({"adapter":"replay","path":"x","format":"recording","speed":-1})",
+       R"({"adapter":"replay","path":"x","format":"recording","max_records":0})",
+       R"({"adapter":"replay","path":"x","format":"recording","max_records":2000001})",
+       R"({"adapter":"replay","path":"x","format":"recording","source_id":1})",
+       R"({"adapter":"record","path":"x"})"}) {
+    EXPECT_FALSE(Load(source, output).ok()) << source;
+  }
+  for (const auto publisher :
+       {R"([{"adapter":"record","path":"x","queue_capacity":128}])",
+        R"([{"adapter":"record","path":"x","queue_capacity":1023}])",
+        R"([{"adapter":"record","path":"x","queue_capacity":134217728}])",
+        R"([{"adapter":"record","path":"x","speed":1}])",
+        R"([{"adapter":"replay","path":"x","format":"recording"}])"}) {
+    EXPECT_FALSE(Load(recording, publisher).ok()) << publisher;
+  }
+}
+
+TEST_F(ConfigTest, RejectsRecordingFeedbackAndNormalizedDuplicatePaths) {
+  const std::string recording =
+      R"({"adapter":"replay","path":"old.yqr","format":"recording"})";
+  EXPECT_FALSE(
+      Load(recording, R"([{"adapter":"record","path":"./old.yqr"}])").ok());
+  EXPECT_FALSE(Load(recording, R"([{"adapter":"record","path":"new.yqr"},)"
+                               R"({"adapter":"record","path":"./new.yqr"}])")
+                   .ok());
+  EXPECT_FALSE(std::filesystem::exists(directory_.File("new.yqr")));
+}
+
 }  // namespace
 }  // namespace yquant::marketd

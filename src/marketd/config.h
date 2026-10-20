@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 
+#include "marketd/file_config.h"
 #include "marketd/tcp_transport.h"
 #include "strategyd/market_data_config.h"
 #include "yquant/strategy/strategy_config.h"
@@ -14,7 +15,7 @@ inline constexpr std::size_t kMaxPublishers = 8;
 inline constexpr std::size_t kMaxRuntimePathBytes = 1023;
 inline constexpr std::size_t kMaxStreamBytes = 64;
 
-enum class Adapter { kMock, kShm, kTcp };
+enum class Adapter { kMock, kShm, kTcp, kReplay, kRecord };
 
 // Owns initialization data; inactive adapter fields are ignored. Mock metadata
 // is loaded before any transport is opened. Paths and names are NUL-terminated.
@@ -24,6 +25,7 @@ struct SourceConfig {
   char runtime_directory[kMaxRuntimePathBytes + 1] = {};
   char stream[kMaxStreamBytes + 1] = {};
   TcpEndpoint tcp;
+  ReplayConfig replay;
 };
 
 struct PublisherConfig {
@@ -34,6 +36,7 @@ struct PublisherConfig {
   std::size_t max_payload_size = 256;
   TcpEndpoint tcp;
   std::size_t max_clients = 16;
+  RecordConfig record;
 };
 
 // Only the first publisher_count entries are active; the daemon owns a single
@@ -50,7 +53,8 @@ struct MarketdConfig {
     const MarketdConfig& config, strategy::ConfigError& error) noexcept;
 
 // Strict JSON loader: decoded duplicate/unknown fields, wrong types and
-// overlong strings fail. Relative mock paths resolve beside this JSON file.
+// overlong strings fail. Relative mock, replay and recording paths resolve
+// beside this JSON file. Validation does not read replay data or create files.
 class ConfigLoader {
  public:
   // Replaces prior configuration. Failure empties config() and owns its
