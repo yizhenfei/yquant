@@ -13,8 +13,9 @@
 namespace yquant::marketd {
 
 // Owns a configuration-assembled Source -> Publisher[] pipeline. All methods
-// run on the daemon thread; no background worker is created. Each loop services
-// every output and polls at most 64 quotes before checking termination again.
+// run on the daemon thread. Publishers may own workers for file I/O. Each loop
+// services every output and polls at most 64 quotes before checking
+// termination.
 class MarketdRunner {
  public:
   MarketdRunner() noexcept = default;
@@ -29,11 +30,14 @@ class MarketdRunner {
                                   std::uint64_t now) noexcept;
   // Requires successful Init. max_events=0 means unlimited; otherwise stops
   // after publishing exactly that many quotes to every output. Any source or
-  // publisher failure terminates the pipeline. All exits close all resources.
+  // publisher failure terminates the pipeline. Replay EOF is a normal stop.
+  // All exits drain recording outputs and close resources; delayed output
+  // failures make otherwise normal exits fail.
   [[nodiscard]] base::Status Run(const strategyd::MonotonicClock& clock,
                                  strategyd::EventLoopEnvironment& environment,
                                  std::uint64_t max_events = 0) noexcept;
-  // Idempotent; preserves counters and failure diagnostics.
+  // Best-effort, idempotent cleanup; use Run to observe delayed output errors.
+  // Preserves counters and existing failure diagnostics.
   void Close() noexcept;
   std::uint64_t event_count() const noexcept { return event_count_; }
   const char* error_stage() const noexcept { return error_stage_; }
@@ -43,6 +47,9 @@ class MarketdRunner {
   // Copies failure context before cleanup can invalidate adapter diagnostics.
   base::Status Fail(base::Status status, const char* stage,
                     const char* detail) noexcept;
+  // Finishes every output even after a failure. Reports the first shutdown
+  // error and owns its diagnostic unless an earlier pipeline error exists.
+  base::Status Finish() noexcept;
 
   std::unique_ptr<Source> source_;
   std::array<std::unique_ptr<Publisher>, kMaxPublishers> publishers_;

@@ -5,6 +5,8 @@
 #include <thread>
 
 #include "marketd/adapters.h"
+#include "marketd/recording.h"
+#include "marketd/replay_source.h"
 #include "marketd/tcp_transport.h"
 #include "yquant/md/quote_codec.h"
 
@@ -49,6 +51,12 @@ base::Status MarketdRunner::Init(const MarketdConfig& config,
       status = adapter->Init(
           {config.source.runtime_directory, config.source.stream});
     }
+  } else if (config.source.adapter == Adapter::kReplay) {
+    auto* adapter = new (std::nothrow) ReplaySource;
+    if (adapter != nullptr) {
+      source_.reset(adapter);
+      status = adapter->Init(config.source.replay);
+    }
   } else {
     auto* adapter = new (std::nothrow) TcpSource;
     if (adapter != nullptr) {
@@ -69,6 +77,12 @@ base::Status MarketdRunner::Init(const MarketdConfig& config,
         status = adapter->Init({{output.runtime_directory, output.stream},
                                 output.capacity,
                                 output.max_payload_size});
+      }
+    } else if (output.adapter == Adapter::kRecord) {
+      auto* adapter = new (std::nothrow) RecordPublisher;
+      if (adapter != nullptr) {
+        publishers_[i].reset(adapter);
+        status = adapter->Init(output.record);
       }
     } else {
       auto* adapter = new (std::nothrow) TcpPublisher;
@@ -100,8 +114,7 @@ base::Status MarketdRunner::Run(const strategyd::MonotonicClock& clock,
     if (!status.ok())
       return Fail(status, "termination", "cannot check termination signals");
     if (stop || (max_events != 0 && event_count_ >= max_events)) {
-      Close();
-      return {};
+      return Finish();
     }
     const auto now = clock.Now();
     for (std::size_t i = 0; i < publisher_count_; ++i) {
@@ -117,6 +130,7 @@ base::Status MarketdRunner::Run(const strategyd::MonotonicClock& clock,
       if (result.state == PollState::kError)
         return Fail(result.status, "source_poll", source_->error_detail());
       if (result.state == PollState::kIdle) break;
+      if (result.state == PollState::kEnd) return Finish();
       status = md::ValidateQuote(quote);
       if (!status.ok())
         return Fail(status, "source_poll", "source produced an invalid quote");
@@ -132,14 +146,28 @@ base::Status MarketdRunner::Run(const strategyd::MonotonicClock& clock,
   }
 }
 
-void MarketdRunner::Close() noexcept {
+void MarketdRunner::Close() noexcept { (void)Finish(); }
+
+base::Status MarketdRunner::Finish() noexcept {
   if (source_) source_->Close();
   source_.reset();
+  base::Status first_error;
   for (std::size_t i = 0; i < publisher_count_; ++i) {
-    if (publishers_[i]) publishers_[i]->Close();
+    if (publishers_[i]) {
+      const auto status = publishers_[i]->Finish();
+      if (first_error.ok() && !status.ok()) {
+        first_error = status;
+        if (error_stage_[0] == '\0') {
+          std::snprintf(error_stage_, sizeof(error_stage_), "publisher_finish");
+          std::snprintf(error_detail_, sizeof(error_detail_), "%s",
+                        publishers_[i]->error_detail());
+        }
+      }
+    }
     publishers_[i].reset();
   }
   publisher_count_ = 0;
+  return first_error;
 }
 
 }  // namespace yquant::marketd

@@ -11,6 +11,8 @@
 
 #include "gtest/gtest.h"
 #include "marketd/adapters.h"
+#include "marketd/recording.h"
+#include "marketd/replay_source.h"
 #include "marketd/tcp_transport.h"
 #include "test_support.h"
 
@@ -279,6 +281,49 @@ TEST(MarketdCppHeapTest, TcpFirstQuoteAndSteadyDeliveryHaveNoCppHeapActivity) {
   EXPECT_EQ(received, kQuoteCount);
   EXPECT_EQ(activity.allocation_calls, 0U);
   EXPECT_EQ(activity.deallocation_calls, 0U);
+}
+
+TEST(MarketdCppHeapTest, ReplayAndRecordingHaveNoCppHeapActivity) {
+  testing::RuntimeDirectory directory;
+  ASSERT_TRUE(directory.valid());
+  std::string csv =
+      "Date,Time,SecurityID,SecurityIDSource,BidPX1,BidSize1,OfferPX1,"
+      "OfferSize1\n";
+  for (std::size_t i = 0; i < kQuoteCount; ++i)
+    csv += "2020.12.31,09:15:00.000,600000,101,10,100,10.01,200\n";
+  ASSERT_TRUE(directory.Write("quotes.csv", csv));
+  ReplayConfig input;
+  std::snprintf(input.path, sizeof(input.path), "%s",
+                directory.File("quotes.csv").c_str());
+  input.format = ReplayFormat::kDolphinDbCsv;
+  input.speed = 0;
+  input.max_records = kQuoteCount;
+  ReplaySource source;
+  ASSERT_TRUE(source.Init(input).ok()) << source.error_detail();
+  RecordConfig output;
+  std::snprintf(output.path, sizeof(output.path), "%s",
+                directory.File("quotes.yqr").c_str());
+  RecordPublisher publisher;
+  ASSERT_TRUE(publisher.Init(output).ok()) << publisher.error_detail();
+  bool succeeded = true;
+  std::size_t count = 0;
+  const auto activity = ObserveCppHeap([&]() noexcept {
+    model::QuoteTick quote;
+    for (; count < kQuoteCount; ++count) {
+      if (source.Poll(count, quote).state != PollState::kEvent ||
+          !publisher.Publish(quote).ok()) {
+        succeeded = false;
+        break;
+      }
+    }
+    succeeded &= source.Poll(count, quote).state == PollState::kEnd;
+    succeeded &= publisher.Service(count).ok();
+  });
+  EXPECT_TRUE(succeeded);
+  EXPECT_EQ(count, kQuoteCount);
+  EXPECT_EQ(activity.allocation_calls, 0U);
+  EXPECT_EQ(activity.deallocation_calls, 0U);
+  EXPECT_TRUE(publisher.Finish().ok()) << publisher.error_detail();
 }
 
 }  // namespace

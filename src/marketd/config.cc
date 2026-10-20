@@ -4,6 +4,7 @@
 #include <ifaddrs.h>
 #include <simdjson.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -81,14 +82,18 @@ base::Status ParseAdapter(simdjson::ondemand::value value, bool source,
                           PublisherConfig& output, char* mock_path,
                           strategy::ConfigError& error) noexcept {
   constexpr std::string_view kFields[] = {
-      "adapter", "config",   "runtime_directory",
-      "stream",  "capacity", "max_payload_size",
-      "address", "port",     "max_clients"};
+      "adapter",        "config",        "runtime_directory",
+      "stream",         "capacity",      "max_payload_size",
+      "address",        "port",          "max_clients",
+      "path",           "format",        "speed",
+      "max_records",    "source_id",     "price_decimals",
+      "queue_capacity", "start_delay_ms"};
   simdjson::ondemand::object object;
   auto code = value.get_object().get(object);
   if (code) return JsonError(code, FieldPath(source, index, "").text, error);
   std::uint32_t seen = 0;
   char adapter[16] = {};
+  char format[24] = {};
   char* runtime = source ? input.runtime_directory : output.runtime_directory;
   char* stream = source ? input.stream : output.stream;
   auto& tcp = source ? input.tcp : output.tcp;
@@ -146,6 +151,53 @@ base::Status ParseAdapter(simdjson::ondemand::value value, bool source,
       case 8:
         status = ReadSize(field.value(), output.max_clients, path.text, error);
         break;
+      case 9:
+        status = ReadText(field.value(),
+                          source ? input.replay.path : output.record.path,
+                          kMaxDataPathBytes + 1, path.text, error);
+        break;
+      case 10:
+        status =
+            ReadText(field.value(), format, sizeof(format), path.text, error);
+        break;
+      case 11: {
+        const auto number_error =
+            field.value().get_double().get(input.replay.speed);
+        if (number_error) status = JsonError(number_error, path.text, error);
+        break;
+      }
+      case 12:
+        status =
+            ReadSize(field.value(), input.replay.max_records, path.text, error);
+        break;
+      case 13: {
+        std::size_t id = 0;
+        status = ReadSize(field.value(), id, path.text, error);
+        if (status.ok() && (id == 0 || id > UINT32_MAX))
+          status = Invalid(path.text, "must be from 1 to 4294967295", error);
+        if (status.ok()) input.replay.source_id.value = id;
+        break;
+      }
+      case 14: {
+        std::size_t decimals = 0;
+        status = ReadSize(field.value(), decimals, path.text, error);
+        if (status.ok() && decimals > 6)
+          status = Invalid(path.text, "must be from 0 to 6", error);
+        if (status.ok()) input.replay.price_decimals = decimals;
+        break;
+      }
+      case 15:
+        status = ReadSize(field.value(), output.record.queue_capacity,
+                          path.text, error);
+        break;
+      case 16: {
+        std::size_t delay = 0;
+        status = ReadSize(field.value(), delay, path.text, error);
+        if (status.ok() && delay > 60000)
+          status = Invalid(path.text, "must be from 0 to 60000 ms", error);
+        if (status.ok()) input.replay.start_delay_ns = delay * 1000000ULL;
+        break;
+      }
     }
     if (!status.ok()) return status;
   }
@@ -163,6 +215,24 @@ base::Status ParseAdapter(simdjson::ondemand::value value, bool source,
     selected = Adapter::kTcp;
     required = (1U << 0) | (1U << 6) | (1U << 7);
     allowed = required | (source ? 0 : (1U << 8));
+  } else if (std::strcmp(adapter, "replay") == 0 && source) {
+    selected = Adapter::kReplay;
+    required = (1U << 0) | (1U << 9) | (1U << 10);
+    allowed = required | (1U << 11) | (1U << 12) | (1U << 16);
+    if (std::strcmp(format, "dolphindb_csv") == 0) {
+      input.replay.format = ReplayFormat::kDolphinDbCsv;
+      required |= (1U << 13) | (1U << 14);
+      allowed |= (1U << 13) | (1U << 14);
+    } else if (std::strcmp(format, "recording") == 0) {
+      input.replay.format = ReplayFormat::kRecording;
+    } else {
+      return Invalid("source.format", "unsupported or missing replay format",
+                     error);
+    }
+  } else if (std::strcmp(adapter, "record") == 0 && !source) {
+    selected = Adapter::kRecord;
+    required = (1U << 0) | (1U << 9);
+    allowed = required | (1U << 15);
   } else {
     return Invalid(FieldPath(source, index, "adapter").text,
                    "unsupported or missing adapter", error);
@@ -301,6 +371,44 @@ std::filesystem::path Normalized(const char* path) noexcept {
   return error ? std::filesystem::path(path).lexically_normal() : result;
 }
 
+// File paths are resolved by the JSON loader; typed callers provide absolute
+// paths. Existence and read/write access are checked only by adapter Init.
+base::Status ValidateFilePath(const char* path, bool source, std::size_t index,
+                              strategy::ConfigError& error) noexcept {
+  if (strnlen(path, kMaxDataPathBytes + 1) > kMaxDataPathBytes ||
+      path[0] != '/')
+    return Invalid(FieldPath(source, index, "path").text,
+                   "must be a bounded absolute file path", error);
+  const auto name = std::filesystem::path(path).filename();
+  if (name.empty() || name == "." || name == "..")
+    return Invalid(FieldPath(source, index, "path").text, "must name a file",
+                   error);
+  return {};
+}
+
+// Resolves file adapters without opening their data files.
+base::Status ResolveFilePath(char* value, const char* config_path, bool source,
+                             std::size_t index,
+                             strategy::ConfigError& error) noexcept {
+  auto resolved = std::filesystem::path(value);
+  if (resolved.is_relative()) {
+    std::error_code filesystem_error;
+    resolved = std::filesystem::absolute(
+        std::filesystem::path(config_path).parent_path() / resolved,
+        filesystem_error);
+    if (filesystem_error) {
+      error.Set(FieldPath(source, index, "path").text,
+                "cannot resolve relative path");
+      return {base::ErrorCode::kIoError, filesystem_error};
+    }
+  }
+  if (resolved.native().size() > kMaxDataPathBytes)
+    return Invalid(FieldPath(source, index, "path").text,
+                   "resolved path is too long", error);
+  std::snprintf(value, kMaxDataPathBytes + 1, "%s", resolved.c_str());
+  return {};
+}
+
 // Tests one logical SHM endpoint, independent of pathname spelling.
 bool SameShm(const char* left_directory, const char* left_stream,
              const char* right_directory, const char* right_stream) noexcept {
@@ -367,6 +475,29 @@ base::Status ValidateConfig(const MarketdConfig& config,
     case Adapter::kTcp:
       status = ValidateTcp(config.source.tcp, true, 0, error);
       break;
+    case Adapter::kReplay: {
+      const auto& replay = config.source.replay;
+      status = ValidateFilePath(replay.path, true, 0, error);
+      if (!status.ok()) return status;
+      if (replay.format != ReplayFormat::kRecording &&
+          replay.format != ReplayFormat::kDolphinDbCsv)
+        return Invalid("source.format", "unsupported replay format", error);
+      if (!std::isfinite(replay.speed) || replay.speed < 0)
+        return Invalid("source.speed", "must be finite and nonnegative", error);
+      if (replay.start_delay_ns > 60000000000ULL)
+        return Invalid("source.start_delay_ms", "must be from 0 to 60000 ms",
+                       error);
+      if (replay.max_records == 0 || replay.max_records > kMaxReplayRecords)
+        return Invalid("source.max_records", "must be from 1 to 2000000",
+                       error);
+      if (replay.format == ReplayFormat::kDolphinDbCsv) {
+        if (replay.source_id.value == 0)
+          return Invalid("source.source_id", "must be nonzero", error);
+        if (replay.price_decimals > 6)
+          return Invalid("source.price_decimals", "must be from 0 to 6", error);
+      }
+      break;
+    }
     default:
       return Invalid("source.adapter", "unsupported adapter", error);
   }
@@ -414,6 +545,20 @@ base::Status ValidateConfig(const MarketdConfig& config,
                        "source and publisher cannot be the same endpoint",
                        error);
       }
+    } else if (output.adapter == Adapter::kRecord) {
+      status = ValidateFilePath(output.record.path, false, i, error);
+      if (!status.ok()) return status;
+      const auto capacity = output.record.queue_capacity;
+      if (capacity < 256 || capacity > kMaxRecordingQueueBytes ||
+          (capacity & (capacity - 1)) != 0)
+        return Invalid(FieldPath(false, i, "queue_capacity").text,
+                       "must be a power of two from 256 to 67108864 bytes",
+                       error);
+      if (config.source.adapter == Adapter::kReplay &&
+          Normalized(config.source.replay.path) ==
+              Normalized(output.record.path))
+        return Invalid(FieldPath(false, i, "path").text,
+                       "source and recording cannot be the same file", error);
     } else {
       return Invalid(FieldPath(false, i, "adapter").text,
                      "unsupported publisher adapter", error);
@@ -421,11 +566,15 @@ base::Status ValidateConfig(const MarketdConfig& config,
     for (std::size_t j = 0; j < i; ++j) {
       const auto& other = config.publishers[j];
       if (output.adapter != other.adapter) continue;
-      const bool duplicate =
-          output.adapter == Adapter::kShm
-              ? SameShm(output.runtime_directory, output.stream,
-                        other.runtime_directory, other.stream)
-              : SameTcp(output.tcp, other.tcp);
+      bool duplicate = false;
+      if (output.adapter == Adapter::kShm)
+        duplicate = SameShm(output.runtime_directory, output.stream,
+                            other.runtime_directory, other.stream);
+      else if (output.adapter == Adapter::kTcp)
+        duplicate = SameTcp(output.tcp, other.tcp);
+      else if (output.adapter == Adapter::kRecord)
+        duplicate =
+            Normalized(output.record.path) == Normalized(other.record.path);
       if (duplicate)
         return Invalid(FieldPath(false, i, "adapter").text,
                        "duplicate publisher endpoint", error);
@@ -464,6 +613,15 @@ base::Status ConfigLoader::Load(const char* path) noexcept {
       return status;
     }
     parsed.source.mock = loader.config();
+  } else if (parsed.source.adapter == Adapter::kReplay) {
+    status = ResolveFilePath(parsed.source.replay.path, path, true, 0, error_);
+    if (!status.ok()) return status;
+  }
+  for (std::size_t i = 0; i < parsed.publisher_count; ++i) {
+    if (parsed.publishers[i].adapter != Adapter::kRecord) continue;
+    status = ResolveFilePath(parsed.publishers[i].record.path, path, false, i,
+                             error_);
+    if (!status.ok()) return status;
   }
   status = ValidateConfig(parsed, error_);
   if (status.ok()) config_ = parsed;

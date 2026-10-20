@@ -38,7 +38,7 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 - `src/strategyd/`：策略进程与动态库加载实现。
 - `src/md/`：共享内存映射、seqlock 协议和报价编解码。
 - `src/marketd/`：行情进程、配置、输入与输出适配器。
-- `examples/marketd/`：本机分发和 TCP 中继配置。
+- `examples/marketd/`：本机分发、TCP 中继、历史回放与录制配置。
 - `examples/strategies/`：用户策略动态库示例。
 - `tests/base/`：基础组件测试。
 - `tests/strategyd/`：策略运行时与进程集成测试。
@@ -120,7 +120,7 @@ cmake -P cmake/DownloadTestData.cmake
 
 ## 行情进程
 
-`yquant-marketd` 按 JSON 组装 `Source → QuoteTick → Publisher[]`。输入支持模拟行情、共享内存和 TCP；输出支持共享内存广播和 TCP 分发。接入与中继使用相同程序，由配置决定组合。
+`yquant-marketd` 按 JSON 组装 `Source → QuoteTick → Publisher[]`。输入支持模拟行情、共享内存、TCP 和历史文件回放；输出支持共享内存广播、TCP 分发和异步录制。接入与中继使用相同程序，由配置决定组合。
 
 先启动行情进程：
 
@@ -143,6 +143,15 @@ cmake -P cmake/DownloadTestData.cmake
 
 `--check-config` 只校验配置，不创建发布者；`--max-events N` 用于有限事件演示。使用 SIGINT 或 SIGTERM 停止进程。完整配置、故障处理及协议见[行情进程设计](docs/design/marketd.md)。
 
+用真实历史数据完成回放与录制：
+
+```sh
+cmake --build --preset debug --target download_test_data
+./build/debug/bin/yquant-marketd --config ./build/debug/marketd/replay_csv.json
+```
+
+示例最快回放全部 367,171 条 DolphinDB 历史快照，将一档报价录制到 `build/debug/marketd/capture.yqr`。已有同名文件时失败，重新运行需更换文件名或移动已有文件。`replay_recording.json` 可将录制文件发到共享内存；原速、倍速、启动等待与策略接入见[行情回放与录制](docs/design/market-data-replay.md)。
+
 ## 工程方案
 
 - [工程组织与验证方案](docs/design/engineering.md)：平台、错误处理、构建依赖与测试工具方案。
@@ -155,6 +164,7 @@ cmake -P cmake/DownloadTestData.cmake
 - [策略配置设计](docs/design/strategy-config.md)：JSON 分层、强类型配置与启动校验。
 - [行情驱动与策略事件循环](docs/design/market-data.md)：一档报价、策略上下文、模拟行情源与事件分派。
 - [行情进程设计](docs/design/marketd.md)：可配置行情管线、本机广播和跨机中继。
+- [行情回放与录制](docs/design/market-data-replay.md)：真实 CSV 转换、回放时序和异步录制格式。
 - [共享内存行情订阅发布组件](docs/design/shared-memory-pubsub.md)：seqlock、独立游标、覆盖缺口和重启隔离。
 - [交易执行与模拟柜台](docs/design/trading.md)：限价委托、撤单与异步回报的执行闭环。
 - [一档双边做市策略](docs/design/bbo-market-making.md)：策略伪代码、所需数据与回调语义。

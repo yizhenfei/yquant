@@ -10,6 +10,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -17,6 +18,8 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "marketd/csv_replay.h"
+#include "marketd/recording.h"
 #include "test_support.h"
 #include "yquant/md/quote_codec.h"
 #include "yquant/md/shm_pubsub.h"
@@ -441,6 +444,101 @@ TEST_F(MarketdIntegrationTest, HelpAndInvalidArgumentsHaveDeterministicExit) {
   ASSERT_TRUE(invalid.Wait());
   EXPECT_EQ(invalid.exit_code(), 2);
   EXPECT_FALSE(std::filesystem::exists(directory_.File("quotes.manifest")));
+}
+
+TEST_F(MarketdIntegrationTest, RealHistoryRecordsAndReplaysEveryQuote) {
+  const char* data_directory = std::getenv("YQUANT_TEST_DATA_DIR");
+  ASSERT_NE(data_directory, nullptr);
+  const std::string csv_path =
+      std::string(data_directory) + "/dolphindb/2020-12-31/snapshot.csv";
+  ASSERT_TRUE(directory_.Write(
+      "history.json",
+      R"({"source":{"adapter":"replay","format":"dolphindb_csv",)"
+      R"("path":")" +
+          csv_path +
+          R"(","source_id":7,"price_decimals":4,)"
+          R"("speed":0,"max_records":400000},"publishers":[)"
+          R"({"adapter":"record","path":"first.yqr","queue_capacity":67108864}]})"));
+  ChildProcess first;
+  ASSERT_EQ(StartMarketd(first, "history.json"), 0);
+  ASSERT_TRUE(first.Wait()) << first.output();
+  ASSERT_EQ(first.exit_code(), 0) << first.output();
+  EXPECT_NE(first.output().find("Stopped events=367171"), std::string::npos);
+
+  ASSERT_TRUE(directory_.Write(
+      "recording.json",
+      R"({"source":{"adapter":"replay","format":"recording",)"
+      R"("path":"first.yqr","speed":0,"max_records":400000},)"
+      R"("publishers":[{"adapter":"record","path":"second.yqr",)"
+      R"("queue_capacity":67108864}]})"));
+  ChildProcess second;
+  ASSERT_EQ(StartMarketd(second, "recording.json"), 0);
+  ASSERT_TRUE(second.Wait()) << second.output();
+  ASSERT_EQ(second.exit_code(), 0) << second.output();
+  EXPECT_NE(second.output().find("Stopped events=367171"), std::string::npos);
+
+  ReplayConfig csv;
+  std::snprintf(csv.path, sizeof(csv.path), "%s", csv_path.c_str());
+  csv.format = ReplayFormat::kDolphinDbCsv;
+  csv.source_id = {7};
+  csv.max_records = 400000;
+  ReplayData original;
+  ReplayData recorded;
+  ReplayData replayed;
+  char detail[256];
+  ASSERT_TRUE(LoadDolphinDbCsv(csv, original, detail).ok()) << detail;
+  ASSERT_TRUE(LoadRecordingFile(directory_.File("first.yqr").c_str(), 400000,
+                                recorded, detail)
+                  .ok())
+      << detail;
+  ASSERT_TRUE(LoadRecordingFile(directory_.File("second.yqr").c_str(), 400000,
+                                replayed, detail)
+                  .ok())
+      << detail;
+  ASSERT_EQ(original.size(), 367171U);
+  ASSERT_EQ(recorded.size(), original.size());
+  ASSERT_EQ(replayed.size(), original.size());
+  for (std::size_t i = 0; i < original.size(); ++i) {
+    EXPECT_EQ(recorded[i].quote, original[i].quote) << "record " << i;
+    EXPECT_EQ(replayed[i].quote, original[i].quote) << "replay " << i;
+    if (::testing::Test::HasFailure()) break;
+  }
+}
+
+TEST_F(MarketdIntegrationTest, ReplayFeedsSharedMemoryWhileRecording) {
+  ASSERT_TRUE(directory_.Write(
+      "short.csv",
+      "Date,Time,SecurityID,SecurityIDSource,BidPX1,BidSize1,OfferPX1,"
+      "OfferSize1\n"
+      "2020.12.31,09:15:00.000,600000,101,10,100,10.01,200\n"
+      "2020.12.31,09:15:00.020,600000,101,10.01,100,10.02,200\n"));
+  ASSERT_TRUE(directory_.Write(
+      "replay.json",
+      R"({"source":{"adapter":"replay","format":"dolphindb_csv",)"
+      R"("path":"short.csv","source_id":42,"price_decimals":2,)"
+      R"("start_delay_ms":500},"publishers":[)" +
+          ShmJson() + R"(,{"adapter":"record","path":"short.yqr"}]})"));
+  ChildProcess marketd;
+  ASSERT_EQ(StartMarketd(marketd, "replay.json"), 0);
+  ASSERT_TRUE(marketd.WaitForOutput("Running")) << marketd.output();
+  md::ShmSubscriber reader;
+  ASSERT_TRUE(reader.Open({directory_.path(), "quotes"}).ok());
+  model::QuoteTick quote;
+  for (std::uint64_t sequence = 1; sequence <= 2; ++sequence) {
+    ASSERT_TRUE(ReadQuote(reader, quote));
+    EXPECT_EQ(quote.sequence, sequence);
+    EXPECT_EQ(quote.source_id.value, 42U);
+    EXPECT_EQ(quote.bid_price, 999 + static_cast<std::int64_t>(sequence));
+  }
+  ASSERT_TRUE(marketd.Wait()) << marketd.output();
+  EXPECT_EQ(marketd.exit_code(), 0) << marketd.output();
+  ReplayData recording;
+  char detail[256];
+  ASSERT_TRUE(LoadRecordingFile(directory_.File("short.yqr").c_str(), 2,
+                                recording, detail)
+                  .ok())
+      << detail;
+  EXPECT_EQ(recording.size(), 2U);
 }
 
 }  // namespace

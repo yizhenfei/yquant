@@ -14,6 +14,9 @@ add_executable(yquant_marketd_test
   tests/marketd/config_test.cc
   tests/marketd/adapters_test.cc
   tests/marketd/runner_test.cc
+  tests/marketd/csv_replay_test.cc
+  tests/marketd/recording_test.cc
+  tests/marketd/replay_source_test.cc
   tests/marketd/tcp_transport_test.cc
   tests/marketd/marketd_integration_test.cc)
 target_link_libraries(yquant_marketd_test PRIVATE

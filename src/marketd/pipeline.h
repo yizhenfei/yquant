@@ -8,7 +8,7 @@
 
 namespace yquant::marketd {
 
-enum class PollState { kEvent, kIdle, kError };
+enum class PollState { kEvent, kIdle, kError, kEnd };
 
 // Non-event results preserve the caller's quote; failures own no borrowed data.
 struct PollResult {
@@ -36,6 +36,12 @@ class Publisher {
   [[nodiscard]] virtual base::Status Publish(
       const model::QuoteTick& quote) noexcept = 0;
   [[nodiscard]] virtual base::Status Service(std::uint64_t now) noexcept = 0;
+  // Explicit orderly shutdown reports delayed write/flush errors. The default
+  // closes synchronous outputs. Implementations must make repeat calls safe.
+  [[nodiscard]] virtual base::Status Finish() noexcept {
+    Close();
+    return {};
+  }
   virtual void Close() noexcept = 0;
   virtual const char* error_detail() const noexcept = 0;
 };

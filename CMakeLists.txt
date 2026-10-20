@@ -89,12 +89,15 @@ set_target_properties(yquant_strategyd PROPERTIES
 add_library(yquant_marketd_runtime STATIC
   src/marketd/adapters.cc
   src/marketd/config.cc
+  src/marketd/csv_replay.cc
+  src/marketd/recording.cc
+  src/marketd/replay_source.cc
   src/marketd/runner.cc
   src/marketd/tcp_transport.cc)
 target_include_directories(yquant_marketd_runtime PUBLIC
   "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(yquant_marketd_runtime PUBLIC
-  yquant::md yquant_host_support
+  yquant::md yquant::base yquant_host_support
   PRIVATE simdjson::simdjson Threads::Threads)
 target_compile_options(yquant_marketd_runtime PRIVATE -Wall -Wextra -Wpedantic)
 
@@ -132,9 +135,16 @@ configure_file(examples/strategies/shm_market_data.json
 configure_file(examples/strategies/mock_trading.json
   "${CMAKE_BINARY_DIR}/strategies/mock_trading.json" COPYONLY)
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/marketd")
-foreach(config IN ITEMS mock_source local tcp_source tcp_relay)
+foreach(config IN ITEMS mock_source local tcp_source tcp_relay record_local
+                        replay_recording)
   configure_file("examples/marketd/${config}.json"
     "${CMAKE_BINARY_DIR}/marketd/${config}.json" COPYONLY)
+endforeach()
+configure_file(examples/marketd/replay_csv.json.in
+  "${CMAKE_BINARY_DIR}/marketd/replay_csv.json" @ONLY)
+foreach(config IN ITEMS replay_market_data replay_observer)
+  configure_file("examples/strategies/${config}.json"
+    "${CMAKE_BINARY_DIR}/strategies/${config}.json" COPYONLY)
 endforeach()
 
 add_library(yquant_base STATIC
