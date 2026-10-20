@@ -9,6 +9,9 @@
 
 namespace yquant::model {
 
+// Supported fixed-point price precision, measured in decimal places.
+inline constexpr std::uint8_t kMaxPriceDecimals = 6;
+
 // Owns the immutable units and identity shared by all sources of an instrument.
 // Hosts publish definitions only after validating the ID, venue, six ASCII
 // digits, and price_decimals in 0..6. Quantities are measured in shares.

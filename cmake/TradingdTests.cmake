@@ -8,6 +8,7 @@ target_link_libraries(yquant_tradingd_test PRIVATE
   yquant_tradingd_runtime GTest::gtest_main Threads::Threads)
 target_compile_options(yquant_tradingd_test PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(yquant_tradingd_test PRIVATE
+  YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json"
   YQUANT_TEST_TRADINGD_PATH="$<TARGET_FILE:yquant_tradingd>"
   YQUANT_TEST_STRATEGYD_PATH="$<TARGET_FILE:yquant_strategyd>"
   YQUANT_TEST_MARKETD_PATH="$<TARGET_FILE:yquant_marketd>"
@@ -24,6 +25,8 @@ target_link_libraries(yquant_tradingd_allocation_test PRIVATE
   yquant_tradingd_runtime GTest::gtest_main Threads::Threads)
 target_compile_options(yquant_tradingd_allocation_test PRIVATE
   -Wall -Wextra -Wpedantic)
+target_compile_definitions(yquant_tradingd_allocation_test PRIVATE
+  YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json")
 gtest_discover_tests(yquant_tradingd_allocation_test
   DISCOVERY_MODE PRE_TEST
   DISCOVERY_TIMEOUT 30

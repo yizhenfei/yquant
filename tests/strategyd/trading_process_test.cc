@@ -77,7 +77,7 @@ TEST(TradingProcessTest, LoadsOrderExampleAndFills200BeforeSignal) {
 
 TEST(TradingProcessTest, QuantityOneProducesExactlyOneFill) {
   testing::ConfigFile config(
-      R"({"strategy_id":"one","parameters":{"source_id":1,"venue":"SSE",)"
+      R"({"strategy_id":"one","parameters":{"venue":"SSE",)"
       R"("symbol":"600000","quantity":1}})");
   ASSERT_TRUE(config.valid());
   Process child;

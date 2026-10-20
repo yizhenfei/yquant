@@ -296,6 +296,8 @@ TEST(MarketdCppHeapTest, ReplayAndRecordingHaveNoCppHeapActivity) {
   std::snprintf(input.path, sizeof(input.path), "%s",
                 directory.File("quotes.csv").c_str());
   input.format = ReplayFormat::kDolphinDbCsv;
+  std::snprintf(input.instrument_catalog, sizeof(input.instrument_catalog),
+                "%s", directory.File("instruments.json").c_str());
   input.speed = 0;
   input.max_records = kQuoteCount;
   ReplaySource source;

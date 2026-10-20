@@ -386,7 +386,7 @@ flowchart TD
 
 ### 宿主配置
 
-`--trading-config <path>` 为可选参数，省略时仍提供可查询的空交易服务，允许阶段内的交易请求返回 `kUnsupported`。本阶段启用交易时还须提供行情配置，使用其中的标的字典；不要求策略订阅全部可交易标的。指定交易配置却缺少行情配置路径时，按命令行用法错误退出，退出码为 2。
+`--trading-config <path>` 为可选参数，省略时仍提供可查询的空交易服务，允许阶段内的交易请求返回 `kUnsupported`。本阶段启用交易时还须提供行情配置，从[共享标的字典](market-data.md#共享标的字典)解析其中的运行清单，以此建立本进程可交易范围；不要求策略订阅全部可交易标的。指定交易配置却缺少行情配置路径时，按命令行用法错误退出，退出码为 2。
 
 交易配置由宿主加载，字段如下，全部必填且拒绝未知字段：
 
@@ -407,7 +407,7 @@ flowchart TD
 
 ### 示例与预期轨迹
 
-示例 [order_lifecycle_strategy.cc](../../examples/strategies/order_lifecycle_strategy.cc) 通过自身的[派生配置](../../examples/strategies/order_lifecycle_strategy.json)选择行情来源、场所、代码和下单数量。在 `OnStart` 解析标的、订阅并查询初始账户，在第一条有效报价中按卖一价提交一次买入限价委托，随后只观察该委托，不追加交易。[模拟柜台配置](../../examples/strategies/mock_trading.json)默认使用 `fill` 模式；完整运行命令见 [README](../../README.md#策略进程)。
+示例 [order_lifecycle_strategy.cc](../../examples/strategies/order_lifecycle_strategy.cc) 通过自身的[派生配置](../../examples/strategies/order_lifecycle_strategy.json)选择场所、代码和下单数量，行情来源由宿主配置绑定。在 `OnStart` 解析标的、订阅并查询初始账户，在第一条有效报价中按卖一价提交一次买入限价委托，随后只观察该委托，不追加交易。[模拟柜台配置](../../examples/strategies/mock_trading.json)默认使用 `fill` 模式；完整运行命令见 [README](../../README.md#策略进程)。
 
 ```text
 OnTick(context, tick):
@@ -451,7 +451,7 @@ OnFill(context, fill):
 
 ## 容量与实现位置
 
-持仓槽最多 64 项，与标的字典上限一致。委托账本初始上限为 1024 张，唯一成交记录上限为 8192 条，待发送请求和本地待更新队列各为 256 条。存储在准备阶段建立，运行期不扩容；终态委托和成交去重记录保留至实例销毁，达到委托上限后拒绝新单。
+持仓槽最多 64 项，与本进程运行标的上限一致。委托账本初始上限为 1024 张，唯一成交记录上限为 8192 条，待发送请求和本地待更新队列各为 256 条。存储在准备阶段建立，运行期不扩容；终态委托和成交去重记录保留至实例销毁，达到委托上限后拒绝新单。
 
 模拟单最多产生两笔成交，成交记录容量可覆盖全部受理订单。新的事件在校验和容量检查完成前不修改账本；异常事件导致容量耗尽时保留未应用事件的诊断并进入错误收尾。ID、回报序号和时间计算均检查溢出。
 

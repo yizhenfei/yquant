@@ -1,4 +1,4 @@
 {
   "strategy_id": "replay-observer",
-  "parameters": {"source_id": 1, "venue": "SZSE", "symbol": "000557"}
+  "parameters": {"venue": "SZSE", "symbol": "000557"}
 }

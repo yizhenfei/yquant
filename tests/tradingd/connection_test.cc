@@ -19,6 +19,7 @@ namespace yquant::tradingd {
 namespace {
 
 constexpr std::uint64_t kConnectTimeoutNs = 1000000000;
+constexpr auto kWaitTimeout = std::chrono::seconds(2);
 
 Message Heartbeat(std::uint64_t sequence = 1) {
   Message message;
@@ -29,8 +30,7 @@ Message Heartbeat(std::uint64_t sequence = 1) {
 }
 
 ReceiveResult WaitActive(Connection& connection, Message& output) {
-  const auto deadline =
-      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  const auto deadline = std::chrono::steady_clock::now() + kWaitTimeout;
   ReceiveResult result;
   do {
     result = connection.Poll(output);
@@ -38,6 +38,29 @@ ReceiveResult WaitActive(Connection& connection, Message& output) {
     std::this_thread::yield();
   } while (std::chrono::steady_clock::now() < deadline);
   return result;
+}
+
+// Nonblocking accept can remain idle after connect returns. Retries only idle
+// results until the shared deadline; errors and timeouts report diagnostics.
+::testing::AssertionResult WaitAccept(Listener& listener,
+                                      Connection& connection, bool& accepted) {
+  const auto deadline = std::chrono::steady_clock::now() + kWaitTimeout;
+  do {
+    const auto status = listener.Accept(connection, accepted);
+    if (!status.ok()) {
+      return ::testing::AssertionFailure()
+             << "Accept failed: code=" << static_cast<int>(status.code)
+             << ", system_error=" << status.system_error.message()
+             << ", detail=" << connection.error_detail();
+    }
+    if (accepted) return ::testing::AssertionSuccess();
+    std::this_thread::yield();
+  } while (std::chrono::steady_clock::now() < deadline);
+  return ::testing::AssertionFailure()
+         << "Accept queue remained empty for "
+         << std::chrono::duration_cast<std::chrono::milliseconds>(kWaitTimeout)
+                .count()
+         << " ms";
 }
 
 class ConnectedEndpoints : public testing::Test {
@@ -49,7 +72,7 @@ class ConnectedEndpoints : public testing::Test {
     endpoint.port = listener_.port();
     ASSERT_TRUE(sender_.Connect(endpoint, kConnectTimeoutNs).ok());
     bool accepted = false;
-    ASSERT_TRUE(listener_.Accept(receiver_, accepted).ok());
+    ASSERT_TRUE(WaitAccept(listener_, receiver_, accepted));
     ASSERT_TRUE(accepted);
   }
   Listener listener_;
@@ -82,7 +105,7 @@ class RawPeerEndpoints : public testing::Test {
               0);
 #endif
     bool accepted = false;
-    ASSERT_TRUE(listener_.Accept(receiver_, accepted).ok());
+    ASSERT_TRUE(WaitAccept(listener_, receiver_, accepted));
     ASSERT_TRUE(accepted);
   }
   void TearDown() override {

@@ -1,3 +1,13 @@
+// Example strategy plugin for observing a configured instrument's quotes.
+//
+// The configuration stores a validated venue/symbol pair. OnStart resolves the
+// instrument and subscribes to quotes from the host's bound source. OnTick
+// checks the instrument, verifies the host's latest snapshot matches the
+// callback and sequence numbers increase, then counts quotes and tracks the
+// maximum local age using Now() - receive_time_ns.
+// The first quote emits a readiness marker; OnStop prints the final summary.
+// YQuantGetStrategyPlugin exports the module's creation and destruction hooks.
+
 #include <unistd.h>
 
 #include <cerrno>
@@ -23,7 +33,6 @@ using yquant::base::ErrorCode;
 using yquant::model::InstrumentDefinition;
 using yquant::model::InstrumentId;
 using yquant::model::QuoteTick;
-using yquant::model::SourceId;
 using yquant::strategy::ConfigError;
 using yquant::strategy::Strategy;
 using yquant::strategy::StrategyConfig;
@@ -55,11 +64,10 @@ ErrorCode WriteReadiness(std::string_view text) noexcept {
   return ErrorCode::kOk;
 }
 
-// Owns one source selection and a validated venue/symbol pair. Initialization
-// commits all values together, retaining no JSON strings or parser objects.
+// Owns a validated venue/symbol pair. Initialization commits all values
+// together, retaining no JSON strings or parser objects.
 class QuoteObserverConfig final : public StrategyConfig {
  public:
-  SourceId source_id() const noexcept { return source_id_; }
   std::string_view venue() const noexcept { return {venue_, venue_size_}; }
   std::string_view symbol() const noexcept {
     return {symbol_, sizeof(symbol_)};
@@ -89,24 +97,12 @@ class QuoteObserverConfig final : public StrategyConfig {
       return ParseError(result, "", error);
     }
 
-    std::uint64_t source_id = 0;
     std::string_view venue;
     std::string_view symbol;
-    bool has_source_id = false;
     bool has_venue = false;
     bool has_symbol = false;
     for (const auto field : object) {
-      if (field.key == "source_id") {
-        if (has_source_id) {
-          error.Set(field.key, "duplicate parameter");
-          return ErrorCode::kInvalidArgument;
-        }
-        if (const auto result = field.value.get_uint64().get(source_id);
-            result != simdjson::SUCCESS) {
-          return ParseError(result, field.key, error);
-        }
-        has_source_id = true;
-      } else if (field.key == "venue") {
+      if (field.key == "venue") {
         if (has_venue) {
           error.Set(field.key, "duplicate parameter");
           return ErrorCode::kInvalidArgument;
@@ -131,16 +127,9 @@ class QuoteObserverConfig final : public StrategyConfig {
         return ErrorCode::kInvalidArgument;
       }
     }
-    if (!has_source_id || !has_venue || !has_symbol) {
-      error.Set(!has_source_id ? "source_id"
-                : !has_venue   ? "venue"
-                               : "symbol",
+    if (!has_venue || !has_symbol) {
+      error.Set(!has_venue ? "venue" : "symbol",
                 "required parameter is missing");
-      return ErrorCode::kInvalidArgument;
-    }
-    if (source_id == 0 ||
-        source_id > std::numeric_limits<std::uint32_t>::max()) {
-      error.Set("source_id", "must be an integer from 1 to UINT32_MAX");
       return ErrorCode::kInvalidArgument;
     }
     if (venue != "SSE" && venue != "SZSE" && venue != "BSE") {
@@ -154,7 +143,6 @@ class QuoteObserverConfig final : public StrategyConfig {
       return ErrorCode::kInvalidArgument;
     }
 
-    source_id_.value = static_cast<std::uint32_t>(source_id);
     std::memcpy(venue_, venue.data(), venue.size());
     venue_size_ = venue.size();
     std::memcpy(symbol_, symbol.data(), symbol.size());
@@ -162,7 +150,6 @@ class QuoteObserverConfig final : public StrategyConfig {
   }
 
  private:
-  SourceId source_id_;
   char venue_[4] = {};
   std::size_t venue_size_ = 0;
   char symbol_[yquant::model::kSymbolLength] = {};
@@ -185,8 +172,7 @@ class QuoteObserverStrategy final : public Strategy {
     if (find_result != ErrorCode::kOk) {
       return find_result;
     }
-    const auto subscribe_result =
-        market_data.SubscribeQuotes(config_.source_id(), instrument.id);
+    const auto subscribe_result = market_data.SubscribeQuotes(instrument.id);
     if (subscribe_result != ErrorCode::kOk) {
       return subscribe_result;
     }
@@ -202,10 +188,8 @@ class QuoteObserverStrategy final : public Strategy {
     }
     const auto& market_data = context.market_data();
     QuoteTick latest;
-    if (tick.source_id != config_.source_id() ||
-        tick.instrument_id != instrument_.id ||
-        !market_data.TryGetLatestQuote(tick.source_id, tick.instrument_id,
-                                       latest) ||
+    if (tick.instrument_id != instrument_.id ||
+        !market_data.TryGetLatestQuote(tick.instrument_id, latest) ||
         latest != tick || tick.sequence <= last_sequence_) {
       return ErrorCode::kCorrupt;
     }

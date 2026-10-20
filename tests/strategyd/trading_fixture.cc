@@ -128,7 +128,7 @@ class TradingFixture final : public Strategy {
         context.trading().CancelOrder(untouched) != ErrorCode::kInvalidState) {
       return ErrorCode::kCorrupt;
     }
-    const auto subscribed = data.SubscribeQuotes({1}, instrument_.id);
+    const auto subscribed = data.SubscribeQuotes(instrument_.id);
     if (subscribed != ErrorCode::kOk) return subscribed;
     Emit('S');
     return ErrorCode::kOk;

@@ -1,11 +1,12 @@
 #include <cinttypes>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <limits>
 #include <new>
 #include <string_view>
 
 #include "simdjson.h"
+#include "yquant/model/identifiers.h"
 #include "yquant/model/instrument.h"
 #include "yquant/strategy/strategy.h"
 #include "yquant/strategy/strategy_plugin.h"
@@ -19,7 +20,6 @@ namespace strategy = yquant::strategy;
 // trading service and never interpreted as this strategy's private allocation.
 class Config final : public strategy::StrategyConfig {
  public:
-  model::SourceId source_id;
   model::InstrumentId instrument_id;
   model::OrderSide side = model::OrderSide::kUnknown;
   std::int64_t quantity = 0;
@@ -42,12 +42,7 @@ class Config final : public strategy::StrategyConfig {
     std::string_view symbol;
     for (const auto field : object) {
       bool invalid = false;
-      if (field.key == "source_id") {
-        std::uint64_t id = 0;
-        invalid = field.value.get_uint64().get(id) || id == 0 ||
-                  id > std::numeric_limits<std::uint32_t>::max();
-        if (!invalid) source_id.value = static_cast<std::uint32_t>(id);
-      } else if (field.key == "venue") {
+      if (field.key == "venue") {
         invalid = field.value.get_string().get(venue);
       } else if (field.key == "symbol") {
         invalid = field.value.get_string().get(symbol);
@@ -71,11 +66,10 @@ class Config final : public strategy::StrategyConfig {
         return ErrorCode::kInvalidArgument;
       }
     }
-    if (source_id.value == 0 || quantity <= 0 ||
-        side == model::OrderSide::kUnknown ||
+    if (quantity <= 0 || side == model::OrderSide::kUnknown ||
         model::MakeInstrumentId(venue, symbol, instrument_id) !=
             ErrorCode::kOk) {
-      error.Set("", "source_id, venue, symbol, side and quantity are required");
+      error.Set("", "venue, symbol, side and quantity are required");
       return ErrorCode::kInvalidArgument;
     }
     std::memcpy(venue_name, venue.data(), venue.size());
@@ -114,8 +108,8 @@ class SharedAccountStrategy final : public strategy::Strategy {
                                              definition) != ErrorCode::kOk ||
         !context.trading().TryGetCash(cash))
       return ErrorCode::kInvalidArgument;
-    const auto status = context.market_data().SubscribeQuotes(
-        config_.source_id, config_.instrument_id);
+    const auto status =
+        context.market_data().SubscribeQuotes(config_.instrument_id);
     if (status != ErrorCode::kOk) return status;
     return Marker("shared_account: ready\n");
   }

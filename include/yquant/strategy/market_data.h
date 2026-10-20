@@ -9,10 +9,11 @@
 
 namespace yquant::strategy {
 
-// Host-owned market-data service used only by the currently executing strategy
-// callback on its owning thread. Do not retain this object or pass it to
-// another thread. Instrument metadata and last dispatched snapshots remain
-// available during OnStop; returned values own their data.
+// Host-owned market-data service bound to the source selected by host config.
+// Used only by the currently executing strategy callback on its owning thread.
+// Do not retain this object or pass it to another thread. Instrument metadata
+// and last dispatched snapshots remain available during OnStop; returned
+// values own their data.
 class MarketData {
  public:
   virtual ~MarketData() noexcept = default;
@@ -24,21 +25,21 @@ class MarketData {
       std::string_view venue, std::string_view symbol,
       model::InstrumentDefinition& out) const noexcept = 0;
 
-  // Valid only in OnStart. Locally registers one source/instrument pair;
+  // Valid only in OnStart. Registers an instrument with the host-bound source;
   // success does not imply that a quote is available. Repeating a registered
-  // pair is successful. Unknown pairs return kInvalidArgument, an absent source
-  // returns kUnsupported, and other callback phases return kInvalidState.
+  // instrument is successful. Unknown IDs return kInvalidArgument, an absent
+  // source returns kUnsupported, and other phases return kInvalidState.
   // Failures preserve all existing registrations. Dispatch begins only after
   // OnStart succeeds; startup failure removes this instance's registrations.
   [[nodiscard]] virtual base::ErrorCode SubscribeQuotes(
-      model::SourceId source_id, model::InstrumentId id) noexcept = 0;
+      model::InstrumentId id) noexcept = 0;
 
-  // Copies the last dispatched snapshot, without waiting or expiring it.
-  // Returns false without changing out for invalid, unsubscribed, or unseen
-  // pairs. Within OnTick, querying its pair returns the exact callback value.
+  // Copies the instrument's last dispatched snapshot from the host-bound
+  // source, without waiting or expiring it. Returns false without changing out
+  // for an absent source or invalid, unsubscribed, or unseen IDs. Within
+  // OnTick, querying its instrument returns the exact callback value.
   [[nodiscard]] virtual bool TryGetLatestQuote(
-      model::SourceId source_id, model::InstrumentId id,
-      model::QuoteTick& out) const noexcept = 0;
+      model::InstrumentId id, model::QuoteTick& out) const noexcept = 0;
 };
 
 }  // namespace yquant::strategy

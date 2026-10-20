@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "strategyd/instrument_catalog.h"
 #include "yquant/model/identifiers.h"
 
 namespace yquant::marketd {
@@ -16,7 +17,7 @@ enum class ReplayFormat { kRecording, kDolphinDbCsv };
 
 // Replay storage is bounded and populated before the pipeline starts. Zero
 // speed emits as fast as the host polls; positive speed scales arrival gaps.
-// source_id and price_decimals apply only to the DolphinDB CSV conversion.
+// source_id and instrument_catalog apply only to DolphinDB CSV conversion.
 struct ReplayConfig {
   char path[kMaxDataPathBytes + 1] = {};
   ReplayFormat format = ReplayFormat::kRecording;
@@ -25,7 +26,8 @@ struct ReplayConfig {
   std::uint64_t start_delay_ns = 0;
   std::size_t max_records = 1000000;
   model::SourceId source_id{1};
-  std::uint8_t price_decimals = 4;
+  // Absolute catalog path, loaded only while converting the CSV input.
+  char instrument_catalog[strategyd::kMaxInstrumentCatalogPathLength + 1] = {};
 };
 
 // The output is created exclusively, never appended to or overwritten.

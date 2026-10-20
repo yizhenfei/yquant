@@ -187,8 +187,8 @@ const char* ExerciseMarketData(MockMarketDataSource& source,
       ++counts.quotes;
       market_data.BeginCallback(CallbackPhase::kTick);
       model::QuoteTick snapshot;
-      if (!context.market_data().TryGetLatestQuote(
-              tick.source_id, tick.instrument_id, snapshot) ||
+      if (!context.market_data().TryGetLatestQuote(tick.instrument_id,
+                                                   snapshot) ||
           snapshot != tick || context.Now() != tick.receive_time_ns) {
         return "callback query differs from the quote just published";
       }
@@ -223,16 +223,15 @@ const char* ExerciseMarketData(MockMarketDataSource& source,
         return "invalid source changed acceptance or was not rejected";
       }
       ++counts.rejected;
-      if (!context.market_data().TryGetLatestQuote(
-              tick.source_id, tick.instrument_id, snapshot) ||
+      if (!context.market_data().TryGetLatestQuote(tick.instrument_id,
+                                                   snapshot) ||
           snapshot != tick) {
         return "ignored or invalid records changed the latest snapshot";
       }
       const auto unchanged = snapshot;
-      if (context.market_data().TryGetLatestQuote({}, tick.instrument_id,
-                                                  snapshot) ||
+      if (context.market_data().TryGetLatestQuote({}, snapshot) ||
           snapshot != unchanged ||
-          context.market_data().TryGetLatestQuote(tick.source_id, {},
+          context.market_data().TryGetLatestQuote(model::InstrumentId{1},
                                                   snapshot) ||
           snapshot != unchanged) {
         return "failed lookup changed its output";
@@ -304,7 +303,7 @@ TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
   market_data.BeginCallback(CallbackPhase::kStart);
   for (std::size_t index = 0; index < config.instrument_count; ++index) {
     ASSERT_EQ(context.market_data().SubscribeQuotes(
-                  config.source_id, config.instruments[index].instrument.id),
+                  config.instruments[index].instrument.id),
               base::ErrorCode::kOk);
   }
   market_data.EndCallback();

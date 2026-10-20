@@ -1,8 +1,14 @@
 #include "strategyd/market_data_config.h"
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
 #include <string>
 #include <string_view>
+#include <system_error>
 
 #include "gtest/gtest.h"
 #include "strategyd/json_config_document.h"
@@ -15,11 +21,16 @@ namespace {
 using testing::ConfigFile;
 
 constexpr std::string_view kInstrument =
-    R"({"venue":"SSE","symbol":"600000","price_decimals":2,)"
-    R"("bid_price":1000,"bid_qty":100,"ask_price":1001,"ask_qty":200,"price_step":1})";
+    R"({"venue":"SSE","symbol":"600000",)"
+    R"("bid_price":1000,"bid_qty":100,"ask_price":1001,)"
+    R"("ask_qty":200,"price_step":1})";
 
-std::string Json(std::string_view instruments = kInstrument) {
-  return R"({"source_id":1,"adapter":"mock","interval_ms":100,"instruments":[)" +
+std::string Json(
+    std::string_view instruments = kInstrument,
+    std::string_view catalog = YQUANT_TEST_INSTRUMENT_CATALOG_PATH) {
+  return R"({"instrument_catalog":")" + std::string(catalog) +
+         R"(","source_id":1,"adapter":"mock","interval_ms":100,)"
+         R"("instruments":[)" +
          std::string(instruments) + "]}";
 }
 
@@ -30,8 +41,65 @@ std::string Replace(std::string json, std::string_view from,
   return json;
 }
 
+// Holds explicitly written host configurations and their shared catalog.
+class CatalogConfigDirectory {
+ public:
+  CatalogConfigDirectory() { valid_ = mkdtemp(path_) != nullptr; }
+  ~CatalogConfigDirectory() {
+    if (valid_) {
+      std::error_code error;
+      std::filesystem::remove_all(path_, error);
+    }
+  }
+  CatalogConfigDirectory(const CatalogConfigDirectory&) = delete;
+  CatalogConfigDirectory& operator=(const CatalogConfigDirectory&) = delete;
+
+  bool valid() const { return valid_; }
+  std::string File(std::string_view name) const {
+    return (std::filesystem::path(path_) / name).string();
+  }
+  bool Write(std::string_view name, std::string_view contents) const {
+    if (!valid_) return false;
+    const auto file_path = std::filesystem::path(path_) / name;
+    std::error_code error;
+    std::filesystem::create_directories(file_path.parent_path(), error);
+    if (error) return false;
+    FILE* file = std::fopen(file_path.c_str(), "wb");
+    if (file == nullptr) return false;
+    const auto written = std::fwrite(contents.data(), 1, contents.size(), file);
+    return std::fclose(file) == 0 && written == contents.size();
+  }
+
+ private:
+  char path_[64] = "/tmp/yquant-catalog-config-XXXXXX";
+  bool valid_ = false;
+};
+
+// Restores the caller's directory even when a fatal assertion returns early.
+class ScopedWorkingDirectory {
+ public:
+  explicit ScopedWorkingDirectory(const char* path)
+      : original_(open(".", O_RDONLY)) {
+    valid_ = original_ >= 0 && chdir(path) == 0;
+  }
+  ~ScopedWorkingDirectory() {
+    if (original_ >= 0) {
+      if (valid_) fchdir(original_);
+      close(original_);
+    }
+  }
+  ScopedWorkingDirectory(const ScopedWorkingDirectory&) = delete;
+  ScopedWorkingDirectory& operator=(const ScopedWorkingDirectory&) = delete;
+
+  bool valid() const { return valid_; }
+
+ private:
+  int original_ = -1;
+  bool valid_ = false;
+};
+
 TEST(MarketDataConfigTest, LoadsExactTypedValuesAndDecodedStrings) {
-  ConfigFile file(Replace(Json(), "SSE", R"(\u0053SE)"));
+  ConfigFile file(Replace(Json(), "\"SSE\"", R"("\u0053SE")"));
   ASSERT_TRUE(file.valid());
   MarketDataConfigLoader loader;
   ASSERT_TRUE(loader.Load(file.path()).ok()) << loader.error().message;
@@ -60,6 +128,60 @@ TEST(MarketDataConfigTest, PreservesIntegersAboveDoubleExactRange) {
   MarketDataConfigLoader loader;
   ASSERT_TRUE(loader.Load(file.path()).ok()) << loader.error().message;
   EXPECT_EQ(loader.config().instruments[0].bid_price, 9007199254740993LL);
+}
+
+TEST(MarketDataConfigTest, RequiresAnExplicitNonemptyCatalogPath) {
+  const std::string catalog_value =
+      '"' + std::string(YQUANT_TEST_INSTRUMENT_CATALOG_PATH) + '"';
+  MarketDataConfigLoader loader;
+  for (const std::string_view invalid :
+       {"null", "1", "true", R"("")", R"("bad\u0000path")"}) {
+    SCOPED_TRACE(invalid);
+    ConfigFile file(Replace(Json(), catalog_value, invalid));
+    ASSERT_TRUE(file.valid());
+    EXPECT_FALSE(loader.Load(file.path()).ok());
+    EXPECT_EQ(loader.config().instrument_count, 0U);
+    EXPECT_EQ(loader.config().source_id.value, 0U);
+    EXPECT_NE(loader.error().message[0], '\0');
+  }
+  ConfigFile missing(
+      Replace(Json(), "\"instrument_catalog\":" + catalog_value + ',', ""));
+  ASSERT_TRUE(missing.valid());
+  EXPECT_FALSE(loader.Load(missing.path()).ok());
+  EXPECT_STREQ(loader.error().field_path, "instrument_catalog");
+}
+
+TEST(MarketDataConfigTest, FailedCatalogLoadClearsAnEarlierResolvedConfig) {
+  constexpr std::string_view kCatalogs[] = {
+      R"({"instruments":[{"venue":"SSE","symbol":"600000",)"
+      R"("price_decimals":7}]})",
+      R"({"instruments":[{"venue":"SSE","symbol":"600000","price_decimals":2},)"
+      R"({"venue":"SSE","symbol":"600000","price_decimals":4}]})",
+      R"({"instruments":[]})",
+  };
+  ConfigFile valid(Json());
+  ASSERT_TRUE(valid.valid());
+  MarketDataConfigLoader loader;
+  for (const auto catalog_json : kCatalogs) {
+    ConfigFile catalog(catalog_json);
+    ASSERT_TRUE(catalog.valid());
+    ConfigFile host(Json(kInstrument, catalog.path()));
+    ASSERT_TRUE(host.valid());
+    ASSERT_TRUE(loader.Load(valid.path()).ok()) << loader.error().message;
+    EXPECT_FALSE(loader.Load(host.path()).ok());
+    EXPECT_EQ(loader.config().source_id.value, 0U);
+    EXPECT_EQ(loader.config().instrument_count, 0U);
+    EXPECT_EQ(loader.config().instruments[0].instrument.id.value, 0U);
+    EXPECT_NE(loader.error().message[0], '\0');
+  }
+  ConfigFile missing(Json(kInstrument, "/yquant-no-such-catalog.json"));
+  ASSERT_TRUE(missing.valid());
+  ASSERT_TRUE(loader.Load(valid.path()).ok());
+  EXPECT_FALSE(loader.Load(missing.path()).ok());
+  EXPECT_EQ(loader.config().source_id.value, 0U);
+  EXPECT_EQ(loader.config().instrument_count, 0U);
+  ASSERT_TRUE(loader.Load(valid.path()).ok()) << loader.error().message;
+  EXPECT_STREQ(loader.error().message, "");
 }
 
 struct InvalidField {
@@ -100,10 +222,11 @@ INSTANTIATE_TEST_SUITE_P(
         InvalidField{"SymbolLength", "\"600000\"", "\"00000\""},
         InvalidField{"SymbolDigit", "\"600000\"", "\"60000a\""},
         InvalidField{"SymbolType", "\"600000\"", "600000"},
-        InvalidField{"Decimals", "\"price_decimals\":2",
-                     "\"price_decimals\":7"},
-        InvalidField{"NegativeDecimals", "\"price_decimals\":2",
-                     "\"price_decimals\":-1"},
+        InvalidField{"InlineDecimals", "\"symbol\":\"600000\"",
+                     "\"symbol\":\"600000\",\"price_decimals\":2"},
+        InvalidField{"InlineDecimalsOverride", "\"symbol\":\"600000\"",
+                     "\"symbol\":\"600000\",\"price_decimals\":4"},
+        InvalidField{"MissingDefinition", "\"600000\"", "\"600002\""},
         InvalidField{"BidZero", "\"bid_price\":1000", "\"bid_price\":0"},
         InvalidField{"BidOverflow", "\"bid_price\":1000",
                      "\"bid_price\":9223372036854775808"},
@@ -183,12 +306,49 @@ TEST(MarketDataConfigTest,
   EXPECT_EQ(loader.config().instruments[0].instrument.symbol_view(), "600000");
 }
 
-std::string ShmJson() {
+std::string ShmJson(
+    std::string_view catalog = YQUANT_TEST_INSTRUMENT_CATALOG_PATH) {
   // Place instruments before adapter to exercise order-independent schema.
   return R"({"source_id":1,"instruments":[)"
-         R"({"venue":"SSE","symbol":"600000","price_decimals":2}],)"
+         R"({"venue":"SSE","symbol":"600000"}],)"
          R"("runtime_directory":"/tmp/yquant","stream":"quotes.main",)"
-         R"("adapter":"shm"})";
+         R"("adapter":"shm","instrument_catalog":")" +
+         std::string(catalog) + "\"}";
+}
+
+TEST(MarketDataConfigTest, ResolvesNestedHostPathsAgainstTheirSharedCatalog) {
+  CatalogConfigDirectory directory;
+  ASSERT_TRUE(directory.valid());
+  ASSERT_TRUE(directory.Write(
+      "catalog/instruments.json",
+      R"({"instruments":[{"venue":"SSE","symbol":"600000","price_decimals":4},)"
+      R"({"venue":"SZSE","symbol":"000001","price_decimals":3}]})"));
+  ASSERT_TRUE(
+      directory.Write("hosts/nested/mock.json",
+                      Json(kInstrument, "../../catalog/instruments.json")));
+  ASSERT_TRUE(directory.Write("hosts/shm.json",
+                              ShmJson("../catalog/instruments.json")));
+  ASSERT_TRUE(directory.Write("unrelated/marker", ""));
+  ScopedWorkingDirectory working_directory(directory.File("unrelated").c_str());
+  ASSERT_TRUE(working_directory.valid());
+
+  MarketDataConfigLoader mock;
+  MarketDataConfigLoader shm;
+  ASSERT_TRUE(mock.Load(directory.File("hosts/nested/mock.json").c_str()).ok())
+      << mock.error().message;
+  ASSERT_TRUE(shm.Load("../hosts/shm.json").ok()) << shm.error().message;
+  ASSERT_EQ(mock.config().instrument_count, 1U);
+  ASSERT_EQ(shm.config().instrument_count, 1U);
+  const auto definition = mock.config().instruments[0].instrument;
+  EXPECT_EQ(definition.price_decimals, 4U);
+  EXPECT_EQ(shm.config().instruments[0].instrument, definition);
+
+  std::error_code error;
+  ASSERT_TRUE(std::filesystem::remove(
+      directory.File("catalog/instruments.json"), error));
+  ASSERT_FALSE(error);
+  EXPECT_EQ(mock.config().instruments[0].instrument, definition);
+  EXPECT_EQ(shm.config().instruments[0].instrument, definition);
 }
 
 TEST(MarketDataConfigTest, LoadsShmDictionaryAndOptionalPollInterval) {
@@ -223,8 +383,10 @@ TEST(MarketDataConfigTest, RejectsInvalidShmSchemaAndMixedAdapterFields) {
       {"MissingDirectory", "\"runtime_directory\":\"/tmp/yquant\",", ""},
       {"MockInterval", "\"adapter\":\"shm\"",
        "\"adapter\":\"shm\",\"interval_ms\":1"},
-      {"MockPrice", "\"price_decimals\":2",
-       "\"price_decimals\":2,\"bid_price\":0"},
+      {"InlineDecimals", "\"symbol\":\"600000\"",
+       "\"symbol\":\"600000\",\"price_decimals\":2"},
+      {"MockPrice", "\"symbol\":\"600000\"",
+       "\"symbol\":\"600000\",\"bid_price\":0"},
       {"PollNegative", "\"adapter\":\"shm\"",
        "\"adapter\":\"shm\",\"poll_interval_us\":-1"},
       {"PollOverflow", "\"adapter\":\"shm\"",

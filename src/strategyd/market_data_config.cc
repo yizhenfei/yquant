@@ -8,6 +8,7 @@
 #include <string_view>
 #include <utility>
 
+#include "strategyd/instrument_catalog.h"
 #include "strategyd/json_config_document.h"
 
 namespace yquant::strategyd {
@@ -82,9 +83,9 @@ std::string_view VenueName(model::Venue venue) noexcept {
   return {};
 }
 
-// Loads one complete instrument into temporary storage. No parser views are
-// retained in out. Adapter-specific field presence is checked after root
-// parsing, so field order never affects the selected schema.
+// Loads an instrument reference and optional mock seed into temporary storage.
+// Metadata is resolved from the catalog after root parsing. No parser views
+// are retained, and field order does not affect the selected adapter schema.
 base::Status ParseInstrument(simdjson::ondemand::value value, std::size_t index,
                              MockInstrumentConfig& out,
                              std::uint32_t& field_mask,
@@ -97,9 +98,9 @@ base::Status ParseInstrument(simdjson::ondemand::value value, std::size_t index,
   std::string_view venue;
   std::string_view symbol;
   std::uint32_t seen = 0;
-  constexpr std::string_view kFields[] = {
-      "venue",   "symbol",    "price_decimals", "bid_price",
-      "bid_qty", "ask_price", "ask_qty",        "price_step"};
+  constexpr std::string_view kFields[] = {"venue",     "symbol",    "bid_price",
+                                          "bid_qty",   "ask_price", "ask_qty",
+                                          "price_step"};
   for (auto field_result : object) {
     simdjson::ondemand::field field;
     json_error = std::move(field_result).get(field);
@@ -125,35 +126,26 @@ base::Status ParseInstrument(simdjson::ondemand::value value, std::size_t index,
       case 1:
         result = ReadText(field.value(), path.text, symbol, error);
         break;
-      case 2: {
-        std::uint64_t decimals;
-        result = ReadUnsigned(field.value(), path.text, decimals, error);
-        if (result.ok() && decimals > 6) {
-          result = Invalid(path.text, "must be an integer from 0 to 6", error);
-        }
-        if (result.ok()) parsed.instrument.price_decimals = decimals;
-        break;
-      }
-      case 3:
+      case 2:
         result = ReadInteger(field.value(), path.text, parsed.bid_price, error);
         break;
-      case 4:
+      case 3:
         result = ReadInteger(field.value(), path.text, parsed.bid_qty, error);
         break;
-      case 5:
+      case 4:
         result = ReadInteger(field.value(), path.text, parsed.ask_price, error);
         break;
-      case 6:
+      case 5:
         result = ReadInteger(field.value(), path.text, parsed.ask_qty, error);
         break;
-      case 7:
+      case 6:
         result =
             ReadInteger(field.value(), path.text, parsed.price_step, error);
         break;
     }
     if (!result.ok()) return result;
   }
-  for (std::size_t field = 0; field < 3; ++field) {
+  for (std::size_t field = 0; field < 2; ++field) {
     if ((seen & (1U << field)) == 0) {
       return Invalid(FieldPath(index, kFields[field]).text,
                      "required field is missing", error);
@@ -225,8 +217,10 @@ base::Status ReadOwnedText(simdjson::ondemand::value value,
 
 // Applies one adapter's schema after parsing all fields, allowing arbitrary
 // JSON field order while rejecting fields belonging to the other adapter.
-base::Status Parse(const JsonConfigDocument& source, MarketDataConfig& out,
-                   strategy::ConfigError& error) noexcept {
+base::Status Parse(
+    const JsonConfigDocument& source, MarketDataConfig& out,
+    char (&catalog_reference)[kMaxInstrumentCatalogPathLength + 1],
+    strategy::ConfigError& error) noexcept {
   simdjson::ondemand::parser parser;
   auto json_error =
       parser.allocate(source.source().size(), kMaxConfigDepth + 4);
@@ -238,11 +232,11 @@ base::Status Parse(const JsonConfigDocument& source, MarketDataConfig& out,
   json_error = document.get_object().get(root);
   if (json_error) return JsonError(json_error, "$", error);
   constexpr std::string_view kFields[] = {
-      "source_id",         "adapter", "interval_ms",     "instruments",
-      "runtime_directory", "stream",  "poll_interval_us"};
+      "source_id",         "adapter", "interval_ms",      "instruments",
+      "runtime_directory", "stream",  "poll_interval_us", "instrument_catalog"};
   constexpr std::string_view kInstrumentFields[] = {
-      "venue",   "symbol",    "price_decimals", "bid_price",
-      "bid_qty", "ask_price", "ask_qty",        "price_step"};
+      "venue",     "symbol",  "bid_price", "bid_qty",
+      "ask_price", "ask_qty", "price_step"};
   std::array<std::uint32_t, kMaxMarketDataInstruments> masks = {};
   std::uint32_t seen = 0;
   for (auto field_result : root) {
@@ -311,13 +305,17 @@ base::Status Parse(const JsonConfigDocument& source, MarketDataConfig& out,
         if (result.ok()) out.poll_interval_ns = microseconds * 1000;
         break;
       }
+      case 7:
+        result = ReadOwnedText(field.value(), key, catalog_reference, error);
+        break;
     }
     if (!result.ok()) return result;
   }
   const bool mock = out.adapter == MarketDataAdapter::kMock;
-  // source_id, adapter and instruments are common; transport settings belong
-  // only to the selected adapter. The optional SHM field is poll_interval_us.
-  constexpr std::uint32_t kCommonFields = (1U << 0) | (1U << 1) | (1U << 3);
+  // Source identity, adapter, catalog and selected instruments are common.
+  // Transport settings belong only to their selected adapter.
+  constexpr std::uint32_t kCommonFields =
+      (1U << 0) | (1U << 1) | (1U << 3) | (1U << 7);
   constexpr std::uint32_t kMockFields = kCommonFields | (1U << 2);
   constexpr std::uint32_t kShmFields = kCommonFields | (1U << 4) | (1U << 5);
   const std::uint32_t required = mock ? kMockFields : kShmFields;
@@ -330,7 +328,7 @@ base::Status Parse(const JsonConfigDocument& source, MarketDataConfig& out,
                      error);
   }
   for (std::size_t i = 0; i < out.instrument_count; ++i) {
-    for (std::size_t field = 3; field < std::size(kInstrumentFields); ++field) {
+    for (std::size_t field = 2; field < std::size(kInstrumentFields); ++field) {
       const bool present = (masks[i] & (1U << field)) != 0;
       if (mock && !present) {
         return Invalid(FieldPath(i, kInstrumentFields[field]).text,
@@ -429,7 +427,7 @@ base::Status ValidateMarketDataConfig(const MarketDataConfig& config,
       return Invalid(FieldPath(i, "symbol").text, "invalid instrument identity",
                      error);
     }
-    if (item.instrument.price_decimals > 6)
+    if (item.instrument.price_decimals > model::kMaxPriceDecimals)
       return Invalid(FieldPath(i, "price_decimals").text, "must be from 0 to 6",
                      error);
     if (!mock &&
@@ -480,7 +478,33 @@ base::Status MarketDataConfigLoader::Load(const char* path) noexcept {
     return result;
   }
   MarketDataConfig parsed;
-  result = Parse(document, parsed, error_);
+  char catalog_reference[kMaxInstrumentCatalogPathLength + 1] = {};
+  result = Parse(document, parsed, catalog_reference, error_);
+  if (!result.ok()) return result;
+  char catalog_path[kMaxInstrumentCatalogPathLength + 1] = {};
+  result = ResolveInstrumentCatalogPath(path, catalog_reference, catalog_path,
+                                        error_);
+  if (!result.ok()) return result;
+  InstrumentCatalogLoader catalog;
+  result = catalog.Load(catalog_path);
+  if (!result.ok()) {
+    const auto& cause = catalog.error();
+    char detail[sizeof(error_.message)];
+    const int length =
+        std::snprintf(detail, sizeof(detail), "%s: %s: %s", catalog_path,
+                      cause.field_path, cause.message);
+    error_.Set("instrument_catalog", detail);
+    error_.truncated |= cause.truncated || length < 0 ||
+                        static_cast<std::size_t>(length) >= sizeof(detail);
+    return result;
+  }
+  for (std::size_t i = 0; i < parsed.instrument_count; ++i) {
+    auto& definition = parsed.instruments[i].instrument;
+    if (!catalog.Find(definition.id, definition)) {
+      return Invalid(FieldPath(i, "symbol").text,
+                     "instrument is not defined in the catalog", error_);
+    }
+  }
   if (result.ok()) result = ValidateMarketDataConfig(parsed, error_);
   if (result.ok()) config_ = parsed;
   return result;

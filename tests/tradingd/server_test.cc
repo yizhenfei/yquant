@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "strategyd/market_data_config.h"
 #include "tradingd/connection.h"
 
 namespace yquant::tradingd {
@@ -434,7 +435,16 @@ class ConfigFiles {
   std::string Path(const char* name) const {
     return std::string(directory_) + "/" + name;
   }
+  bool CopyCatalog() const {
+    std::error_code error;
+    return std::filesystem::copy_file(YQUANT_TEST_INSTRUMENT_CATALOG_PATH,
+                                      Path("instruments.json"), error);
+  }
   bool Write(const char* name, std::string_view value) const {
+    std::error_code error;
+    std::filesystem::create_directories(
+        std::filesystem::path(Path(name)).parent_path(), error);
+    if (error) return false;
     auto* file = std::fopen(Path(name).c_str(), "wb");
     if (file == nullptr) return false;
     const bool written =
@@ -450,9 +460,11 @@ class ConfigFiles {
 TEST(TradingdConfigTest, LoadsStrictConfigurationAndRelativeReferences) {
   ConfigFiles files;
   ASSERT_TRUE(files.valid());
+  ASSERT_TRUE(files.CopyCatalog());
   ASSERT_TRUE(files.Write("market.json", R"({"source_id":1,"adapter":"mock",
+    "instrument_catalog":"instruments.json",
     "interval_ms":1,"instruments":[{"venue":"SSE","symbol":"600000",
-    "price_decimals":2,"bid_price":1000,"bid_qty":100,"ask_price":1001,
+    "bid_price":1000,"bid_qty":100,"ask_price":1001,
     "ask_qty":100,"price_step":1}]})"));
   ASSERT_TRUE(files.Write("trading.json", R"({"adapter":"mock","mode":"working",
     "report_interval_ms":1,"shutdown_timeout_ms":5000,"initial_cash":1234,
@@ -470,6 +482,8 @@ TEST(TradingdConfigTest, LoadsStrictConfigurationAndRelativeReferences) {
   EXPECT_EQ(loader.config().shutdown_timeout_ns, 2000000000);
   EXPECT_EQ(loader.config().trading.initial_account.cash_balance, 1234);
   EXPECT_EQ(loader.config().market_data.instrument_count, 1U);
+  EXPECT_EQ(
+      loader.config().market_data.instruments[0].instrument.price_decimals, 2);
 
   ASSERT_TRUE(files.Write("server.json", R"({"listen":{"address":"127.0.0.1",
     "port":19200},"market_data_config":"market.json",
@@ -482,6 +496,44 @@ TEST(TradingdConfigTest, LoadsStrictConfigurationAndRelativeReferences) {
     "port":19200},"market_data_config":"market.json",
     "trading_config":"trading.json","token":"a","token":"b"})"));
   EXPECT_FALSE(loader.Load(files.Path("server.json").c_str()).ok());
+}
+
+TEST(TradingdConfigTest, NestedMarketConfigAndClientShareCatalogDefinitions) {
+  ConfigFiles files;
+  ASSERT_TRUE(files.valid());
+  ASSERT_TRUE(files.CopyCatalog());
+  ASSERT_TRUE(files.Write("sources/market.json",
+                          R"({"source_id":1,"adapter":"mock",
+    "instrument_catalog":"../instruments.json","interval_ms":1,
+    "instruments":[{"venue":"SZSE","symbol":"000557","bid_price":43000,
+    "bid_qty":100,"ask_price":43001,"ask_qty":100,"price_step":1}]})"));
+  ASSERT_TRUE(files.Write("broker/trading.json",
+                          R"({"adapter":"mock","mode":"working",
+    "report_interval_ms":1,"shutdown_timeout_ms":5000,"initial_cash":1234,
+    "initial_positions":[]})"));
+  ASSERT_TRUE(files.Write("server.json",
+                          R"({"listen":{"address":"127.0.0.1","port":19200},
+    "market_data_config":"sources/market.json",
+    "trading_config":"broker/trading.json","token":"test-token"})"));
+  ASSERT_TRUE(files.Write("client_market.json",
+                          R"({"source_id":1,"adapter":"shm",
+    "instrument_catalog":"instruments.json","runtime_directory":")" +
+                              files.Path("stream") +
+                              R"(","stream":"quotes",
+    "instruments":[{"venue":"SZSE","symbol":"000557"}]})"));
+
+  ConfigLoader gateway;
+  ASSERT_TRUE(gateway.Load(files.Path("server.json").c_str()).ok())
+      << gateway.error().field_path << ": " << gateway.error().message;
+  strategyd::MarketDataConfigLoader client;
+  ASSERT_TRUE(client.Load(files.Path("client_market.json").c_str()).ok())
+      << client.error().field_path << ": " << client.error().message;
+  ASSERT_EQ(gateway.config().market_data.instrument_count, 1U);
+  ASSERT_EQ(client.config().instrument_count, 1U);
+  const auto& definition =
+      gateway.config().market_data.instruments[0].instrument;
+  EXPECT_EQ(definition.price_decimals, 4);
+  EXPECT_EQ(definition, client.config().instruments[0].instrument);
 }
 
 }  // namespace

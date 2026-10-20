@@ -1,0 +1,364 @@
+{
+  "instruments": [
+    {
+      "venue": "SSE",
+      "symbol": "600000",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "600001",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SZSE",
+      "symbol": "600000",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SZSE",
+      "symbol": "000001",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000000",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000001",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000002",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000003",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000004",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000005",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000006",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000007",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000008",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000009",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000010",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000011",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000012",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000013",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000014",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000015",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000016",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000017",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000018",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000019",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000020",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000021",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000022",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000023",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000024",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000025",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000026",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000027",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000028",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000029",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000030",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000031",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000032",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000033",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000034",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000035",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000036",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000037",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000038",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000039",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000040",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000041",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000042",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000043",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000044",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000045",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000046",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000047",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000048",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000049",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000050",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000051",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000052",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000053",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000054",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000055",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000056",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000057",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000058",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000059",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000060",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000061",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000062",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000063",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SSE",
+      "symbol": "000064",
+      "price_decimals": 2
+    },
+    {
+      "venue": "SZSE",
+      "symbol": "000557",
+      "price_decimals": 4
+    },
+    {
+      "venue": "SZSE",
+      "symbol": "000519",
+      "price_decimals": 4
+    },
+    {
+      "venue": "SZSE",
+      "symbol": "000895",
+      "price_decimals": 4
+    }
+  ]
+}

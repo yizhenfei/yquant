@@ -40,12 +40,13 @@ class TradingdProcessTest : public ::testing::Test {
     ASSERT_NE(port_, 0);
     ASSERT_TRUE(directory_.Write(
         "market.json",
-        R"({"adapter":"mock","source_id":1,"interval_ms":10,"instruments":[)"
-        R"({"venue":"SSE","symbol":"600000","price_decimals":2,)"
+        R"({"adapter":"mock","source_id":1,"interval_ms":10,)"
+        R"("instrument_catalog":"instruments.json","instruments":[)"
+        R"({"venue":"SSE","symbol":"600000",)"
         R"("bid_price":1000,"bid_qty":100,"ask_price":1001,"ask_qty":200,"price_step":0}]})"));
     ASSERT_TRUE(directory_.Write(
         "strategy.json",
-        R"({"strategy_id":"shared-account","parameters":{"source_id":1,)"
+        R"({"strategy_id":"shared-account","parameters":{)"
         R"("venue":"SSE","symbol":"600000","side":"buy","quantity":200}})"));
     ASSERT_TRUE(directory_.Write(
         "server.json",
@@ -136,10 +137,11 @@ TEST_F(TradingdProcessTest, TwoStrategiesFillAgainstOneAccount) {
           R"(","stream":"quotes","capacity":16384,"max_payload_size":80}]})"));
   ASSERT_TRUE(directory_.Write(
       "shared_market.json",
-      R"({"adapter":"shm","source_id":1,"runtime_directory":")" +
+      R"({"adapter":"shm","source_id":1,)"
+      R"("instrument_catalog":"instruments.json","runtime_directory":")" +
           std::string(directory_.path()) +
           R"(","stream":"quotes","poll_interval_us":0,"instruments":[)"
-          R"({"venue":"SSE","symbol":"600000","price_decimals":2}]})"));
+          R"({"venue":"SSE","symbol":"600000"}]})"));
   ChildProcess marketd;
   ASSERT_EQ(marketd.Start(YQUANT_TEST_MARKETD_PATH,
                           {"--config", directory_.File("marketd.json")}),

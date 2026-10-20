@@ -51,6 +51,7 @@ endif()
 
 # Both daemons reuse host configuration, mock input and termination handling.
 add_library(yquant_host_support STATIC
+  src/strategyd/instrument_catalog.cc
   src/strategyd/json_config_document.cc
   src/strategyd/market_data_config.cc
   src/strategyd/mock_market_data_source.cc
@@ -154,6 +155,8 @@ target_link_libraries(parameterized_strategy PRIVATE simdjson::simdjson)
 target_link_libraries(quote_observer_strategy PRIVATE simdjson::simdjson)
 target_link_libraries(order_lifecycle_strategy PRIVATE simdjson::simdjson)
 target_link_libraries(shared_account_strategy PRIVATE simdjson::simdjson)
+configure_file(examples/instruments.json
+  "${CMAKE_BINARY_DIR}/instruments.json" COPYONLY)
 configure_file(examples/strategies/mock_market_data.json
   "${CMAKE_BINARY_DIR}/strategies/mock_market_data.json" COPYONLY)
 configure_file(examples/strategies/shm_market_data.json

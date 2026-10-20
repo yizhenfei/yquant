@@ -1,12 +1,12 @@
 {
   "source_id": 1,
   "adapter": "mock",
+  "instrument_catalog": "../instruments.json",
   "interval_ms": 100,
   "instruments": [
     {
       "venue": "SSE",
       "symbol": "600000",
-      "price_decimals": 2,
       "bid_price": 1000,
       "bid_qty": 100,
       "ask_price": 1001,

@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <limits>
 #include <new>
 #include <string_view>
 
@@ -31,7 +30,6 @@ using yquant::model::OrderUpdateKind;
 using yquant::model::PositionSnapshot;
 using yquant::model::QuoteFlag;
 using yquant::model::QuoteTick;
-using yquant::model::SourceId;
 using yquant::strategy::ConfigError;
 using yquant::strategy::Strategy;
 using yquant::strategy::StrategyConfig;
@@ -41,7 +39,6 @@ using yquant::strategy::StrategyPlugin;
 // Owns the instrument selection and quantity; the parser/input die at startup.
 class OrderLifecycleConfig final : public StrategyConfig {
  public:
-  SourceId source_id() const noexcept { return source_id_; }
   std::string_view venue() const noexcept { return {venue_, venue_size_}; }
   std::string_view symbol() const noexcept {
     return {symbol_, sizeof(symbol_)};
@@ -60,16 +57,12 @@ class OrderLifecycleConfig final : public StrategyConfig {
       return parsed == simdjson::MEMALLOC ? ErrorCode::kResourceExhausted
                                           : ErrorCode::kInvalidArgument;
     }
-    std::uint64_t source_id = 0;
     std::string_view venue;
     std::string_view symbol;
     std::int64_t quantity = 0;
     for (const auto field : object) {
       bool invalid = false;
-      if (field.key == "source_id") {
-        invalid = field.value.get_uint64().get(source_id) || source_id == 0 ||
-                  source_id > std::numeric_limits<std::uint32_t>::max();
-      } else if (field.key == "venue") {
+      if (field.key == "venue") {
         invalid = field.value.get_string().get(venue) ||
                   (venue != "SSE" && venue != "SZSE" && venue != "BSE");
       } else if (field.key == "symbol") {
@@ -88,15 +81,13 @@ class OrderLifecycleConfig final : public StrategyConfig {
         return ErrorCode::kInvalidArgument;
       }
     }
-    if (source_id == 0 || venue.empty() || symbol.empty() || quantity == 0) {
-      error.Set(source_id == 0   ? "source_id"
-                : venue.empty()  ? "venue"
+    if (venue.empty() || symbol.empty() || quantity == 0) {
+      error.Set(venue.empty()    ? "venue"
                 : symbol.empty() ? "symbol"
                                  : "quantity",
                 "required parameter is missing");
       return ErrorCode::kInvalidArgument;
     }
-    source_id_.value = static_cast<std::uint32_t>(source_id);
     std::memcpy(venue_, venue.data(), venue.size());
     venue_size_ = venue.size();
     std::memcpy(symbol_, symbol.data(), symbol.size());
@@ -105,7 +96,6 @@ class OrderLifecycleConfig final : public StrategyConfig {
   }
 
  private:
-  SourceId source_id_;
   char venue_[4] = {};
   std::size_t venue_size_ = 0;
   char symbol_[yquant::model::kSymbolLength] = {};
@@ -150,8 +140,7 @@ class OrderLifecycleStrategy final : public Strategy {
          initial_position_.reserved_qty != 0)) {
       return ErrorCode::kCorrupt;
     }
-    const auto subscribed =
-        market_data.SubscribeQuotes(config_.source_id(), instrument_.id);
+    const auto subscribed = market_data.SubscribeQuotes(instrument_.id);
     if (subscribed != ErrorCode::kOk) return subscribed;
     const auto printed = PrintMarker("order_lifecycle: ready\n");
     return printed == ErrorCode::kOk ? ReportAccount(context, "initial")
