@@ -67,11 +67,11 @@ NautilusTrader 将这些类型放在 `nautilus_model` / `nautilus_trader.model`�
 
 `SourceId` 为包装 `uint32_t` 的强类型，`0` 无效，由宿主配置中的 `source_id` 指定，标识原始行情接入来源。`adapter` 指定宿主读取行情的实现类型：`mock` 或 `shm`。中继及共享内存订阅保留原始来源 ID；读取同一来源的多个策略进程使用相同的 `source_id`，独立接入来源使用不同的 ID。
 
-多个适配器可以提供同一个标的的行情，因此来源身份与标的身份分别保存。每个 `strategyd` 配置一个来源，`QuoteTick`、订阅和查询接口均携带来源，缓存和去重以 `(source_id, instrument_id)` 为键。共享内存输入逐条验证报价中的来源与配置一致。
+多个适配器可以提供同一个标的的行情，因此来源身份与标的身份分别保存。每个 `strategyd` 由宿主配置绑定唯一原始来源，策略在该绑定范围内按 `InstrumentId` 订阅和查询。`QuoteTick::source_id` 保留原始来源身份；订阅、缓存和序号均在该绑定范围内按标的维护，入站报价在更新状态前必须通过来源一致性校验。
 
-Nautilus 的行情客户端在接入层持有 `ClientId`，其原生 `QuoteTick` 不含客户端 ID。YQuant 将 `source_id` 放入报价记录，是为本项目的来源追踪与查询作出的接口选择。[客户端适配器](https://github.com/nautechsystems/nautilus_trader/blob/develop/crates/data/src/client.rs)、[原生 QuoteTick](https://github.com/nautechsystems/nautilus_trader/blob/develop/crates/model/src/data/quote.rs)
+Nautilus 的行情客户端在接入层持有 `ClientId`，其原生 `QuoteTick` 不含客户端 ID。YQuant 将 `source_id` 放入报价记录，用于来源追踪与协议校验。[客户端适配器](https://github.com/nautechsystems/nautilus_trader/blob/develop/crates/data/src/client.rs)、[原生 QuoteTick](https://github.com/nautechsystems/nautilus_trader/blob/develop/crates/model/src/data/quote.rs)
 
-多源同时启动、优先级、故障切换和综合报价不进入首版。后续扩展时，每个来源独立维护状态，并先按统一标的定义完成数值归一化；不同来源的序号不能互相比较，也不自动按到达先后合并报价。需要支持重连并重置序号时，再定义来源会话代次和缓存失效协议。
+运行期间不提供选源或切源。多源同时启动、优先级、故障切换和综合报价留待后续设计。扩展时，每个来源独立维护状态，并先按统一标的定义完成数值归一化；不同来源的序号不能互相比较，也不自动按到达先后合并报价。需要支持重连并重置序号时，再定义来源会话代次和缓存失效协议。
 
 ## 行情数据
 
@@ -89,7 +89,7 @@ Nautilus 的行情客户端在接入层持有 `ClientId`，其原生 `QuoteTick`
 
 | 字段 | 类型与语义 |
 | --- | --- |
-| `source_id` | `SourceId`，标识宿主配置的行情接入实例 |
+| `source_id` | `SourceId`，标识原始行情来源，必须与宿主绑定的来源一致 |
 | `instrument_id` | `InstrumentId`，关联本次运行的标的定义 |
 | `sequence` | `uint64_t`，来源会话内在 `(source_id, instrument_id)` 范围从 `1` 开始递增；Live 接入时首条可大于 `1`，运行期间不重置 |
 | `event_time_ns` | `uint64_t`，存在时为 Unix 纪元起的 UTC 纳秒，原始时间的精度不会因换算而提高 |
@@ -100,7 +100,7 @@ Nautilus 的行情客户端在接入层持有 `ClientId`，其原生 `QuoteTick`
 
 一侧不存在时清除该侧标志，价格和数量规范化为 `0`；一侧存在时数量必须大于 `0`。是否存在由标志决定，不能仅通过零价格推断。事件时间缺失时清除对应标志并将值置零。
 
-锁盘、交叉盘及不可交易状态仍可形成完整行情事件，交给策略判断是否采取行动。框架不因 `bid_price >= ask_price` 静默过滤事件。负数量、未知标的、来源与当前适配器不符、未知标志或字段与存在标志矛盾属于源协议错误，停止运行并报告原因。`receive_time_ns` 不得晚于宿主当前 `Now()`；违反这一约束说明时间域或时间戳错误，同样作为非法行情拒绝。
+锁盘、交叉盘及不可交易状态仍可形成完整行情事件，交给策略判断是否采取行动。框架不因 `bid_price >= ask_price` 静默过滤事件。负数量、未知标的、来源与宿主绑定不符、未知标志或字段与存在标志矛盾属于源协议错误，停止运行并报告原因。`receive_time_ns` 不得晚于宿主当前 `Now()`；违反这一约束说明时间域或时间戳错误，同样作为非法行情拒绝。
 
 多档快照后续使用独立的 `OrderBookDepth` 类型，单独定义深度订阅和回调。本阶段只提供一档报价（BBO）订阅和 `OnTick`。
 
@@ -112,7 +112,7 @@ Nautilus 的行情客户端在接入层持有 `ClientId`，其原生 `QuoteTick`
 
 市场事件时间不能与本地单调时间相减。行情过期判断使用 `Now() - receive_time_ns`。首版不提供定时回调，没有新行情时不主动触发策略的过期检查。
 
-运行时按 `(source_id, instrument_id)` 保存最后接受的序号。重复或旧序号不覆盖该键的快照，也不触发 `OnTick()`，仅累计饱和的 `uint64_t` 诊断计数；停止后仍保留计数，非零时进程输出 `yquant-strategyd: ignored_quotes=N`。两个来源都出现 `sequence=1` 不构成重复。报价来源序号跳跃可以被接受，因为每条记录都是完整报价，且上游序号是否连续由适配器按供应商协议解释。共享内存流序号独立于报价来源序号，前者连续扫描并检测覆盖；报告 `Gap` 时停止策略，不用完整快照的规则静默跳过缺失记录。
+运行时先校验报价属于宿主绑定的来源，再按 `instrument_id` 保存最后接受的序号。重复或旧序号不覆盖该标的的快照，也不触发 `OnTick()`，仅累计饱和的 `uint64_t` 诊断计数；停止后仍保留计数，非零时进程输出 `yquant-strategyd: ignored_quotes=N`。报价来源序号跳跃可以被接受，因为每条记录都是完整报价，且上游序号是否连续由适配器按供应商协议解释。共享内存流序号独立于报价来源序号，前者连续扫描并检测覆盖；报告 `Gap` 时停止策略，不用完整快照的规则静默跳过缺失记录。
 
 适配器保留原生序号的解释责任，不直接把重连后清零的上游序号作为当前发布序号。本阶段发生断线或需要重建流状态时，以行情源错误停止运行；发布序号耗尽也停止运行。
 
@@ -142,21 +142,19 @@ base::ErrorCode FindInstrument(
     std::string_view venue, std::string_view symbol,
     model::InstrumentDefinition& out) const noexcept;
 
-base::ErrorCode SubscribeQuotes(
-    model::SourceId source_id, model::InstrumentId id) noexcept;
+base::ErrorCode SubscribeQuotes(model::InstrumentId id) noexcept;
 
 bool TryGetLatestQuote(
-    model::SourceId source_id, model::InstrumentId id,
-    model::QuoteTick& out) const noexcept;
+    model::InstrumentId id, model::QuoteTick& out) const noexcept;
 ```
 
 `FindInstrument()` 复制完整标的定义。输入视图只在调用期间借用；找不到标的时返回 `kInvalidArgument`，保持 `out` 不变。名称解析用于启动阶段；行情热路径通过固定容量哈希表将稳定 ID 映射到预分配槽位，不解析场所或代码字符串。
 
-`SubscribeQuotes()` 只允许在 `OnStart()` 中调用，登记该策略需要的来源和标的。重复订阅同一来源与标的成功返回且不增加名额；未知来源、未知标的或来源不提供该标的时返回 `kInvalidArgument`，没有行情源时返回 `kUnsupported`，在其他回调中调用返回 `kInvalidState`。失败不改变已有订阅。
+`SubscribeQuotes()` 只允许在 `OnStart()` 中调用，在宿主绑定的来源中登记标的订阅。重复订阅同一标的成功返回且不增加名额；标的 ID 无效或不在配置字典中时返回 `kInvalidArgument`，没有行情源时返回 `kUnsupported`，在其他回调中调用返回 `kInvalidState`。失败不改变已有订阅。
 
 订阅成功表示本地登记完成，不表示已收到行情。`OnStart()` 成功后冻结订阅表，再启动行情源；期间不重入 `OnTick()`。启动失败时撤销本次全部登记，运行中不提供增加或取消订阅的接口。
 
-`TryGetLatestQuote()` 将指定来源与标的的最新已分派快照复制到 `out`。未订阅、任一 ID 无效或尚无行情时返回 `false`，保持 `out` 不变。它不等待下一条行情，也不按时间自动删除旧快照；策略自行判断新鲜度。在 `OnTick()` 内查询当前来源与标的，结果必须与本次回调参数一致。
+`TryGetLatestQuote()` 将宿主绑定来源中指定标的的最新已分派快照复制到 `out`。没有行情源、标的 ID 无效或不在配置字典中、未订阅或尚无行情时返回 `false`，保持 `out` 不变。它不等待下一条行情，也不按时间自动删除旧快照；策略自行判断新鲜度。在 `OnTick()` 内按当前 `tick.instrument_id` 查询，结果必须与本次回调参数一致。
 
 ### 回调
 
@@ -181,12 +179,12 @@ virtual base::ErrorCode OnStop(StrategyContext& context) noexcept = 0;
 OnStart(context):
     用 context.market_data().FindInstrument(venue, symbol, definition) 查找标的
     保存 InstrumentId 和计量单位
-    用 context.market_data().SubscribeQuotes(source_id, id) 登记订阅
+    用 context.market_data().SubscribeQuotes(id) 登记订阅
     return 成功
 
 OnTick(context, tick):
     用 context.market_data().TryGetLatestQuote(
-        tick.source_id, tick.instrument_id, snapshot) 查询快照
+        tick.instrument_id, snapshot) 查询快照
     检查 snapshot 与 tick 一致
     在预分配状态中记录序号、回调次数和数据年龄
     return 成功
@@ -264,7 +262,7 @@ Stop() -> Status
 
 `--strategy` 和 `--config` 必填，`--market-data-config <path>` 可选且只允许出现一次。没有该参数时不建立行情源，标的字典为空，生命周期示例仍可以运行。
 
-行情配置由宿主读取，指定源类型、传输参数和可供订阅的标的。策略在 `OnStart()` 中通过 `MarketData` 选择订阅，宿主根据成功登记的结果建立源订阅表。
+行情配置由宿主读取，绑定原始来源，指定源类型、传输参数和可供订阅的标的。策略在 `OnStart()` 中通过 `MarketData` 选择标的订阅，宿主根据成功登记的结果建立源订阅表。
 
 ### 通用校验
 
@@ -336,20 +334,19 @@ Stop() -> Status
 {
   "strategy_id": "quote-observer-001",
   "parameters": {
-    "source_id": 1,
     "venue": "SSE",
     "symbol": "600000"
   }
 }
 ```
 
-`source_id`、`venue`、`symbol` 由观察策略的派生配置类读取；`source_id` 必须匹配宿主配置的接入实例。所有标的定义可供查询，只有策略成功登记的来源与标的组合才进入源订阅表和行情回调；字典存在不等于已经订阅。
+`venue`、`symbol` 由观察策略的派生配置类读取，来源由宿主行情配置绑定。所有标的定义可供查询，只有策略成功登记的标的才进入源订阅表和行情回调；字典存在不等于已经订阅。同一标的改用其他宿主来源或传输类型时，策略配置保持不变。
 
 ## 内存与工程组织
 
 `StrategyRunner` 直接内嵌 `MarketDataImpl`，由它持有标的字典、订阅表、行情缓存、回调阶段和单调时钟引用。`StrategyContextImpl` 是薄视图，借用时钟、`MarketData` 与 `Trading` 服务；行情状态仍由 `MarketDataImpl` 持有。宿主按配置选择内嵌的模拟或共享内存源；测试注入的源替代此选择，配置校验和字典建立规则不变。行情服务与上下文均由宿主管理，存活时间覆盖策略收尾。
 
-字典、订阅表和缓存采用最多 64 项的连续存储，稳定标的 ID 通过固定 128 槽哈希表映射到内部数组索引。哈希只用于初始化后不扩容的内部查找，不作为公共 ID 或持久身份。来源固定为配置中的一个接入实例，查询仍须验证来源。行情热路径中的读取、校验、快照复制和回调调度不动态申请或扩容；策略自身的行情回调也遵循这一约束。共享内存连接的映射与订阅端分配发生在 `Start()`，发现入口检查所需的临时分配和文件 I/O 留在 `Service()` 冷路径。
+字典、订阅表和缓存采用最多 64 项的连续存储，稳定标的 ID 通过固定 128 槽哈希表映射到内部数组索引。哈希只用于初始化后不扩容的内部查找，不作为公共 ID 或持久身份。宿主在绑定来源范围内按标的保存状态，入站报价须先通过来源校验。行情热路径中的读取、校验、快照复制和回调调度不动态申请或扩容；策略自身的行情回调也遵循这一约束。共享内存连接的映射与订阅端分配发生在 `Start()`，发现入口检查所需的临时分配和文件 I/O 留在 `Service()` 冷路径。
 
 等待与信号设施在初始化阶段建立，资源失败通过显式结果返回。Linux 与 macOS 使用相同的 `pselect()` 和信号掩码协议；通过计时及信号测试验证目标平台行为，不通过额外线程驱动模拟行情。
 
@@ -386,12 +383,12 @@ Stop() -> Status
 | --- | --- |
 | 行情接入 | 真实动态库可从模拟源或 `marketd` 共享内存持续收到行情；策略订阅和回调接口相同，收到停止信号后正常退出 |
 | 单线程执行 | 行情源读取、维护与全部策略回调在主线程执行，不创建行情或信号等待线程；源不直接调用策略，不发生回调重入 |
-| 初始化与订阅 | 名称解析、重复订阅、未知来源、未知标的、无行情源及错误阶段调用符合约定；`OnStart()` 返回前不发生行情回调 |
+| 初始化与订阅 | 名称解析、重复订阅、无效或未知标的、无行情源及错误阶段调用符合约定；`OnStart()` 返回前不发生行情回调 |
 | 接口访问 | `StrategyContext` 的 const 与非 const 访问器返回同一宿主行情对象；查询通过 `MarketData` 的 const 方法执行，引用不跨回调保存 |
 | 稳定标识 | 同一场所和六位代码跨配置顺序、来源及进程构造得到相同 ID；不同场所分离，前导零保留，稳定 ID 与内部缓存索引独立 |
-| 快照一致性 | 首条行情前查询失败且输出不变；每次先更新缓存再回调，当前来源与标的查询和回调参数一致，错误来源查询失败且输出不变 |
+| 快照一致性 | 无行情源、无效或未知标的、未订阅及首条行情前查询均失败且输出不变；每次先更新缓存再回调，按当前标的查询得到本次回调的完整快照 |
 | 顺序与存在标志 | 旧、重复序号不分派，完整快照允许序号跳跃；单边缺失、锁盘和不可交易事件按原语义传给策略 |
-| 来源与序号范围 | 错误来源事件在序号比较前拒绝，不能改变当前来源最后接受的序号；订阅和查询不能忽略来源参数 |
+| 来源绑定与序号范围 | 订阅和查询使用宿主绑定的唯一来源，运行中不能切源；错误来源事件在序号比较前拒绝，不能改变已保存的快照及序号 |
 | 配置边界 | 64 个标的正常加载，65 个、重复标的、非法来源 ID、未知键、非法单位精度及数值溢出均在加载动态库前拒绝 |
 | 信号等待竞态 | 在检查停止与进入等待之间发送信号仍能退出；无行情时可停止，持续有行情时也不会使信号饥饿 |
 | 行情源故障 | 注入 `Start()`、`Poll()` 或 `Service()` 错误，停止行情并按交易收尾规则处理委托，最终配对停止回调且非零退出；`Idle` 和错误保持输出对象不变 |

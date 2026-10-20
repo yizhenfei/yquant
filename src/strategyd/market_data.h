@@ -26,12 +26,13 @@ class MarketDataImpl final : public strategy::MarketData {
   explicit MarketDataImpl(const MonotonicClock& clock) noexcept
       : clock_(clock) {}
 
-  // Copies validated metadata into an unconfigured object outside callbacks.
+  // Binds the configured source and copies its validated instrument metadata
+  // into an unconfigured object outside callbacks.
   // Borrows config only for this call. Failure preserves the current state;
   // successful configuration remains in place until Reset().
   [[nodiscard]] base::Status Configure(const MarketDataConfig& config) noexcept;
-  // Invalidates cached snapshots and registrations. Call only outside
-  // callbacks.
+  // Clears the source binding, cached snapshots, and registrations. Call only
+  // outside callbacks.
   void Reset() noexcept;
 
   // Host-only, non-nested phase boundaries on the owning thread. Begin before
@@ -58,10 +59,9 @@ class MarketDataImpl final : public strategy::MarketData {
       std::string_view venue, std::string_view symbol,
       model::InstrumentDefinition& out) const noexcept override;
   [[nodiscard]] base::ErrorCode SubscribeQuotes(
-      model::SourceId source_id, model::InstrumentId id) noexcept override;
+      model::InstrumentId id) noexcept override;
   [[nodiscard]] bool TryGetLatestQuote(
-      model::SourceId source_id, model::InstrumentId id,
-      model::QuoteTick& out) const noexcept override;
+      model::InstrumentId id, model::QuoteTick& out) const noexcept override;
 
   // Borrows fixed storage until Reset(). The runner consumes the registration
   // list after OnStart has returned, when no further registrations are allowed.
@@ -69,8 +69,9 @@ class MarketDataImpl final : public strategy::MarketData {
     return {subscriptions_.data(), subscription_count_};
   }
 
-  // Validates before publishing. Accepted quotes update the cache; old quotes
-  // succeed with accepted=false. Failure changes neither cache nor accepted.
+  // Validates against the bound source before publishing. Accepted quotes
+  // update the cache; old quotes succeed with accepted=false. Failure changes
+  // neither cache nor accepted.
   [[nodiscard]] base::ErrorCode ApplyQuote(const model::QuoteTick& tick,
                                            bool& accepted) noexcept;
 
@@ -95,6 +96,7 @@ class MarketDataImpl final : public strategy::MarketData {
   std::optional<std::size_t> FindIndex(model::InstrumentId id) const noexcept;
 
   const MonotonicClock& clock_;
+  // Set by Configure and fixed until Reset; zero means no source is bound.
   model::SourceId source_id_;
   std::size_t instrument_count_ = 0;
   std::array<InstrumentSlot, kMaxMarketDataInstruments> instruments_ = {};

@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <limits>
 #include <new>
 #include <string_view>
 
@@ -50,7 +49,6 @@ ModuleLifetime module_lifetime;
 
 class FixtureConfig final : public StrategyConfig {
  public:
-  yquant::model::SourceId source_id() const noexcept { return {source_id_}; }
   std::string_view venue() const noexcept { return venue_; }
   std::string_view symbol() const noexcept { return symbol_; }
 
@@ -135,17 +133,10 @@ class FixtureConfig final : public StrategyConfig {
       error.Set("", "expected an object");
       return ErrorCode::kInvalidArgument;
     }
-    std::uint64_t source_id = 0;
     std::string_view venue;
     std::string_view symbol;
     for (const auto field : object) {
-      if (field.key == "source_id") {
-        if (field.value.get_uint64().get(source_id) || source_id == 0 ||
-            source_id > std::numeric_limits<std::uint32_t>::max()) {
-          error.Set("source_id", "expected a nonzero uint32 source ID");
-          return ErrorCode::kInvalidArgument;
-        }
-      } else if (field.key == "venue") {
+      if (field.key == "venue") {
         if (field.value.get_string().get(venue) ||
             (venue != "SSE" && venue != "SZSE" && venue != "BSE")) {
           error.Set("venue", "expected a supported venue");
@@ -163,11 +154,10 @@ class FixtureConfig final : public StrategyConfig {
         return ErrorCode::kInvalidArgument;
       }
     }
-    if (source_id == 0 || venue.empty() || symbol.empty()) {
-      error.Set("", "source_id, venue and symbol are required");
+    if (venue.empty() || symbol.empty()) {
+      error.Set("", "venue and symbol are required");
       return ErrorCode::kInvalidArgument;
     }
-    source_id_ = static_cast<std::uint32_t>(source_id);
     std::memcpy(venue_, venue.data(), venue.size());
     std::memcpy(symbol_, symbol.data(), symbol.size());
     return ErrorCode::kOk;
@@ -176,7 +166,6 @@ class FixtureConfig final : public StrategyConfig {
   std::int64_t quote_qty_ = 0;
   std::int64_t large_value_ = 0;
   char label_[64] = {};
-  std::uint32_t source_id_ = 0;
   char venue_[5] = {};
   char symbol_[yquant::model::kSymbolLength + 1] = {};
 };
@@ -225,20 +214,16 @@ class FixtureStrategy final : public Strategy {
       auto& market_data = context.market_data();
       yquant::model::QuoteTick snapshot;
       if (last_sequence_ != 0 &&
-          (!market_data.TryGetLatestQuote(config_.source_id(), instrument_id_,
-                                          snapshot) ||
+          (!market_data.TryGetLatestQuote(instrument_id_, snapshot) ||
            snapshot.sequence != last_sequence_)) {
         return ErrorCode::kCorrupt;
       }
       const auto expected = snapshot;
-      const yquant::model::SourceId wrong_source{
-          config_.source_id().value == 1 ? 2U : 1U};
-      if (market_data.TryGetLatestQuote(wrong_source, instrument_id_,
-                                        snapshot) ||
+      if (market_data.TryGetLatestQuote({}, snapshot) ||
           !SameQuote(snapshot, expected)) {
         return ErrorCode::kCorrupt;
       }
-      if (market_data.SubscribeQuotes(config_.source_id(), instrument_id_) !=
+      if (market_data.SubscribeQuotes(instrument_id_) !=
           ErrorCode::kInvalidState) {
         return ErrorCode::kCorrupt;
       }
@@ -256,18 +241,14 @@ class FixtureStrategy final : public Strategy {
       auto& market_data = context.market_data();
       yquant::model::QuoteTick snapshot;
       if (tick.sequence <= last_sequence_ ||
-          !market_data.TryGetLatestQuote(tick.source_id, tick.instrument_id,
-                                         snapshot) ||
+          !market_data.TryGetLatestQuote(tick.instrument_id, snapshot) ||
           !SameQuote(snapshot, tick) || context.Now() < tick.receive_time_ns ||
-          market_data.SubscribeQuotes(tick.source_id, tick.instrument_id) !=
+          market_data.SubscribeQuotes(tick.instrument_id) !=
               ErrorCode::kInvalidState) {
         return ErrorCode::kCorrupt;
       }
       const auto expected = snapshot;
-      const yquant::model::SourceId wrong_source{
-          tick.source_id.value == 1 ? 2U : 1U};
-      if (market_data.TryGetLatestQuote(wrong_source, tick.instrument_id,
-                                        snapshot) ||
+      if (market_data.TryGetLatestQuote({}, snapshot) ||
           !SameQuote(snapshot, expected)) {
         return ErrorCode::kCorrupt;
       }
@@ -306,21 +287,17 @@ class FixtureStrategy final : public Strategy {
     if (market_data.FindInstrument("INVALID", config_.symbol(), unchanged) !=
             ErrorCode::kInvalidArgument ||
         unchanged != instrument ||
-        market_data.SubscribeQuotes(config_.source_id(), {}) !=
-            ErrorCode::kInvalidArgument) {
+        market_data.SubscribeQuotes({}) != ErrorCode::kInvalidArgument) {
       return ErrorCode::kCorrupt;
     }
-    const ErrorCode subscribe =
-        market_data.SubscribeQuotes(config_.source_id(), instrument_id_);
+    const ErrorCode subscribe = market_data.SubscribeQuotes(instrument_id_);
     if (subscribe != ErrorCode::kOk ||
-        market_data.SubscribeQuotes(config_.source_id(), instrument_id_) !=
-            ErrorCode::kOk) {
+        market_data.SubscribeQuotes(instrument_id_) != ErrorCode::kOk) {
       return subscribe == ErrorCode::kOk ? ErrorCode::kCorrupt : subscribe;
     }
     yquant::model::QuoteTick untouched;
     untouched.sequence = 999;
-    if (market_data.TryGetLatestQuote(config_.source_id(), instrument_id_,
-                                      untouched) ||
+    if (market_data.TryGetLatestQuote(instrument_id_, untouched) ||
         untouched.sequence != 999) {
       return ErrorCode::kCorrupt;
     }

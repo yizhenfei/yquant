@@ -402,7 +402,7 @@ flowchart TD
 
 ### 示例与预期轨迹
 
-示例 [order_lifecycle_strategy.cc](../../examples/strategies/order_lifecycle_strategy.cc) 通过自身的[派生配置](../../examples/strategies/order_lifecycle_strategy.json)选择行情来源、场所、代码和下单数量。在 `OnStart` 解析标的、订阅并查询初始账户，在第一条有效报价中按卖一价提交一次买入限价委托，随后只观察该委托，不追加交易。[模拟柜台配置](../../examples/strategies/mock_trading.json)默认使用 `fill` 模式；完整运行命令见 [README](../../README.md#策略进程)。
+示例 [order_lifecycle_strategy.cc](../../examples/strategies/order_lifecycle_strategy.cc) 通过自身的[派生配置](../../examples/strategies/order_lifecycle_strategy.json)选择场所、代码和下单数量，行情来源由宿主配置绑定。在 `OnStart` 解析标的、订阅并查询初始账户，在第一条有效报价中按卖一价提交一次买入限价委托，随后只观察该委托，不追加交易。[模拟柜台配置](../../examples/strategies/mock_trading.json)默认使用 `fill` 模式；完整运行命令见 [README](../../README.md#策略进程)。
 
 ```text
 OnTick(context, tick):

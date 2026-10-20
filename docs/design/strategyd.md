@@ -62,9 +62,9 @@ virtual ~Strategy() noexcept = default;
 
 `config()` 返回策略内嵌的配置对象，宿主完成公共字段和自定义参数校验后才调用 `OnStart`。配置初始化失败时直接销毁实例，不调用启动或停止回调。
 
-`OnStart` 准备策略运行资源，通过 `context.market_data().FindInstrument(venue, symbol, definition)` 查询标的，通过 `context.market_data().SubscribeQuotes(source_id, instrument_id)` 登记启动订阅。回调成功返回后订阅集合冻结，宿主再激活行情源；全部成功后进入运行态。回调必须及时返回，当前没有策略轮询或定时回调。行情接口的输入输出与错误约定见[行情接口](market-data.md#行情接口)。
+`OnStart` 准备策略运行资源，通过 `context.market_data().FindInstrument(venue, symbol, definition)` 查询标的，通过 `context.market_data().SubscribeQuotes(instrument_id)` 登记启动订阅。回调成功返回后订阅集合冻结，宿主再激活行情源；全部成功后进入运行态。回调必须及时返回，当前没有策略轮询或定时回调。行情接口的输入输出与错误约定见[行情接口](market-data.md#行情接口)。
 
-行情与标识公共类型位于 `yquant::model`。订阅、最新快照和序号校验均以来源与标的的组合为键，来源标识及查询签名见[行情驱动设计](market-data.md)。
+行情与标识公共类型位于 `yquant::model`。宿主为行情服务绑定唯一来源，在该范围内按标的保存订阅、最新快照和序号；来源身份及入站校验见[行情驱动设计](market-data.md#行情来源身份)。
 
 `OnStart` 失败时，策略回滚本次启动操作，实例保持可安全销毁。宿主直接销毁该实例，不调用 `OnStop`。
 
@@ -102,7 +102,7 @@ extern "C" YQuantGetStrategyPlugin() noexcept -> const StrategyPlugin*
 
 描述符和工厂函数指针由动态库持有，只在动态库句柄有效期间使用。宿主在 `destroy()` 返回后清空实例引用，再释放动态库句柄；释放后不再访问描述符、工厂函数或实例的虚函数。
 
-入口使用 C linkage 固定符号名，生命周期接口仍依赖 C++ ABI。密集开发期间，宿主与所有策略始终采用最新 SDK 和 ABI，同步重新编译，不维护旧 ABI 的兼容实现。公共接口的签名或布局变化时更新 `kStrategyPluginAbiVersion`，加载器只接受与自身版本一致的策略动态库。
+入口使用 C linkage 固定符号名，生命周期接口仍依赖 C++ ABI。当前 `kStrategyPluginAbiVersion` 为 `8`，宿主与所有策略按该版本 SDK 同步重新编译，不维护旧 ABI 的兼容实现。公共接口的签名或布局变化时更新该版本，加载器只接受与自身版本一致的策略动态库。
 
 宿主与策略使用相同目标平台和架构、兼容的编译器与标准库构建；验收使用同一工程和同一构建 preset。
 
@@ -314,7 +314,7 @@ tests/strategyd/missing_dependency.cc       缺失依赖场景的测试库
 
 `ParameterizedStrategy` 使用派生配置读取 `quote_qty`、`max_position`。两个示例均使用带上下文的生命周期回调，不登记行情订阅，也不进行交易；省略行情配置时仍保持运行直至收到停止请求。配套 JSON 在构建时复制到策略产物目录。
 
-`QuoteObserverStrategy` 从派生配置读取来源、场所和代码，在 `OnStart` 查询标的并订阅，在 `OnTick` 检查最新缓存与回调一致。首次报价输出固定标记，`OnStop` 输出回调数、末次序号和最大数据年龄；运行方式与配套行情配置见[行情驱动设计](market-data.md#配置与启动方式)。
+`QuoteObserverStrategy` 从派生配置读取场所和代码，在 `OnStart` 查询标的并订阅宿主绑定来源的报价，在 `OnTick` 检查最新缓存与回调一致。首次报价输出固定标记，`OnStop` 输出回调数、末次序号和最大数据年龄；运行方式与配套行情配置见[行情驱动设计](market-data.md#配置与启动方式)。
 
 `OrderLifecycleStrategy` 从行情回调提交一次限价单，通过委托和成交回调检查账本，在停止阶段查询最终状态。配置、预期轨迹与收尾验收见[示例与预期轨迹](trading.md#示例与预期轨迹)。
 

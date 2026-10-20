@@ -88,7 +88,7 @@ base::ErrorCode MarketDataImpl::FindInstrument(
 }
 
 base::ErrorCode MarketDataImpl::SubscribeQuotes(
-    model::SourceId source_id, model::InstrumentId id) noexcept {
+    model::InstrumentId id) noexcept {
   if (phase_ != CallbackPhase::kStart) {
     return base::ErrorCode::kInvalidState;
   }
@@ -96,7 +96,7 @@ base::ErrorCode MarketDataImpl::SubscribeQuotes(
     return base::ErrorCode::kUnsupported;
   }
   const auto index = FindIndex(id);
-  if (source_id != source_id_ || !index) {
+  if (!index) {
     return base::ErrorCode::kInvalidArgument;
   }
   auto& slot = instruments_[*index];
@@ -107,11 +107,10 @@ base::ErrorCode MarketDataImpl::SubscribeQuotes(
   return base::ErrorCode::kOk;
 }
 
-bool MarketDataImpl::TryGetLatestQuote(model::SourceId source_id,
-                                       model::InstrumentId id,
+bool MarketDataImpl::TryGetLatestQuote(model::InstrumentId id,
                                        model::QuoteTick& out) const noexcept {
   const auto index = FindIndex(id);
-  if (source_id != source_id_ || !index) {
+  if (source_id_.value == 0 || !index) {
     return false;
   }
   const auto& slot = instruments_[*index];

@@ -102,7 +102,7 @@ cmake -P cmake/DownloadTestData.cmake
   --market-data-config ./build/debug/strategies/mock_market_data.json
 ```
 
-`--market-data-config` 为可选的宿主行情配置，可选择模拟源或共享内存源。示例使用来源 `1`，每 100 ms 生成 `SSE/600000` 的一档报价；策略通过 `parameters.source_id` 选择来源。首次行情输出 `quote_observer: first quote received`，停止时输出 `ticks`、`last_sequence` 和 `max_age_ns` 汇总。省略行情配置时，两个不订阅行情的示例仍可运行。标识、订阅及模拟规则见[行情驱动设计](docs/design/market-data.md)。
+`--market-data-config` 为可选的宿主行情配置，可选择模拟源或共享内存源，并将行情服务绑定到配置中的唯一来源。示例使用来源 `1`，每 100 ms 生成 `SSE/600000` 的一档报价；观察策略只通过 `parameters.venue` 和 `parameters.symbol` 选择标的。首次行情输出 `quote_observer: first quote received`，停止时输出 `ticks`、`last_sequence` 和 `max_age_ns` 汇总。省略行情配置时，两个不订阅行情的示例仍可运行。标识、订阅及模拟规则见[行情驱动设计](docs/design/market-data.md)。
 
 运行单笔限价委托示例：
 

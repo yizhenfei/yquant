@@ -117,7 +117,7 @@ class MarketMakingConfig final : public StrategyConfig {
 
 `LifecycleStrategy::OnStart` 读取配置中的消息并输出 `lifecycle_strategy: startup_message=lifecycle strategy started`，验证参数在原始 JSON 缓冲释放后仍可使用。
 
-行情观察示例 [quote_observer_strategy.cc](../../examples/strategies/quote_observer_strategy.cc) 的 `QuoteObserverConfig` 读取必填的 `source_id`、`venue`、`symbol`，分别保存为来源强类型及自持字符串。来源为 `1..UINT32_MAX` 的整数，场所支持 `SSE`、`SZSE`、`BSE`，代码为六位 ASCII 数字；实际来源和标的是否可供订阅由 `OnStart` 查询、登记时检查。[配套 JSON](../../examples/strategies/quote_observer_strategy.json) 与宿主行情配置的对应关系见[行情驱动设计](market-data.md#配置与启动方式)。
+行情观察示例 [quote_observer_strategy.cc](../../examples/strategies/quote_observer_strategy.cc) 的 `QuoteObserverConfig` 读取必填的 `venue`、`symbol`，保存为自持字符串。场所支持 `SSE`、`SZSE`、`BSE`，代码为六位 ASCII 数字；标的是否可供订阅由 `OnStart` 查询、登记时检查。来源由宿主行情配置绑定，策略参数不包含 `source_id`。[配套 JSON](../../examples/strategies/quote_observer_strategy.json) 与宿主行情配置的对应关系见[行情驱动设计](market-data.md#配置与启动方式)。
 
 ## 策略持有配置
 

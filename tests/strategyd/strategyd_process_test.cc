@@ -297,9 +297,10 @@ void ExpectQuoteLifecycle(const std::string& events, std::size_t min_quotes) {
   EXPECT_EQ(quotes, std::string(quotes.size(), 'Q'));
 }
 
-std::string MockMarketConfig(std::uint32_t interval_ms) {
-  return R"({"source_id":1,"adapter":"mock","interval_ms":)" +
-         std::to_string(interval_ms) +
+std::string MockMarketConfig(std::uint32_t interval_ms,
+                             std::uint32_t source_id = 1) {
+  return R"({"source_id":)" + std::to_string(source_id) +
+         R"(,"adapter":"mock","interval_ms":)" + std::to_string(interval_ms) +
          R"(,"instruments":[{"venue":"SSE","symbol":"600000",)"
          R"("price_decimals":2,"bid_price":1000,"bid_qty":100,)"
          R"("ask_price":1001,"ask_qty":200,"price_step":1}]})";
@@ -700,13 +701,17 @@ TEST(StrategydMarketProcessTest, ContinuesReceivingQuotesUntilSignal) {
   ExpectQuoteLifecycle(child.events(), 2);
 }
 
-TEST(StrategydMarketProcessTest, LoadsRealQuoteObserverAndReceivesData) {
+class QuoteObserverSourceTest : public ::testing::TestWithParam<std::uint32_t> {
+};
+
+TEST_P(QuoteObserverSourceTest, ReusesStrategyConfigAcrossHostSources) {
+  testing::ConfigFile market(MockMarketConfig(1, GetParam()));
+  ASSERT_TRUE(market.valid());
   ChildProcess child;
-  ASSERT_EQ(
-      child.Start({"--market-data-config", YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                   "--config", YQUANT_TEST_QUOTE_EXAMPLE_CONFIG_PATH,
-                   "--strategy", YQUANT_TEST_QUOTE_EXAMPLE_PATH}),
-      0);
+  ASSERT_EQ(child.Start({"--market-data-config", market.path(), "--config",
+                         YQUANT_TEST_QUOTE_EXAMPLE_CONFIG_PATH, "--strategy",
+                         YQUANT_TEST_QUOTE_EXAMPLE_PATH}),
+            0);
   ASSERT_TRUE(child.WaitForOutput("quote_observer: first quote received\n"))
       << child.output();
   EXPECT_NE(child.output().find("Running"), std::string::npos);
@@ -726,6 +731,9 @@ TEST(StrategydMarketProcessTest, LoadsRealQuoteObserverAndReceivesData) {
   EXPECT_GE(ticks, 1U);
   EXPECT_EQ(sequence, ticks);
 }
+
+INSTANTIATE_TEST_SUITE_P(HostBinding, QuoteObserverSourceTest,
+                         ::testing::Values(1U, 17U));
 
 TEST(StrategydMarketProcessTest, MarketConfigValidationPrecedesLibraryLoading) {
   testing::ConfigFile market(

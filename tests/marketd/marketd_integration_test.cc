@@ -189,9 +189,8 @@ class MarketdIntegrationTest : public ::testing::Test {
     ASSERT_TRUE(directory_.Write("mock.json", testing::kMockJson));
     ASSERT_TRUE(directory_.Write("local.json", LocalJson()));
     ASSERT_TRUE(directory_.Write(
-        "strategy.json",
-        R"({"strategy_id":"marketd-observer","parameters":{)"
-        R"("source_id":42,"venue":"SSE","symbol":"600000"}})"));
+        "strategy.json", R"({"strategy_id":"marketd-observer","parameters":{)"
+                         R"("venue":"SSE","symbol":"600000"}})"));
     ASSERT_TRUE(directory_.Write(
         "strategy_host.json",
         R"({"source_id":42,"adapter":"shm","runtime_directory":")" +
