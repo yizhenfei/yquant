@@ -1,0 +1,8 @@
+{
+  "strategy_id": "test-quotes",
+  "parameters": {
+    "source_id": 1,
+    "venue": "SSE",
+    "symbol": "600000"
+  }
+}

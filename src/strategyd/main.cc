@@ -1,12 +1,9 @@
-#include <pthread.h>
-#include <signal.h>
-
-#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <string_view>
 
-#include "strategyd/strategy_runtime.h"
+#include "strategyd/strategy_runner.h"
+#include "strategyd/termination_signals.h"
 #include "yquant/base/status.h"
 
 namespace {
@@ -14,12 +11,14 @@ namespace {
 using yquant::base::ErrorCode;
 using yquant::base::Status;
 using yquant::strategyd::LoadAndStart;
-using yquant::strategyd::Stop;
-using yquant::strategyd::StrategyRuntime;
+using yquant::strategyd::RunnerState;
+using yquant::strategyd::StrategyRunner;
+using yquant::strategyd::TerminationSignals;
 
 void PrintUsage(FILE* output) noexcept {
   std::fputs(
       "Usage: yquant-strategyd --strategy LIBRARY --config JSON\n"
+      "                       [--market-data-config JSON]\n"
       "       yquant-strategyd --help\n",
       output);
 }
@@ -27,7 +26,8 @@ void PrintUsage(FILE* output) noexcept {
 void PrintFailure(const char* stage, ErrorCode code, const char* detail,
                   int system_error = 0, const char* strategy_path = nullptr,
                   const char* config_path = nullptr,
-                  std::string_view strategy_id = {}) noexcept {
+                  std::string_view strategy_id = {},
+                  const char* market_data_path = nullptr) noexcept {
   std::fprintf(stderr, "yquant-strategyd: stage=%s code=%u", stage,
                static_cast<unsigned>(code));
   if (strategy_path != nullptr) {
@@ -35,6 +35,9 @@ void PrintFailure(const char* stage, ErrorCode code, const char* detail,
   }
   if (config_path != nullptr) {
     std::fprintf(stderr, " config=%s", config_path);
+  }
+  if (market_data_path != nullptr) {
+    std::fprintf(stderr, " market_data_config=%s", market_data_path);
   }
   if (!strategy_id.empty()) {
     std::fprintf(stderr, " strategy_id=%.*s",
@@ -48,44 +51,12 @@ void PrintFailure(const char* stage, ErrorCode code, const char* detail,
   std::fputc('\n', stderr);
 }
 
-void PrintRuntimeFailure(const StrategyRuntime& runtime, const Status& status,
-                         const char* strategy_path,
-                         const char* config_path) noexcept {
-  PrintFailure(runtime.error_stage(), status.code, runtime.error_detail(),
+void PrintRunnerFailure(const StrategyRunner& runner, const Status& status,
+                        const char* strategy_path, const char* config_path,
+                        const char* market_data_path) noexcept {
+  PrintFailure(runner.error_stage(), status.code, runner.error_detail(),
                status.system_error.value(), strategy_path, config_path,
-               runtime.strategy_id());
-}
-
-bool PrepareTerminationSignals(sigset_t& signals) noexcept {
-  if (sigemptyset(&signals) != 0 || sigaddset(&signals, SIGINT) != 0 ||
-      sigaddset(&signals, SIGTERM) != 0) {
-    const int error = errno;
-    PrintFailure("signal_setup", ErrorCode::kIoError,
-                 "could not prepare termination signal set", error);
-    return false;
-  }
-
-  // Block before loading user code so any threads it creates inherit the mask.
-  const int mask_error = pthread_sigmask(SIG_BLOCK, &signals, nullptr);
-  if (mask_error != 0) {
-    PrintFailure("signal_setup", ErrorCode::kIoError,
-                 "could not block termination signals", mask_error);
-    return false;
-  }
-
-  // An ignored disposition can survive exec. Reset it while signals are
-  // blocked so sigwait can receive these signals without an async handler.
-  struct sigaction action{};
-  action.sa_handler = SIG_DFL;
-  if (sigemptyset(&action.sa_mask) != 0 ||
-      sigaction(SIGINT, &action, nullptr) != 0 ||
-      sigaction(SIGTERM, &action, nullptr) != 0) {
-    const int error = errno;
-    PrintFailure("signal_setup", ErrorCode::kIoError,
-                 "could not reset termination signal dispositions", error);
-    return false;
-  }
-  return true;
+               runner.strategy_id(), market_data_path);
 }
 
 }  // namespace
@@ -97,7 +68,8 @@ int main(int argc, char* argv[]) {
   }
   const char* library_path = nullptr;
   const char* config_path = nullptr;
-  bool valid = argc == 5;
+  const char* market_data_path = nullptr;
+  bool valid = argc == 5 || argc == 7;
   for (int index = 1; valid && index < argc; index += 2) {
     const char* value = argv[index + 1];
     if (value[0] == '\0' || value[0] == '-') {
@@ -108,6 +80,9 @@ int main(int argc, char* argv[]) {
     } else if (std::strcmp(argv[index], "--config") == 0 &&
                config_path == nullptr) {
       config_path = value;
+    } else if (std::strcmp(argv[index], "--market-data-config") == 0 &&
+               market_data_path == nullptr) {
+      market_data_path = value;
     } else {
       valid = false;
     }
@@ -116,41 +91,42 @@ int main(int argc, char* argv[]) {
     PrintUsage(stderr);
     return 2;
   }
-  sigset_t termination_signals;
-  if (!PrepareTerminationSignals(termination_signals)) {
+  TerminationSignals termination_signals;
+  const auto signal_status = termination_signals.Prepare();
+  if (!signal_status.ok()) {
+    PrintFailure("signal_setup", signal_status.code,
+                 "could not prepare termination signals",
+                 signal_status.system_error.value());
     return 1;
   }
 
-  StrategyRuntime runtime;
+  StrategyRunner runner(nullptr, nullptr, &termination_signals);
   const Status start_status =
-      runtime.Handle(LoadAndStart{library_path, config_path});
+      runner.Handle(LoadAndStart{library_path, config_path, market_data_path});
   if (!start_status.ok()) {
-    PrintRuntimeFailure(runtime, start_status, library_path, config_path);
+    PrintRunnerFailure(runner, start_status, library_path, config_path,
+                       market_data_path);
     return 1;
   }
+  if (runner.state() == RunnerState::kFinished) {
+    return 0;
+  }
 
-  const auto strategy_id = runtime.strategy_id();
+  const auto strategy_id = runner.strategy_id();
   std::fprintf(
       stderr, "yquant-strategyd: Running strategy=%s strategy_id=%.*s\n",
       library_path, static_cast<int>(strategy_id.size()), strategy_id.data());
   std::fflush(stderr);
 
-  int exit_code = 0;
-  int signal_number = 0;
-  const int wait_error = sigwait(&termination_signals, &signal_number);
-  if (wait_error != 0) {
-    PrintFailure("signal_wait", ErrorCode::kIoError,
-                 "could not wait for termination signal", wait_error,
-                 library_path, config_path, strategy_id);
-    exit_code = 1;
+  const Status run_status = runner.Run(termination_signals);
+  if (runner.ignored_quote_count() != 0) {
+    std::fprintf(stderr, "yquant-strategyd: ignored_quotes=%llu\n",
+                 static_cast<unsigned long long>(runner.ignored_quote_count()));
   }
-
-  // Keep the mask until process exit, including throughout OnStop. A wait
-  // failure still requires normal strategy cleanup.
-  const Status stop_status = runtime.Handle(Stop{});
-  if (!stop_status.ok()) {
-    PrintRuntimeFailure(runtime, stop_status, library_path, config_path);
-    exit_code = 1;
+  if (!run_status.ok()) {
+    PrintRunnerFailure(runner, run_status, library_path, config_path,
+                       market_data_path);
+    return 1;
   }
-  return exit_code;
+  return 0;
 }

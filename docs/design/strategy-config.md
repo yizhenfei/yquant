@@ -115,11 +115,13 @@ class MarketMakingConfig final : public StrategyConfig {
 }
 ```
 
-`LifecycleStrategy::OnStart()` 读取配置中的消息并输出 `lifecycle_strategy: startup_message=lifecycle strategy started`，验证参数在原始 JSON 缓冲释放后仍可使用。
+`LifecycleStrategy::OnStart` 读取配置中的消息并输出 `lifecycle_strategy: startup_message=lifecycle strategy started`，验证参数在原始 JSON 缓冲释放后仍可使用。
+
+行情观察示例 [quote_observer_strategy.cc](../../examples/strategies/quote_observer_strategy.cc) 的 `QuoteObserverConfig` 读取必填的 `source_id`、`venue`、`symbol`，分别保存为来源强类型及自持字符串。来源为 `1..UINT32_MAX` 的整数，场所支持 `SSE`、`SZSE`、`BSE`，代码为六位 ASCII 数字；实际来源和标的是否可供订阅由 `OnStart` 查询、登记时检查。[配套 JSON](../../examples/strategies/quote_observer_strategy.json) 与宿主行情配置的对应关系见[行情驱动设计](market-data.md#配置与启动方式)。
 
 ## 策略持有配置
 
-`Strategy` 新增配置访问器，`OnStart()`、`OnStop()` 保持无参数。
+`Strategy` 通过配置访问器提供强类型配置，生命周期与行情回调通过 `StrategyContext&` 获取运行服务。
 
 ```cpp
 virtual StrategyConfig& config() noexcept = 0;
@@ -132,12 +134,12 @@ class MarketMakingStrategy final : public Strategy {
  public:
   MarketMakingConfig& config() noexcept override { return config_; }
 
-  base::ErrorCode OnStart() noexcept override {
+  base::ErrorCode OnStart(StrategyContext& context) noexcept override {
     // 此时配置已经完整校验，直接使用 config_.quote_qty() 等字段。
     ...
   }
 
-  base::ErrorCode OnStop() noexcept override;
+  base::ErrorCode OnStop(StrategyContext& context) noexcept override;
 
  private:
   MarketMakingConfig config_;
@@ -146,7 +148,7 @@ class MarketMakingStrategy final : public Strategy {
 
 框架通过 `StrategyConfig&` 读取公共 ID 和初始化状态，具体策略直接访问自己的 `MarketMakingConfig`，不需要向下转型。
 
-`config()` 每次返回同一个内嵌对象，引用在策略实例存活期间有效。配置与策略一起创建、销毁，不增加独立的配置工厂或销毁函数。构造阶段只建立默认状态，运行资源仍由 `OnStart()` 准备。
+`config()` 每次返回同一个内嵌对象，引用在策略实例存活期间有效。配置与策略一起创建、销毁，不增加独立的配置工厂或销毁函数。构造阶段只建立默认状态，运行资源由 `OnStart` 准备；行情标的查询及订阅通过该回调中的 `context.market_data()` 完成。配置对象不保存上下文或行情接口引用，这些引用只在当前回调期间有效。
 
 ## 配置加载与启动
 
@@ -158,29 +160,35 @@ class MarketMakingStrategy final : public Strategy {
 yquant-strategyd --strategy ./market_making.so --config ./market_making.json
 ```
 
-`--config <path>` 为必填参数，只出现一次。路径按启动工作目录解释，文件读取与内容校验在运行时处理 `LoadAndStart{library_path, config_path}` 时执行。
+`--config <path>` 为必填参数，只出现一次。路径按启动工作目录解释，文件读取与内容校验在运行时处理 `LoadAndStart` 时执行。命令同时携带动态库路径及可选的宿主行情配置路径；省略行情配置时，仍可运行不订阅行情的策略。
 
 ```mermaid
 flowchart TD
     FILE["读取 JSON 配置文件"]
     BASE["校验公共结构<br/>解析 strategy_id，定位 parameters"]
+    PREPARE["准备宿主行情源与上下文"]
     LIBRARY["加载动态库<br/>校验当前 ABI"]
     CREATE["创建策略及内嵌配置对象"]
     INITIALIZE["初始化配置基类的公共字段"]
     PARAMETERS["配置类解析并校验 parameters"]
     START["调用 OnStart"]
+    SOURCE["冻结订阅并激活行情源"]
     RUNNING["进入运行态"]
 
     FILE --> BASE
-    BASE --> LIBRARY
+    BASE --> PREPARE
+    PREPARE --> LIBRARY
     LIBRARY --> CREATE
     CREATE --> INITIALIZE
     INITIALIZE --> PARAMETERS
     PARAMETERS --> START
-    START --> RUNNING
+    START --> SOURCE
+    SOURCE --> RUNNING
 ```
 
 框架先检查完整 JSON、根字段、ID 和 `parameters` 的对象类型，再加载动态库。宿主保留 `parameters` 的原始源码片段，避免通过浮点数中转或重新序列化改变整数精度。
+
+宿主行情源 `Prepare` 在加载策略动态库前校验并复制源配置，行情服务根据同一配置建立字典与缓存。`Start(subscriptions, now)` 在策略配置校验及 `OnStart` 成功后复制订阅选择并同步激活行情源，不保留输入参数借用。策略自定义参数描述业务选择，宿主行情配置描述行情供给，两者分别校验。行情读取、回调和停止均由主线程执行，主循环与行情源停止顺序见[策略进程设计](strategyd.md#运行流程)。
 
 配置对象接收的 JSON 文本只在 `Initialize()` 及其调用的 `LoadParameters()` 期间有效。初始化完成后释放文件缓冲和解析临时存储；需要保留的字符串、数组等数据必须由配置对象持有。
 
@@ -194,20 +202,22 @@ flowchart TD
 | --- | --- |
 | 参数解析 | 输出用法，退出码为 `2` |
 | 文件读取、JSON 或公共字段校验 | 输出路径和原因，不加载动态库，退出码为 `1` |
-| 配置初始化或自定义参数校验 | 保存诊断，销毁实例、释放动态库句柄；不调用 `OnStart()`、`OnStop()`，退出码为 `1` |
-| `OnStart()` | 沿用启动失败回滚，销毁实例及内嵌配置，不调用 `OnStop()` |
+| 宿主行情配置校验或行情源 `Prepare` | 释放已取得的宿主资源，不加载策略动态库，退出码为 `1` |
+| 配置初始化或自定义参数校验 | 保存诊断，销毁实例、释放动态库句柄；不调用 `OnStart`、`OnStop`，退出码为 `1` |
+| `OnStart` | 沿用启动失败回滚，销毁实例及内嵌配置，不调用 `OnStop` |
+| 行情源 `Start` 或 `Poll` | `OnStart` 已成功，同步停止行情源后执行一次 `OnStop`，再销毁实例与配置，退出码为 `1` |
 
-未启动、配置初始化失败和已经停止的策略都必须可安全销毁。正常停止顺序仍为 `OnStop() → destroy(strategy) → 释放动态库句柄`；内嵌配置在 `destroy()` 内随策略析构。
+未启动、配置初始化失败和已经停止的策略都必须可安全销毁。正常停止时，先禁止行情读取与分派，同步调用行情源的幂等 `Stop`，再执行 `OnStop(context) → destroy(strategy) → 释放动态库句柄`，最后释放宿主资源。内嵌配置在 `destroy()` 内随策略析构，`OnStop` 期间仍可查询最后的行情快照。
 
 ## 动态库边界与工程约束
 
 跨动态库只传递公共 SDK 类型和 JSON 文本视图。第三方 JSON DOM、解析器及其分配器留在各自模块内部；宿主解析公共结构，策略在初始化时解析自身参数。
 
-`StrategyConfig` 的初始化、公共字段访问和空参数默认处理通过头文件实现，保持 `yquant::strategy_api` 为 `INTERFACE` target，不依赖宿主额外导出的 C++ 函数。公共类型放入 `include/yquant/strategy/strategy_config.h`，文件读取和公共 JSON 校验放入策略进程内部。
+`StrategyConfig` 的初始化、公共字段访问和空参数默认处理通过头文件实现，保持 `yquant::strategy_api` 为 `INTERFACE` target，不依赖宿主额外导出的 C++ 函数。公共类型放入 `include/yquant/strategy/strategy_config.h`。策略进程内部的 `JsonConfigDocument` 统一负责两类配置的文件读取、UTF-8、完整语法、重复键及容量校验，`StrategyConfigLoader` 和 `MarketDataConfigLoader` 分别解析各自的字段与取值。
 
 宿主和策略均使用支持显式错误返回的 JSON 解析路径，遵守无异常约定。必要的读取、解码和配置存储分配在初始化阶段完成，检查失败；运行期不扩容配置存储，也不持有原始 JSON 的借用。
 
-JSON 解析使用固定版本的 simdjson `5.0.4`，关闭异常接口及线程支持，宿主和示例策略分别私有链接其静态实现。依赖版本与归档哈希由 `cmake/Dependencies.cmake` 固定。宿主完整遍历配置检查语法和重复键，再从原始缓冲提取 `parameters`，将解析器和重复键检查的临时存储在加载结束时释放。
+JSON 解析使用固定版本的 simdjson `5.0.4`，关闭异常接口及线程支持，宿主和示例策略分别私有链接其静态实现。依赖版本与归档哈希由 `cmake/Dependencies.cmake` 固定。`JsonConfigDocument` 位于 `src/strategyd/json_config_document.h/.cc`，完整遍历并验证输入后释放解析器和重复键检查临时存储；策略加载器保留原始 `parameters` 片段，直至配置初始化完成。
 
 公共接口的签名或布局变化时更新 `kStrategyPluginAbiVersion`，宿主和所有策略按最新 SDK 同步重新编译。加载器在创建实例和调用配置访问器之前校验版本一致性，不提供旧 ABI 的兼容路径。工厂通过 `Strategy*&` 接收必须提供的输出变量，创建与销毁协议见[动态库入口与对象所有权](strategyd.md#动态库入口与对象所有权)。
 
@@ -222,7 +232,7 @@ JSON 解析使用固定版本的 simdjson `5.0.4`，关闭异常接口及线程�
 | 强类型参数 | 派生类正确读取整数等字段，缺项、未知项、数值溢出和组合约束失败给出对应路径；整数不经过浮点数中转 |
 | 生命周期策略参数 | `startup_message` 为必填字符串，解码后 1 至 128 字节且无内嵌 NUL；缺项、错误类型、空字符串、超长及未知参数均拒绝，启动时输出配置中的消息 |
 | 一次初始化 | 成功或失败后再次初始化均返回状态错误，配置及已有诊断不被修改 |
-| 生命周期 | 配置全部校验后才调用 `OnStart()`；配置失败直接销毁，无启动或停止回调 |
+| 生命周期 | 配置全部校验后才调用 `OnStart`；配置失败直接销毁，无启动或停止回调；`OnStart` 成功后的行情源激活或读取失败仍执行一次 `OnStop` |
 | 存储生命周期 | 初始化后释放原始 JSON 缓冲，配置中的 ID、字符串和容器仍可正确读取，销毁后无残留引用 |
 | 诊断生命周期 | 实例销毁和动态库句柄释放后，宿主仍可输出字段路径及原因 |
 | ABI | 版本与 `kStrategyPluginAbiVersion` 不符的插件在工厂调用前被拒绝，当前版本策略完成配置、启动和停止 |

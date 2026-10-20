@@ -30,6 +30,7 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 ## 项目目录
 
 - `include/yquant/base/`：基础组件公开头文件。
+- `include/yquant/model/`：来源与标的标识、标的定义和一档报价。
 - `include/yquant/strategy/`：策略生命周期、强类型配置与动态库协议。
 - `src/base/`：基础组件及内部实现。
 - `src/strategyd/`：策略进程与动态库加载实现。
@@ -56,7 +57,7 @@ ctest --preset debug
 
 ## 策略进程
 
-`yquant-strategyd` 读取 JSON 配置，加载用户策略动态库，在配置全部校验成功后调用 `OnStart()`。收到停止信号后调用 `OnStop()`、销毁实例并释放动态库句柄。
+`yquant-strategyd` 读取 JSON 配置，加载用户策略动态库，在配置全部校验成功后调用 `OnStart(context)`。行情源读取、缓存更新及 `OnTick(context, tick)` 均在主线程执行。收到停止信号后，同步停止行情源，调用 `OnStop(context)`、销毁实例并释放动态库句柄。
 
 构建后运行生命周期策略示例：
 
@@ -68,13 +69,24 @@ ctest --preset debug
 
 `--strategy` 和 `--config` 均为必填参数，顺序不限。启动成功后输出 `Running` 和策略 ID。使用 `Ctrl+C` 或向进程发送 `SIGTERM` 停止，使用 `--help` 查看参数。路径以启动工作目录为基准；动态库文件名后缀由 CMake 的本机 `MODULE` 配置决定。
 
-生命周期示例的 `LifecycleConfig` 派生自 `StrategyConfig`，读取必填字符串 `parameters.startup_message`，将解码后 1 至 128 字节、无内嵌 NUL 的内容保存在自身定长存储中，拒绝未知参数。配套配置将消息设为 `lifecycle strategy started`，`OnStart()` 读取该参数并输出 `lifecycle_strategy: startup_message=lifecycle strategy started`。
+生命周期示例的 `LifecycleConfig` 派生自 `StrategyConfig`，读取必填字符串 `parameters.startup_message`，将解码后 1 至 128 字节、无内嵌 NUL 的内容保存在自身定长存储中，拒绝未知参数。配套配置将消息设为 `lifecycle strategy started`，`OnStart` 读取该参数并输出 `lifecycle_strategy: startup_message=lifecycle strategy started`。
 
-用户策略继承 `yquant::strategy::Strategy`，导出 `YQuantGetStrategyPlugin()`，通过描述符提供创建和销毁函数。示例位于 [lifecycle_strategy.cc](examples/strategies/lifecycle_strategy.cc)，接口及所有权约定见[策略进程与动态策略加载设计](docs/design/strategyd.md)。
+用户策略继承 `yquant::strategy::Strategy`，导出 `YQuantGetStrategyPlugin()`，通过描述符提供创建和销毁函数。回调通过 `context.market_data()` 访问标的、订阅及快照，通过 `context.Now()` 查询单调时间。示例位于 [lifecycle_strategy.cc](examples/strategies/lifecycle_strategy.cc)，接口及所有权约定见[策略进程与动态策略加载设计](docs/design/strategyd.md)。
 
 配置文件包含 `strategy_id` 和 `parameters`。框架校验公共字段，策略内嵌的 `StrategyConfig` 派生对象解析自定义参数；无自定义参数时使用基类并填写空对象。配置 ID 为 1 至 64 字节的 UTF-8 字符串，文件上限为 1 MiB，JSON 容器嵌套最多 64 层。
 
 强类型参数示例见 [parameterized_strategy.cc](examples/strategies/parameterized_strategy.cc) 和[配套配置](examples/strategies/parameterized_strategy.json)。构建后将上述命令的动态库与配置文件名都换成 `parameterized_strategy` 即可运行；配置约定见[策略配置设计](docs/design/strategy-config.md)。
+
+使用模拟行情驱动观察策略：
+
+```sh
+./build/debug/bin/yquant-strategyd \
+  --strategy ./build/debug/strategies/quote_observer_strategy.so \
+  --config ./build/debug/strategies/quote_observer_strategy.json \
+  --market-data-config ./build/debug/strategies/mock_market_data.json
+```
+
+`--market-data-config` 为可选的宿主行情配置。示例使用来源 `1`，每 100 ms 生成 `SSE/600000` 的一档报价；策略通过 `parameters.source_id` 选择来源。首次行情输出 `quote_observer: first quote received`，停止时输出 `ticks`、`last_sequence` 和 `max_age_ns` 汇总。省略行情配置时，两个不订阅行情的示例仍可运行。标识、订阅及模拟规则见[行情驱动设计](docs/design/market-data.md)。
 
 ## 工程方案
 
@@ -86,6 +98,7 @@ ctest --preset debug
 - [SPSC 队列设计](docs/design/spsc-queue.md)：低延迟内存消息队列设计。
 - [策略进程与动态策略加载设计](docs/design/strategyd.md)：生命周期接口、动态库协议与命令执行流程。
 - [策略配置设计](docs/design/strategy-config.md)：JSON 分层、强类型配置与启动校验。
+- [行情驱动与策略事件循环](docs/design/market-data.md)：一档报价、策略上下文、模拟行情源与事件分派。
 - [一档双边做市策略](docs/design/bbo-market-making.md)：策略伪代码、所需数据与回调语义。
 
 ## 参考系统与资料

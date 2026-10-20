@@ -4,13 +4,11 @@
 #include <cstddef>
 #include <string_view>
 
+#include "strategyd/json_config_document.h"
 #include "yquant/base/status.h"
 #include "yquant/strategy/strategy_config.h"
 
 namespace yquant::strategyd {
-
-inline constexpr std::size_t kMaxConfigFileBytes = 1024 * 1024;
-inline constexpr std::size_t kMaxConfigDepth = 64;
 
 // Owns validated source text until configuration initialization is complete.
 // The JSON parser and duplicate-key scratch storage are local to Load().
@@ -24,6 +22,9 @@ class StrategyConfigLoader {
   StrategyConfigLoader(StrategyConfigLoader&&) = delete;
   StrategyConfigLoader& operator=(StrategyConfigLoader&&) = delete;
 
+  // Replaces any previous source/configuration. On failure the ID and parameter
+  // view are empty, and error() retains an owned diagnostic until the next
+  // Load.
   [[nodiscard]] base::Status Load(const char* path) noexcept;
   // Invalidates parameters_json(). Diagnostics remain valid until Load().
   void Reset() noexcept;
@@ -39,7 +40,7 @@ class StrategyConfigLoader {
   }
 
  private:
-  char* source_ = nullptr;
+  JsonConfigDocument document_;
   strategy::StrategyId strategy_id_;
   std::string_view parameters_json_;
   strategy::ConfigError error_;

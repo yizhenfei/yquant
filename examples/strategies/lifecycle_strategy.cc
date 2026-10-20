@@ -16,6 +16,7 @@ using yquant::base::ErrorCode;
 using yquant::strategy::ConfigError;
 using yquant::strategy::Strategy;
 using yquant::strategy::StrategyConfig;
+using yquant::strategy::StrategyContext;
 using yquant::strategy::StrategyPlugin;
 
 constexpr std::size_t kMaxStartupMessageBytes = 128;
@@ -101,7 +102,7 @@ class LifecycleStrategy final : public Strategy {
  public:
   LifecycleConfig& config() noexcept override { return config_; }
 
-  ErrorCode OnStart() noexcept override {
+  ErrorCode OnStart(StrategyContext&) noexcept override {
     if (state_ != State::kIdle || !config_.ready()) {
       return ErrorCode::kInvalidState;
     }
@@ -113,7 +114,7 @@ class LifecycleStrategy final : public Strategy {
     return ErrorCode::kOk;
   }
 
-  ErrorCode OnStop() noexcept override {
+  ErrorCode OnStop(StrategyContext&) noexcept override {
     if (state_ != State::kRunning) {
       return ErrorCode::kInvalidState;
     }

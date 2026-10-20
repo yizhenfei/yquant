@@ -13,6 +13,7 @@ using yquant::base::ErrorCode;
 using yquant::strategy::ConfigError;
 using yquant::strategy::Strategy;
 using yquant::strategy::StrategyConfig;
+using yquant::strategy::StrategyContext;
 using yquant::strategy::StrategyPlugin;
 
 ErrorCode ParseError(simdjson::error_code result, std::string_view path,
@@ -117,7 +118,7 @@ class ParameterizedStrategy final : public Strategy {
  public:
   ParameterizedConfig& config() noexcept override { return config_; }
 
-  ErrorCode OnStart() noexcept override {
+  ErrorCode OnStart(StrategyContext&) noexcept override {
     if (state_ != State::kIdle || !config_.ready()) {
       return ErrorCode::kInvalidState;
     }
@@ -130,7 +131,7 @@ class ParameterizedStrategy final : public Strategy {
     return ErrorCode::kOk;
   }
 
-  ErrorCode OnStop() noexcept override {
+  ErrorCode OnStop(StrategyContext&) noexcept override {
     if (state_ != State::kRunning) {
       return ErrorCode::kInvalidState;
     }

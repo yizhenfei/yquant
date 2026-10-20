@@ -31,13 +31,18 @@ target_include_directories(yquant_strategy_api INTERFACE
 target_link_libraries(yquant_strategy_api INTERFACE yquant_compile_options)
 
 add_library(yquant_strategyd_runtime STATIC
+  src/strategyd/json_config_document.cc
+  src/strategyd/market_data_config.cc
+  src/strategyd/mock_market_data_source.cc
   src/strategyd/strategy_config_loader.cc
+  src/strategyd/market_data.cc
   src/strategyd/strategy_library.cc
-  src/strategyd/strategy_runtime.cc)
+  src/strategyd/strategy_runner.cc
+  src/strategyd/termination_signals.cc)
 target_include_directories(yquant_strategyd_runtime PUBLIC
   "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(yquant_strategyd_runtime PUBLIC yquant::strategy_api
-  PRIVATE simdjson::simdjson ${CMAKE_DL_LIBS})
+  PRIVATE simdjson::simdjson Threads::Threads ${CMAKE_DL_LIBS})
 target_compile_options(yquant_strategyd_runtime PRIVATE
   -Wall -Wextra -Wpedantic)
 
@@ -63,8 +68,12 @@ function(yquant_add_strategy_example name)
 endfunction()
 yquant_add_strategy_example(lifecycle_strategy)
 yquant_add_strategy_example(parameterized_strategy)
+yquant_add_strategy_example(quote_observer_strategy)
 target_link_libraries(lifecycle_strategy PRIVATE simdjson::simdjson)
 target_link_libraries(parameterized_strategy PRIVATE simdjson::simdjson)
+target_link_libraries(quote_observer_strategy PRIVATE simdjson::simdjson)
+configure_file(examples/strategies/mock_market_data.json
+  "${CMAKE_BINARY_DIR}/strategies/mock_market_data.json" COPYONLY)
 
 add_library(yquant_base STATIC
   src/base/spsc_queue.cc
@@ -145,4 +154,16 @@ if(BUILD_TESTING)
 
   include(cmake/LoggingCompileTests.cmake)
   include(cmake/StrategydTests.cmake)
+
+  # Keep replacement global allocation functions isolated from other tests.
+  add_executable(market_data_allocation_test
+    tests/strategyd/market_data_allocation_test.cc)
+  target_link_libraries(market_data_allocation_test PRIVATE
+    yquant_strategyd_runtime GTest::gtest_main yquant_compile_options)
+  target_compile_options(market_data_allocation_test PRIVATE
+    -Wall -Wextra -Wpedantic)
+  gtest_discover_tests(market_data_allocation_test
+    DISCOVERY_MODE PRE_TEST
+    DISCOVERY_TIMEOUT 30
+    PROPERTIES TIMEOUT 30)
 endif()

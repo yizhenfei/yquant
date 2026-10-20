@@ -5,9 +5,12 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -24,6 +27,8 @@ namespace yquant::strategyd {
 namespace {
 
 constexpr auto kProcessTimeout = std::chrono::seconds(10);
+
+enum class InheritedSignals { kUnchanged, kBlocked, kIgnored };
 
 void CloseIfOpen(int fd) {
   if (fd >= 0) {
@@ -80,8 +85,8 @@ class ChildProcess {
     CloseIfOpen(release_fd_);
   }
 
-  int Start(const std::vector<std::string>& arguments,
-            bool block_start = false) {
+  int Start(const std::vector<std::string>& arguments, bool block_start = false,
+            InheritedSignals signals = InheritedSignals::kUnchanged) {
     int output[2] = {-1, -1};
     int events[2] = {-1, -1};
     int release[2] = {-1, -1};
@@ -99,6 +104,13 @@ class ChildProcess {
 
     std::vector<std::string> argv_storage{YQUANT_TEST_STRATEGYD_PATH};
     argv_storage.insert(argv_storage.end(), arguments.begin(), arguments.end());
+    if (signals != InheritedSignals::kUnchanged) {
+      argv_storage.insert(
+          argv_storage.begin(),
+          signals == InheritedSignals::kBlocked ? "blocked" : "ignored");
+      argv_storage.insert(argv_storage.begin(),
+                          YQUANT_TEST_SIGNAL_LAUNCHER_PATH);
+    }
     std::vector<char*> argv;
     for (std::string& argument : argv_storage) {
       argv.push_back(argument.data());
@@ -138,8 +150,8 @@ class ChildProcess {
         }
       }
       if (error == 0) {
-        error = posix_spawn(&pid_, YQUANT_TEST_STRATEGYD_PATH, &actions,
-                            nullptr, argv.data(), env.data());
+        error = posix_spawn(&pid_, argv.front(), &actions, nullptr, argv.data(),
+                            env.data());
       }
       posix_spawn_file_actions_destroy(&actions);
     }
@@ -168,6 +180,13 @@ class ChildProcess {
   bool WaitForEvent(char event) {
     return ObserveUntil(
         [&] { return events_.find(event) != std::string::npos; });
+  }
+
+  bool WaitForEventCount(char event, std::size_t count) {
+    return ObserveUntil([&] {
+      return static_cast<std::size_t>(
+                 std::count(events_.begin(), events_.end(), event)) >= count;
+    });
   }
 
   bool Wait() {
@@ -265,6 +284,25 @@ void ExpectCompletedLifecycle(const std::string& events,
   if (unload != std::string::npos && expected.find('D') != std::string::npos) {
     EXPECT_LT(events.find('D'), unload);
   }
+}
+
+// Quote fixtures use one subscription, so Q must occur only between S and T.
+void ExpectQuoteLifecycle(const std::string& events, std::size_t min_quotes) {
+  const std::string trace = events.substr(0, events.find('U'));
+  ASSERT_GE(trace.size(), 5U + min_quotes) << trace;
+  EXPECT_EQ(trace.substr(0, 3), "CPS");
+  EXPECT_EQ(trace.substr(trace.size() - 2), "TD");
+  const std::string quotes = trace.substr(3, trace.size() - 5);
+  EXPECT_GE(quotes.size(), min_quotes);
+  EXPECT_EQ(quotes, std::string(quotes.size(), 'Q'));
+}
+
+std::string MockMarketConfig(std::uint32_t interval_ms) {
+  return R"({"source_id":1,"adapter":"mock","interval_ms":)" +
+         std::to_string(interval_ms) +
+         R"(,"instruments":[{"venue":"SSE","symbol":"600000",)"
+         R"("price_decimals":2,"bid_price":1000,"bid_qty":100,)"
+         R"("ask_price":1001,"ask_qty":200,"price_step":1}]})";
 }
 
 TEST(StrategydProcessTest, HelpExitsSuccessfullyWithoutLoading) {
@@ -464,6 +502,14 @@ TEST(StrategydProcessTest, InvalidArgumentsExitWithUsageError) {
        YQUANT_TEST_PLUGIN_GOOD_PATH, "--config", YQUANT_TEST_CONFIG_PATH},
       {"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--config",
        YQUANT_TEST_CONFIG_PATH, "--config", YQUANT_TEST_CONFIG_PATH},
+      {"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--config",
+       YQUANT_TEST_CONFIG_PATH, "--market-data-config"},
+      {"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--config",
+       YQUANT_TEST_CONFIG_PATH, "--market-data-config", ""},
+      {"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--config",
+       YQUANT_TEST_CONFIG_PATH, "--market-data-config",
+       YQUANT_TEST_MARKET_DATA_CONFIG_PATH, "--market-data-config",
+       YQUANT_TEST_MARKET_DATA_CONFIG_PATH},
   };
   for (const auto& arguments : invalid_arguments) {
     SCOPED_TRACE(::testing::PrintToString(arguments));
@@ -639,6 +685,187 @@ TEST(StrategydProcessTest, ParameterErrorsRemainReadableAfterPluginCleanup) {
             std::string::npos);
   ExpectCompletedLifecycle(child.events(), "CPD");
 }
+
+TEST(StrategydMarketProcessTest, ContinuesReceivingQuotesUntilSignal) {
+  ChildProcess child;
+  ASSERT_EQ(
+      child.Start({"--strategy", YQUANT_TEST_PLUGIN_QUOTES_PATH, "--config",
+                   YQUANT_TEST_QUOTE_CONFIG_PATH, "--market-data-config",
+                   YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
+      0);
+  ASSERT_TRUE(child.WaitForEventCount('Q', 2)) << child.output();
+  ASSERT_TRUE(child.Signal(SIGTERM));
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 0) << child.output();
+  ExpectQuoteLifecycle(child.events(), 2);
+}
+
+TEST(StrategydMarketProcessTest, LoadsRealQuoteObserverAndReceivesData) {
+  ChildProcess child;
+  ASSERT_EQ(
+      child.Start({"--market-data-config", YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                   "--config", YQUANT_TEST_QUOTE_EXAMPLE_CONFIG_PATH,
+                   "--strategy", YQUANT_TEST_QUOTE_EXAMPLE_PATH}),
+      0);
+  ASSERT_TRUE(child.WaitForOutput("quote_observer: first quote received\n"))
+      << child.output();
+  EXPECT_NE(child.output().find("Running"), std::string::npos);
+  ASSERT_TRUE(child.Signal(SIGTERM));
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 0) << child.output();
+  const auto summary = child.output().find("quote_observer: ticks=");
+  ASSERT_NE(summary, std::string::npos) << child.output();
+  unsigned long long ticks = 0;
+  unsigned long long sequence = 0;
+  unsigned long long max_age = 0;
+  ASSERT_EQ(std::sscanf(child.output().c_str() + summary,
+                        "quote_observer: ticks=%llu last_sequence=%llu "
+                        "max_age_ns=%llu",
+                        &ticks, &sequence, &max_age),
+            3);
+  EXPECT_GE(ticks, 1U);
+  EXPECT_EQ(sequence, ticks);
+}
+
+TEST(StrategydMarketProcessTest, MarketConfigValidationPrecedesLibraryLoading) {
+  testing::ConfigFile market(
+      R"({"source_id":0,"adapter":"mock","interval_ms":1,"instruments":[]})");
+  ASSERT_TRUE(market.valid());
+  ChildProcess child;
+  ASSERT_EQ(child.Start({"--strategy", "/yquant-no-such-strategy.so",
+                         "--config", YQUANT_TEST_CONFIG_PATH,
+                         "--market-data-config", market.path()}),
+            0);
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 1) << child.output();
+  EXPECT_NE(child.output().find("stage=market_data_config"), std::string::npos);
+  EXPECT_NE(child.output().find(market.path()), std::string::npos);
+  EXPECT_EQ(child.output().find("stage=dlopen"), std::string::npos);
+  EXPECT_TRUE(child.events().empty());
+}
+
+TEST(StrategydMarketProcessTest, MissingMarketConfigDoesNotCreateStrategy) {
+  ChildProcess child;
+  ASSERT_EQ(
+      child.Start({"--strategy", YQUANT_TEST_PLUGIN_QUOTES_PATH, "--config",
+                   YQUANT_TEST_QUOTE_CONFIG_PATH, "--market-data-config",
+                   "/yquant-no-such-market.json"}),
+      0);
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 1) << child.output();
+  EXPECT_NE(child.output().find("stage=market_data_config"), std::string::npos);
+  EXPECT_TRUE(child.events().empty());
+}
+
+TEST(StrategydMarketProcessTest, SignalInterruptsThe60000MillisecondInterval) {
+  testing::ConfigFile market(MockMarketConfig(60000));
+  ASSERT_TRUE(market.valid());
+  ChildProcess child;
+  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_QUOTES_PATH,
+                         "--config", YQUANT_TEST_QUOTE_CONFIG_PATH,
+                         "--market-data-config", market.path()}),
+            0);
+  ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
+  ASSERT_TRUE(child.Signal(SIGINT));
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 0) << child.output();
+  ExpectCompletedLifecycle(child.events(), "CPSTD");
+}
+
+TEST(StrategydMarketProcessTest, StopDuringStartDoesNotDispatchAnyQuote) {
+  ChildProcess child;
+  ASSERT_EQ(
+      child.Start({"--strategy", YQUANT_TEST_PLUGIN_QUOTES_PATH, "--config",
+                   YQUANT_TEST_QUOTE_CONFIG_PATH, "--market-data-config",
+                   YQUANT_TEST_MARKET_DATA_CONFIG_PATH},
+                  true),
+      0);
+  ASSERT_TRUE(child.WaitForEvent('S')) << child.output();
+  ASSERT_TRUE(child.Signal(SIGTERM));
+  ASSERT_TRUE(child.ReleaseStart());
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 0) << child.output();
+  ExpectCompletedLifecycle(child.events(), "CPSTD");
+}
+
+TEST(StrategydMarketProcessTest, StartFailureDoesNotDispatchOrStopStrategy) {
+  ChildProcess child;
+  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_QUOTE_START_FAIL_PATH,
+                         "--config", YQUANT_TEST_QUOTE_CONFIG_PATH,
+                         "--market-data-config",
+                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
+            0);
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 1) << child.output();
+  EXPECT_NE(child.output().find("stage=start"), std::string::npos);
+  ExpectCompletedLifecycle(child.events(), "CPSD");
+}
+
+TEST(StrategydMarketProcessTest, TickFailurePairsStopAndRetainsDiagnostic) {
+  ChildProcess child;
+  ASSERT_EQ(
+      child.Start({"--strategy", YQUANT_TEST_PLUGIN_TICK_FAIL_PATH, "--config",
+                   YQUANT_TEST_QUOTE_CONFIG_PATH, "--market-data-config",
+                   YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
+      0);
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 1) << child.output();
+  EXPECT_NE(child.output().find("stage=tick"), std::string::npos);
+  EXPECT_NE(child.output().find("strategy_id=test-quotes"), std::string::npos);
+  EXPECT_NE(child.output().find("sequence=1"), std::string::npos);
+  ExpectCompletedLifecycle(child.events(), "CPSQTD");
+}
+
+TEST(StrategydMarketProcessTest, NoSubscriptionsRemainIdleUntilSignal) {
+  ChildProcess child;
+  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--config",
+                         YQUANT_TEST_CONFIG_PATH, "--market-data-config",
+                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
+            0);
+  ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
+  ASSERT_TRUE(child.Signal(SIGTERM));
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 0) << child.output();
+  ExpectCompletedLifecycle(child.events(), "CPSTD");
+}
+
+struct InheritedSignalCase {
+  const char* name;
+  InheritedSignals state;
+  int signal;
+};
+
+class InheritedSignalTest
+    : public ::testing::TestWithParam<InheritedSignalCase> {};
+
+TEST_P(InheritedSignalTest, RestoresTerminationHandlingAndStopsNormally) {
+  ChildProcess child;
+  ASSERT_EQ(
+      child.Start({"--strategy", YQUANT_TEST_PLUGIN_QUOTES_PATH, "--config",
+                   YQUANT_TEST_QUOTE_CONFIG_PATH, "--market-data-config",
+                   YQUANT_TEST_MARKET_DATA_CONFIG_PATH},
+                  false, GetParam().state),
+      0);
+  ASSERT_TRUE(child.WaitForEventCount('Q', 2)) << child.output();
+  ASSERT_TRUE(child.Signal(GetParam().signal));
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 0) << child.output();
+  ExpectQuoteLifecycle(child.events(), 2);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ExecInheritance, InheritedSignalTest,
+    ::testing::Values(InheritedSignalCase{"BlockedSigint",
+                                          InheritedSignals::kBlocked, SIGINT},
+                      InheritedSignalCase{"BlockedSigterm",
+                                          InheritedSignals::kBlocked, SIGTERM},
+                      InheritedSignalCase{"IgnoredSigint",
+                                          InheritedSignals::kIgnored, SIGINT},
+                      InheritedSignalCase{"IgnoredSigterm",
+                                          InheritedSignals::kIgnored, SIGTERM}),
+    [](const ::testing::TestParamInfo<InheritedSignalCase>& info) {
+      return info.param.name;
+    });
 
 }  // namespace
 }  // namespace yquant::strategyd
