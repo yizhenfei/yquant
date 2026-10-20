@@ -48,8 +48,10 @@ struct MarketDataConfig {
 [[nodiscard]] base::Status ValidateMarketDataConfig(
     const MarketDataConfig& config, strategy::ConfigError& error) noexcept;
 
-// Loads strict mock/SHM source JSON. No parser, source views or heap
-// allocations survive Load(). Methods are serialized by the owning host thread.
+// Loads strict mock/SHM source JSON and resolves its selected instruments from
+// the referenced catalog. Relative catalog paths use this config's directory.
+// No parser, source views or temporary catalog storage survive Load(). Methods
+// are serialized by the owning host thread.
 class MarketDataConfigLoader {
  public:
   // Replaces the previous configuration. Failure leaves config() empty and

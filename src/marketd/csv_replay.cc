@@ -17,6 +17,8 @@
 #include <string_view>
 #include <utility>
 
+#include "strategyd/instrument_catalog.h"
+
 namespace yquant::marketd {
 namespace {
 
@@ -243,12 +245,23 @@ base::Status LoadDolphinDbCsv(const ReplayConfig& config, ReplayData& output,
   if (!error_detail.empty()) error_detail.front() = '\0';
   if (config.path[0] == '\0' ||
       std::memchr(config.path, '\0', sizeof(config.path)) == nullptr ||
-      config.source_id.value == 0 || config.price_decimals > 6 ||
+      config.source_id.value == 0 || config.instrument_catalog[0] != '/' ||
+      std::memchr(config.instrument_catalog, '\0',
+                  sizeof(config.instrument_catalog)) == nullptr ||
       config.max_records == 0 || config.max_records > kMaxReplayRecords)
     return Failure(error_detail, 0, "invalid replay configuration",
                    base::ErrorCode::kInvalidArgument);
+  strategyd::InstrumentCatalogLoader catalog;
+  auto status = catalog.Load(config.instrument_catalog);
+  if (!status.ok()) {
+    if (!error_detail.empty())
+      std::snprintf(error_detail.data(), error_detail.size(),
+                    "CSV instrument catalog %s: %s", catalog.error().field_path,
+                    catalog.error().message);
+    return status;
+  }
   ReplayData parsed;
-  auto status = parsed.Reserve(config.max_records);
+  status = parsed.Reserve(config.max_records);
   if (!status.ok())
     return Failure(error_detail, 0, "cannot allocate replay storage",
                    status.code);
@@ -354,6 +367,10 @@ base::Status LoadDolphinDbCsv(const ReplayConfig& config, ReplayData& output,
           model::MakeInstrumentId(venue == "101" ? "SSE" : "SZSE", symbol,
                                   quote.instrument_id) != base::ErrorCode::kOk)
         return Failure(error_detail, line, "invalid security ID or source");
+      model::InstrumentDefinition definition;
+      if (!catalog.Find(quote.instrument_id, definition))
+        return Failure(error_detail, line,
+                       "instrument is not defined in the catalog");
       if (!ParseTimestamp(fields[columns[0]], fields[columns[1]],
                           quote.event_time_ns))
         return Failure(error_detail, line, "invalid Date or Time");
@@ -365,9 +382,9 @@ base::Status LoadDolphinDbCsv(const ReplayConfig& config, ReplayData& output,
                             arrival_time))
           return Failure(error_detail, line, "invalid RecvTime");
       }
-      if (!ParsePrice(fields[columns[4]], config.price_decimals,
+      if (!ParsePrice(fields[columns[4]], definition.price_decimals,
                       quote.ask_price) ||
-          !ParsePrice(fields[columns[5]], config.price_decimals,
+          !ParsePrice(fields[columns[5]], definition.price_decimals,
                       quote.bid_price))
         return Failure(error_detail, line, "invalid or overflowing price");
       std::uint64_t ask_qty, bid_qty;

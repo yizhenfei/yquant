@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <span>
 #include <string_view>
 #include <utility>
 
@@ -86,7 +87,7 @@ base::Status ParseAdapter(simdjson::ondemand::value value, bool source,
       "stream",         "capacity",      "max_payload_size",
       "address",        "port",          "max_clients",
       "path",           "format",        "speed",
-      "max_records",    "source_id",     "price_decimals",
+      "max_records",    "source_id",     "instrument_catalog",
       "queue_capacity", "start_delay_ms"};
   simdjson::ondemand::object object;
   auto code = value.get_object().get(object);
@@ -178,14 +179,11 @@ base::Status ParseAdapter(simdjson::ondemand::value value, bool source,
         if (status.ok()) input.replay.source_id.value = id;
         break;
       }
-      case 14: {
-        std::size_t decimals = 0;
-        status = ReadSize(field.value(), decimals, path.text, error);
-        if (status.ok() && decimals > 6)
-          status = Invalid(path.text, "must be from 0 to 6", error);
-        if (status.ok()) input.replay.price_decimals = decimals;
+      case 14:
+        status =
+            ReadText(field.value(), input.replay.instrument_catalog,
+                     sizeof(input.replay.instrument_catalog), path.text, error);
         break;
-      }
       case 15:
         status = ReadSize(field.value(), output.record.queue_capacity,
                           path.text, error);
@@ -493,8 +491,11 @@ base::Status ValidateConfig(const MarketdConfig& config,
       if (replay.format == ReplayFormat::kDolphinDbCsv) {
         if (replay.source_id.value == 0)
           return Invalid("source.source_id", "must be nonzero", error);
-        if (replay.price_decimals > 6)
-          return Invalid("source.price_decimals", "must be from 0 to 6", error);
+        if (replay.instrument_catalog[0] != '/' ||
+            std::memchr(replay.instrument_catalog, '\0',
+                        sizeof(replay.instrument_catalog)) == nullptr)
+          return Invalid("source.instrument_catalog",
+                         "must be a bounded absolute catalog path", error);
       }
       break;
     }
@@ -616,6 +617,17 @@ base::Status ConfigLoader::Load(const char* path) noexcept {
   } else if (parsed.source.adapter == Adapter::kReplay) {
     status = ResolveFilePath(parsed.source.replay.path, path, true, 0, error_);
     if (!status.ok()) return status;
+    if (parsed.source.replay.format == ReplayFormat::kDolphinDbCsv) {
+      strategy::ConfigError catalog_error;
+      status = strategyd::ResolveInstrumentCatalogPath(
+          path, parsed.source.replay.instrument_catalog,
+          std::span(parsed.source.replay.instrument_catalog), catalog_error);
+      if (!status.ok()) {
+        error_.Set("source.instrument_catalog", catalog_error.message);
+        error_.truncated |= catalog_error.truncated;
+        return status;
+      }
+    }
   }
   for (std::size_t i = 0; i < parsed.publisher_count; ++i) {
     if (parsed.publishers[i].adapter != Adapter::kRecord) continue;

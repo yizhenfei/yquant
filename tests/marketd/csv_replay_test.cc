@@ -3,6 +3,7 @@
 #include <sys/stat.h>
 
 #include <array>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -27,6 +28,22 @@ class CsvReplayTest : public ::testing::Test {
     config_.format = ReplayFormat::kDolphinDbCsv;
     config_.source_id = {42};
     config_.max_records = 32;
+    std::snprintf(config_.instrument_catalog,
+                  sizeof(config_.instrument_catalog), "%s",
+                  directory_.File("instruments.json").c_str());
+    ASSERT_TRUE(SetCatalog(4));
+  }
+
+  // Each fixture owns the definitions used to interpret its CSV prices.
+  bool SetCatalog(std::uint8_t sse_decimals) {
+    return directory_.Write(
+        "instruments.json",
+        R"({"instruments":[{"venue":"SSE","symbol":"600000",)"
+        R"("price_decimals":)" +
+            std::to_string(sse_decimals) +
+            R"(},{"venue":"SZSE","symbol":"000519","price_decimals":4},)"
+            R"({"venue":"SZSE","symbol":"000557","price_decimals":4},)"
+            R"({"venue":"SZSE","symbol":"000895","price_decimals":4}]})");
   }
 
   base::Status Load(std::string_view csv) {
@@ -72,7 +89,7 @@ TEST_F(CsvReplayTest, ConvertsRealSnapshotValuesAndCanonicalizesMissingSide) {
 }
 
 TEST_F(CsvReplayTest, RoundsPricesUsingExactDecimalText) {
-  config_.price_decimals = 2;
+  ASSERT_TRUE(SetCatalog(2));
   ASSERT_TRUE(
       Load(std::string(kHeader) +
            "\n2020.12.31,09:15:00.000,600000,101,1.005,1.00499999999,1,1\n"
@@ -86,6 +103,51 @@ TEST_F(CsvReplayTest, RoundsPricesUsingExactDecimalText) {
   EXPECT_EQ(data_[1].quote.bid_price, 431);
   EXPECT_EQ(data_[1].quote.sequence, 2U);
   EXPECT_EQ(data_[1].offset_ns, 1000000U);
+}
+
+TEST_F(CsvReplayTest, UsesEachInstrumentsCatalogPricePrecision) {
+  ASSERT_TRUE(SetCatalog(2));
+  ASSERT_TRUE(Load(std::string(kHeader) +
+                   "\n2020.12.31,09:15:00,600000,101,4.3,4.3,1,1\n"
+                   "2020.12.31,09:15:00,000557,102,4.3,4.3,1,1\n")
+                  .ok())
+      << detail_.data();
+  ASSERT_EQ(data_.size(), 2U);
+  EXPECT_EQ(data_[0].quote.ask_price, 430);
+  EXPECT_EQ(data_[0].quote.bid_price, 430);
+  EXPECT_EQ(data_[1].quote.ask_price, 43000);
+  EXPECT_EQ(data_[1].quote.bid_price, 43000);
+}
+
+TEST_F(CsvReplayTest, UnknownInstrumentRejectsWholeFileAndPreservesOutput) {
+  const auto known = "2020.12.31,09:15:00,000557,102,4.3,4.3,1,1\n";
+  ASSERT_TRUE(Load(std::string(kHeader) + "\n" + known).ok());
+  const auto previous = data_[0].quote;
+  EXPECT_EQ(Load(std::string(kHeader) + "\n" + known +
+                 "2020.12.31,09:15:01,600001,101,4,4,1,1\n")
+                .code,
+            base::ErrorCode::kCorrupt);
+  EXPECT_NE(std::strstr(detail_.data(), "line 3"), nullptr);
+  EXPECT_NE(std::strstr(detail_.data(), "not defined in the catalog"), nullptr);
+  ASSERT_EQ(data_.size(), 1U);
+  EXPECT_EQ(data_[0].quote, previous);
+}
+
+TEST_F(CsvReplayTest, CatalogLoadFailurePreservesPreviousOutput) {
+  const auto csv =
+      std::string(kHeader) + "\n2020.12.31,09:15:00,000557,102,4,4,1,1\n";
+  ASSERT_TRUE(Load(csv).ok());
+  const auto previous = data_[0].quote;
+  ASSERT_TRUE(SetCatalog(7));
+  EXPECT_EQ(Load(csv).code, base::ErrorCode::kInvalidArgument);
+  EXPECT_NE(std::strstr(detail_.data(), "instrument catalog"), nullptr);
+  ASSERT_EQ(data_.size(), 1U);
+  EXPECT_EQ(data_[0].quote, previous);
+  std::snprintf(config_.instrument_catalog, sizeof(config_.instrument_catalog),
+                "%s", directory_.File("missing.json").c_str());
+  EXPECT_EQ(Load(csv).code, base::ErrorCode::kIoError);
+  ASSERT_EQ(data_.size(), 1U);
+  EXPECT_EQ(data_[0].quote, previous);
 }
 
 TEST_F(CsvReplayTest, HandlesQuotedColumnsEscapesCrLfAndMultilineIgnoredField) {
@@ -145,7 +207,7 @@ TEST_F(CsvReplayTest, PreservesFileOrderAndPerInstrumentSequences) {
 TEST_F(CsvReplayTest, AcceptsEmptyReplayWithHeaderAndUnsignedLimits) {
   ASSERT_TRUE(Load(std::string(kHeader) + "\n").ok());
   EXPECT_EQ(data_.size(), 0U);
-  config_.price_decimals = 0;
+  ASSERT_TRUE(SetCatalog(0));
   ASSERT_TRUE(Load(std::string(kHeader) +
                    "\n2020.02.29,08:00:00.123456789,600000,101,"
                    "9223372036854775807,0.5,9223372036854775807,1\n")
@@ -234,7 +296,15 @@ TEST_F(CsvReplayTest,
   EXPECT_EQ(LoadDolphinDbCsv(config_, data_, {}).code,
             base::ErrorCode::kInvalidArgument);
   config_.source_id = {1};
-  config_.price_decimals = 7;
+  std::snprintf(config_.instrument_catalog, sizeof(config_.instrument_catalog),
+                "%s", "relative.json");
+  EXPECT_EQ(LoadDolphinDbCsv(config_, data_, {}).code,
+            base::ErrorCode::kInvalidArgument);
+  config_.instrument_catalog[0] = '\0';
+  EXPECT_EQ(LoadDolphinDbCsv(config_, data_, {}).code,
+            base::ErrorCode::kInvalidArgument);
+  std::memset(config_.instrument_catalog, 'x',
+              sizeof(config_.instrument_catalog));
   EXPECT_EQ(LoadDolphinDbCsv(config_, data_, {}).code,
             base::ErrorCode::kInvalidArgument);
 }

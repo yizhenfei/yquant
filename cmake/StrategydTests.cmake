@@ -74,6 +74,7 @@ set_target_properties(strategyd_fixture_missing_dependency PROPERTIES
   INSTALL_RPATH "${strategy_dependency_rpath}")
 
 add_executable(yquant_strategyd_test
+  tests/strategyd/instrument_catalog_test.cc
   tests/strategyd/market_model_test.cc
   tests/strategyd/market_data_config_test.cc
   tests/strategyd/mock_market_data_source_test.cc
@@ -94,12 +95,15 @@ target_link_libraries(yquant_strategyd_test PRIVATE
   yquant_strategyd_runtime GTest::gtest_main yquant_compile_options)
 target_compile_options(yquant_strategyd_test PRIVATE -Wall -Wextra -Wpedantic)
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/test_data")
+configure_file("tests/fixtures/instruments.json"
+  "${CMAKE_BINARY_DIR}/test_data/instruments.json" COPYONLY)
 foreach(config IN ITEMS lifecycle typed quote_observer mock_market_data
     trading_strategy mock_trading)
   configure_file("tests/strategyd/configs/${config}.json"
     "${CMAKE_BINARY_DIR}/test_data/${config}.json" COPYONLY)
 endforeach()
 target_compile_definitions(yquant_strategyd_test PRIVATE
+  YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json"
   YQUANT_TEST_STRATEGYD_PATH="$<TARGET_FILE:yquant_strategyd>"
   YQUANT_TEST_SIGNAL_LAUNCHER_PATH="$<TARGET_FILE:strategyd_signal_launcher>"
   YQUANT_TEST_EXAMPLE_PATH="$<TARGET_FILE:lifecycle_strategy>"

@@ -199,7 +199,8 @@ TEST_F(ConfigTest, ResolvesReplayAndRecordingPathsWithoutOpeningFiles) {
   ASSERT_TRUE(
       Load(
           R"({"speed":2.5,"adapter":"replay","path":"history.csv",)"
-          R"("format":"dolphindb_csv","source_id":7,"price_decimals":4})",
+          R"("format":"dolphindb_csv","source_id":7,)"
+          R"("instrument_catalog":"catalog.json"})",
           R"([{"adapter":"record","path":"quotes.yqr","queue_capacity":4096}])")
           .ok())
       << loader_.error().message;
@@ -210,7 +211,8 @@ TEST_F(ConfigTest, ResolvesReplayAndRecordingPathsWithoutOpeningFiles) {
                directory_.File("history.csv").c_str());
   EXPECT_EQ(config.source.replay.speed, 2.5);
   EXPECT_EQ(config.source.replay.source_id.value, 7U);
-  EXPECT_EQ(config.source.replay.price_decimals, 4U);
+  EXPECT_STREQ(config.source.replay.instrument_catalog,
+               directory_.File("catalog.json").c_str());
   EXPECT_EQ(config.publishers[0].adapter, Adapter::kRecord);
   EXPECT_STREQ(config.publishers[0].record.path,
                directory_.File("quotes.yqr").c_str());
@@ -230,10 +232,17 @@ TEST_F(ConfigTest, LoadsRecordingReplayAndRejectsFileSchemaViolations) {
       {R"({"adapter":"replay","path":"x"})",
        R"({"adapter":"replay","path":"x","format":"unknown"})",
        R"({"adapter":"replay","path":"x","format":"dolphindb_csv"})",
+       R"({"adapter":"replay","path":"x","format":"dolphindb_csv","source_id":1})",
+       R"({"adapter":"replay","path":"x","format":"dolphindb_csv","instrument_catalog":"instruments.json"})",
+       R"({"adapter":"replay","path":"x","format":"dolphindb_csv","source_id":1,"price_decimals":4,"instrument_catalog":"instruments.json"})",
+       R"({"adapter":"replay","path":"x","format":"dolphindb_csv","source_id":1,"instrument_catalog":""})",
+       R"({"adapter":"replay","path":"x","format":"dolphindb_csv","source_id":1,"instrument_catalog":"bad\u0000.json"})",
        R"({"adapter":"replay","path":"x","format":"recording","speed":-1})",
        R"({"adapter":"replay","path":"x","format":"recording","max_records":0})",
        R"({"adapter":"replay","path":"x","format":"recording","max_records":2000001})",
        R"({"adapter":"replay","path":"x","format":"recording","source_id":1})",
+       R"({"adapter":"replay","path":"x","format":"recording","instrument_catalog":"instruments.json"})",
+       R"({"adapter":"replay","path":"x","format":"recording","price_decimals":4})",
        R"({"adapter":"record","path":"x"})"}) {
     EXPECT_FALSE(Load(source, output).ok()) << source;
   }

@@ -102,7 +102,7 @@ cmake -P cmake/DownloadTestData.cmake
   --market-data-config ./build/debug/strategies/mock_market_data.json
 ```
 
-`--market-data-config` 为可选的宿主行情配置，可选择模拟源或共享内存源，并将行情服务绑定到配置中的唯一来源。示例使用来源 `1`，每 100 ms 生成 `SSE/600000` 的一档报价；观察策略只通过 `parameters.venue` 和 `parameters.symbol` 选择标的。首次行情输出 `quote_observer: first quote received`，停止时输出 `ticks`、`last_sequence` 和 `max_age_ns` 汇总。省略行情配置时，两个不订阅行情的示例仍可运行。标识、订阅及模拟规则见[行情驱动设计](docs/design/market-data.md)。
+`--market-data-config` 为可选的宿主行情配置，可选择模拟源或共享内存源，并将行情服务绑定到配置中的唯一来源。配置通过 `instrument_catalog` 引用[共享标的文件](examples/instruments.json)，`instruments` 只列运行标的身份及模拟源所需的价量参数，价格精度统一从字典读取。示例使用来源 `1`，每 100 ms 生成 `SSE/600000` 的一档报价；观察策略只通过 `parameters.venue` 和 `parameters.symbol` 选择标的。首次行情输出 `quote_observer: first quote received`，停止时输出 `ticks`、`last_sequence` 和 `max_age_ns` 汇总。省略行情配置时，两个不订阅行情的示例仍可运行。路径规则与字典格式见[行情驱动设计](docs/design/market-data.md#共享标的字典)。
 
 运行单笔限价委托示例：
 
@@ -114,7 +114,7 @@ cmake -P cmake/DownloadTestData.cmake
   --trading-config ./build/debug/strategies/mock_trading.json
 ```
 
-`--trading-config` 为可选的宿主交易配置，使用时必须同时提供行情配置作为标的字典。示例在首次有效卖一报价提交 200 股买单，默认 `fill` 模式按 100 股、100 股两笔成交，输出 `order_lifecycle: terminal state=filled cumulative=200 leaves=0`。成交后进程继续运行，停止时输出 `order_lifecycle: stopped fills=2 filled_qty=200 state=filled`。
+`--trading-config` 为可选的宿主交易配置，使用时必须同时提供行情配置，以运行清单和共享字典建立本地标的范围。示例在首次有效卖一报价提交 200 股买单，默认 `fill` 模式按 100 股、100 股两笔成交，输出 `order_lifecycle: terminal state=filled cumulative=200 leaves=0`。成交后进程继续运行，停止时输出 `order_lifecycle: stopped fills=2 filled_qty=200 state=filled`。
 
 将交易配置的 `mode` 改为 `working`，等到 `order_lifecycle: working` 后发送停止信号，可验证宿主自动撤单和排空。交易接口、配置及收尾规则见[交易执行与模拟柜台](docs/design/trading.md)。交易服务同时提供持仓与资金查询，买单预占资金，卖单预占可卖持仓。
 

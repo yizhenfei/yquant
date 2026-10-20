@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <string>
 
@@ -16,8 +17,8 @@ namespace {
 constexpr char kCsv[] =
     "Date,Time,SecurityID,SecurityIDSource,OfferPX1,BidPX1,OfferSize1,"
     "BidSize1\n"
-    "2020.12.31,09:15:00.000,000557,102,10.01,10.00,200,100\n"
-    "2020.12.31,09:15:00.001,000557,102,10.02,10.01,300,200\n";
+    "2020.12.31,09:15:00.000,600000,101,10.01,10.00,200,100\n"
+    "2020.12.31,09:15:00.001,600000,101,10.02,10.01,300,200\n";
 
 ReplayConfig CsvConfig(const std::string& path, double speed = 1) {
   ReplayConfig config;
@@ -26,7 +27,9 @@ ReplayConfig CsvConfig(const std::string& path, double speed = 1) {
   config.speed = speed;
   config.max_records = 8;
   config.source_id = {77};
-  config.price_decimals = 2;
+  std::snprintf(
+      config.instrument_catalog, sizeof(config.instrument_catalog), "%s",
+      (std::filesystem::path(path).parent_path() / "instruments.json").c_str());
   return config;
 }
 

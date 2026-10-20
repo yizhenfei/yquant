@@ -15,6 +15,7 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -297,12 +298,14 @@ void ExpectQuoteLifecycle(const std::string& events, std::size_t min_quotes) {
   EXPECT_EQ(quotes, std::string(quotes.size(), 'Q'));
 }
 
-std::string MockMarketConfig(std::uint32_t interval_ms,
-                             std::uint32_t source_id = 1) {
+std::string MockMarketConfig(
+    std::uint32_t interval_ms, std::uint32_t source_id = 1,
+    std::string_view catalog = YQUANT_TEST_INSTRUMENT_CATALOG_PATH) {
   return R"({"source_id":)" + std::to_string(source_id) +
+         R"(,"instrument_catalog":")" + std::string(catalog) + '"' +
          R"(,"adapter":"mock","interval_ms":)" + std::to_string(interval_ms) +
          R"(,"instruments":[{"venue":"SSE","symbol":"600000",)"
-         R"("price_decimals":2,"bid_price":1000,"bid_qty":100,)"
+         R"("bid_price":1000,"bid_qty":100,)"
          R"("ask_price":1001,"ask_qty":200,"price_step":1}]})";
 }
 
@@ -736,8 +739,7 @@ INSTANTIATE_TEST_SUITE_P(HostBinding, QuoteObserverSourceTest,
                          ::testing::Values(1U, 17U));
 
 TEST(StrategydMarketProcessTest, MarketConfigValidationPrecedesLibraryLoading) {
-  testing::ConfigFile market(
-      R"({"source_id":0,"adapter":"mock","interval_ms":1,"instruments":[]})");
+  testing::ConfigFile market(MockMarketConfig(1, 0));
   ASSERT_TRUE(market.valid());
   ChildProcess child;
   ASSERT_EQ(child.Start({"--strategy", "/yquant-no-such-strategy.so",
@@ -751,6 +753,55 @@ TEST(StrategydMarketProcessTest, MarketConfigValidationPrecedesLibraryLoading) {
   EXPECT_EQ(child.output().find("stage=dlopen"), std::string::npos);
   EXPECT_TRUE(child.events().empty());
 }
+
+struct CatalogFailure {
+  const char* name;
+  const char* contents;
+};
+
+class CatalogFailureProcessTest
+    : public ::testing::TestWithParam<CatalogFailure> {};
+
+TEST_P(CatalogFailureProcessTest, RejectsBeforeCreatingOrStartingStrategy) {
+  const auto& fault = GetParam();
+  testing::ConfigFile catalog(fault.contents);
+  ASSERT_TRUE(catalog.valid());
+  if (fault.contents[0] == '\0') {
+    ASSERT_EQ(unlink(catalog.path()), 0);
+  }
+  testing::ConfigFile market(MockMarketConfig(1, 1, catalog.path()));
+  ASSERT_TRUE(market.valid());
+  ChildProcess child;
+  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_QUOTES_PATH,
+                         "--config", YQUANT_TEST_QUOTE_CONFIG_PATH,
+                         "--market-data-config", market.path()}),
+            0);
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 1) << child.output();
+  EXPECT_NE(child.output().find("stage=market_data_config"), std::string::npos);
+  EXPECT_EQ(child.output().find("Running"), std::string::npos);
+  EXPECT_TRUE(child.events().empty());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CatalogValidation, CatalogFailureProcessTest,
+    ::testing::Values(
+        CatalogFailure{"MissingFile", ""},
+        CatalogFailure{"MalformedJson", R"({"instruments":[)"},
+        CatalogFailure{"InvalidDefinition",
+                       R"({"instruments":[{"venue":"SSE","symbol":"600000",)"
+                       R"("price_decimals":7}]})"},
+        CatalogFailure{
+            "DuplicateDefinition",
+            R"({"instruments":[{"venue":"SSE","symbol":"600000",)"
+            R"("price_decimals":2},)"
+            R"({"venue":"SSE","symbol":"600000","price_decimals":4}]})"},
+        CatalogFailure{"MissingDefinition",
+                       R"({"instruments":[{"venue":"SZSE","symbol":"000001",)"
+                       R"("price_decimals":2}]})"}),
+    [](const ::testing::TestParamInfo<CatalogFailure>& info) {
+      return info.param.name;
+    });
 
 TEST(StrategydMarketProcessTest, MissingMarketConfigDoesNotCreateStrategy) {
   ChildProcess child;

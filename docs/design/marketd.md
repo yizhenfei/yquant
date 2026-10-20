@@ -72,7 +72,7 @@ yquant-marketd --config /path/to/marketd.json --max-events 100
 }
 ```
 
-`source.config` 相对主配置文件所在目录解析。模拟行情配置包含来源、间隔和标的报价，格式与 `strategyd` 模拟源一致，示例见 [mock_source.json](../../examples/marketd/mock_source.json)。
+`source.config` 相对主配置文件所在目录解析。模拟行情配置引用[共享标的字典](market-data.md#共享标的字典)，并保存来源、间隔、运行标的及其模拟报价，格式与 `strategyd` 模拟源一致；示例见 [mock_source.json](../../examples/marketd/mock_source.json)。其中 `instrument_catalog` 相对模拟源配置文件所在目录解析，而非相对 `marketd` 主配置。标的精度由字典提供。
 
 共享内存输出的容量为 2 的幂，默认 1024；载荷上限默认 256 字节，本报价帧要求至少 80 字节，组件上限为 4096 字节。运行目录必须使用当前用户拥有的绝对路径，组和其他用户不可写入。
 
@@ -149,7 +149,7 @@ TCP 新连接只接收接入后的报价，不补发连接前的事件。停止�
 
 ## 策略接入
 
-`strategyd` 的宿主行情配置选择 `adapter: "shm"`，保留来源和品种定义。用户策略继续通过 `MarketData::SubscribeQuotes` 订阅，通过 `OnTick` 消费，保持缓存更新早于回调的契约。
+`strategyd` 的宿主行情配置选择 `adapter: "shm"`，绑定来源、引用与生产端一致的共享字典并声明本进程运行范围。用户策略继续通过 `MarketData::SubscribeQuotes` 订阅，通过 `OnTick` 消费，保持缓存更新早于回调的契约。
 
 策略共享内存输入维护自己的过滤器和游标，逐条读取匹配报价。缺口、非法帧、源标识不匹配、发布者停止或更换代次均报告错误并停止策略。空读的 `poll_interval_us` 默认为 0；设为正数时仅在无积压事件时等待该间隔。
 

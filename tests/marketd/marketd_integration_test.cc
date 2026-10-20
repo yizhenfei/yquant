@@ -193,11 +193,12 @@ class MarketdIntegrationTest : public ::testing::Test {
                          R"("venue":"SSE","symbol":"600000"}})"));
     ASSERT_TRUE(directory_.Write(
         "strategy_host.json",
-        R"({"source_id":42,"adapter":"shm","runtime_directory":")" +
+        R"({"source_id":42,"adapter":"shm",)"
+        R"("instrument_catalog":"instruments.json","runtime_directory":")" +
             std::string(directory_.path()) +
             R"(","stream":"quotes",)"
             R"("poll_interval_us":0,"instruments":[{"venue":"SSE",)"
-            R"("symbol":"600000","price_decimals":2}]})"));
+            R"("symbol":"600000"}]})"));
   }
 
   std::string ShmJson() const {
@@ -272,8 +273,9 @@ TEST_F(MarketdIntegrationTest, ShmQuotesDriveTradingAndAccountSettlement) {
   // Stable prices make final cash independent of when the SHM reader joins.
   ASSERT_TRUE(directory_.Write(
       "order_mock.json",
-      R"({"source_id":1,"adapter":"mock","interval_ms":1,"instruments":[)"
-      R"({"venue":"SSE","symbol":"600000","price_decimals":2,)"
+      R"({"source_id":1,"adapter":"mock","interval_ms":1,)"
+      R"("instrument_catalog":"instruments.json","instruments":[)"
+      R"({"venue":"SSE","symbol":"600000",)"
       R"("bid_price":1000,"bid_qty":100,"ask_price":1001,"ask_qty":200,)"
       R"("price_step":0}]})"));
   ASSERT_TRUE(directory_.Write(
@@ -283,10 +285,11 @@ TEST_F(MarketdIntegrationTest, ShmQuotesDriveTradingAndAccountSettlement) {
           ShmJson() + "]}"));
   ASSERT_TRUE(directory_.Write(
       "order_host.json",
-      R"({"source_id":1,"adapter":"shm","runtime_directory":")" +
+      R"({"source_id":1,"adapter":"shm",)"
+      R"("instrument_catalog":"instruments.json","runtime_directory":")" +
           std::string(directory_.path()) +
           R"(","stream":"quotes","poll_interval_us":0,"instruments":[)"
-          R"({"venue":"SSE","symbol":"600000","price_decimals":2}]})"));
+          R"({"venue":"SSE","symbol":"600000"}]})"));
   ChildProcess marketd;
   ASSERT_EQ(StartMarketd(marketd, "order_feed.json"), 0);
   ASSERT_TRUE(marketd.WaitForOutput("Running")) << marketd.output();
@@ -446,6 +449,8 @@ TEST_F(MarketdIntegrationTest, HelpAndInvalidArgumentsHaveDeterministicExit) {
 }
 
 TEST_F(MarketdIntegrationTest, RealHistoryRecordsAndReplaysEveryQuote) {
+  ASSERT_TRUE(directory_.Copy("instruments.json",
+                              YQUANT_TEST_EXAMPLE_INSTRUMENT_CATALOG_PATH));
   const char* data_directory = std::getenv("YQUANT_TEST_DATA_DIR");
   ASSERT_NE(data_directory, nullptr);
   const std::string csv_path =
@@ -455,7 +460,7 @@ TEST_F(MarketdIntegrationTest, RealHistoryRecordsAndReplaysEveryQuote) {
       R"({"source":{"adapter":"replay","format":"dolphindb_csv",)"
       R"("path":")" +
           csv_path +
-          R"(","source_id":7,"price_decimals":4,)"
+          R"(","source_id":7,"instrument_catalog":"instruments.json",)"
           R"("speed":0,"max_records":400000},"publishers":[)"
           R"({"adapter":"record","path":"first.yqr","queue_capacity":67108864}]})"));
   ChildProcess first;
@@ -480,6 +485,8 @@ TEST_F(MarketdIntegrationTest, RealHistoryRecordsAndReplaysEveryQuote) {
   std::snprintf(csv.path, sizeof(csv.path), "%s", csv_path.c_str());
   csv.format = ReplayFormat::kDolphinDbCsv;
   csv.source_id = {7};
+  std::snprintf(csv.instrument_catalog, sizeof(csv.instrument_catalog), "%s",
+                directory_.File("instruments.json").c_str());
   csv.max_records = 400000;
   ReplayData original;
   ReplayData recorded;
@@ -514,7 +521,8 @@ TEST_F(MarketdIntegrationTest, ReplayFeedsSharedMemoryWhileRecording) {
   ASSERT_TRUE(directory_.Write(
       "replay.json",
       R"({"source":{"adapter":"replay","format":"dolphindb_csv",)"
-      R"("path":"short.csv","source_id":42,"price_decimals":2,)"
+      R"("path":"short.csv","source_id":42,)"
+      R"("instrument_catalog":"instruments.json",)"
       R"("start_delay_ms":500},"publishers":[)" +
           ShmJson() + R"(,{"adapter":"record","path":"short.yqr"}]})"));
   ChildProcess marketd;

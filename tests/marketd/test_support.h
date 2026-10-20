@@ -18,12 +18,16 @@
 
 namespace yquant::marketd::testing {
 
-// Isolates on-disk discovery and stable lock files for each test.
+// Isolates on-disk discovery, lock files and a shared catalog copy per test.
 class RuntimeDirectory {
  public:
-  RuntimeDirectory() { valid_ = mkdtemp(path_) != nullptr; }
+  RuntimeDirectory() {
+    owns_directory_ = mkdtemp(path_) != nullptr;
+    valid_ = owns_directory_ &&
+             Copy("instruments.json", YQUANT_TEST_INSTRUMENT_CATALOG_PATH);
+  }
   ~RuntimeDirectory() {
-    if (valid_) {
+    if (owns_directory_) {
       std::error_code error;
       std::filesystem::remove_all(path_, error);
     }
@@ -35,6 +39,12 @@ class RuntimeDirectory {
   std::string File(std::string_view name) const {
     return std::string(path_) + "/" + std::string(name);
   }
+  bool Copy(std::string_view name, const char* source) const {
+    std::error_code error;
+    return std::filesystem::copy_file(
+        source, File(name), std::filesystem::copy_options::overwrite_existing,
+        error);
+  }
   bool Write(std::string_view name, std::string_view contents) const {
     auto* file = std::fopen(File(name).c_str(), "wb");
     if (file == nullptr) return false;
@@ -45,6 +55,7 @@ class RuntimeDirectory {
 
  private:
   char path_[64] = "/tmp/yquant-marketd-XXXXXX";
+  bool owns_directory_ = false;
   bool valid_ = false;
 };
 
@@ -111,8 +122,9 @@ inline MarketdConfig LocalConfig(const char* directory) {
 inline constexpr std::string_view kMockJson = R"({
   "source_id": 42,
   "adapter": "mock",
+  "instrument_catalog": "instruments.json",
   "interval_ms": 1,
-  "instruments": [{"venue":"SSE","symbol":"600000","price_decimals":2,
+  "instruments": [{"venue":"SSE","symbol":"600000",
     "bid_price":1000,"bid_qty":100,"ask_price":1001,"ask_qty":200,
     "price_step":1}]
 })";

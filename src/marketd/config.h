@@ -53,8 +53,9 @@ struct MarketdConfig {
     const MarketdConfig& config, strategy::ConfigError& error) noexcept;
 
 // Strict JSON loader: decoded duplicate/unknown fields, wrong types and
-// overlong strings fail. Relative mock, replay and recording paths resolve
-// beside this JSON file. Validation does not read replay data or create files.
+// overlong strings fail. Relative mock, replay, catalog and recording paths
+// resolve beside their owning JSON file. Validation does not read replay data
+// or the CSV catalog and does not create files.
 class ConfigLoader {
  public:
   // Replaces prior configuration. Failure empties config() and owns its
