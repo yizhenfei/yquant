@@ -23,9 +23,12 @@ target_compile_definitions(yquant_marketd_test PRIVATE
   YQUANT_TEST_MARKETD_PATH="$<TARGET_FILE:yquant_marketd>"
   YQUANT_TEST_STRATEGYD_PATH="$<TARGET_FILE:yquant_strategyd>"
   YQUANT_TEST_QUOTE_EXAMPLE_PATH="$<TARGET_FILE:quote_observer_strategy>"
-  YQUANT_TEST_QUOTE_EXAMPLE_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/quote_observer_strategy.json")
+  YQUANT_TEST_QUOTE_EXAMPLE_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/quote_observer_strategy.json"
+  YQUANT_TEST_ORDER_EXAMPLE_PATH="$<TARGET_FILE:order_lifecycle_strategy>"
+  YQUANT_TEST_ORDER_EXAMPLE_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/order_lifecycle_strategy.json"
+  YQUANT_TEST_TRADING_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/mock_trading.json")
 add_dependencies(yquant_marketd_test
-  yquant_marketd yquant_strategyd quote_observer_strategy)
+  yquant_marketd yquant_strategyd quote_observer_strategy order_lifecycle_strategy)
 gtest_discover_tests(yquant_marketd_test
   DISCOVERY_MODE PRE_TEST
   DISCOVERY_TIMEOUT 30

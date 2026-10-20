@@ -3,6 +3,7 @@
 
 #include "yquant/base/status.h"
 #include "yquant/model/quote_tick.h"
+#include "yquant/model/trading_event.h"
 #include "yquant/strategy/strategy_config.h"
 #include "yquant/strategy/strategy_context.h"
 
@@ -17,6 +18,7 @@ class Strategy {
   virtual StrategyConfig& config() noexcept = 0;
 
   // Receives fully initialized configuration and may register subscriptions.
+  // Trading requests are disabled until all startup stages succeed.
   // On failure, roll back startup resources and remain safe to destroy. The
   // host then destroys the instance without calling OnStop.
   [[nodiscard]] virtual base::ErrorCode OnStart(
@@ -28,6 +30,20 @@ class Strategy {
   // instance. Lifecycle-only strategies may keep this no-op implementation.
   [[nodiscard]] virtual base::ErrorCode OnTick(
       StrategyContext&, const model::QuoteTick&) noexcept {
+    return base::ErrorCode::kOk;
+  }
+
+  // The host has committed the complete report before calling either callback.
+  // A fill report calls OnOrderUpdate then OnFill without another broker event
+  // between them. Local requests from the first callback are visible in the
+  // second. Non-kOk stops business callbacks; committed facts are not rolled
+  // back. During stopping these callbacks may query but cannot send requests.
+  [[nodiscard]] virtual base::ErrorCode OnOrderUpdate(
+      StrategyContext&, const model::OrderUpdate&) noexcept {
+    return base::ErrorCode::kOk;
+  }
+  [[nodiscard]] virtual base::ErrorCode OnFill(StrategyContext&,
+                                               const model::Fill&) noexcept {
     return base::ErrorCode::kOk;
   }
 

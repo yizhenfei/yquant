@@ -31,9 +31,9 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 ## 项目目录
 
 - `include/yquant/base/`：基础组件公开头文件。
-- `include/yquant/model/`：来源与标的标识、标的定义和一档报价。
+- `include/yquant/model/`：交易领域公共类型。
 - `include/yquant/md/`：共享内存行情订阅发布与标准报价帧。
-- `include/yquant/strategy/`：策略生命周期、强类型配置与动态库协议。
+- `include/yquant/strategy/`：策略开发接口与动态库协议。
 - `src/base/`：基础组件及内部实现。
 - `src/strategyd/`：策略进程与动态库加载实现。
 - `src/md/`：共享内存映射、seqlock 协议和报价编解码。
@@ -73,7 +73,7 @@ cmake -P cmake/DownloadTestData.cmake
 
 ## 策略进程
 
-`yquant-strategyd` 读取 JSON 配置，加载用户策略动态库，在配置全部校验成功后调用 `OnStart(context)`。行情源读取、缓存更新及 `OnTick(context, tick)` 均在主线程执行。收到停止信号后，同步停止行情源，调用 `OnStop(context)`、销毁实例并释放动态库句柄。
+`yquant-strategyd` 读取 JSON 配置并加载用户策略动态库，全部校验成功后调用 `OnStart(context)`。主线程驱动行情、交易请求及委托和成交回报。收到停止信号后，宿主停止行情和策略新请求，自动撤单并处理回报；排空后调用 `OnStop(context)`、销毁实例并释放动态库句柄。
 
 构建后运行生命周期策略示例：
 
@@ -87,7 +87,7 @@ cmake -P cmake/DownloadTestData.cmake
 
 生命周期示例的 `LifecycleConfig` 派生自 `StrategyConfig`，读取必填字符串 `parameters.startup_message`，将解码后 1 至 128 字节、无内嵌 NUL 的内容保存在自身定长存储中，拒绝未知参数。配套配置将消息设为 `lifecycle strategy started`，`OnStart` 读取该参数并输出 `lifecycle_strategy: startup_message=lifecycle strategy started`。
 
-用户策略继承 `yquant::strategy::Strategy`，导出 `YQuantGetStrategyPlugin()`，通过描述符提供创建和销毁函数。回调通过 `context.market_data()` 访问标的、订阅及快照，通过 `context.Now()` 查询单调时间。示例位于 [lifecycle_strategy.cc](examples/strategies/lifecycle_strategy.cc)，接口及所有权约定见[策略进程与动态策略加载设计](docs/design/strategyd.md)。
+用户策略继承 `yquant::strategy::Strategy`，导出 `YQuantGetStrategyPlugin()`，通过描述符提供创建和销毁函数。回调通过 `context.market_data()` 访问行情，通过 `context.trading()` 提交、撤销和查询委托，通过 `context.Now()` 查询单调时间。接口及所有权约定见[策略进程与动态策略加载设计](docs/design/strategyd.md)。
 
 配置文件包含 `strategy_id` 和 `parameters`。框架校验公共字段，策略内嵌的 `StrategyConfig` 派生对象解析自定义参数；无自定义参数时使用基类并填写空对象。配置 ID 为 1 至 64 字节的 UTF-8 字符串，文件上限为 1 MiB，JSON 容器嵌套最多 64 层。
 
@@ -103,6 +103,20 @@ cmake -P cmake/DownloadTestData.cmake
 ```
 
 `--market-data-config` 为可选的宿主行情配置，可选择模拟源或共享内存源。示例使用来源 `1`，每 100 ms 生成 `SSE/600000` 的一档报价；策略通过 `parameters.source_id` 选择来源。首次行情输出 `quote_observer: first quote received`，停止时输出 `ticks`、`last_sequence` 和 `max_age_ns` 汇总。省略行情配置时，两个不订阅行情的示例仍可运行。标识、订阅及模拟规则见[行情驱动设计](docs/design/market-data.md)。
+
+运行单笔限价委托示例：
+
+```sh
+./build/debug/bin/yquant-strategyd \
+  --strategy ./build/debug/strategies/order_lifecycle_strategy.so \
+  --config ./build/debug/strategies/order_lifecycle_strategy.json \
+  --market-data-config ./build/debug/strategies/mock_market_data.json \
+  --trading-config ./build/debug/strategies/mock_trading.json
+```
+
+`--trading-config` 为可选的宿主交易配置，使用时必须同时提供行情配置作为标的字典。示例在首次有效卖一报价提交 200 股买单，默认 `fill` 模式按 100 股、100 股两笔成交，输出 `order_lifecycle: terminal state=filled cumulative=200 leaves=0`。成交后进程继续运行，停止时输出 `order_lifecycle: stopped fills=2 filled_qty=200 state=filled`。
+
+将交易配置的 `mode` 改为 `working`，等到 `order_lifecycle: working` 后发送停止信号，可验证宿主自动撤单和排空。交易接口、配置及收尾规则见[交易执行与模拟柜台](docs/design/trading.md)。交易服务同时提供持仓与资金查询，买单预占资金，卖单预占可卖持仓。
 
 ## 行情进程
 
@@ -142,6 +156,7 @@ cmake -P cmake/DownloadTestData.cmake
 - [行情驱动与策略事件循环](docs/design/market-data.md)：一档报价、策略上下文、模拟行情源与事件分派。
 - [行情进程设计](docs/design/marketd.md)：可配置行情管线、本机广播和跨机中继。
 - [共享内存行情订阅发布组件](docs/design/shared-memory-pubsub.md)：seqlock、独立游标、覆盖缺口和重启隔离。
+- [交易执行与模拟柜台](docs/design/trading.md)：限价委托、撤单与异步回报的执行闭环。
 - [一档双边做市策略](docs/design/bbo-market-making.md)：策略伪代码、所需数据与回调语义。
 
 ## 参考系统与资料

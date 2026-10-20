@@ -19,6 +19,7 @@ void PrintUsage(FILE* output) noexcept {
   std::fputs(
       "Usage: yquant-strategyd --strategy LIBRARY --config JSON\n"
       "                       [--market-data-config JSON]\n"
+      "                       [--trading-config JSON]\n"
       "       yquant-strategyd --help\n",
       output);
 }
@@ -27,7 +28,8 @@ void PrintFailure(const char* stage, ErrorCode code, const char* detail,
                   int system_error = 0, const char* strategy_path = nullptr,
                   const char* config_path = nullptr,
                   std::string_view strategy_id = {},
-                  const char* market_data_path = nullptr) noexcept {
+                  const char* market_data_path = nullptr,
+                  const char* trading_path = nullptr) noexcept {
   std::fprintf(stderr, "yquant-strategyd: stage=%s code=%u", stage,
                static_cast<unsigned>(code));
   if (strategy_path != nullptr) {
@@ -38,6 +40,9 @@ void PrintFailure(const char* stage, ErrorCode code, const char* detail,
   }
   if (market_data_path != nullptr) {
     std::fprintf(stderr, " market_data_config=%s", market_data_path);
+  }
+  if (trading_path != nullptr) {
+    std::fprintf(stderr, " trading_config=%s", trading_path);
   }
   if (!strategy_id.empty()) {
     std::fprintf(stderr, " strategy_id=%.*s",
@@ -53,10 +58,11 @@ void PrintFailure(const char* stage, ErrorCode code, const char* detail,
 
 void PrintRunnerFailure(const StrategyRunner& runner, const Status& status,
                         const char* strategy_path, const char* config_path,
-                        const char* market_data_path) noexcept {
+                        const char* market_data_path,
+                        const char* trading_path) noexcept {
   PrintFailure(runner.error_stage(), status.code, runner.error_detail(),
                status.system_error.value(), strategy_path, config_path,
-               runner.strategy_id(), market_data_path);
+               runner.strategy_id(), market_data_path, trading_path);
 }
 
 }  // namespace
@@ -69,7 +75,8 @@ int main(int argc, char* argv[]) {
   const char* library_path = nullptr;
   const char* config_path = nullptr;
   const char* market_data_path = nullptr;
-  bool valid = argc == 5 || argc == 7;
+  const char* trading_path = nullptr;
+  bool valid = argc == 5 || argc == 7 || argc == 9;
   for (int index = 1; valid && index < argc; index += 2) {
     const char* value = argv[index + 1];
     if (value[0] == '\0' || value[0] == '-') {
@@ -83,11 +90,15 @@ int main(int argc, char* argv[]) {
     } else if (std::strcmp(argv[index], "--market-data-config") == 0 &&
                market_data_path == nullptr) {
       market_data_path = value;
+    } else if (std::strcmp(argv[index], "--trading-config") == 0 &&
+               trading_path == nullptr) {
+      trading_path = value;
     } else {
       valid = false;
     }
   }
-  if (!valid || library_path == nullptr || config_path == nullptr) {
+  if (!valid || library_path == nullptr || config_path == nullptr ||
+      (trading_path != nullptr && market_data_path == nullptr)) {
     PrintUsage(stderr);
     return 2;
   }
@@ -101,11 +112,11 @@ int main(int argc, char* argv[]) {
   }
 
   StrategyRunner runner(nullptr, nullptr, &termination_signals);
-  const Status start_status =
-      runner.Handle(LoadAndStart{library_path, config_path, market_data_path});
+  const Status start_status = runner.Handle(
+      LoadAndStart{library_path, config_path, market_data_path, trading_path});
   if (!start_status.ok()) {
     PrintRunnerFailure(runner, start_status, library_path, config_path,
-                       market_data_path);
+                       market_data_path, trading_path);
     return 1;
   }
   if (runner.state() == RunnerState::kFinished) {
@@ -125,7 +136,7 @@ int main(int argc, char* argv[]) {
   }
   if (!run_status.ok()) {
     PrintRunnerFailure(runner, run_status, library_path, config_path,
-                       market_data_path);
+                       market_data_path, trading_path);
     return 1;
   }
   return 0;

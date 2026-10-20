@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "yquant/strategy/market_data.h"
+#include "yquant/strategy/trading.h"
 
 namespace yquant::strategy {
 
@@ -22,6 +23,10 @@ class StrategyContext {
   // the const overload permits queries without subscription changes.
   virtual MarketData& market_data() noexcept = 0;
   virtual const MarketData& market_data() const noexcept = 0;
+  // Same borrowing and ownership rules as market_data(). Disabled trading
+  // remains queryable, with requests rejected explicitly.
+  virtual Trading& trading() noexcept = 0;
+  virtual const Trading& trading() const noexcept = 0;
 };
 
 }  // namespace yquant::strategy

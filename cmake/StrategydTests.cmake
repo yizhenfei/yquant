@@ -31,6 +31,28 @@ yquant_add_strategy_fixture(quotes 14)
 yquant_add_strategy_fixture(tick_fail 15)
 yquant_add_strategy_fixture(quote_start_fail 16)
 
+function(yquant_add_trading_fixture name mode)
+  add_library(strategyd_trading_${name} MODULE
+    tests/strategyd/trading_fixture.cc)
+  target_link_libraries(strategyd_trading_${name} PRIVATE
+    yquant::strategy_api simdjson::simdjson)
+  target_compile_definitions(strategyd_trading_${name} PRIVATE
+    YQUANT_TEST_TRADING_MODE=${mode})
+  target_compile_options(strategyd_trading_${name} PRIVATE
+    -Wall -Wextra -Wpedantic)
+  set_target_properties(strategyd_trading_${name} PROPERTIES
+    PREFIX ""
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN YES)
+endfunction()
+yquant_add_trading_fixture(normal 0)
+yquant_add_trading_fixture(cancel 1)
+yquant_add_trading_fixture(update_fail 2)
+yquant_add_trading_fixture(fill_fail 3)
+yquant_add_trading_fixture(bulk 4)
+yquant_add_trading_fixture(partial_cancel 6)
+yquant_add_trading_fixture(insufficient 8)
+
 add_executable(strategyd_signal_launcher
   tests/strategyd/signal_inheritance_launcher.cc)
 target_link_libraries(strategyd_signal_launcher PRIVATE yquant_compile_options)
@@ -58,6 +80,11 @@ add_executable(yquant_strategyd_test
   tests/strategyd/shm_market_data_source_test.cc
   tests/strategyd/market_runner_test.cc
   tests/strategyd/strategy_context_test.cc
+  tests/strategyd/trading_test.cc
+  tests/strategyd/trading_config_test.cc
+  tests/strategyd/mock_trading_adapter_test.cc
+  tests/strategyd/trading_runner_test.cc
+  tests/strategyd/trading_process_test.cc
   tests/strategyd/strategy_config_test.cc
   tests/strategyd/strategy_config_loader_test.cc
   tests/strategyd/strategy_runner_test.cc
@@ -67,7 +94,8 @@ target_link_libraries(yquant_strategyd_test PRIVATE
   yquant_strategyd_runtime GTest::gtest_main yquant_compile_options)
 target_compile_options(yquant_strategyd_test PRIVATE -Wall -Wextra -Wpedantic)
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/test_data")
-foreach(config IN ITEMS lifecycle typed quote_observer mock_market_data)
+foreach(config IN ITEMS lifecycle typed quote_observer mock_market_data
+    trading_strategy mock_trading)
   configure_file("tests/strategyd/configs/${config}.json"
     "${CMAKE_BINARY_DIR}/test_data/${config}.json" COPYONLY)
 endforeach()
@@ -85,9 +113,22 @@ target_compile_definitions(yquant_strategyd_test PRIVATE
   YQUANT_TEST_MARKET_DATA_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/mock_market_data.json"
   YQUANT_TEST_QUOTE_EXAMPLE_PATH="$<TARGET_FILE:quote_observer_strategy>"
   YQUANT_TEST_QUOTE_EXAMPLE_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/quote_observer_strategy.json")
+target_compile_definitions(yquant_strategyd_test PRIVATE
+  YQUANT_TEST_ORDER_EXAMPLE_PATH="$<TARGET_FILE:order_lifecycle_strategy>"
+  YQUANT_TEST_ORDER_EXAMPLE_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/order_lifecycle_strategy.json"
+  YQUANT_TEST_TRADING_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/mock_trading.json"
+  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/trading_strategy.json")
 add_dependencies(yquant_strategyd_test
   yquant_strategyd lifecycle_strategy parameterized_strategy
-  quote_observer_strategy strategyd_signal_launcher)
+  quote_observer_strategy order_lifecycle_strategy strategyd_signal_launcher)
+
+foreach(name IN ITEMS normal cancel update_fail fill_fail bulk partial_cancel
+    insufficient)
+  string(TOUPPER "${name}" upper_name)
+  target_compile_definitions(yquant_strategyd_test PRIVATE
+    YQUANT_TEST_TRADING_${upper_name}_PATH="$<TARGET_FILE:strategyd_trading_${name}>")
+  add_dependencies(yquant_strategyd_test strategyd_trading_${name})
+endforeach()
 
 foreach(name IN ITEMS good no_entry bad_abi bad_size no_create no_destroy
     create_fail create_null create_inconsistent start_fail stop_fail null_plugin

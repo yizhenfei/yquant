@@ -10,6 +10,7 @@
 #include "strategyd/market_data.h"
 #include "strategyd/mock_market_data_source.h"
 #include "strategyd/strategy_context.h"
+#include "strategyd/trading.h"
 
 namespace {
 
@@ -296,7 +297,8 @@ TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
   }
   ManualClock clock;
   MarketDataImpl market_data(clock);
-  StrategyContextImpl context(clock, market_data);
+  TradingImpl trading(clock, market_data);
+  StrategyContextImpl context(clock, market_data, trading);
   ASSERT_TRUE(market_data.Configure(config).ok());
   market_data.BeginCallback(CallbackPhase::kStart);
   for (std::size_t index = 0; index < config.instrument_count; ++index) {

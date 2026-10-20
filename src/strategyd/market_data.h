@@ -15,7 +15,7 @@
 namespace yquant::strategyd {
 
 // Host-owned callback phase controls when subscription registration is legal.
-enum class CallbackPhase { kNone, kStart, kTick, kStop };
+enum class CallbackPhase { kNone, kStart, kTick, kOrderUpdate, kFill, kStop };
 
 // Main-thread dictionary, subscriptions, and last dispatched snapshots. Stable
 // InstrumentIds map to private dense slots; no map or buffer grows at runtime.
@@ -38,6 +38,21 @@ class MarketDataImpl final : public strategy::MarketData {
   // entering a strategy callback and End after it returns, including on error.
   void BeginCallback(CallbackPhase phase) noexcept { phase_ = phase; }
   void EndCallback() noexcept { phase_ = CallbackPhase::kNone; }
+
+  // Checks the shared immutable dictionary without requiring a subscription.
+  bool HasInstrument(model::InstrumentId id) const noexcept {
+    return FindIndex(id).has_value();
+  }
+
+  // Copies shared metadata for host accounting, independently of subscription.
+  // Unknown IDs leave out unchanged.
+  bool TryGetInstrument(model::InstrumentId id,
+                        model::InstrumentDefinition& out) const noexcept {
+    const auto index = FindIndex(id);
+    if (!index) return false;
+    out = instruments_[*index].definition;
+    return true;
+  }
 
   [[nodiscard]] base::ErrorCode FindInstrument(
       std::string_view venue, std::string_view symbol,

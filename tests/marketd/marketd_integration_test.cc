@@ -266,6 +266,61 @@ TEST_F(MarketdIntegrationTest, TwoStrategiesAndRawReadersObserveBroadcast) {
   EXPECT_FALSE(later.Open(endpoint).ok());
 }
 
+TEST_F(MarketdIntegrationTest, ShmQuotesDriveTradingAndAccountSettlement) {
+  // Stable prices make final cash independent of when the SHM reader joins.
+  ASSERT_TRUE(directory_.Write(
+      "order_mock.json",
+      R"({"source_id":1,"adapter":"mock","interval_ms":1,"instruments":[)"
+      R"({"venue":"SSE","symbol":"600000","price_decimals":2,)"
+      R"("bid_price":1000,"bid_qty":100,"ask_price":1001,"ask_qty":200,)"
+      R"("price_step":0}]})"));
+  ASSERT_TRUE(directory_.Write(
+      "order_feed.json",
+      R"({"source":{"adapter":"mock","config":"order_mock.json"},)"
+      R"("publishers":[)" +
+          ShmJson() + "]}"));
+  ASSERT_TRUE(directory_.Write(
+      "order_host.json",
+      R"({"source_id":1,"adapter":"shm","runtime_directory":")" +
+          std::string(directory_.path()) +
+          R"(","stream":"quotes","poll_interval_us":0,"instruments":[)"
+          R"({"venue":"SSE","symbol":"600000","price_decimals":2}]})"));
+  ChildProcess marketd;
+  ASSERT_EQ(StartMarketd(marketd, "order_feed.json"), 0);
+  ASSERT_TRUE(marketd.WaitForOutput("Running")) << marketd.output();
+  ChildProcess strategy;
+  ASSERT_EQ(strategy.Start(
+                YQUANT_TEST_STRATEGYD_PATH,
+                {"--strategy", YQUANT_TEST_ORDER_EXAMPLE_PATH, "--config",
+                 YQUANT_TEST_ORDER_EXAMPLE_CONFIG_PATH, "--market-data-config",
+                 directory_.File("order_host.json"), "--trading-config",
+                 YQUANT_TEST_TRADING_CONFIG_PATH}),
+            0);
+  ASSERT_TRUE(strategy.WaitForOutput(
+      "order_lifecycle: terminal state=filled cumulative=200 leaves=0\n"))
+      << strategy.output();
+  EXPECT_NE(
+      strategy.output().find(
+          "order_lifecycle: account initial cash=100000000000000 reserved=0 "
+          "available=100000000000000 position_total=1000 "
+          "position_available=800 "
+          "position_reserved=0\n"),
+      std::string::npos);
+  Stop(strategy);
+  EXPECT_NE(
+      strategy.output().find(
+          "order_lifecycle: stopped fills=2 filled_qty=200 state=filled\n"),
+      std::string::npos);
+  EXPECT_NE(
+      strategy.output().find(
+          "order_lifecycle: account final cash=99997998000000 reserved=0 "
+          "available=99997998000000 position_total=1200 position_available=800 "
+          "position_reserved=0\n"),
+      std::string::npos);
+  Stop(marketd);
+  EXPECT_FALSE(std::filesystem::exists(directory_.File("quotes.manifest")));
+}
+
 TEST_F(MarketdIntegrationTest, DuplicatePublisherFailsWhileOriginalStaysLive) {
   ChildProcess first;
   ASSERT_EQ(StartMarketd(first), 0);
