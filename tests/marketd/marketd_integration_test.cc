@@ -1,0 +1,392 @@
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <spawn.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <chrono>
+#include <csignal>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <vector>
+
+#include "gtest/gtest.h"
+#include "test_support.h"
+#include "yquant/md/quote_codec.h"
+#include "yquant/md/shm_pubsub.h"
+
+extern char** environ;
+
+namespace yquant::marketd {
+namespace {
+
+constexpr auto kProcessTimeout = std::chrono::seconds(10);
+
+// Owns one real daemon and a nonblocking combined output pipe. Failed tests
+// kill and reap their children, so no failure leaves a feed or writer lock
+// live.
+class ChildProcess {
+ public:
+  ChildProcess() = default;
+  ~ChildProcess() {
+    if (pid_ > 0) {
+      kill(pid_, SIGKILL);
+      while (waitpid(pid_, &status_, 0) == -1 && errno == EINTR) {
+      }
+    }
+    if (output_fd_ >= 0) close(output_fd_);
+  }
+  ChildProcess(const ChildProcess&) = delete;
+  ChildProcess& operator=(const ChildProcess&) = delete;
+
+  int Start(const char* executable, const std::vector<std::string>& arguments) {
+    int output[2];
+    if (pipe(output) != 0) return errno;
+    std::vector<std::string> storage{executable};
+    storage.insert(storage.end(), arguments.begin(), arguments.end());
+    std::vector<char*> argv;
+    for (auto& argument : storage) argv.push_back(argument.data());
+    argv.push_back(nullptr);
+    posix_spawn_file_actions_t actions;
+    int error = posix_spawn_file_actions_init(&actions);
+    if (error == 0) {
+      error =
+          posix_spawn_file_actions_adddup2(&actions, output[1], STDOUT_FILENO);
+      if (error == 0)
+        error = posix_spawn_file_actions_adddup2(&actions, output[1],
+                                                 STDERR_FILENO);
+      if (error == 0)
+        error = posix_spawn_file_actions_addclose(&actions, output[0]);
+      if (error == 0)
+        error = posix_spawn_file_actions_addclose(&actions, output[1]);
+      if (error == 0)
+        error = posix_spawn(&pid_, executable, &actions, nullptr, argv.data(),
+                            environ);
+      posix_spawn_file_actions_destroy(&actions);
+    }
+    close(output[1]);
+    if (error != 0) {
+      close(output[0]);
+      pid_ = -1;
+      return error;
+    }
+    output_fd_ = output[0];
+    if (fcntl(output_fd_, F_SETFL, O_NONBLOCK) != 0) return errno;
+    if (fcntl(output_fd_, F_SETFD, FD_CLOEXEC) != 0) return errno;
+    return 0;
+  }
+
+  bool WaitForOutput(std::string_view text) {
+    return ObserveUntil(
+        [&] { return output_.find(text) != std::string::npos; });
+  }
+  bool Wait() {
+    return ObserveUntil([&] { return pid_ < 0; });
+  }
+  bool Signal(int signal) const { return pid_ > 0 && kill(pid_, signal) == 0; }
+  int exit_code() const {
+    return exited_ && WIFEXITED(status_) ? WEXITSTATUS(status_) : -1;
+  }
+  const std::string& output() const { return output_; }
+
+ private:
+  // Reads only currently available bytes and retries interrupted reads.
+  void Drain() {
+    char buffer[1024];
+    for (;;) {
+      const auto count = read(output_fd_, buffer, sizeof(buffer));
+      if (count > 0)
+        output_.append(buffer, static_cast<std::size_t>(count));
+      else if (count < 0 && errno == EINTR)
+        continue;
+      else
+        return;
+    }
+  }
+
+  // Observes process exit and output under a single deadline per expectation.
+  template <typename Predicate>
+  bool ObserveUntil(Predicate done) {
+    const auto deadline = std::chrono::steady_clock::now() + kProcessTimeout;
+    for (;;) {
+      Drain();
+      if (pid_ > 0) {
+        const auto result = waitpid(pid_, &status_, WNOHANG);
+        if (result == pid_) {
+          pid_ = -1;
+          exited_ = true;
+          Drain();
+        } else if (result < 0 && errno != EINTR) {
+          return false;
+        }
+      }
+      if (done()) return true;
+      if (pid_ < 0) return false;
+      const auto remaining =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              deadline - std::chrono::steady_clock::now());
+      if (remaining.count() <= 0) return false;
+      pollfd descriptor{output_fd_, POLLIN, 0};
+      if (poll(&descriptor, 1, static_cast<int>(remaining.count())) < 0 &&
+          errno != EINTR)
+        return false;
+    }
+  }
+
+  pid_t pid_ = -1;
+  int output_fd_ = -1;
+  int status_ = 0;
+  bool exited_ = false;
+  std::string output_;
+};
+
+// Reads a live IPC stream without silently skipping gaps or malformed events.
+bool ReadQuote(md::ShmSubscriber& subscriber, model::QuoteTick& out) {
+  const auto deadline = std::chrono::steady_clock::now() + kProcessTimeout;
+  md::EventBuffer buffer;
+  for (;;) {
+    const auto result = subscriber.TryNext(buffer);
+    if (result.status == md::ReadStatus::kEvent)
+      return md::DecodeQuoteEvent(buffer.view(), out).ok();
+    if (result.status != md::ReadStatus::kEmpty &&
+        result.status != md::ReadStatus::kYield &&
+        result.status != md::ReadStatus::kRetry)
+      return false;
+    if (std::chrono::steady_clock::now() >= deadline) return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+}
+
+// Reserves a kernel-selected local TCP port until this setup call returns.
+std::uint16_t AvailablePort() {
+  const int descriptor = socket(AF_INET, SOCK_STREAM, 0);
+  if (descriptor < 0) return 0;
+  sockaddr_in address = {};
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  socklen_t size = sizeof(address);
+  const bool success =
+      bind(descriptor, reinterpret_cast<sockaddr*>(&address), size) == 0 &&
+      getsockname(descriptor, reinterpret_cast<sockaddr*>(&address), &size) ==
+          0;
+  close(descriptor);
+  return success ? ntohs(address.sin_port) : 0;
+}
+
+class MarketdIntegrationTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    ASSERT_TRUE(directory_.valid());
+    ASSERT_TRUE(directory_.Write("mock.json", testing::kMockJson));
+    ASSERT_TRUE(directory_.Write("local.json", LocalJson()));
+    ASSERT_TRUE(directory_.Write(
+        "strategy.json",
+        R"({"strategy_id":"marketd-observer","parameters":{)"
+        R"("source_id":42,"venue":"SSE","symbol":"600000"}})"));
+    ASSERT_TRUE(directory_.Write(
+        "strategy_host.json",
+        R"({"source_id":42,"adapter":"shm","runtime_directory":")" +
+            std::string(directory_.path()) +
+            R"(","stream":"quotes",)"
+            R"("poll_interval_us":0,"instruments":[{"venue":"SSE",)"
+            R"("symbol":"600000","price_decimals":2}]})"));
+  }
+
+  std::string ShmJson() const {
+    return R"({"adapter":"shm","runtime_directory":")" +
+           std::string(directory_.path()) +
+           R"(","stream":"quotes","capacity":8192,"max_payload_size":80})";
+  }
+  std::string LocalJson() const {
+    return R"({"source":{"adapter":"mock","config":"mock.json"},)"
+           R"("publishers":[)" +
+           ShmJson() + "]}";
+  }
+  int StartMarketd(ChildProcess& child, std::string_view config = "local.json",
+                   const std::vector<std::string>& extra = {}) const {
+    std::vector<std::string> arguments{"--config", directory_.File(config)};
+    arguments.insert(arguments.end(), extra.begin(), extra.end());
+    return child.Start(YQUANT_TEST_MARKETD_PATH, arguments);
+  }
+  int StartStrategy(ChildProcess& child) const {
+    return child.Start(
+        YQUANT_TEST_STRATEGYD_PATH,
+        {"--strategy", YQUANT_TEST_QUOTE_EXAMPLE_PATH, "--config",
+         directory_.File("strategy.json"), "--market-data-config",
+         directory_.File("strategy_host.json")});
+  }
+  void Stop(ChildProcess& child) const {
+    ASSERT_TRUE(child.Signal(SIGTERM)) << child.output();
+    ASSERT_TRUE(child.Wait()) << child.output();
+    EXPECT_EQ(child.exit_code(), 0) << child.output();
+  }
+
+  testing::RuntimeDirectory directory_;
+};
+
+TEST_F(MarketdIntegrationTest, TwoStrategiesAndRawReadersObserveBroadcast) {
+  ChildProcess marketd;
+  ASSERT_EQ(StartMarketd(marketd), 0);
+  ASSERT_TRUE(marketd.WaitForOutput("Running")) << marketd.output();
+  md::ShmSubscriber first_reader;
+  md::ShmSubscriber second_reader;
+  const md::Endpoint endpoint{directory_.path(), "quotes"};
+  ASSERT_TRUE(first_reader.Open(endpoint, {}, md::StartPosition::At(1)).ok());
+  ASSERT_TRUE(second_reader.Open(endpoint, {}, md::StartPosition::At(1)).ok());
+  ChildProcess first_strategy;
+  ChildProcess second_strategy;
+  ASSERT_EQ(StartStrategy(first_strategy), 0);
+  ASSERT_EQ(StartStrategy(second_strategy), 0);
+  ASSERT_TRUE(first_strategy.WaitForOutput("first quote received"))
+      << first_strategy.output();
+  ASSERT_TRUE(second_strategy.WaitForOutput("first quote received"))
+      << second_strategy.output();
+  for (std::uint64_t i = 1; i <= 16; ++i) {
+    model::QuoteTick first;
+    model::QuoteTick second;
+    ASSERT_TRUE(ReadQuote(first_reader, first));
+    ASSERT_TRUE(ReadQuote(second_reader, second));
+    EXPECT_EQ(first, second);
+    EXPECT_EQ(first.sequence, i);
+    EXPECT_EQ(first.source_id.value, 42U);
+    EXPECT_EQ(first.receive_time_ns, 0U);
+  }
+  Stop(first_strategy);
+  Stop(second_strategy);
+  EXPECT_NE(first_strategy.output().find("ticks="), std::string::npos);
+  EXPECT_NE(second_strategy.output().find("ticks="), std::string::npos);
+  Stop(marketd);
+  md::ShmSubscriber later;
+  EXPECT_FALSE(later.Open(endpoint).ok());
+}
+
+TEST_F(MarketdIntegrationTest, DuplicatePublisherFailsWhileOriginalStaysLive) {
+  ChildProcess first;
+  ASSERT_EQ(StartMarketd(first), 0);
+  ASSERT_TRUE(first.WaitForOutput("Running")) << first.output();
+  ChildProcess second;
+  ASSERT_EQ(StartMarketd(second), 0);
+  ASSERT_TRUE(second.Wait()) << second.output();
+  EXPECT_NE(second.exit_code(), 0) << second.output();
+  EXPECT_NE(second.output().find("publisher_init"), std::string::npos);
+  md::ShmSubscriber subscriber;
+  ASSERT_TRUE(subscriber.Open({directory_.path(), "quotes"}).ok());
+  model::QuoteTick quote;
+  EXPECT_TRUE(ReadQuote(subscriber, quote));
+  Stop(first);
+}
+
+TEST_F(MarketdIntegrationTest, CheckConfigCreatesNoDiscoveryOrWriterLock) {
+  ChildProcess child;
+  ASSERT_EQ(StartMarketd(child, "local.json", {"--check-config"}), 0);
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 0) << child.output();
+  EXPECT_NE(child.output().find("configuration valid"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(directory_.File("quotes.manifest")));
+  EXPECT_FALSE(std::filesystem::exists(directory_.File("quotes.lock")));
+}
+
+TEST_F(MarketdIntegrationTest, EventLimitExitsAndRemovesDiscovery) {
+  ChildProcess child;
+  ASSERT_EQ(StartMarketd(child, "local.json", {"--max-events", "17"}), 0);
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 0) << child.output();
+  EXPECT_NE(child.output().find("Stopped events=17"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(directory_.File("quotes.manifest")));
+  md::ShmPublisher publisher;
+  EXPECT_TRUE(publisher.Create({{directory_.path(), "quotes"}, 16, 80}).ok());
+}
+
+TEST_F(MarketdIntegrationTest, CrashRestartChangesGenerationAndReleasesLock) {
+  ChildProcess first;
+  ASSERT_EQ(StartMarketd(first), 0);
+  ASSERT_TRUE(first.WaitForOutput("Running")) << first.output();
+  md::ShmSubscriber old_reader;
+  ASSERT_TRUE(old_reader.Open({directory_.path(), "quotes"}).ok());
+  const auto generation = old_reader.generation();
+  ASSERT_TRUE(first.Signal(SIGKILL));
+  ASSERT_TRUE(first.Wait()) << first.output();
+  ChildProcess replacement;
+  ASSERT_EQ(StartMarketd(replacement), 0);
+  ASSERT_TRUE(replacement.WaitForOutput("Running")) << replacement.output();
+  md::ShmSubscriber new_reader;
+  ASSERT_TRUE(new_reader.Open({directory_.path(), "quotes"}).ok());
+  EXPECT_NE(new_reader.generation(), generation);
+  md::RefreshResult result;
+  ASSERT_TRUE(old_reader.Refresh(result).ok());
+  EXPECT_EQ(result.status, md::RefreshStatus::kStreamChanged);
+  model::QuoteTick quote;
+  EXPECT_TRUE(ReadQuote(new_reader, quote));
+  Stop(replacement);
+}
+
+TEST_F(MarketdIntegrationTest,
+       TcpRelayFeedsRealStrategyAndPreservesQuoteOrigin) {
+  const auto port = AvailablePort();
+  ASSERT_NE(port, 0);
+  ASSERT_TRUE(directory_.Write(
+      "server.json",
+      R"({"source":{"adapter":"mock","config":"mock.json"},)"
+      R"("publishers":[{"adapter":"tcp","address":"127.0.0.1","port":)" +
+          std::to_string(port) + "}]}"));
+  // Keep listener and client addresses explicit; the receiver is an ordinary
+  // configured source and has no deployment-role flag.
+  ASSERT_TRUE(directory_.Write(
+      "relay.json",
+      R"({"source":{"adapter":"tcp","address":"127.0.0.1","port":)" +
+          std::to_string(port) + "},\"publishers\":[" + ShmJson() + "]}"));
+  ChildProcess server;
+  ASSERT_EQ(StartMarketd(server, "server.json"), 0);
+  ASSERT_TRUE(server.WaitForOutput("Running")) << server.output();
+  ChildProcess relay;
+  ASSERT_EQ(StartMarketd(relay, "relay.json"), 0);
+  ASSERT_TRUE(relay.WaitForOutput("Running")) << relay.output();
+  md::ShmSubscriber subscriber;
+  ASSERT_TRUE(
+      subscriber
+          .Open({directory_.path(), "quotes"}, {}, md::StartPosition::At(1))
+          .ok());
+  ChildProcess strategy;
+  ASSERT_EQ(StartStrategy(strategy), 0);
+  ASSERT_TRUE(strategy.WaitForOutput("first quote received"))
+      << strategy.output();
+  model::QuoteTick previous;
+  ASSERT_TRUE(ReadQuote(subscriber, previous));
+  EXPECT_EQ(previous.source_id.value, 42U);
+  EXPECT_GT(previous.event_time_ns, 0U);
+  EXPECT_EQ(previous.receive_time_ns, 0U);
+  for (int i = 0; i < 15; ++i) {
+    model::QuoteTick current;
+    ASSERT_TRUE(ReadQuote(subscriber, current));
+    EXPECT_EQ(current.source_id, previous.source_id);
+    EXPECT_EQ(current.instrument_id, previous.instrument_id);
+    EXPECT_EQ(current.sequence, previous.sequence + 1);
+    EXPECT_GE(current.event_time_ns, previous.event_time_ns);
+    previous = current;
+  }
+  Stop(strategy);
+  Stop(relay);
+  Stop(server);
+}
+
+TEST_F(MarketdIntegrationTest, HelpAndInvalidArgumentsHaveDeterministicExit) {
+  ChildProcess help;
+  ASSERT_EQ(help.Start(YQUANT_TEST_MARKETD_PATH, {"--help"}), 0);
+  ASSERT_TRUE(help.Wait());
+  EXPECT_EQ(help.exit_code(), 0);
+  EXPECT_NE(help.output().find("Usage:"), std::string::npos);
+  ChildProcess invalid;
+  ASSERT_EQ(StartMarketd(invalid, "local.json", {"--max-events", "0"}), 0);
+  ASSERT_TRUE(invalid.Wait());
+  EXPECT_EQ(invalid.exit_code(), 2);
+  EXPECT_FALSE(std::filesystem::exists(directory_.File("quotes.manifest")));
+}
+
+}  // namespace
+}  // namespace yquant::marketd

@@ -32,6 +32,10 @@ base::Status MockMarketDataSource::Prepare(
                   error.field_path, error.message);
     return result;
   }
+  if (config.adapter != MarketDataAdapter::kMock) {
+    return Error(base::ErrorCode::kInvalidArgument,
+                 "mock source requires adapter=mock");
+  }
   config_ = config;
   state_ = State::kPrepared;
   error_detail_[0] = '\0';

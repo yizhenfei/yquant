@@ -1,0 +1,42 @@
+add_executable(yquant_md_test
+  tests/md/shm_pubsub_test.cc
+  tests/md/quote_codec_test.cc)
+target_include_directories(yquant_md_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(yquant_md_test PRIVATE
+  yquant::md GTest::gtest_main Threads::Threads)
+target_compile_options(yquant_md_test PRIVATE -Wall -Wextra -Wpedantic)
+gtest_discover_tests(yquant_md_test
+  DISCOVERY_MODE PRE_TEST
+  DISCOVERY_TIMEOUT 30
+  PROPERTIES ${yquant_test_properties})
+
+add_executable(yquant_marketd_test
+  tests/marketd/config_test.cc
+  tests/marketd/adapters_test.cc
+  tests/marketd/runner_test.cc
+  tests/marketd/tcp_transport_test.cc
+  tests/marketd/marketd_integration_test.cc)
+target_link_libraries(yquant_marketd_test PRIVATE
+  yquant_marketd_runtime GTest::gtest_main Threads::Threads)
+target_compile_options(yquant_marketd_test PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_definitions(yquant_marketd_test PRIVATE
+  YQUANT_TEST_MARKETD_PATH="$<TARGET_FILE:yquant_marketd>"
+  YQUANT_TEST_STRATEGYD_PATH="$<TARGET_FILE:yquant_strategyd>"
+  YQUANT_TEST_QUOTE_EXAMPLE_PATH="$<TARGET_FILE:quote_observer_strategy>"
+  YQUANT_TEST_QUOTE_EXAMPLE_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/quote_observer_strategy.json")
+add_dependencies(yquant_marketd_test
+  yquant_marketd yquant_strategyd quote_observer_strategy)
+gtest_discover_tests(yquant_marketd_test
+  DISCOVERY_MODE PRE_TEST
+  DISCOVERY_TIMEOUT 30
+  PROPERTIES ${yquant_test_properties})
+
+# Isolate replacement global new/delete from all other test executables.
+add_executable(marketd_allocation_test tests/marketd/allocation_test.cc)
+target_link_libraries(marketd_allocation_test PRIVATE
+  yquant_marketd_runtime GTest::gtest_main Threads::Threads)
+target_compile_options(marketd_allocation_test PRIVATE -Wall -Wextra -Wpedantic)
+gtest_discover_tests(marketd_allocation_test
+  DISCOVERY_MODE PRE_TEST
+  DISCOVERY_TIMEOUT 30
+  PROPERTIES ${yquant_test_properties})

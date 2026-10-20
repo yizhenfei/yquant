@@ -17,6 +17,7 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 - 常驻服务进程在名称末尾加 `d`，其他程序不加此后缀。
 
 核心策略进程命名为 `yquant-strategyd`。
+行情进程命名为 `yquant-marketd`。
 
 ## 目标平台
 
@@ -31,12 +32,17 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 
 - `include/yquant/base/`：基础组件公开头文件。
 - `include/yquant/model/`：来源与标的标识、标的定义和一档报价。
+- `include/yquant/md/`：共享内存行情订阅发布与标准报价帧。
 - `include/yquant/strategy/`：策略生命周期、强类型配置与动态库协议。
 - `src/base/`：基础组件及内部实现。
 - `src/strategyd/`：策略进程与动态库加载实现。
+- `src/md/`：共享内存映射、seqlock 协议和报价编解码。
+- `src/marketd/`：行情进程、配置、输入与输出适配器。
+- `examples/marketd/`：本机分发和 TCP 中继配置。
 - `examples/strategies/`：用户策略动态库示例。
 - `tests/base/`：基础组件测试。
 - `tests/strategyd/`：策略运行时与进程集成测试。
+- `tests/md/`、`tests/marketd/`：行情组件与多进程分发测试。
 - `cmake/`：依赖与编译配置。
 - `docs/design/`：架构与组件设计。
 - `docs/research/`：系统研究资料与记录。
@@ -96,7 +102,32 @@ cmake -P cmake/DownloadTestData.cmake
   --market-data-config ./build/debug/strategies/mock_market_data.json
 ```
 
-`--market-data-config` 为可选的宿主行情配置。示例使用来源 `1`，每 100 ms 生成 `SSE/600000` 的一档报价；策略通过 `parameters.source_id` 选择来源。首次行情输出 `quote_observer: first quote received`，停止时输出 `ticks`、`last_sequence` 和 `max_age_ns` 汇总。省略行情配置时，两个不订阅行情的示例仍可运行。标识、订阅及模拟规则见[行情驱动设计](docs/design/market-data.md)。
+`--market-data-config` 为可选的宿主行情配置，可选择模拟源或共享内存源。示例使用来源 `1`，每 100 ms 生成 `SSE/600000` 的一档报价；策略通过 `parameters.source_id` 选择来源。首次行情输出 `quote_observer: first quote received`，停止时输出 `ticks`、`last_sequence` 和 `max_age_ns` 汇总。省略行情配置时，两个不订阅行情的示例仍可运行。标识、订阅及模拟规则见[行情驱动设计](docs/design/market-data.md)。
+
+## 行情进程
+
+`yquant-marketd` 按 JSON 组装 `Source → QuoteTick → Publisher[]`。输入支持模拟行情、共享内存和 TCP；输出支持共享内存广播和 TCP 分发。接入与中继使用相同程序，由配置决定组合。
+
+先启动行情进程：
+
+```sh
+./build/debug/bin/yquant-marketd --config ./build/debug/marketd/local.json
+```
+
+再在其他终端启动一个或多个策略进程：
+
+```sh
+./build/debug/bin/yquant-strategyd \
+  --strategy ./build/debug/strategies/quote_observer_strategy.so \
+  --config ./build/debug/strategies/quote_observer_strategy.json \
+  --market-data-config ./build/debug/strategies/shm_market_data.json
+```
+
+各策略进程通过私有游标读取同一份共享内存。槽位覆盖时报告缺口并停止策略，避免继续使用缺失事件后的状态。共享内存和网络中继均保留源标识、品种、报价序号与 UTC 事件时间，接收时间在策略进程本地赋值。
+
+跨机部署使用 [tcp_source.json](examples/marketd/tcp_source.json) 与 [tcp_relay.json](examples/marketd/tcp_relay.json)。策略机器将输入地址改为行情机器的数字 IPv4 地址，随后向本机共享内存发布。TCP 单个慢客户端被独立断开，其他输出继续工作。
+
+`--check-config` 只校验配置，不创建发布者；`--max-events N` 用于有限事件演示。使用 SIGINT 或 SIGTERM 停止进程。完整配置、故障处理及协议见[行情进程设计](docs/design/marketd.md)。
 
 ## 工程方案
 
@@ -109,6 +140,8 @@ cmake -P cmake/DownloadTestData.cmake
 - [策略进程与动态策略加载设计](docs/design/strategyd.md)：生命周期接口、动态库协议与命令执行流程。
 - [策略配置设计](docs/design/strategy-config.md)：JSON 分层、强类型配置与启动校验。
 - [行情驱动与策略事件循环](docs/design/market-data.md)：一档报价、策略上下文、模拟行情源与事件分派。
+- [行情进程设计](docs/design/marketd.md)：可配置行情管线、本机广播和跨机中继。
+- [共享内存行情订阅发布组件](docs/design/shared-memory-pubsub.md)：seqlock、独立游标、覆盖缺口和重启隔离。
 - [一档双边做市策略](docs/design/bbo-market-making.md)：策略伪代码、所需数据与回调语义。
 
 ## 参考系统与资料

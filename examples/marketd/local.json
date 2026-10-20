@@ -1,0 +1,12 @@
+{
+  "source": {"adapter": "mock", "config": "mock_source.json"},
+  "publishers": [
+    {
+      "adapter": "shm",
+      "runtime_directory": "/tmp/yquant-marketd",
+      "stream": "quotes",
+      "capacity": 1024,
+      "max_payload_size": 80
+    }
+  ]
+}
