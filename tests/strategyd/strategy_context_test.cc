@@ -2,6 +2,7 @@
 
 #include "gtest/gtest.h"
 #include "strategyd/market_data.h"
+#include "strategyd/trading.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -57,7 +58,8 @@ model::QuoteTick ContextQuote(model::InstrumentId id, std::uint64_t sequence) {
 TEST(StrategyContextTest, EmptyDictionaryPreservesOutputsAndHasNoSource) {
   ContextTestClock clock;
   MarketDataImpl market_data(clock);
-  StrategyContextImpl context(clock, market_data);
+  TradingImpl trading(clock, market_data);
+  StrategyContextImpl context(clock, market_data, trading);
   const auto definition = ContextConfig().instruments[0].instrument;
   auto unchanged_definition = definition;
   EXPECT_EQ(context.market_data().FindInstrument("SSE", "600000",
@@ -84,7 +86,8 @@ TEST(StrategyContextTest, EmptyDictionaryPreservesOutputsAndHasNoSource) {
 TEST(StrategyContextTest, ResolvesDefinitionsAndRegistersOnlyDuringStart) {
   ContextTestClock clock;
   MarketDataImpl market_data(clock);
-  StrategyContextImpl context(clock, market_data);
+  TradingImpl trading(clock, market_data);
+  StrategyContextImpl context(clock, market_data, trading);
   const auto config = ContextConfig();
   ASSERT_TRUE(market_data.Configure(config).ok());
   const auto definition = config.instruments[0].instrument;
@@ -122,7 +125,8 @@ TEST(StrategyContextTest, ResolvesDefinitionsAndRegistersOnlyDuringStart) {
 TEST(StrategyContextTest, KeepsAcceptedSnapshotAndRequiresTheExactSourcePair) {
   ContextTestClock clock;
   MarketDataImpl market_data(clock);
-  StrategyContextImpl context(clock, market_data);
+  TradingImpl trading(clock, market_data);
+  StrategyContextImpl context(clock, market_data, trading);
   const strategy::StrategyContext& read_only_context = context;
   const auto config = ContextConfig();
   ASSERT_TRUE(market_data.Configure(config).ok());

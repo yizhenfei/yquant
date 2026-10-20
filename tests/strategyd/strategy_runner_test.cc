@@ -80,6 +80,28 @@ void ExpectLifecycle(const std::string& events, const std::string& expected) {
   }
 }
 
+// Lifecycle-only runners still stop through the public event-loop entry.
+class ImmediateStopEnvironment final : public EventLoopEnvironment {
+ public:
+  base::Status CheckStop(bool& out) noexcept override {
+    out = true;
+    return {};
+  }
+  base::Status Wait(std::optional<std::uint64_t>) noexcept override {
+    return {base::ErrorCode::kInternalError, {}};
+  }
+};
+
+// Requests stop and drives finalization without exposing internal dispatch.
+base::Status StopRunner(StrategyRunner& runner) noexcept {
+  const auto requested = runner.Handle(Stop{});
+  if (!requested.ok() || runner.state() == RunnerState::kFinished) {
+    return requested;
+  }
+  ImmediateStopEnvironment environment;
+  return runner.Run(environment);
+}
+
 TEST(StrategyRunnerTest, StartsStopsAndRejectsASecondLoad) {
   EventPipe events;
   ASSERT_TRUE(events.valid());
@@ -99,11 +121,11 @@ TEST(StrategyRunnerTest, StartsStopsAndRejectsASecondLoad) {
   EXPECT_EQ(runner.state(), RunnerState::kRunning);
   EXPECT_EQ(events.Read(), "CPS");
 
-  ASSERT_TRUE(runner.Handle(Stop{}).ok());
+  ASSERT_TRUE(StopRunner(runner).ok());
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   EXPECT_EQ(runner.strategy_id(), "test-lifecycle");
   ExpectLifecycle(events.Read(), "TD");
-  EXPECT_TRUE(runner.Handle(Stop{}).ok());
+  EXPECT_TRUE(StopRunner(runner).ok());
   EXPECT_EQ(runner
                 .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_GOOD_PATH,
                                      YQUANT_TEST_CONFIG_PATH})
@@ -114,9 +136,9 @@ TEST(StrategyRunnerTest, StartsStopsAndRejectsASecondLoad) {
 
 TEST(StrategyRunnerTest, StopBeforeLoadFinishesWithoutLoading) {
   StrategyRunner runner;
-  ASSERT_TRUE(runner.Handle(Stop{}).ok());
+  ASSERT_TRUE(StopRunner(runner).ok());
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
-  EXPECT_TRUE(runner.Handle(Stop{}).ok());
+  EXPECT_TRUE(StopRunner(runner).ok());
   EXPECT_EQ(runner
                 .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_GOOD_PATH,
                                      YQUANT_TEST_CONFIG_PATH})
@@ -153,7 +175,7 @@ TEST(StrategyRunnerTest, DestroysBeforeReleasingTheLibraryReference) {
                   .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_GOOD_PATH,
                                        YQUANT_TEST_CONFIG_PATH})
                   .ok());
-  ASSERT_TRUE(runner.Handle(Stop{}).ok());
+  ASSERT_TRUE(StopRunner(runner).ok());
   const std::string lifecycle = events.Read();
   ExpectLifecycle(lifecycle, "CPSTD");
   if (probe_events == "U") {
@@ -169,7 +191,7 @@ TEST(StrategyRunnerTest, RejectsEmptyPathsAndFinishes) {
               base::ErrorCode::kInvalidArgument);
     EXPECT_EQ(runner.state(), RunnerState::kFinished);
     EXPECT_STREQ(runner.error_stage(), "path");
-    EXPECT_TRUE(runner.Handle(Stop{}).ok());
+    EXPECT_TRUE(StopRunner(runner).ok());
   }
 }
 
@@ -190,7 +212,7 @@ TEST_P(InvalidPluginTest, FailsAndReleasesOwnedResources) {
           .ok());
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   ExpectLifecycle(events.Read(), GetParam().events);
-  EXPECT_TRUE(runner.Handle(Stop{}).ok());
+  EXPECT_TRUE(StopRunner(runner).ok());
   EXPECT_TRUE(events.Read().empty());
 }
 
@@ -225,11 +247,11 @@ TEST(StrategyRunnerTest, StopFailureStillDestroysAndCloses) {
                   .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_STOP_FAIL_PATH,
                                        YQUANT_TEST_CONFIG_PATH})
                   .ok());
-  EXPECT_EQ(runner.Handle(Stop{}).code, base::ErrorCode::kInvalidArgument);
+  EXPECT_EQ(StopRunner(runner).code, base::ErrorCode::kInvalidArgument);
   EXPECT_STREQ(runner.error_stage(), "stop");
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   ExpectLifecycle(events.Read(), "CPSTD");
-  EXPECT_TRUE(runner.Handle(Stop{}).ok());
+  EXPECT_TRUE(StopRunner(runner).ok());
   EXPECT_TRUE(events.Read().empty());
 }
 
@@ -245,7 +267,7 @@ TEST(StrategyRunnerTest, RejectsConfigurationBeforeLoadingTheLibrary) {
   EXPECT_STREQ(runner.error_stage(), "config");
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   EXPECT_TRUE(events.Read().empty());
-  EXPECT_TRUE(runner.Handle(Stop{}).ok());
+  EXPECT_TRUE(StopRunner(runner).ok());
 }
 
 TEST(StrategyRunnerTest, MissingConfigPathsNeverCreateTheStrategy) {
@@ -275,7 +297,7 @@ TEST(StrategyRunnerTest, InitializesTypedParametersBeforeStartAndOwnsValues) {
       << runner.error_detail();
   EXPECT_EQ(events.Read(), "CPS");
   EXPECT_EQ(runner.state(), RunnerState::kRunning);
-  ASSERT_TRUE(runner.Handle(Stop{}).ok());
+  ASSERT_TRUE(StopRunner(runner).ok());
   ExpectLifecycle(events.Read(), "TD");
 }
 
@@ -310,7 +332,7 @@ TEST_P(InvalidParametersTest, DestroysWithoutStartOrStop) {
                 .find(std::string("parameters.") + test_case.error_field),
             std::string::npos);
   ExpectLifecycle(events.Read(), "CPD");
-  EXPECT_TRUE(runner.Handle(Stop{}).ok());
+  EXPECT_TRUE(StopRunner(runner).ok());
   EXPECT_EQ(runner.strategy_id(), "typed");
   EXPECT_TRUE(events.Read().empty());
 }

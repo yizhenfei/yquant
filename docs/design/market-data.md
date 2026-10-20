@@ -6,50 +6,33 @@
 
 每个进程运行一个策略实例，连接一个行情源，最多配置 64 个标的。模拟源按照真实时间持续发布一档报价，直到收到停止请求。策略在启动时声明订阅，运行期间通过回调接收行情，并查询最新快照。
 
-本阶段提供 `QuoteTick`、行情查询、启动订阅、模拟行情源和事件循环。委托、账户账本、策略定时回调、运行中变更订阅及断线重连由后续设计扩展。
+本阶段提供 `QuoteTick`、行情查询、启动订阅、模拟行情源和事件循环。交易执行及委托、持仓与资金账本见[交易执行设计](trading.md)；策略定时回调、运行中变更订阅及断线重连由后续设计扩展。
 
 动态库和配置的公共约定分别见[策略进程设计](strategyd.md)、[策略配置设计](strategy-config.md)。行情类型的分类依据见 [Tick 数据分类](../research/tick-data-model.md)；本阶段只实现一档报价，不引入该研究中全部事件头和载荷类型。
 
 ## 单线程运行模型
 
 ```mermaid
-flowchart TD
-    START(["策略启动完成"])
-
-    subgraph MAIN_LOOP["主线程主循环"]
-        CHECK["循环入口<br/>检查退出信号"]
-        STOPPING{"收到停止请求<br/>或已有运行错误？"}
-        READY{"行情是否立即就绪？"}
-        WAIT["等待下一行情期限<br/>或退出信号"]
-        BATCH["处理一批到期行情，最多 64 条<br/>Poll → 校验 → 更新快照 → OnTick"]
-
-        CHECK --> STOPPING
-        STOPPING -->|否| READY
-        READY -->|否| WAIT
-        READY -->|是| BATCH
-        WAIT -->|期限到达或信号中断| CHECK
-        BATCH -->|批次结束或暂时无行情| CHECK
-    end
-
-    ERROR["保存运行错误"]
-    STOP["进入 Stopping<br/>不再读取或分派行情"]
-    CLEANUP["停止行情源 → OnStop<br/>销毁策略 → 释放动态库句柄"]
-    EXIT(["结束进程"])
-
-    START --> CHECK
-    STOPPING -->|是| STOP
-    WAIT -->|等待失败| ERROR
-    BATCH -->|行情源、校验或回调失败| ERROR
-    ERROR --> STOP
-    STOP --> CLEANUP
-    CLEANUP --> EXIT
+flowchart LR
+    RUN["主线程事件循环"]
+    POLL["行情源 Poll"]
+    VALIDATE["校验来源、标的与序号"]
+    CACHE["更新最新快照"]
+    CALLBACK["调用 OnTick"]
+    RUN --> POLL
+    POLL -->|Event| VALIDATE
+    VALIDATE -->|新事件| CACHE
+    CACHE --> CALLBACK
+    CALLBACK --> RUN
+    VALIDATE -->|旧或重复事件| RUN
+    POLL -->|Idle| RUN
 ```
 
-等待返回和行情批次结束后，都回到循环入口检查退出信号。没有行情源或订阅时，只等待退出信号。每批内部先取得并校验行情，再更新最新快照，最后调用 `OnTick()`；策略在回调中通过上下文查询该快照。
+行情源返回后，宿主先校验并更新最新快照，再调用 `OnTick()`。行情与交易回报由同一主线程公平驱动，共享事件批次额度；完整调度及停止流程见[交易执行设计](trading.md#主循环与收尾)。
 
 | 组件 | 主线程中的职责 |
 | --- | --- |
-| 事件循环 | 等待模拟源的下一期限或退出信号，调度行情读取和停止 |
+| 事件循环 | 调度行情、交易回报与停止处理 |
 | 行情源 | 非阻塞地生成或读取一条定长记录，不直接调用策略 |
 | 策略运行时 | 更新最新行情缓存，串行执行全部策略回调 |
 
@@ -63,7 +46,7 @@ flowchart TD
 
 公共交易领域类型统一组织为 `yquant::model`，目录为 `include/yquant/model/`。标识、标的定义和行情事件分别放入 `identifiers.h`、`instrument.h`、`quote_tick.h`，避免让通用标的身份依附某一种行情事件。策略上下文仍属于 `yquant::strategy`，行情接入实现留在宿主内部。
 
-NautilusTrader 将这些类型放在 `nautilus_model` / `nautilus_trader.model`：`identifiers` 保存标识，`instruments` 保存标的定义，`data` 保存报价等行情。YQuant 采用相同的模块职责，初期使用上述三个头文件，不展开尚无内容的子目录。[Nautilus 模型模块](https://github.com/nautechsystems/nautilus_trader/blob/develop/crates/model/src/lib.rs)
+NautilusTrader 将这些类型放在 `nautilus_model` / `nautilus_trader.model`：`identifiers` 保存标识，`instruments` 保存标的定义，`data` 保存报价等行情。YQuant 按这些职责组织公共类型，委托与成交类型见[交易执行设计](trading.md#委托模型)。[Nautilus 模型模块](https://github.com/nautechsystems/nautilus_trader/blob/develop/crates/model/src/lib.rs)
 
 ### 标的身份
 
@@ -135,7 +118,7 @@ Nautilus 的行情客户端在接入层持有 `ClientId`，其原生 `QuoteTick`
 
 ### 上下文
 
-`yquant::strategy::StrategyContext` 是由宿主实现的公共抽象接口，核心签名如下：
+`yquant::strategy::StrategyContext` 提供时间与宿主服务，行情侧关键签名如下：
 
 ```cpp
 std::uint64_t Now() const noexcept;
@@ -144,7 +127,7 @@ MarketData& market_data() noexcept;
 const MarketData& market_data() const noexcept;
 ```
 
-`Now()` 提供宿主的单调时间。`market_data()` 返回同一个宿主持有的行情接口，不创建或转移对象；const 上下文返回只读接口，可查询标的与快照，订阅通过非 const 接口登记。
+`Now()` 提供宿主的单调时间。`market_data()` 返回同一个宿主持有的行情接口，不创建或转移对象；const 上下文返回只读接口，可查询标的与快照，订阅通过非 const 接口登记。交易服务访问器及其规则见[交易接口](trading.md#策略接口)。
 
 上下文及其返回的 `MarketData` 引用仅在当前主线程回调期间使用，策略不得保存引用或地址供后续调用，也不得交给后台线程。构造器和析构器不访问这些接口。复制得到的定长标的与行情快照可以保存在策略自己的存储中；宿主在 `OnStop()` 期间仍保留最后分派的快照。
 
@@ -188,7 +171,7 @@ virtual base::ErrorCode OnStop(StrategyContext& context) noexcept = 0;
 
 回调必须及时返回，不阻塞等待下一条行情。`tick` 是主线程持有的定长对象，只在当前回调期间有效；运行时不向策略暴露源内部可复用缓冲区的长期借用。
 
-`OnTick()` 返回非 `kOk` 时，宿主保存错误码及该行情的来源、标的、序号，停止后续分派并进入错误收尾。成功启动的策略仍调用一次 `OnStop()`，最终退出码为 `1`。
+`OnTick()` 返回非 `kOk` 时，宿主保存错误码及该行情的来源、标的、序号，关闭后续业务回调。宿主继续执行能够完成的交易收尾，最终配对一次 `OnStop()` 并以失败状态退出；规则见[错误与超时](trading.md#错误与超时)。
 
 观察行情的示例策略按下面的逻辑执行：
 
@@ -225,7 +208,7 @@ Stop() -> Status
 
 `Poll()` 非阻塞，每次最多将一条自包含记录复制到 `out`，返回 `Event` 后由运行时校验、更新缓存并调用策略。没有到期事件时返回 `Idle`，出错时返回带失败 `Status` 的 `Error`，诊断由源的 `error_detail()` 提供并复制到运行时；后两种情况保持 `out` 不变。它不调用策略、睡眠或在内部无限循环处理数据。
 
-`next_deadline()` 返回下一条模拟行情的单调时间期限；同批仍有记录待取时表示立即就绪，没有订阅时为空。`Poll()` 返回 `Idle` 后，期限必须在未来或为空，不能持续返回“立即就绪但无数据”而使主循环空转。该期限只用于宿主调度，不触发策略定时回调。
+`next_deadline()` 返回下一条模拟行情的单调时间期限；同批仍有记录待取时表示立即就绪，没有订阅时为空。`Poll()` 返回 `Idle` 时，期限必须为空或晚于传入该次调用的 `now`，不能持续返回“立即就绪但无数据”而使主循环空转。该期限只用于宿主调度，不触发策略定时回调。
 
 `Stop()` 幂等且同步，停止后不再调用 `Poll()`，源取消发布期限并结束活动订阅。未启动或已经停止时成功返回；关闭资源失败仍保留诊断并完成能够安全执行的清理。没有后台工作需要回收。
 
@@ -237,90 +220,13 @@ Stop() -> Status
 
 ## 主循环与收尾
 
-### 启动
+行情配置在加载策略动态库前校验，行情源 `Prepare` 与行情服务建立自持存储。柜台账户初始化见[交易启动流程](trading.md#启动与事件调度)。`OnStart()` 成功后冻结订阅表，宿主激活行情源，全部成功后才进入运行态。
 
-1. 主线程阻塞 `SIGINT`、`SIGTERM`，安装只设置停止标志的信号处理函数，并准备等待时使用的临时信号掩码。
-2. 读取策略配置及可选行情配置，准备时钟、字典、缓存和行情源。
-3. 加载动态库、创建策略并初始化强类型配置，释放 JSON 解析存储。
-4. 调用 `OnStart(context)`，成功后冻结订阅表。
-5. 激活行情源，进入 `Running`，输出状态后处理事件。
+`StrategyRunner::Run(environment)` 统一驱动请求与来源事件，行情读取及报价分派为私有实现。每次从行情源取得一条事件后完成校验、序号检查与缓存更新，再进入 `OnTick()`；旧或重复行情不回调，但仍占用共享事件额度。请求与双来源的额度、公平轮换及等待期限见[启动与事件调度](trading.md#启动与事件调度)，退出信号协议见[主循环与信号](strategyd.md#主循环与信号)。
 
-每个同步阶段结束时检查停止请求。若尚未调用 `OnStart()`，取消启动并回收已有资源，不调用 `OnStop()`；若它已经成功返回，即使行情源尚未启动，也必须调用一次 `OnStop()`。启动错误与停止请求同时发生时保留错误结果。
+进入 `Stopping` 后不再调用行情源 `Poll()` 或 `OnTick()`，同步停止行情源并保留最后分派的缓存。交易回报继续按排空规则处理；正常排空期间仍可调用委托与成交回调，其中交易服务只允许查询，最终 `OnStop()` 仍可查询最后行情。委托收尾、回调失败及超时规则集中在[交易执行设计](trading.md#主循环与收尾)。
 
-每个同步阶段边界执行信号检查：通过 `pthread_sigmask()` 临时切换到解除 `SIGINT`、`SIGTERM` 屏蔽的掩码，随后立即恢复普通代码使用的屏蔽掩码，再判断停止标志。检查窗口中不调用策略或 SDK。策略创建的线程继承退出信号被屏蔽的状态，策略不得自行接管这些信号。
-
-### 等待与事件分派
-
-`StrategyRunner::Run(environment)` 统一驱动行情读取与策略回调；批次处理和单条报价分派保留为私有方法。测试通过注入行情源和等待环境驱动 `Run()`，验证完整事件循环。
-
-主线程使用 `pselect()` 同时等待下一行情期限与退出信号。本阶段不监听文件描述符，调用的 `nfds` 为 `0`、描述符集合为空；有未来期限时传入剩余时长，期限已到时直接读取行情，没有行情源或订阅时无限等待信号。
-
-普通代码和全部策略回调执行期间，`SIGINT`、`SIGTERM` 保持屏蔽。`pselect()` 使用一份显式解除这两个信号屏蔽的临时掩码，在进入等待时原子地切换掩码，返回后恢复原有屏蔽状态，避免信号发生在“检查停止—开始等待”之间而使进程一直睡眠。[pselect 等待与信号掩码](https://man7.org/linux/man-pages/man2/select.2.html)
-
-运行时每批最多处理 64 个 `Poll()` 返回的事件，随后执行一次显式信号检查。重复或旧序号虽不调用策略，也占用批次额度，避免持续丢弃事件时使信号饥饿。立即就绪的行情不逐条调用等待系统调用；数据暂时读尽后才等待下一期限。
-
-显式检查通过临时解除再恢复屏蔽来接收已待处理的退出信号，不依赖零超时 `pselect()` 必须交付信号。解除屏蔽时，待处理的未屏蔽信号按 POSIX 规则送达。[信号掩码与待处理信号](https://man7.org/linux/man-pages/man3/pthread_sigmask.3p.html)
-
-```text
-主线程:
-    loop:
-        临时解除退出信号屏蔽，立即恢复屏蔽并检查结果
-        若已有错误或停止标志，进入收尾
-        读取 next_deadline，计算非负的剩余等待时长
-        若没有立即就绪的行情:
-            pselect(0, 空描述符集合, 剩余时长或无限等待, 临时信号掩码)
-            若发生非 EINTR 错误，保存错误并进入收尾
-            continue                 # 返回后先重新检查信号及期限
-        重复最多 64 次:
-            使用最新单调时间调用 Poll(now, tick)
-            若返回 Error，保存错误并进入收尾
-            若返回 Idle，结束当前批次
-            校验来源、标的、字段和该来源内的序号
-            若为重复或旧序号，累计计数并处理批次内下一条
-            更新对应来源与标的的最新快照
-            调用 OnTick(context, tick)
-            若回调失败，保存错误并进入收尾
-            若下一期限在未来或为空，结束当前批次
-```
-
-停止请求最迟在当前有界批次结束后被接收；回调必须及时返回，主线程进入 `Stopping` 后不再开始新的行情回调。计算等待时长及被信号中断后重试时都重新读取单调时钟，不使用可能回拨的日历时间作为等待依据。
-
-### 退出信号与停止
-
-退出信号处理函数只把信号编号写入 `volatile sig_atomic_t`，不调用策略、分配、格式化输出或释放资源。停止标志在安装处理函数前初始化，收尾完成前不重置。处理函数只在主线程的 `pselect()` 或显式信号检查窗口中执行。
-
-不沿用进程可能继承的退出信号忽略状态，也不依赖继承掩码中这两个信号是否原本被屏蔽。初始化时显式安装处理函数，等待掩码显式移除 `SIGINT`、`SIGTERM`，其他信号的屏蔽状态保持不变。
-
-正常停止顺序如下：
-
-```text
-主线程进入 Stopping，不再调用 Poll 和 OnTick
-→ source.Stop()，取消发布期限并结束活动订阅
-→ OnStop(context)
-→ destroy(strategy) → 释放动态库句柄
-→ 释放上下文、字典、缓存和模拟源存储
-```
-
-停止时不再产生尚未返回的模拟行情，也不为完成当前模拟批次继续调用策略。没有源错误、回调错误或收尾错误时，正常停止返回 `0`。退出信号保持屏蔽直到进程结束，不打断同步收尾。
-
-### 错误处理
-
-| 条件 | 行为 |
-| --- | --- |
-| 配置或资源准备失败 | 不调用 `OnStart()`，回收已取得资源，退出码 `1` |
-| `OnStart()` 失败 | 清除订阅登记，销毁实例，不调用 `OnStop()` |
-| 行情源激活或 `Poll()` 失败 | 停止源；已成功启动的策略调用一次 `OnStop()`，退出码 `1` |
-| 旧或重复序号 | 不更新缓存、不调用策略，增加丢弃计数，继续运行 |
-| 非法行情 | 优先停止分派，停止源并完成策略收尾，退出码 `1` |
-| 等待被信号中断 | 检查停止标志；无停止请求时重新计算期限并等待 |
-| 信号检查时设置或恢复掩码失败 | 保存系统错误，停止源并完成策略收尾，退出码 `1` |
-| 其他等待错误 | 保存系统错误，停止源并完成策略收尾，退出码 `1` |
-| `OnTick()` 失败 | 保留来源、标的和序号，停止源并完成策略收尾，退出码 `1` |
-| 源 `Stop()`、策略 `OnStop()` 或关闭动态库失败 | 保留错误，继续能够安全完成的资源回收，退出码 `1` |
-
-始终保留首先遇到的运行错误，清理成功不能覆盖它。诊断内容复制到宿主存储，输出策略 ID、失败阶段及可用的来源、标的、序号和系统错误。启动或行情回调已经返回错误时，后续处理到的退出信号不将结果改为正常停止。
-
-后续接入委托回报时，交易排空单独定义，不能直接沿用行情停止后不再读取的规则。
+没有交易接入或活动委托时，交易侧无需排空，已有行情观察与生命周期示例仍保持停止信号后的正常收尾。
 
 ## 配置与启动方式
 
@@ -359,7 +265,7 @@ Stop() -> Status
 
 各字段必填，不补默认值。`source_id` 为 `1..UINT32_MAX` 的整数，`adapter` 只接受 `mock`，`interval_ms` 为 `1..60000` 的整数，标的数为 `1..64`。场所和代码组合必须唯一。基础价格和数量为正整数，卖价高于买价，步长为非负整数，价格和数量均在 `int64_t` 范围内。
 
-行情 JSON 与策略 JSON 复用 `JsonConfigDocument` 校验 UTF-8、完整语法、重复键、文件大小和嵌套深度，两个配置加载器分别检查各自字段与取值。行情配置解析完成后释放源码与解析器，源只保留强类型配置。无效行情、重复序号和源故障由测试注入，模拟源的正常配置不制造协议错误。
+行情 JSON 复用 `JsonConfigDocument` 的[通用输入校验](strategy-config.md#配置格式)，行情加载器检查本节字段与取值。解析完成后释放源码与解析器，源只保留强类型配置。无效行情、重复序号和源故障由测试注入，模拟源的正常配置不制造协议错误。
 
 观察策略的配置示例：
 
@@ -378,7 +284,7 @@ Stop() -> Status
 
 ## 内存与工程组织
 
-`StrategyRunner` 直接内嵌 `MarketDataImpl`，由它持有标的字典、订阅表、行情缓存、回调阶段和单调时钟引用。`StrategyContextImpl` 是薄视图，只借用时钟和 `MarketData` 接口，提供 `Now()` 与 `market_data()`。两个实现均由宿主管理，存活时间覆盖策略收尾。
+`StrategyRunner` 直接内嵌 `MarketDataImpl`，由它持有标的字典、订阅表、行情缓存、回调阶段和单调时钟引用。`StrategyContextImpl` 是薄视图，借用时钟、`MarketData` 与 `Trading` 服务；行情状态仍由 `MarketDataImpl` 持有。两个实现均由宿主管理，存活时间覆盖策略收尾。
 
 首版字典、订阅表和缓存采用最多 64 项的连续存储，稳定标的 ID 通过固定 128 槽哈希表映射到内部数组索引。哈希只用于初始化后不扩容的内部查找，不作为公共 ID 或持久身份。来源固定为配置中的一个接入实例，查询仍须验证来源。运行期读取、校验、快照复制和回调调度不动态申请或扩容；策略自身的行情回调也遵循这一约束。
 
@@ -390,15 +296,15 @@ Stop() -> Status
 | `include/yquant/model/instrument.h` | 定长标的定义及计量单位 |
 | `include/yquant/model/quote_tick.h` | 带来源身份的一档报价 |
 | `include/yquant/strategy/market_data.h` | 策略可见的标的查询、订阅及快照接口 |
-| `include/yquant/strategy/strategy_context.h` | 单调时间与行情接口访问器 |
+| `include/yquant/strategy/strategy_context.h` | 单调时间及行情、交易服务访问器 |
 | `include/yquant/strategy/strategy.h` | 上下文生命周期与行情回调 |
 | `src/strategyd/market_data_source.h` | 宿主内部行情源与非阻塞读取接口 |
 | `src/strategyd/mock_market_data_source.h/.cc` | 模拟源的期限、批次和报价生成 |
 | `src/strategyd/market_data_config.h/.cc` | 宿主行情配置的解析与校验 |
-| `src/strategyd/json_config_document.h/.cc` | 两种配置共用的 JSON 文件读取、完整语法及重复键校验 |
+| `src/strategyd/json_config_document.h/.cc` | 宿主配置共用的 JSON 文件读取、完整语法及重复键校验 |
 | `src/strategyd/strategy_config_loader.h/.cc` | 策略公共字段及原始参数片段加载 |
 | `src/strategyd/market_data.h/.cc` | Runner 内嵌的行情服务实现，持有字典、订阅、缓存与回调阶段 |
-| `src/strategyd/strategy_context.h` | 借用时钟和行情接口的上下文薄视图 |
+| `src/strategyd/strategy_context.h` | 借用时钟和宿主服务的上下文薄视图 |
 | `src/strategyd/strategy_runner.h/.cc` | 行情读取、回调分派与生命周期收尾 |
 | `src/strategyd/monotonic_clock.h` | 源、上下文与调度共用的单调时间基准 |
 | `src/strategyd/event_loop_environment.h` | 主循环依赖的等待与停止检查环境，供系统信号及测试实现 |

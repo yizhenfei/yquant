@@ -9,7 +9,7 @@
 
 namespace yquant::strategy {
 
-inline constexpr std::uint32_t kStrategyPluginAbiVersion = 5;
+inline constexpr std::uint32_t kStrategyPluginAbiVersion = 7;
 
 // Descriptor and function pointers remain valid while the library is open.
 // Host and plugin must use compatible C++ ABIs and the same interface version.

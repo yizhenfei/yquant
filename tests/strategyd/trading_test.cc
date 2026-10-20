@@ -1,0 +1,955 @@
+#include "strategyd/trading.h"
+
+#include <cstring>
+#include <limits>
+#include <string>
+#include <string_view>
+
+#include "gtest/gtest.h"
+#include "strategyd/trading_adapter.h"
+
+namespace yquant::strategyd {
+namespace {
+using base::ErrorCode;
+using model::OrderState;
+using model::OrderUpdateKind;
+
+class LedgerClock final : public MonotonicClock {
+ public:
+  std::uint64_t Now() const noexcept override { return now; }
+  std::uint64_t now = 1000;
+};
+
+// Records sends without generating callbacks; tests explicitly drive reports.
+class RecordingTradingAdapter final : public TradingAdapter {
+ public:
+  base::Status Prepare(const TradingConfig&) noexcept override { return {}; }
+  base::Status Start(std::uint64_t) noexcept override { return {}; }
+  base::Status ReadAccountSnapshot(
+      TradingAccountSnapshot& out) noexcept override {
+    out = {};
+    return {};
+  }
+  base::Status SendOrder(model::ClientOrderId id,
+                         const model::OrderRequest& request,
+                         std::uint64_t) noexcept override {
+    ++order_sends;
+    last_order_id = id;
+    last_order = request;
+    return {fail_send ? ErrorCode::kIoError : ErrorCode::kOk, {}};
+  }
+  base::Status SendCancel(model::ClientOrderId id,
+                          const model::BrokerOrderId& broker,
+                          model::CancelRequestId cancel,
+                          std::uint64_t) noexcept override {
+    ++cancel_sends;
+    last_order_id = id;
+    last_broker = broker;
+    last_cancel_id = cancel;
+    return {fail_send ? ErrorCode::kIoError : ErrorCode::kOk, {}};
+  }
+  TradingPollResult Poll(std::uint64_t, TradingEvent&) noexcept override {
+    return {};
+  }
+  std::optional<std::uint64_t> next_deadline() const noexcept override {
+    return {};
+  }
+  bool is_drained() const noexcept override { return true; }
+  base::Status Stop() noexcept override { return {}; }
+  const char* error_detail() const noexcept override {
+    return "injected send failure";
+  }
+  model::ClientOrderId last_order_id;
+  model::CancelRequestId last_cancel_id;
+  model::BrokerOrderId last_broker;
+  model::OrderRequest last_order;
+  std::size_t order_sends = 0;
+  std::size_t cancel_sends = 0;
+  bool fail_send = false;
+};
+
+class TradingTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    auto& config = market_config;
+    config.source_id = {1};
+    config.interval_ns = 1000000;
+    config.instrument_count = 1;
+    auto& item = config.instruments[0];
+    ASSERT_EQ(model::MakeInstrumentId("SSE", "600000", item.instrument.id),
+              ErrorCode::kOk);
+    instrument_id = item.instrument.id;
+    item.instrument.venue = model::Venue::kSse;
+    std::memcpy(item.instrument.symbol, "600000", 6);
+    item.instrument.price_decimals = 2;
+    item.bid_price = 1000;
+    item.ask_price = 1001;
+    item.bid_qty = 100;
+    item.ask_qty = 200;
+    item.price_step = 1;
+    ASSERT_TRUE(market_data.Configure(config).ok());
+    TradingAccountSnapshot account;
+    account.cash_balance = std::numeric_limits<std::int64_t>::max();
+    ASSERT_TRUE(trading.Configure(account).ok());
+    trading.SetRunning(true);
+  }
+
+  model::OrderRequest Request(std::int64_t quantity = 200) const {
+    return {instrument_id, model::OrderSide::kBuy, 1001, quantity};
+  }
+  model::ClientOrderId Submit(std::int64_t quantity = 200) {
+    model::ClientOrderId id;
+    trading.BeginCallback(CallbackPhase::kTick);
+    EXPECT_EQ(trading.SubmitOrder(Request(quantity), id), ErrorCode::kOk);
+    trading.EndCallback();
+    return id;
+  }
+  model::OrderSnapshot Snapshot(model::ClientOrderId id) const {
+    model::OrderSnapshot result;
+    EXPECT_TRUE(trading.TryGetOrder(id, result));
+    return result;
+  }
+  void Send() { ASSERT_TRUE(trading.ProcessRequests(adapter, clock.now).ok()); }
+  void Bootstrap(std::int64_t cash, std::int64_t total = 0,
+                 std::int64_t available = 0, bool include_position = false) {
+    trading.Reset();
+    TradingAccountSnapshot account;
+    account.cash_balance = cash;
+    if (include_position) {
+      account.position_count = 1;
+      account.positions[0] = {instrument_id, total, available, 0};
+    }
+    ASSERT_TRUE(trading.Configure(account).ok());
+    trading.SetRunning(true);
+  }
+  void Precision(std::uint8_t decimals) {
+    trading.Reset();
+    market_data.Reset();
+    market_config.instruments[0].instrument.price_decimals = decimals;
+    ASSERT_TRUE(market_data.Configure(market_config).ok());
+  }
+  model::CashSnapshot Cash() const {
+    model::CashSnapshot result;
+    EXPECT_TRUE(trading.TryGetCash(result));
+    return result;
+  }
+  model::PositionSnapshot Position() const {
+    model::PositionSnapshot result;
+    EXPECT_TRUE(trading.TryGetPosition(instrument_id, result));
+    return result;
+  }
+  model::ClientOrderId SubmitRequest(const model::OrderRequest& request) {
+    model::ClientOrderId id;
+    trading.BeginCallback(CallbackPhase::kTick);
+    EXPECT_EQ(trading.SubmitOrder(request, id), ErrorCode::kOk);
+    trading.EndCallback();
+    return id;
+  }
+  TradingEvent Event(model::ClientOrderId id, std::uint64_t sequence,
+                     OrderUpdateKind kind, std::int64_t cumulative = 0) const {
+    TradingEvent event;
+    event.client_order_id = id;
+    EXPECT_EQ(event.broker_order_id.Assign("broker-order-" +
+                                           std::to_string(id.value)),
+              ErrorCode::kOk);
+    event.report_sequence = sequence;
+    event.kind = kind;
+    event.cumulative_filled_qty = cumulative;
+    event.receive_time_ns = clock.now;
+    return event;
+  }
+  TradingEvent Execution(model::ClientOrderId id, std::uint64_t sequence,
+                         std::string_view execution_id, std::int64_t quantity,
+                         std::int64_t cumulative) const {
+    auto event = Event(id, sequence, OrderUpdateKind::kFill, cumulative);
+    event.fill.client_order_id = id;
+    event.fill.broker_order_id = event.broker_order_id;
+    EXPECT_EQ(event.fill.execution_id.Assign(execution_id), ErrorCode::kOk);
+    event.fill.instrument_id = instrument_id;
+    event.fill.side = Snapshot(id).side;
+    event.fill.price = 1001;
+    event.fill.quantity = quantity;
+    event.fill.receive_time_ns = clock.now;
+    return event;
+  }
+  void Accept(model::ClientOrderId id) {
+    Send();
+    TradingDispatch dispatch;
+    ASSERT_EQ(
+        trading.ApplyEvent(Event(id, 1, OrderUpdateKind::kAccepted), dispatch),
+        ErrorCode::kOk);
+    EXPECT_TRUE(dispatch.notify_order);
+    EXPECT_FALSE(dispatch.has_fill);
+  }
+  void Cancel(model::ClientOrderId id) {
+    trading.BeginCallback(CallbackPhase::kOrderUpdate);
+    EXPECT_EQ(trading.CancelOrder(id), ErrorCode::kOk);
+    trading.EndCallback();
+  }
+
+  LedgerClock clock;
+  MarketDataConfig market_config;
+  MarketDataImpl market_data{clock};
+  TradingImpl trading{clock, market_data};
+  RecordingTradingAdapter adapter;
+  model::InstrumentId instrument_id;
+};
+
+TEST(TradingModelTest, OpaqueIdentityIsOwnedAndSupportsFullCapacity) {
+  model::BrokerOrderId broker;
+  std::string original(64, 'x');
+  EXPECT_EQ(broker.Assign(original), ErrorCode::kOk);
+  original.assign(64, 'y');
+  EXPECT_EQ(broker.view(), std::string(64, 'x'));
+  EXPECT_EQ(broker.Assign(std::string(65, 'z')), ErrorCode::kInvalidArgument);
+  EXPECT_EQ(broker.view(), std::string(64, 'x'));
+  EXPECT_EQ(broker.Assign({}), ErrorCode::kInvalidArgument);
+  EXPECT_EQ(broker.view().size(), 64U);
+  model::ExecutionId execution;
+  ASSERT_EQ(execution.Assign(std::string_view("a\0b", 3)), ErrorCode::kOk);
+  EXPECT_EQ(execution.view().size(), 3U);
+  auto copied = execution;
+  ASSERT_EQ(execution.Assign("other"), ErrorCode::kOk);
+  EXPECT_EQ(copied.view(), std::string_view("a\0b", 3));
+}
+
+TEST(TradingModelTest, ReasonRetains128BytesAndMarksTruncation) {
+  model::OrderReason reason;
+  reason.Set(7, std::string(128, 'x'));
+  EXPECT_EQ(reason.code, 7);
+  EXPECT_EQ(reason.view().size(), 128U);
+  EXPECT_FALSE(reason.truncated);
+  EXPECT_EQ(reason.text[128], '\0');
+  reason.Set(8, std::string(129, 'y'));
+  EXPECT_TRUE(reason.truncated);
+  EXPECT_EQ(reason.view(), std::string(128, 'y'));
+  reason.size = 255;
+  EXPECT_EQ(reason.view().size(), 128U);
+}
+
+TEST_F(TradingTest,
+       LocalAcceptanceImmediatelyQueryableWithoutBrokerAcceptance) {
+  const auto id = Submit();
+  EXPECT_EQ(adapter.order_sends, 0U);
+  EXPECT_EQ(Snapshot(id).state, OrderState::kPendingNew);
+  EXPECT_EQ(Snapshot(id).leaves_qty, 200);
+  EXPECT_TRUE(Snapshot(id).broker_order_id.empty());
+  EXPECT_EQ(Snapshot(id).report_sequence, 0U);
+  EXPECT_FALSE(trading.is_drained());
+  Send();
+  EXPECT_EQ(adapter.order_sends, 1U);
+  EXPECT_EQ(Snapshot(id).state, OrderState::kPendingNew);
+  TradingDispatch dispatch;
+  ASSERT_EQ(
+      trading.ApplyEvent(Event(id, 1, OrderUpdateKind::kAccepted), dispatch),
+      ErrorCode::kOk);
+  EXPECT_EQ(Snapshot(id).state, OrderState::kWorking);
+  EXPECT_EQ(Snapshot(id), dispatch.update.order);
+}
+
+TEST_F(TradingTest, PhaseDisabledAndInvalidRequestsPreserveOutputs) {
+  model::ClientOrderId output{99};
+  trading.BeginCallback(CallbackPhase::kStart);
+  EXPECT_FALSE(trading.accepting_orders());
+  EXPECT_EQ(trading.SubmitOrder(Request(), output), ErrorCode::kInvalidState);
+  trading.EndCallback();
+  TradingImpl disabled(clock, market_data);
+  disabled.SetRunning(true);
+  disabled.BeginCallback(CallbackPhase::kTick);
+  EXPECT_EQ(disabled.SubmitOrder(Request(), output), ErrorCode::kUnsupported);
+  EXPECT_EQ(output.value, 99U);
+  trading.BeginCallback(CallbackPhase::kFill);
+  EXPECT_TRUE(trading.accepting_orders());
+  auto request = Request();
+  request.quantity = 0;
+  EXPECT_EQ(trading.SubmitOrder(request, output), ErrorCode::kInvalidArgument);
+  request = Request();
+  request.instrument_id = {};
+  EXPECT_EQ(trading.SubmitOrder(request, output), ErrorCode::kInvalidArgument);
+  request = Request();
+  request.side = model::OrderSide::kUnknown;
+  EXPECT_EQ(trading.SubmitOrder(request, output), ErrorCode::kInvalidArgument);
+  EXPECT_EQ(output.value, 99U);
+  EXPECT_EQ(trading.order_count(), 0U);
+  trading.EndCallback();
+  auto unchanged = Snapshot(Submit());
+  const auto saved = unchanged;
+  EXPECT_FALSE(trading.TryGetOrder({999}, unchanged));
+  EXPECT_EQ(unchanged, saved);
+}
+
+TEST_F(TradingTest, UniqueFillsAdvanceOnceAndOldReportsDoNotNotify) {
+  const auto id = Submit();
+  Accept(id);
+  const auto first = Execution(id, 2, "fill-1", 100, 100);
+  TradingDispatch dispatch;
+  ASSERT_EQ(trading.ApplyEvent(first, dispatch), ErrorCode::kOk);
+  EXPECT_TRUE(dispatch.notify_order);
+  EXPECT_TRUE(dispatch.has_fill);
+  EXPECT_EQ(Snapshot(id).cumulative_filled_qty, 100);
+  EXPECT_EQ(Snapshot(id).leaves_qty, 100);
+  const auto once_cash = Cash();
+  const auto once_position = Position();
+  ASSERT_EQ(trading.ApplyEvent(first, dispatch), ErrorCode::kOk);
+  EXPECT_FALSE(dispatch.notify_order);
+  EXPECT_FALSE(dispatch.has_fill);
+  EXPECT_EQ(Snapshot(id).cumulative_filled_qty, 100);
+  EXPECT_EQ(Cash(), once_cash);
+  EXPECT_EQ(Position(), once_position);
+  const auto before = Snapshot(id);
+  dispatch.notify_order = true;
+  dispatch.update.order.leaves_qty = 123;
+  EXPECT_EQ(trading.ApplyEvent(Execution(id, 3, "fill-1", 1, 101), dispatch),
+            ErrorCode::kCorrupt);
+  EXPECT_EQ(Snapshot(id), before);
+  EXPECT_TRUE(dispatch.notify_order);
+  EXPECT_EQ(dispatch.update.order.leaves_qty, 123);
+  EXPECT_EQ(Cash(), once_cash);
+  EXPECT_EQ(Position(), once_position);
+  ASSERT_EQ(trading.ApplyEvent(Execution(id, 3, "fill-2", 100, 200), dispatch),
+            ErrorCode::kOk);
+  EXPECT_EQ(Snapshot(id).state, OrderState::kFilled);
+  EXPECT_EQ(Snapshot(id).leaves_qty, 0);
+  EXPECT_TRUE(trading.is_drained());
+}
+
+TEST_F(TradingTest,
+       FillCanPrecedeAcceptanceAndLateAcceptanceOnlyAdvancesSequence) {
+  const auto id = Submit();
+  Send();
+  TradingDispatch dispatch;
+  ASSERT_EQ(trading.ApplyEvent(Execution(id, 1, "fill", 200, 200), dispatch),
+            ErrorCode::kOk);
+  EXPECT_EQ(Snapshot(id).state, OrderState::kFilled);
+  ++clock.now;
+  ASSERT_EQ(trading.ApplyEvent(Event(id, 2, OrderUpdateKind::kAccepted, 200),
+                               dispatch),
+            ErrorCode::kOk);
+  EXPECT_FALSE(dispatch.notify_order);
+  EXPECT_FALSE(dispatch.has_fill);
+  EXPECT_EQ(Snapshot(id).state, OrderState::kFilled);
+  EXPECT_EQ(Snapshot(id).report_sequence, 2U);
+  EXPECT_EQ(Snapshot(id).receive_time_ns, clock.now);
+}
+
+TEST_F(TradingTest, InvalidReportsPreserveLedgerAndDispatch) {
+  const auto id = Submit();
+  Accept(id);
+  const auto before = Snapshot(id);
+  const auto before_cash = Cash();
+  const auto before_position = Position();
+  auto invalid = Execution(id, 3, "gap", 1, 1);
+  TradingDispatch dispatch;
+  dispatch.notify_order = true;
+  EXPECT_EQ(trading.ApplyEvent(invalid, dispatch), ErrorCode::kCorrupt);
+  EXPECT_EQ(Snapshot(id), before);
+  EXPECT_TRUE(dispatch.notify_order);
+  invalid = Execution(id, 2, "wrong-cumulative", 1, 2);
+  EXPECT_EQ(trading.ApplyEvent(invalid, dispatch), ErrorCode::kCorrupt);
+  invalid = Execution(id, 2, "wrong-price", 1, 1);
+  invalid.fill.price = 1002;
+  EXPECT_EQ(trading.ApplyEvent(invalid, dispatch), ErrorCode::kCorrupt);
+  invalid = Event(id, 2, OrderUpdateKind::kAccepted);
+  invalid.reason.size = 255;
+  EXPECT_EQ(trading.ApplyEvent(invalid, dispatch), ErrorCode::kCorrupt);
+  EXPECT_EQ(Snapshot(id), before);
+  EXPECT_EQ(Cash(), before_cash);
+  EXPECT_EQ(Position(), before_position);
+}
+
+TEST_F(TradingTest, CancelQueuedBeforeFullFillStillSendsAndSettles) {
+  const auto id = Submit();
+  Accept(id);
+  Cancel(id);
+  EXPECT_EQ(Snapshot(id).state, OrderState::kWorking);
+  EXPECT_EQ(Snapshot(id).leaves_qty, 200);
+  EXPECT_TRUE(Snapshot(id).cancel_pending);
+  const auto cancel = Snapshot(id).cancel_request_id;
+  TradingDispatch dispatch;
+  ASSERT_EQ(trading.ApplyEvent(Execution(id, 2, "full", 200, 200), dispatch),
+            ErrorCode::kOk);
+  EXPECT_EQ(Snapshot(id).state, OrderState::kFilled);
+  EXPECT_TRUE(Snapshot(id).cancel_pending);
+  EXPECT_FALSE(trading.is_drained());
+  Send();
+  EXPECT_EQ(adapter.cancel_sends, 1U);
+  EXPECT_EQ(adapter.last_cancel_id, cancel);
+  auto rejection = Event(id, 3, OrderUpdateKind::kCancelRejected, 200);
+  rejection.cancel_request_id = cancel;
+  ASSERT_EQ(trading.ApplyEvent(rejection, dispatch), ErrorCode::kOk);
+  EXPECT_EQ(Snapshot(id).state, OrderState::kFilled);
+  EXPECT_FALSE(Snapshot(id).cancel_pending);
+  EXPECT_TRUE(trading.is_drained());
+}
+
+TEST_F(TradingTest, PartialFillThenCancelPreservesExecutedQuantity) {
+  const auto id = Submit();
+  Accept(id);
+  TradingDispatch dispatch;
+  ASSERT_EQ(trading.ApplyEvent(Execution(id, 2, "part", 100, 100), dispatch),
+            ErrorCode::kOk);
+  Cancel(id);
+  Send();
+  auto canceled = Event(id, 3, OrderUpdateKind::kCanceled, 100);
+  canceled.cancel_request_id = Snapshot(id).cancel_request_id;
+  ASSERT_EQ(trading.ApplyEvent(canceled, dispatch), ErrorCode::kOk);
+  const auto terminal = Snapshot(id);
+  EXPECT_EQ(terminal.state, OrderState::kCanceled);
+  EXPECT_EQ(terminal.cumulative_filled_qty, 100);
+  EXPECT_EQ(terminal.leaves_qty, 0);
+  EXPECT_TRUE(trading.is_drained());
+  EXPECT_EQ(trading.ApplyEvent(Execution(id, 4, "late", 100, 200), dispatch),
+            ErrorCode::kCorrupt);
+  EXPECT_EQ(Snapshot(id), terminal);
+}
+
+TEST_F(TradingTest, BrokerIdentityCannotBindTwoClientOrders) {
+  const auto first = Submit();
+  Accept(first);
+  const auto second = Submit();
+  Send();
+  const auto before = Snapshot(second);
+  TradingDispatch dispatch;
+  auto duplicate = Event(second, 1, OrderUpdateKind::kAccepted);
+  duplicate.broker_order_id = Snapshot(first).broker_order_id;
+  EXPECT_EQ(trading.ApplyEvent(duplicate, dispatch), ErrorCode::kCorrupt);
+  EXPECT_EQ(Snapshot(second), before);
+  EXPECT_EQ(Snapshot(first).state, OrderState::kWorking);
+}
+
+TEST_F(TradingTest, NonFillEventRejectsExecutionPayload) {
+  const auto id = Submit();
+  Accept(id);
+  auto event = Event(id, 2, OrderUpdateKind::kAccepted);
+  event.fill.quantity = 1;
+  const auto before = Snapshot(id);
+  TradingDispatch dispatch;
+  EXPECT_EQ(trading.ApplyEvent(event, dispatch), ErrorCode::kCorrupt);
+  EXPECT_EQ(Snapshot(id), before);
+}
+
+TEST_F(TradingTest, CancelFailureCannotSettleAnotherAttemptAndRetryWaits) {
+  const auto id = Submit();
+  Accept(id);
+  trading.BeginStopping();
+  ASSERT_TRUE(trading.ScheduleStopping(clock.now).ok());
+  Send();
+  const auto first_id = Snapshot(id).cancel_request_id;
+  auto rejected = Event(id, 2, OrderUpdateKind::kCancelRejected);
+  rejected.cancel_request_id = first_id;
+  TradingDispatch dispatch;
+  ASSERT_EQ(trading.ApplyEvent(rejected, dispatch), ErrorCode::kOk);
+  ASSERT_TRUE(trading.ScheduleStopping(clock.now).ok());
+  ASSERT_TRUE(trading.next_deadline().has_value());
+  EXPECT_EQ(*trading.next_deadline(), clock.now + 10000000);
+  clock.now += 9999999;
+  ASSERT_TRUE(trading.ScheduleStopping(clock.now).ok());
+  Send();
+  EXPECT_EQ(adapter.cancel_sends, 1U);
+  ++clock.now;
+  ASSERT_TRUE(trading.ScheduleStopping(clock.now).ok());
+  Send();
+  const auto second_id = Snapshot(id).cancel_request_id;
+  EXPECT_NE(second_id, first_id);
+  const auto before_cash = Cash();
+  const auto before_position = Position();
+  ASSERT_EQ(trading.ApplyEvent(rejected, dispatch), ErrorCode::kOk);
+  EXPECT_FALSE(dispatch.notify_order);
+  EXPECT_TRUE(Snapshot(id).cancel_pending);
+  rejected.report_sequence = 3;
+  rejected.receive_time_ns = clock.now;
+  EXPECT_EQ(trading.ApplyEvent(rejected, dispatch), ErrorCode::kCorrupt);
+  EXPECT_TRUE(Snapshot(id).cancel_pending);
+  EXPECT_EQ(Cash(), before_cash);
+  EXPECT_EQ(Position(), before_position);
+  auto canceled = Event(id, 3, OrderUpdateKind::kCanceled);
+  canceled.cancel_request_id = second_id;
+  ASSERT_EQ(trading.ApplyEvent(canceled, dispatch), ErrorCode::kOk);
+  EXPECT_EQ(Snapshot(id).state, OrderState::kCanceled);
+  EXPECT_TRUE(trading.is_drained());
+}
+
+TEST_F(TradingTest, StopNeverSendsNewOrdersBeyondTheScanBudget) {
+  for (std::size_t i = 0; i < 200; ++i) (void)Submit();
+  trading.BeginStopping();
+  TradingDispatch dispatch;
+  std::size_t updates = 0;
+  while (!trading.is_drained()) {
+    ASSERT_TRUE(trading.ScheduleStopping(clock.now).ok());
+    ASSERT_TRUE(trading.ProcessRequests(adapter, clock.now).ok());
+    std::size_t batch = 0;
+    while (trading.has_local_updates() && batch++ < 64) {
+      ASSERT_EQ(trading.ApplyLocalUpdate(dispatch), ErrorCode::kOk);
+      EXPECT_EQ(dispatch.update.kind, OrderUpdateKind::kCanceledBeforeSend);
+      EXPECT_EQ(dispatch.update.order.state, OrderState::kCanceled);
+      EXPECT_EQ(dispatch.update.order.report_sequence, 0U);
+      ++updates;
+    }
+    ASSERT_LE(updates, 200U);
+  }
+  EXPECT_EQ(updates, 200U);
+  EXPECT_EQ(adapter.order_sends, 0U);
+  EXPECT_EQ(adapter.cancel_sends, 0U);
+}
+
+TEST_F(TradingTest, SendFailureIsNotAutomaticallyRetriedOrLocallyCanceled) {
+  const auto id = Submit();
+  adapter.fail_send = true;
+  EXPECT_EQ(trading.ProcessRequests(adapter, clock.now).code,
+            ErrorCode::kIoError);
+  EXPECT_EQ(adapter.order_sends, 1U);
+  EXPECT_TRUE(trading.ProcessRequests(adapter, clock.now).ok());
+  EXPECT_EQ(adapter.order_sends, 1U);
+  trading.BeginStopping();
+  EXPECT_TRUE(trading.ScheduleStopping(clock.now).ok());
+  EXPECT_TRUE(trading.ProcessRequests(adapter, clock.now).ok());
+  EXPECT_FALSE(trading.has_local_updates());
+  EXPECT_EQ(Snapshot(id).state, OrderState::kPendingNew);
+  EXPECT_FALSE(trading.is_drained());
+}
+
+TEST_F(TradingTest,
+       FixedRequestAndOrderLimitsRejectWithoutPartialRegistration) {
+  for (std::size_t i = 0; i < kMaxTradingRequests; ++i) (void)Submit();
+  trading.BeginCallback(CallbackPhase::kTick);
+  model::ClientOrderId out{99999};
+  const auto request_cash = Cash();
+  const auto request_position = Position();
+  EXPECT_EQ(trading.SubmitOrder(Request(), out), ErrorCode::kResourceExhausted);
+  EXPECT_EQ(out.value, 99999U);
+  EXPECT_EQ(Cash(), request_cash);
+  EXPECT_EQ(Position(), request_position);
+  trading.EndCallback();
+  EXPECT_EQ(trading.order_count(), kMaxTradingRequests);
+  ASSERT_TRUE(
+      trading.ProcessRequests(adapter, clock.now, kMaxTradingRequests).ok());
+  for (std::size_t count = kMaxTradingRequests; count < kMaxTradingOrders;
+       ++count) {
+    (void)Submit();
+    Send();
+  }
+  trading.BeginCallback(CallbackPhase::kTick);
+  const auto order_cash = Cash();
+  const auto order_position = Position();
+  EXPECT_EQ(trading.SubmitOrder(Request(), out), ErrorCode::kResourceExhausted);
+  EXPECT_EQ(out.value, 99999U);
+  EXPECT_EQ(trading.order_count(), kMaxTradingOrders);
+  EXPECT_EQ(Cash(), order_cash);
+  EXPECT_EQ(Position(), order_position);
+  trading.EndCallback();
+}
+
+TEST_F(TradingTest, ExecutionCapacityFailurePreservesLastAcceptedFacts) {
+  const auto id = Submit(static_cast<std::int64_t>(kMaxTradingFills + 1));
+  Accept(id);
+  TradingDispatch dispatch;
+  for (std::size_t count = 0; count < kMaxTradingFills; ++count) {
+    ASSERT_EQ(
+        trading.ApplyEvent(Execution(id, count + 2, std::to_string(count), 1,
+                                     static_cast<std::int64_t>(count + 1)),
+                           dispatch),
+        ErrorCode::kOk);
+  }
+  const auto before = Snapshot(id);
+  const auto before_cash = Cash();
+  const auto before_position = Position();
+  EXPECT_EQ(trading.ApplyEvent(
+                Execution(id, kMaxTradingFills + 2, "overflow", 1,
+                          static_cast<std::int64_t>(kMaxTradingFills + 1)),
+                dispatch),
+            ErrorCode::kResourceExhausted);
+  EXPECT_EQ(Snapshot(id), before);
+  EXPECT_EQ(Snapshot(id).leaves_qty, 1);
+  EXPECT_EQ(Cash(), before_cash);
+  EXPECT_EQ(Position(), before_position);
+}
+TEST_F(TradingTest, AccountQueriesPreserveOutputsForDisabledAndUnknownIds) {
+  TradingImpl disabled(clock, market_data);
+  model::CashSnapshot cash{1, 2, 3};
+  EXPECT_FALSE(disabled.TryGetCash(cash));
+  EXPECT_EQ(cash, (model::CashSnapshot{1, 2, 3}));
+  model::PositionSnapshot position{{99}, 4, 3, 1};
+  const auto sentinel = position;
+  EXPECT_FALSE(disabled.TryGetPosition(instrument_id, position));
+  EXPECT_EQ(position, sentinel);
+  EXPECT_FALSE(trading.TryGetPosition({99}, position));
+  EXPECT_EQ(position, sentinel);
+  ASSERT_TRUE(trading.TryGetPosition(instrument_id, position));
+  EXPECT_EQ(position, (model::PositionSnapshot{instrument_id, 0, 0, 0}));
+  Bootstrap(0, 0, 0, true);
+  EXPECT_EQ(Position(), (model::PositionSnapshot{instrument_id, 0, 0, 0}));
+  EXPECT_EQ(Cash(), (model::CashSnapshot{0, 0, 0}));
+}
+
+TEST_F(TradingTest, InvalidBootstrapNeverPublishesAnAccount) {
+  TradingAccountSnapshot good;
+  good.cash_balance = 100;
+  good.position_count = 1;
+  good.positions[0] = {instrument_id, 100, 80, 0};
+  for (int scenario = 0; scenario < 8; ++scenario) {
+    SCOPED_TRACE(scenario);
+    auto invalid = good;
+    switch (scenario) {
+      case 0:
+        invalid.cash_balance = -1;
+        break;
+      case 1:
+        invalid.position_count = kMaxMarketDataInstruments + 1;
+        break;
+      case 2:
+        invalid.positions[0].instrument_id = {99};
+        break;
+      case 3:
+        invalid.positions[0].total_qty = -1;
+        break;
+      case 4:
+        invalid.positions[0].available_qty = -1;
+        break;
+      case 5:
+        invalid.positions[0].available_qty = 101;
+        break;
+      case 6:
+        invalid.positions[0].reserved_qty = 1;
+        break;
+      case 7:
+        invalid.positions[1] = invalid.positions[0];
+        invalid.position_count = 2;
+        break;
+    }
+    TradingImpl ledger(clock, market_data);
+    EXPECT_EQ(ledger.Configure(invalid).code, ErrorCode::kInvalidArgument);
+    model::CashSnapshot out{7, 0, 7};
+    EXPECT_FALSE(ledger.TryGetCash(out));
+    EXPECT_EQ(out.balance, 7);
+    EXPECT_EQ(ledger.order_count(), 0U);
+    ASSERT_TRUE(ledger.Configure(good).ok());
+    EXPECT_TRUE(ledger.TryGetCash(out));
+    EXPECT_EQ(out, (model::CashSnapshot{100, 0, 100}));
+  }
+  const auto before = Cash();
+  EXPECT_EQ(trading.Configure(good).code, ErrorCode::kInvalidState);
+  EXPECT_EQ(Cash(), before);
+}
+
+TEST_F(TradingTest,
+       SharedCashReservationsPreventOvercommitAndFailuresAreAtomic) {
+  constexpr std::int64_t kUnitCash = 1001 * 10000;
+  Bootstrap(3 * kUnitCash);
+  (void)Submit(2);
+  EXPECT_EQ(Cash(),
+            (model::CashSnapshot{3 * kUnitCash, 2 * kUnitCash, kUnitCash}));
+  (void)Submit(1);
+  EXPECT_EQ(Cash(), (model::CashSnapshot{3 * kUnitCash, 3 * kUnitCash, 0}));
+  const auto before = Cash();
+  const auto position = Position();
+  model::ClientOrderId out{77};
+  trading.BeginCallback(CallbackPhase::kTick);
+  EXPECT_EQ(trading.SubmitOrder(Request(1), out),
+            ErrorCode::kResourceExhausted);
+  trading.EndCallback();
+  EXPECT_NE(std::string_view(trading.error_detail()).find("cash"),
+            std::string_view::npos);
+  EXPECT_EQ(out.value, 77U);
+  EXPECT_EQ(trading.order_count(), 2U);
+  EXPECT_EQ(Cash(), before);
+  EXPECT_EQ(Position(), position);
+}
+
+TEST_F(TradingTest, SharedSellReservationsExcludeUnavailableBootstrapShares) {
+  Bootstrap(0, 300, 200, true);
+  auto request = Request(150);
+  request.side = model::OrderSide::kSell;
+  (void)SubmitRequest(request);
+  EXPECT_EQ(Position(), (model::PositionSnapshot{instrument_id, 300, 50, 150}));
+  request.quantity = 50;
+  (void)SubmitRequest(request);
+  const auto before = Position();
+  EXPECT_EQ(before, (model::PositionSnapshot{instrument_id, 300, 0, 200}));
+  request.quantity = 1;
+  model::ClientOrderId out{88};
+  trading.BeginCallback(CallbackPhase::kTick);
+  EXPECT_EQ(trading.SubmitOrder(request, out), ErrorCode::kResourceExhausted);
+  trading.EndCallback();
+  EXPECT_EQ(out.value, 88U);
+  EXPECT_EQ(Position(), before);
+  EXPECT_EQ(Cash(), (model::CashSnapshot{0, 0, 0}));
+}
+
+TEST_F(TradingTest, TwoInstrumentsShareCashButKeepHoldingsIndependent) {
+  trading.Reset();
+  market_data.Reset();
+  market_config.instrument_count = 2;
+  auto& other = market_config.instruments[1];
+  other = market_config.instruments[0];
+  ASSERT_EQ(model::MakeInstrumentId("SZSE", "000001", other.instrument.id),
+            ErrorCode::kOk);
+  other.instrument.venue = model::Venue::kSzse;
+  std::memcpy(other.instrument.symbol, "000001", 6);
+  ASSERT_TRUE(market_data.Configure(market_config).ok());
+  constexpr std::int64_t kUnitCash = 10010000;
+  Bootstrap(3 * kUnitCash);
+  const auto first = Submit(2);
+  auto request = Request(1);
+  request.instrument_id = other.instrument.id;
+  const auto second = SubmitRequest(request);
+  EXPECT_EQ(Cash(), (model::CashSnapshot{3 * kUnitCash, 3 * kUnitCash, 0}));
+  trading.BeginCallback(CallbackPhase::kTick);
+  model::ClientOrderId unchanged{99};
+  EXPECT_EQ(trading.SubmitOrder(request, unchanged),
+            ErrorCode::kResourceExhausted);
+  trading.EndCallback();
+  EXPECT_EQ(unchanged.value, 99U);
+  Accept(second);
+  auto fill = Execution(second, 2, "other-instrument", 1, 1);
+  fill.fill.instrument_id = other.instrument.id;
+  TradingDispatch dispatch;
+  ASSERT_EQ(trading.ApplyEvent(fill, dispatch), ErrorCode::kOk);
+  EXPECT_EQ(Cash(), (model::CashSnapshot{2 * kUnitCash, 2 * kUnitCash, 0}));
+  EXPECT_EQ(Position(), (model::PositionSnapshot{instrument_id, 0, 0, 0}));
+  model::PositionSnapshot second_position;
+  ASSERT_TRUE(trading.TryGetPosition(other.instrument.id, second_position));
+  EXPECT_EQ(second_position,
+            (model::PositionSnapshot{other.instrument.id, 1, 0, 0}));
+  ASSERT_EQ(
+      trading.ApplyEvent(Event(first, 1, OrderUpdateKind::kRejected), dispatch),
+      ErrorCode::kOk);
+  EXPECT_EQ(Cash(), (model::CashSnapshot{2 * kUnitCash, 0, 2 * kUnitCash}));
+  ASSERT_TRUE(trading.TryGetPosition(other.instrument.id, second_position));
+  EXPECT_EQ(second_position.total_qty, 1);
+  EXPECT_EQ(Position().total_qty, 0);
+}
+
+TEST_F(TradingTest,
+       BuyImprovementIsImmediatelyAvailableAndNewSharesCannotBeSold) {
+  constexpr std::int64_t kInitial = 3000000000;
+  constexpr std::int64_t kLimitPart = 1001 * 100 * 10000;
+  constexpr std::int64_t kActual = 1000 * 100 * 10000;
+  Bootstrap(kInitial);
+  const auto id = Submit(200);
+  Accept(id);
+  auto fill = Execution(id, 2, "improved", 100, 100);
+  fill.fill.price = 1000;
+  TradingDispatch dispatch;
+  ASSERT_EQ(trading.ApplyEvent(fill, dispatch), ErrorCode::kOk);
+  EXPECT_EQ(Cash(), (model::CashSnapshot{kInitial - kActual, kLimitPart,
+                                         kInitial - kActual - kLimitPart}));
+  EXPECT_EQ(Position(), (model::PositionSnapshot{instrument_id, 100, 0, 0}));
+  const auto once_cash = Cash();
+  const auto once_position = Position();
+  ASSERT_EQ(trading.ApplyEvent(fill, dispatch), ErrorCode::kOk);
+  EXPECT_EQ(Cash(), once_cash);
+  EXPECT_EQ(Position(), once_position);
+  auto sell = Request(1);
+  sell.side = model::OrderSide::kSell;
+  model::ClientOrderId unchanged{99};
+  trading.BeginCallback(CallbackPhase::kFill);
+  EXPECT_EQ(trading.SubmitOrder(sell, unchanged),
+            ErrorCode::kResourceExhausted);
+  trading.EndCallback();
+  Cancel(id);
+  EXPECT_EQ(Cash(), once_cash);
+  Send();
+  auto canceled = Event(id, 3, OrderUpdateKind::kCanceled, 100);
+  canceled.cancel_request_id = Snapshot(id).cancel_request_id;
+  ASSERT_EQ(trading.ApplyEvent(canceled, dispatch), ErrorCode::kOk);
+  EXPECT_EQ(Cash(),
+            (model::CashSnapshot{kInitial - kActual, 0, kInitial - kActual}));
+  EXPECT_EQ(Position(), once_position);
+}
+
+TEST_F(TradingTest,
+       SellFillCreditsCashAndCancelRejectionKeepsRemainingReservation) {
+  Bootstrap(7000000, 300, 200, true);
+  auto request = Request(200);
+  request.side = model::OrderSide::kSell;
+  const auto id = SubmitRequest(request);
+  Accept(id);
+  auto fill = Execution(id, 2, "sell-part", 100, 100);
+  fill.fill.price = 1002;
+  TradingDispatch dispatch;
+  ASSERT_EQ(trading.ApplyEvent(fill, dispatch), ErrorCode::kOk);
+  EXPECT_EQ(Position(), (model::PositionSnapshot{instrument_id, 200, 0, 100}));
+  EXPECT_EQ(Cash(), (model::CashSnapshot{1009000000, 0, 1009000000}));
+  const auto once_cash = Cash();
+  const auto once_position = Position();
+  ASSERT_EQ(trading.ApplyEvent(fill, dispatch), ErrorCode::kOk);
+  EXPECT_FALSE(dispatch.notify_order);
+  EXPECT_EQ(Cash(), once_cash);
+  EXPECT_EQ(Position(), once_position);
+  Cancel(id);
+  Send();
+  auto rejected = Event(id, 3, OrderUpdateKind::kCancelRejected, 100);
+  rejected.cancel_request_id = Snapshot(id).cancel_request_id;
+  auto wrong_attempt = rejected;
+  ++wrong_attempt.cancel_request_id.value;
+  const auto pending = Snapshot(id);
+  EXPECT_EQ(trading.ApplyEvent(wrong_attempt, dispatch), ErrorCode::kCorrupt);
+  EXPECT_EQ(Snapshot(id), pending);
+  EXPECT_EQ(Cash(), once_cash);
+  EXPECT_EQ(Position(), once_position);
+  ASSERT_EQ(trading.ApplyEvent(rejected, dispatch), ErrorCode::kOk);
+  EXPECT_EQ(Position(), (model::PositionSnapshot{instrument_id, 200, 0, 100}));
+  Cancel(id);
+  Send();
+  auto canceled = Event(id, 4, OrderUpdateKind::kCanceled, 100);
+  canceled.cancel_request_id = Snapshot(id).cancel_request_id;
+  ASSERT_EQ(trading.ApplyEvent(canceled, dispatch), ErrorCode::kOk);
+  EXPECT_EQ(Position(), (model::PositionSnapshot{instrument_id, 200, 100, 0}));
+  EXPECT_EQ(Cash(), (model::CashSnapshot{1009000000, 0, 1009000000}));
+}
+
+TEST_F(TradingTest,
+       DefinitiveRejectionAndLocalCancellationReleaseReservations) {
+  Bootstrap(100000000, 100, 100, true);
+  const auto buy = Submit(1);
+  auto sell_request = Request(100);
+  sell_request.side = model::OrderSide::kSell;
+  const auto sell = SubmitRequest(sell_request);
+  Send();
+  TradingDispatch dispatch;
+  ASSERT_EQ(
+      trading.ApplyEvent(Event(buy, 1, OrderUpdateKind::kRejected), dispatch),
+      ErrorCode::kOk);
+  ASSERT_EQ(
+      trading.ApplyEvent(Event(sell, 1, OrderUpdateKind::kRejected), dispatch),
+      ErrorCode::kOk);
+  EXPECT_EQ(Cash(), (model::CashSnapshot{100000000, 0, 100000000}));
+  EXPECT_EQ(Position(), (model::PositionSnapshot{instrument_id, 100, 100, 0}));
+  (void)Submit(1);
+  (void)SubmitRequest(sell_request);
+  trading.BeginStopping();
+  ASSERT_TRUE(trading.ProcessRequests(adapter, clock.now).ok());
+  EXPECT_EQ(Cash().reserved, 10010000);
+  EXPECT_EQ(Position().reserved_qty, 100);
+  while (trading.has_local_updates()) {
+    ASSERT_EQ(trading.ApplyLocalUpdate(dispatch), ErrorCode::kOk);
+  }
+  EXPECT_EQ(Cash(), (model::CashSnapshot{100000000, 0, 100000000}));
+  EXPECT_EQ(Position(), (model::PositionSnapshot{instrument_id, 100, 100, 0}));
+}
+
+TEST_F(TradingTest, ZeroAccountCannotBuyOrSellAndSendFailureKeepsReservations) {
+  Bootstrap(0);
+  model::ClientOrderId out{5};
+  trading.BeginCallback(CallbackPhase::kTick);
+  EXPECT_EQ(trading.SubmitOrder(Request(1), out),
+            ErrorCode::kResourceExhausted);
+  auto sell = Request(1);
+  sell.side = model::OrderSide::kSell;
+  EXPECT_EQ(trading.SubmitOrder(sell, out), ErrorCode::kResourceExhausted);
+  trading.EndCallback();
+  EXPECT_EQ(out.value, 5U);
+  EXPECT_EQ(trading.order_count(), 0U);
+  Bootstrap(100000000);
+  const auto id = Submit(1);
+  const auto before = Cash();
+  adapter.fail_send = true;
+  EXPECT_FALSE(trading.ProcessRequests(adapter, clock.now).ok());
+  trading.BeginStopping();
+  EXPECT_TRUE(trading.ScheduleStopping(clock.now).ok());
+  EXPECT_TRUE(trading.ProcessRequests(adapter, clock.now).ok());
+  EXPECT_EQ(Cash(), before);
+  EXPECT_EQ(Snapshot(id).state, OrderState::kPendingNew);
+}
+
+TEST_F(TradingTest, PricePrecisionZeroAndSixConvertExactlyWithoutRounding) {
+  for (const std::uint8_t decimals : {std::uint8_t{0}, std::uint8_t{6}}) {
+    SCOPED_TRACE(decimals);
+    Precision(decimals);
+    Bootstrap(100000000);
+    const std::int64_t scale = decimals == 0 ? 1000000 : 1;
+    auto request = Request(3);
+    request.limit_price = 7;
+    const auto id = SubmitRequest(request);
+    EXPECT_EQ(Cash().reserved, 21 * scale);
+    Accept(id);
+    auto fill = Execution(id, 2, "precise", 3, 3);
+    fill.fill.price = 6;
+    TradingDispatch dispatch;
+    ASSERT_EQ(trading.ApplyEvent(fill, dispatch), ErrorCode::kOk);
+    EXPECT_EQ(Cash(), (model::CashSnapshot{100000000 - 18 * scale, 0,
+                                           100000000 - 18 * scale}));
+    EXPECT_EQ(Position(), (model::PositionSnapshot{instrument_id, 3, 0, 0}));
+  }
+}
+
+TEST_F(TradingTest, SubmitNotionalOverflowPreservesEveryOutput) {
+  for (const std::uint8_t decimals : {std::uint8_t{0}, std::uint8_t{6}}) {
+    Precision(decimals);
+    Bootstrap(std::numeric_limits<std::int64_t>::max());
+    auto request = Request(decimals == 0 ? 1 : 2);
+    request.limit_price = std::numeric_limits<std::int64_t>::max();
+    const auto before = Cash();
+    model::ClientOrderId out{8};
+    trading.BeginCallback(CallbackPhase::kTick);
+    EXPECT_EQ(trading.SubmitOrder(request, out), ErrorCode::kInvalidArgument);
+    trading.EndCallback();
+    EXPECT_EQ(out.value, 8U);
+    EXPECT_EQ(trading.order_count(), 0U);
+    EXPECT_EQ(Cash(), before);
+    EXPECT_EQ(Position().total_qty, 0);
+  }
+}
+
+TEST_F(TradingTest, SellCashOverflowDoesNotCommitOrderHashOrAccount) {
+  constexpr auto kMaximum = std::numeric_limits<std::int64_t>::max();
+  Bootstrap(kMaximum - 20000000, 1, 1, true);
+  auto request = Request(1);
+  request.side = model::OrderSide::kSell;
+  const auto id = SubmitRequest(request);
+  Accept(id);
+  auto fill = Execution(id, 2, "same-id", 1, 1);
+  fill.fill.price = 2001;
+  const auto cash = Cash();
+  const auto position = Position();
+  const auto order = Snapshot(id);
+  TradingDispatch dispatch;
+  dispatch.notify_order = true;
+  EXPECT_EQ(trading.ApplyEvent(fill, dispatch), ErrorCode::kCorrupt);
+  EXPECT_EQ(Cash(), cash);
+  EXPECT_EQ(Position(), position);
+  EXPECT_EQ(Snapshot(id), order);
+  EXPECT_TRUE(dispatch.notify_order);
+  fill.fill.price = 1001;
+  ASSERT_EQ(trading.ApplyEvent(fill, dispatch), ErrorCode::kOk);
+  EXPECT_EQ(Cash().balance, kMaximum - 9990000);
+  EXPECT_EQ(Position(), (model::PositionSnapshot{instrument_id, 0, 0, 0}));
+}
+
+TEST_F(TradingTest, FillAmountAndBoughtHoldingOverflowAreAtomic) {
+  Precision(6);
+  Bootstrap(0, 2, 2, true);
+  auto request = Request(2);
+  request.side = model::OrderSide::kSell;
+  request.limit_price = 1;
+  const auto sell = SubmitRequest(request);
+  Accept(sell);
+  auto fill = Execution(sell, 2, "overflow", 2, 2);
+  fill.fill.price = std::numeric_limits<std::int64_t>::max();
+  const auto cash = Cash();
+  const auto position = Position();
+  TradingDispatch dispatch;
+  EXPECT_EQ(trading.ApplyEvent(fill, dispatch), ErrorCode::kCorrupt);
+  EXPECT_EQ(Cash(), cash);
+  EXPECT_EQ(Position(), position);
+  fill.fill.price = 1;
+  ASSERT_EQ(trading.ApplyEvent(fill, dispatch), ErrorCode::kOk);
+  EXPECT_EQ(Cash().balance, 2);
+  Bootstrap(10, std::numeric_limits<std::int64_t>::max(), 0, true);
+  request = Request(1);
+  request.limit_price = 1;
+  const auto buy = SubmitRequest(request);
+  Accept(buy);
+  fill = Execution(buy, 2, "holding-overflow", 1, 1);
+  fill.fill.price = 1;
+  const auto buy_cash = Cash();
+  const auto buy_position = Position();
+  const auto buy_order = Snapshot(buy);
+  EXPECT_EQ(trading.ApplyEvent(fill, dispatch), ErrorCode::kCorrupt);
+  EXPECT_EQ(Cash(), buy_cash);
+  EXPECT_EQ(Position(), buy_position);
+  EXPECT_EQ(Snapshot(buy), buy_order);
+}
+
+}  // namespace
+}  // namespace yquant::strategyd

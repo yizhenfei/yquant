@@ -1,7 +1,9 @@
 #ifndef YQUANT_MODEL_IDENTIFIERS_H_
 #define YQUANT_MODEL_IDENTIFIERS_H_
 
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string_view>
 
 #include "yquant/base/status.h"
@@ -34,6 +36,52 @@ struct InstrumentId {
   friend constexpr bool operator==(InstrumentId,
                                    InstrumentId) noexcept = default;
 };
+
+// Process-local order identity. Assigned monotonically by the host, never
+// reused during a run; zero is invalid.
+struct ClientOrderId {
+  std::uint64_t value = 0;
+  friend constexpr bool operator==(ClientOrderId,
+                                   ClientOrderId) noexcept = default;
+};
+
+// Identifies one locally accepted cancel attempt; zero means no attempt.
+struct CancelRequestId {
+  std::uint64_t value = 0;
+  friend constexpr bool operator==(CancelRequestId,
+                                   CancelRequestId) noexcept = default;
+};
+
+// Owns an opaque session-scoped identifier. Embedded NUL bytes are preserved;
+// callers compare views rather than interpreting these bytes as C strings.
+template <typename Tag>
+class OpaqueTradingId {
+ public:
+  // Copies 1..64 bytes, retaining no view. Failure preserves the previous ID.
+  [[nodiscard]] base::ErrorCode Assign(std::string_view value) noexcept {
+    if (value.empty() || value.size() > sizeof(bytes_)) {
+      return base::ErrorCode::kInvalidArgument;
+    }
+    std::memmove(bytes_, value.data(), value.size());
+    size_ = static_cast<std::uint8_t>(value.size());
+    return base::ErrorCode::kOk;
+  }
+  std::string_view view() const noexcept { return {bytes_, size_}; }
+  bool empty() const noexcept { return size_ == 0; }
+  friend bool operator==(const OpaqueTradingId& lhs,
+                         const OpaqueTradingId& rhs) noexcept {
+    return lhs.view() == rhs.view();
+  }
+
+ private:
+  char bytes_[64] = {};
+  std::uint8_t size_ = 0;
+};
+
+struct BrokerOrderIdTag;
+struct ExecutionIdTag;
+using BrokerOrderId = OpaqueTradingId<BrokerOrderIdTag>;
+using ExecutionId = OpaqueTradingId<ExecutionIdTag>;
 
 // Accepts exactly SSE, SZSE, or BSE and exactly six ASCII digits. Copies the
 // encoded identity into out on success; otherwise returns kInvalidArgument
