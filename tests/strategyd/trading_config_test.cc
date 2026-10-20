@@ -8,6 +8,7 @@
 #include "gtest/gtest.h"
 #include "strategyd/json_config_document.h"
 #include "test_config_file.h"
+#include "yquant/model/identifiers.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -280,10 +281,11 @@ TEST(TradingConfigTest, PositionCapacityAndVenueScopedIdentityAreValidated) {
     std::string positions = "[";
     for (std::size_t index = 0; index < count; ++index) {
       if (index != 0) positions += ',';
-      char symbol[7];
-      std::snprintf(symbol, sizeof(symbol), "%06zu", index);
+      char symbol[model::kSymbolLength + 1];
+      std::snprintf(symbol, sizeof(symbol), "%0*zu",
+                    static_cast<int>(model::kSymbolLength), index);
       std::string item(kPosition);
-      item.replace(item.find("600000"), 6, symbol);
+      item.replace(item.find("600000"), model::kSymbolLength, symbol);
       positions += item;
     }
     positions += ']';

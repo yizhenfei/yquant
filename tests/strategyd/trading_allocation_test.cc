@@ -12,6 +12,7 @@
 #include "strategyd/strategy_context.h"
 #include "strategyd/trading.h"
 #include "strategyd/trading_adapter.h"
+#include "yquant/model/identifiers.h"
 
 namespace {
 
@@ -329,7 +330,7 @@ void CheckTradingHeap(bool cancel, bool sell = false) {
   ASSERT_EQ(model::MakeInstrumentId("SSE", "600000", item.instrument.id),
             base::ErrorCode::kOk);
   item.instrument.venue = model::Venue::kSse;
-  std::copy_n("600000", 6, item.instrument.symbol);
+  std::copy_n("600000", model::kSymbolLength, item.instrument.symbol);
   item.instrument.price_decimals = 2;
   item.bid_price = 1000;
   item.ask_price = 1001;

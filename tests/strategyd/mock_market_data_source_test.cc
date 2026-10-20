@@ -21,7 +21,7 @@ MarketDataConfig Config() {
     const auto symbol = i == 0 ? "600000" : "600001";
     EXPECT_EQ(model::MakeInstrumentId("SSE", symbol, item.instrument.id),
               base::ErrorCode::kOk);
-    for (std::size_t digit = 0; digit < 6; ++digit)
+    for (std::size_t digit = 0; digit < model::kSymbolLength; ++digit)
       item.instrument.symbol[digit] = symbol[digit];
     item.instrument.price_decimals = 2;
     item.bid_price = 1000 + i;

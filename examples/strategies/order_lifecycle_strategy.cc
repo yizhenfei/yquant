@@ -9,6 +9,7 @@
 
 #include "simdjson.h"
 #include "yquant/model/account.h"
+#include "yquant/model/identifiers.h"
 #include "yquant/model/order.h"
 #include "yquant/model/trading_event.h"
 #include "yquant/strategy/strategy.h"
@@ -73,7 +74,8 @@ class OrderLifecycleConfig final : public StrategyConfig {
                   (venue != "SSE" && venue != "SZSE" && venue != "BSE");
       } else if (field.key == "symbol") {
         invalid =
-            field.value.get_string().get(symbol) || symbol.size() != 6 ||
+            field.value.get_string().get(symbol) ||
+            symbol.size() != yquant::model::kSymbolLength ||
             symbol.find_first_not_of("0123456789") != std::string_view::npos;
       } else if (field.key == "quantity") {
         invalid = field.value.get_int64().get(quantity) || quantity <= 0;
@@ -106,7 +108,7 @@ class OrderLifecycleConfig final : public StrategyConfig {
   SourceId source_id_;
   char venue_[4] = {};
   std::size_t venue_size_ = 0;
-  char symbol_[6] = {};
+  char symbol_[yquant::model::kSymbolLength] = {};
   std::int64_t quantity_ = 0;
 };
 

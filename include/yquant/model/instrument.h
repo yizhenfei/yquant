@@ -15,7 +15,8 @@ namespace yquant::model {
 struct InstrumentDefinition {
   InstrumentId id;
   Venue venue = Venue::kUnknown;
-  char symbol[6] = {};  // Exact code, including leading zeros; no terminator.
+  // Exact code, including leading zeros; no terminator.
+  char symbol[kSymbolLength] = {};
   // An encoded price p represents p * 10^-price_decimals yuan.
   std::uint8_t price_decimals = 0;
 

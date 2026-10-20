@@ -87,10 +87,28 @@ TEST(MarketModelTest, PresenceUsesFlagsRatherThanZeroPrices) {
   EXPECT_FALSE(HasQuoteFlag(quote.flags, QuoteFlag::kBidValid));
   quote.bid_price = 0;
   quote.bid_qty = 100;
-  quote.flags = static_cast<std::uint8_t>(QuoteFlag::kBidValid);
+  SetQuoteFlag(quote.flags, QuoteFlag::kBidValid);
   EXPECT_TRUE(HasQuoteFlag(quote.flags, QuoteFlag::kBidValid));
   EXPECT_FALSE(HasQuoteFlag(quote.flags, QuoteFlag::kAskValid));
   EXPECT_EQ(quote.flags & ~kKnownQuoteFlags, 0);
+}
+
+TEST(MarketModelTest, SettingQuoteFlagPreservesOtherBitsAndIsIdempotent) {
+  std::uint8_t flags = 0x80 | static_cast<std::uint8_t>(QuoteFlag::kAskValid);
+  const auto preserved_flags = flags;
+
+  SetQuoteFlag(flags, QuoteFlag::kBidValid);
+  EXPECT_TRUE(HasQuoteFlag(flags, QuoteFlag::kBidValid));
+  EXPECT_EQ(flags & ~static_cast<std::uint8_t>(QuoteFlag::kBidValid),
+            preserved_flags);
+  const auto enabled_flags = flags;
+  SetQuoteFlag(flags, QuoteFlag::kBidValid);
+  EXPECT_EQ(flags, enabled_flags);
+
+  SetQuoteFlag(flags, QuoteFlag::kBidValid, false);
+  EXPECT_EQ(flags, preserved_flags);
+  SetQuoteFlag(flags, QuoteFlag::kBidValid, false);
+  EXPECT_EQ(flags, preserved_flags);
 }
 
 TEST(MarketModelTest, SnapshotEqualityIgnoresPaddingAndChecksAllMembers) {

@@ -11,6 +11,7 @@
 #include <string_view>
 
 #include "simdjson.h"
+#include "yquant/model/identifiers.h"
 #include "yquant/model/instrument.h"
 #include "yquant/model/quote_tick.h"
 #include "yquant/strategy/strategy.h"
@@ -164,7 +165,7 @@ class QuoteObserverConfig final : public StrategyConfig {
   SourceId source_id_;
   char venue_[4] = {};
   std::size_t venue_size_ = 0;
-  char symbol_[6] = {};
+  char symbol_[yquant::model::kSymbolLength] = {};
 };
 
 // Observes one feed and verifies the host's cache-before-callback contract.

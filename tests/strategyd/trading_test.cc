@@ -7,6 +7,7 @@
 
 #include "gtest/gtest.h"
 #include "strategyd/trading_adapter.h"
+#include "yquant/model/identifiers.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -80,7 +81,7 @@ class TradingTest : public ::testing::Test {
               ErrorCode::kOk);
     instrument_id = item.instrument.id;
     item.instrument.venue = model::Venue::kSse;
-    std::memcpy(item.instrument.symbol, "600000", 6);
+    std::memcpy(item.instrument.symbol, "600000", model::kSymbolLength);
     item.instrument.price_decimals = 2;
     item.bid_price = 1000;
     item.ask_price = 1001;
@@ -684,7 +685,7 @@ TEST_F(TradingTest, TwoInstrumentsShareCashButKeepHoldingsIndependent) {
   ASSERT_EQ(model::MakeInstrumentId("SZSE", "000001", other.instrument.id),
             ErrorCode::kOk);
   other.instrument.venue = model::Venue::kSzse;
-  std::memcpy(other.instrument.symbol, "000001", 6);
+  std::memcpy(other.instrument.symbol, "000001", model::kSymbolLength);
   ASSERT_TRUE(market_data.Configure(market_config).ok());
   constexpr std::int64_t kUnitCash = 10010000;
   Bootstrap(3 * kUnitCash);

@@ -10,6 +10,9 @@
 
 namespace yquant::model {
 
+// Number of ASCII digits in a supported instrument symbol; excludes '\0'.
+inline constexpr std::size_t kSymbolLength = 6;
+
 // Numeric codes are part of the stable instrument encoding. Never renumber
 // existing venues when adding another trading venue.
 enum class Venue : std::uint8_t {
@@ -99,7 +102,7 @@ using ExecutionId = OpaqueTradingId<ExecutionIdTag>;
   } else {
     return base::ErrorCode::kInvalidArgument;
   }
-  if (symbol.size() != 6) {
+  if (symbol.size() != kSymbolLength) {
     return base::ErrorCode::kInvalidArgument;
   }
   std::uint32_t symbol_value = 0;

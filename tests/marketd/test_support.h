@@ -12,6 +12,7 @@
 
 #include "gtest/gtest.h"
 #include "marketd/config.h"
+#include "yquant/model/identifiers.h"
 #include "yquant/model/instrument.h"
 #include "yquant/model/quote_tick.h"
 
@@ -55,12 +56,13 @@ inline strategyd::MarketDataConfig MockConfig(std::size_t count = 1) {
   for (std::size_t i = 0; i < count; ++i) {
     auto& item = config.instruments[i];
     item.instrument.venue = model::Venue::kSse;
-    char symbol[7];
-    std::snprintf(symbol, sizeof(symbol), "%06u",
+    char symbol[model::kSymbolLength + 1];
+    std::snprintf(symbol, sizeof(symbol), "%0*u",
+                  static_cast<int>(model::kSymbolLength),
                   600000U + static_cast<unsigned>(i));
     EXPECT_EQ(model::MakeInstrumentId("SSE", symbol, item.instrument.id),
               base::ErrorCode::kOk);
-    std::memcpy(item.instrument.symbol, symbol, 6);
+    std::memcpy(item.instrument.symbol, symbol, model::kSymbolLength);
     item.instrument.price_decimals = 2;
     item.bid_price = 1000;
     item.ask_price = 1001;

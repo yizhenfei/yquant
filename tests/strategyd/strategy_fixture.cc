@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include "simdjson.h"
+#include "yquant/model/identifiers.h"
 #include "yquant/model/instrument.h"
 #include "yquant/model/quote_tick.h"
 #include "yquant/strategy/strategy.h"
@@ -151,7 +152,8 @@ class FixtureConfig final : public StrategyConfig {
           return ErrorCode::kInvalidArgument;
         }
       } else if (field.key == "symbol") {
-        if (field.value.get_string().get(symbol) || symbol.size() != 6 ||
+        if (field.value.get_string().get(symbol) ||
+            symbol.size() != yquant::model::kSymbolLength ||
             symbol.find_first_not_of("0123456789") != std::string_view::npos) {
           error.Set("symbol", "expected a six digit symbol");
           return ErrorCode::kInvalidArgument;
@@ -176,7 +178,7 @@ class FixtureConfig final : public StrategyConfig {
   char label_[64] = {};
   std::uint32_t source_id_ = 0;
   char venue_[5] = {};
-  char symbol_[7] = {};
+  char symbol_[yquant::model::kSymbolLength + 1] = {};
 };
 
 class FixtureStrategy final : public Strategy {

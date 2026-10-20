@@ -11,6 +11,7 @@
 #include "strategyd/mock_market_data_source.h"
 #include "strategyd/strategy_context.h"
 #include "strategyd/trading.h"
+#include "yquant/model/identifiers.h"
 
 namespace {
 
@@ -281,7 +282,7 @@ TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
     auto& item = config.instruments[index];
     item.instrument.venue = model::Venue::kSse;
     std::size_t numeric_symbol = 600000 + index;
-    for (std::size_t digit = 6; digit != 0; --digit) {
+    for (std::size_t digit = model::kSymbolLength; digit != 0; --digit) {
       item.instrument.symbol[digit - 1] = '0' + numeric_symbol % 10;
       numeric_symbol /= 10;
     }

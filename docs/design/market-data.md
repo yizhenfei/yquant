@@ -79,7 +79,7 @@ Nautilus 的行情客户端在接入层持有 `ClientId`，其原生 `QuoteTick`
 
 标的身份由 `venue` 和 `symbol` 共同确定，策略可在启动时通过 `MarketData::FindInstrument()` 查询标的定义及其 ID。
 
-`InstrumentDefinition` 为可复制的定长对象，包含 ID、场所、代码和价格精度。场所使用固定宽度枚举，支持 `SSE`、`SZSE`、`BSE`；首版代码内联保存六位 ASCII 数字，不包含终止符。价格精度 `price_decimals` 表示整数价格的计价单位为 `10^-price_decimals` 元，范围为 `0..6`；数量使用股。
+`InstrumentDefinition` 为可复制的定长对象，包含 ID、场所、代码和价格精度。场所使用固定宽度枚举，支持 `SSE`、`SZSE`、`BSE`；代码长度由 `model::kSymbolLength` 定义，当前为六位 ASCII 数字，内联保存且不包含终止符。价格精度 `price_decimals` 表示整数价格的计价单位为 `10^-price_decimals` 元，范围为 `0..6`；数量使用股。
 
 例如 `price_decimals=2`、价格 `1001` 表示 `10.01` 元，数量 `100` 表示 `100` 股。买入申报单位等交易规则不混入行情数量的编码。字典在启动阶段建立，运行期间只读。
 
