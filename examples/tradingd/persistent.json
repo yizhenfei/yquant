@@ -1,0 +1,18 @@
+{
+  "listen": {"address": "127.0.0.1", "port": 19200},
+  "market_data_config": "../strategies/mock_market_data.json",
+  "trading_config": "../strategies/mock_trading.json",
+  "token": "yquant-local-demo",
+  "max_clients": 16,
+  "heartbeat_timeout_ms": 5000,
+  "shutdown_timeout_ms": 5000,
+  "persistence": {
+    "directory": "state/account-A",
+    "account_key": "simulation/account-A/CNY",
+    "wal_segment_bytes": 67108864,
+    "reserve_segments": 2,
+    "sync_interval_ms": 10,
+    "sync_after_bytes": 1048576,
+    "snapshot_interval_ms": 60000
+  }
+}

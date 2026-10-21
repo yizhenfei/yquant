@@ -141,6 +141,8 @@ cmake -P cmake/DownloadTestData.cmake
 
 另一个策略使用 `client_2.json`。跨机时修改服务端监听地址和客户端目标地址，各客户端保持不同身份。`tradingd` 统一检查与预占账户资源，向所属策略回送委托与成交，并推送共享账户快照。首版使用模拟柜台，协议、停止与故障边界见[共享交易网关](docs/design/tradingd.md)。
 
+需要跨重启保留交易状态时使用 `tradingd/persistent.json`。首次运行加 `--initialize-state`，后续启动省略该标志；默认每 10 ms 或累计 1 MiB 在后台同步，逐笔请求不等待真实落盘。配置与恢复边界见[交易网关持久化与恢复](docs/design/tradingd-persistence.md)。
+
 网关与策略宿主从同一[共享标的字典](docs/design/market-data.md#共享标的字典)解析各自运行清单，客户端运行范围须为网关子集。示例策略只配置场所、代码、方向和数量，行情来源由策略宿主绑定。
 
 运行有底仓双边报价策略：
@@ -216,6 +218,7 @@ cmake --build --preset debug --target download_test_data
 - [共享内存行情订阅发布组件](docs/design/shared-memory-pubsub.md)：seqlock、独立游标、覆盖缺口和重启隔离。
 - [交易执行与账户账本](docs/design/trading.md)：限价委托、撤单与异步回报的执行闭环。
 - [共享交易网关](docs/design/tradingd.md)：多机策略共享账户、订单归属、TCP 协议和断线收尾。
+- [交易网关持久化与恢复](docs/design/tradingd-persistence.md)：mmap 日志、后台同步、快照和柜台对账设计。
 - [有底仓的一档双边报价策略](docs/design/bbo-market-making.md)：库存约束、撤补、过期撤单与失败退避。
 
 ## 参考系统与资料

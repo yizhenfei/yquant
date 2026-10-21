@@ -79,6 +79,57 @@ base::Status Listen(simdjson::ondemand::value value, Endpoint& endpoint,
   return {};
 }
 
+// Parses a bounded persistence block; duplicate keys are rejected by the
+// configuration document before this pass.
+base::Status Persistence(simdjson::ondemand::value value,
+                         PersistenceConfig& config,
+                         strategy::ConfigError& error) noexcept {
+  simdjson::ondemand::object object;
+  auto code = value.get_object().get(object);
+  if (code) return JsonError(code, "persistence", error);
+  unsigned seen = 0;
+  for (auto item : object) {
+    simdjson::ondemand::field field;
+    code = std::move(item).get(field);
+    if (code) return JsonError(code, "persistence", error);
+    std::string_view key;
+    code = field.unescaped_key().get(key);
+    if (code) return JsonError(code, "persistence", error);
+    if (key == "directory" || key == "account_key") {
+      const bool directory = key == "directory";
+      auto status = Text(
+          field.value(), directory ? config.directory : config.account_key,
+          directory ? sizeof(config.directory) : sizeof(config.account_key),
+          directory ? "persistence.directory" : "persistence.account_key",
+          error);
+      if (!status.ok()) return status;
+      seen |= directory ? 1 : 2;
+      continue;
+    }
+    std::uint64_t number = 0;
+    code = field.value().get_uint64().get(number);
+    if (code) return JsonError(code, "persistence", error);
+    if (key == "wal_segment_bytes")
+      config.wal_segment_bytes = number;
+    else if (key == "reserve_segments")
+      config.reserve_segments = number;
+    else if (key == "sync_interval_ms") {
+      if (number > UINT32_MAX)
+        return Invalid("persistence.sync_interval_ms", "too large", error);
+      config.sync_interval_ms = static_cast<std::uint32_t>(number);
+    } else if (key == "sync_after_bytes")
+      config.sync_after_bytes = number;
+    else if (key == "snapshot_interval_ms")
+      config.snapshot_interval_ms = number;
+    else
+      return Invalid("persistence", "unknown field", error);
+  }
+  if (seen != 3)
+    return Invalid("persistence", "directory and account_key are required",
+                   error);
+  return {};
+}
+
 // Parses into temporary values; referenced file paths are resolved later.
 base::Status Parse(const strategyd::JsonConfigDocument& source,
                    ServerConfig& config, char* market_path, char* trading_path,
@@ -93,9 +144,14 @@ base::Status Parse(const strategyd::JsonConfigDocument& source,
   simdjson::ondemand::object root;
   code = document.get_object().get(root);
   if (code) return JsonError(code, "$", error);
-  constexpr std::string_view kFields[] = {
-      "listen",      "market_data_config",   "trading_config",     "token",
-      "max_clients", "heartbeat_timeout_ms", "shutdown_timeout_ms"};
+  constexpr std::string_view kFields[] = {"listen",
+                                          "market_data_config",
+                                          "trading_config",
+                                          "token",
+                                          "max_clients",
+                                          "heartbeat_timeout_ms",
+                                          "shutdown_timeout_ms",
+                                          "persistence"};
   unsigned seen = 0;
   for (auto item : root) {
     simdjson::ondemand::field field;
@@ -110,7 +166,9 @@ base::Status Parse(const strategyd::JsonConfigDocument& source,
       return Invalid(key, "unknown field", error);
     seen |= 1U << index;
     base::Status status;
-    if (index == 0) {
+    if (index == 7) {
+      status = Persistence(field.value(), config.persistence, error);
+    } else if (index == 0) {
       status = Listen(field.value(), config.listen, error);
     } else if (index < 4) {
       char* target = index == 1 ? market_path : trading_path;
@@ -179,6 +237,42 @@ base::Status ValidateConfig(const ServerConfig& config,
       config.shutdown_timeout_ns > kMaximumTimeoutNs)
     return Invalid("shutdown_timeout_ms", "must be from 1000 to 60000 ms",
                    error);
+  const auto& persistence = config.persistence;
+  if (persistence.enabled()) {
+    if (strnlen(persistence.directory, sizeof(persistence.directory)) >=
+        sizeof(persistence.directory))
+      return Invalid("persistence.directory", "path too long", error);
+    const auto key_length =
+        strnlen(persistence.account_key, sizeof(persistence.account_key));
+    if (key_length == 0 || key_length > kMaxAccountKeyBytes)
+      return Invalid("persistence.account_key", "empty or overlong account key",
+                     error);
+    if (persistence.wal_segment_bytes < kMinWalSegmentBytes ||
+        persistence.wal_segment_bytes > kJournalMaxSegmentBytes ||
+        (persistence.wal_segment_bytes & (persistence.wal_segment_bytes - 1)) !=
+            0)
+      return Invalid("persistence.wal_segment_bytes",
+                     "must be a power of two from 4 MiB to 1 GiB", error);
+    if (persistence.reserve_segments < kJournalMinReserveSegments ||
+        persistence.reserve_segments > kJournalMaxReserveSegments)
+      return Invalid("persistence.reserve_segments", "must be from 2 to 16",
+                     error);
+    if (persistence.sync_interval_ms < kJournalMinSyncIntervalMs ||
+        persistence.sync_interval_ms > kJournalMaxSyncIntervalMs)
+      return Invalid("persistence.sync_interval_ms", "must be from 1 to 1000",
+                     error);
+    if (persistence.sync_after_bytes < kJournalMinSyncAfterBytes ||
+        persistence.sync_after_bytes > persistence.wal_segment_bytes)
+      return Invalid("persistence.sync_after_bytes",
+                     "must be from 4 KiB to segment capacity", error);
+    if (persistence.snapshot_interval_ms < kMinSnapshotIntervalMs ||
+        persistence.snapshot_interval_ms > kMaxSnapshotIntervalMs)
+      return Invalid("persistence.snapshot_interval_ms",
+                     "must be from 1000 to 3600000", error);
+  } else if (persistence.initialize || persistence.account_key[0] != '\0') {
+    return Invalid("persistence.directory", "required for persistent state",
+                   error);
+  }
   auto status = strategyd::ValidateMarketDataConfig(config.market_data, error);
   if (!status.ok()) return status;
   status = strategyd::ValidateTradingConfig(config.trading, error);
@@ -227,6 +321,11 @@ base::Status ConfigLoader::Load(const char* path) noexcept {
   if (!status.ok()) {
     error_ = trading_loader.error();
     return status;
+  }
+  if (parsed.persistence.enabled()) {
+    status = Resolve(parsed.persistence.directory, path,
+                     "persistence.directory", error_);
+    if (!status.ok()) return status;
   }
   parsed.market_data = market_loader.config();
   parsed.trading = trading_loader.config();

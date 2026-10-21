@@ -10,15 +10,18 @@ namespace yquant::tradingd {
 
 // Single-thread shared order gateway. The clock outlives this object. Init
 // allocates bounded storage; accepting a connection allocates its bounded
-// buffers. Established-connection order processing does not allocate or wait.
-// A client identity is never reused within a generation, including after EOF.
+// buffers. Established order processing does not allocate or wait for WAL
+// sync; mapping stores can still incur kernel page/dirty-pressure delays. Cold
+// client registration persists identity before Welcome. Persistent identities
+// remain retained across restarts, including after EOF.
 class Server {
  public:
   explicit Server(const strategyd::MonotonicClock& clock) noexcept;
   ~Server() noexcept;
   Server(const Server&) = delete;
   Server& operator=(const Server&) = delete;
-  // Prepares a fresh account and listener. Failure releases partial resources.
+  // Initializes a new account or recovers configured persistent state before
+  // opening the listener. Failure releases partial resources.
   [[nodiscard]] base::Status Init(const ServerConfig& config) noexcept;
   // Services bounded client requests, broker reports and automatic cancels.
   // Failure is terminal; retained account() still reflects committed events.
@@ -35,6 +38,10 @@ class Server {
   void ReportUnconfirmed() const noexcept;
   // Resource release alone does not imply confirmed broker cancellation.
   void Close() noexcept;
+  // Cold orderly shutdown: requires drained orders, waits for a final checked
+  // checkpoint and background sync. Failure retains diagnostics and state
+  // files.
+  [[nodiscard]] base::Status Finish() noexcept;
 
  private:
   struct Storage;

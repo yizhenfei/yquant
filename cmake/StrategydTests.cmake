@@ -107,6 +107,8 @@ add_executable(yquant_strategyd_test
   tests/strategyd/futures_bbo_test.cc
   tests/strategyd/futures_process_test.cc
   tests/strategyd/futures_ledger_test.cc
+  tests/strategyd/trading_persistence_test.cc
+  tests/strategyd/mock_trading_persistence_test.cc
   tests/strategyd/trading_test.cc
   tests/strategyd/trading_config_test.cc
   tests/strategyd/mock_trading_adapter_test.cc

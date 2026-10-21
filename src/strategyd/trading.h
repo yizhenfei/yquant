@@ -4,10 +4,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 
 #include "strategyd/market_data.h"
 #include "strategyd/trading_account.h"
 #include "strategyd/trading_limits.h"
+#include "strategyd/trading_persistence.h"
 #include "strategyd/trading_runtime.h"
 #include "yquant/model/trading_event.h"
 #include "yquant/strategy/trading.h"
@@ -94,9 +96,61 @@ class TradingImpl final : public TradingRuntime {
   [[nodiscard]] base::ErrorCode ApplyLocalUpdate(
       TradingDispatch& out) noexcept override;
 
+  // Installs a borrowed main-thread sink on a configured cash ledger. It must
+  // outlive ledger work. nullptr disables it, including on an empty ledger.
+  // Call outside callbacks/replay; failure preserves the existing sink.
+  // Futures persistence is unsupported and rejected before any mutation.
+  [[nodiscard]] base::Status SetMutationSink(
+      TradingMutationSink* sink) noexcept;
+  // Cash journal revision; futures execution leaves this zero.
+  std::uint64_t mutation_revision() const noexcept;
+  std::uint64_t next_order_id() const noexcept;
+  std::uint64_t next_cancel_id() const noexcept;
+  // Cold/bounded retained-slot iteration; false preserves out.
+  [[nodiscard]] bool TryGetOrderAt(std::size_t index,
+                                   model::OrderSnapshot& out) const noexcept;
+  // Cold identity allocation: never lowers the next ID, allocates no storage,
+  // and changes no existing order. The owner persists its lease before use.
+  [[nodiscard]] base::Status SetNextOrderIdAtLeast(std::uint64_t id) noexcept;
+  // Same cold lease contract for cancel IDs; id is the next assignable value.
+  [[nodiscard]] base::Status SetNextCancelIdAtLeast(std::uint64_t id) noexcept;
+  // Cash-only cold codec operations; futures return kUnsupported.
+  // Export does not allocate and preserves size on failure. Restore validates
+  // a private candidate and preserves this ledger
+  // on failure; successful restore leaves execution stopped and callbacks off.
+  // The checkpoint includes pending queues, reservations and dedup identities.
+  [[nodiscard]] base::Status ExportCheckpoint(std::span<std::byte> bytes,
+                                              std::size_t& size) const noexcept;
+  [[nodiscard]] base::Status RestoreCheckpoint(
+      std::span<const std::byte> bytes) noexcept;
+  // Installs an independently reconciled cash baseline without financially
+  // applying historical executions again. All supplied orders must be terminal
+  // with no outstanding cancels; every cumulative fill needs its unique detail.
+  // Baseline reservations must be zero; sellable quantities are preserved.
+  // Orders may be unordered, but IDs must be unique, nonzero and below
+  // UINT64_MAX. Cold-only and failure atomic. Existing ID leases are never
+  // lowered; the mutation revision starts at zero for the new recovery
+  // baseline.
+  [[nodiscard]] base::Status RestoreReconciled(
+      const TradingAccountSnapshot& baseline,
+      std::span<const model::OrderSnapshot> terminal_orders,
+      std::span<const model::Fill> executions) noexcept;
+  // Cash-only: replays the next fact without sending, invoking the sink or
+  // notifying a strategy. Failure preserves business state. Call only while
+  // stopped, outside callbacks; time-dependent validation uses the fact's now.
+  [[nodiscard]] base::Status ReplayMutation(
+      const TradingMutation& mutation, TradingDispatch* out = nullptr) noexcept;
+  // Cold recovery boundary: conservatively marks restored queued requests as
+  // attempted and removes them. No external request is sent. The owner must
+  // reconcile these uncertain orders before enabling execution.
+  void AbandonRecoveredRequests() noexcept;
+
  private:
   struct Storage;
-  // Finds a retained order; IDs are dense and never reused within this run.
+  // Publishes the next validated fact. Successful commit callers increment
+  // mutation_revision exactly once; failed callbacks preserve business state.
+  [[nodiscard]] base::ErrorCode BeforeCommit(TradingMutation& fact) noexcept;
+  // Finds a retained order independently of its storage slot.
   std::optional<std::size_t> FindIndex(model::ClientOrderId id) const noexcept;
   // Finds a retained position; a known untouched instrument has no slot yet.
   std::optional<std::size_t> FindPosition(
@@ -114,6 +168,10 @@ class TradingImpl final : public TradingRuntime {
   bool stopping_ = false;
   CallbackPhase phase_ = CallbackPhase::kNone;
   char error_detail_[256] = {};
+  TradingMutationSink* sink_ = nullptr;
+  bool replaying_ = false;
+  bool invoking_sink_ = false;
+  std::uint64_t replay_now_ = 0;
 };
 }  // namespace yquant::strategyd
 #endif  // YQUANT_STRATEGYD_TRADING_H_
