@@ -93,6 +93,23 @@ CMakePresets.json
 
 [base::EventLoopEnvironment](../../include/yquant/base/event_loop_environment.h) 提供主线程的 `CheckStop()` 与可选超时的 `Wait()`，便于事件循环注入测试环境。[base::TerminationSignals](../../include/yquant/base/termination_signals.h) 实现 SIGINT、SIGTERM 的屏蔽、显式检查和 `pselect` 等待，由三个程序复用；信号处置与屏蔽掩码保留到进程退出，实现位于 `src/base/termination_signals.cc`。策略程序如何在启动、回调和收尾边界使用这些设施见[主循环与信号](strategyd.md#主循环与信号)。
 
+## 标准输出与诊断
+
+进程和示例策略按消息语义选择控制台流，便于独立重定向正常输出与异常诊断。
+
+| 消息 | 标准流 |
+| --- | --- |
+| `Running`、正常 `Stopped` 等运行状态，业务事件与统计汇总 | `stdout` |
+| `--help` 的帮助文本、配置校验成功消息 | `stdout` |
+| 参数错误及其用法提示，启动、运行或收尾失败 | `stderr` |
+| 警告、未确认订单或撤单等需要关注的异常诊断 | `stderr` |
+
+委托受理、拒绝、成交和撤单结果属于正常业务回报；仅因回报中出现 `rejected` 不改变输出通道。业务回报的校验失败或处理失败则作为异常诊断。
+
+外部监督者通过管道读取 `Running` 等就绪标记时，进程写入 `stdout` 后显式调用 `fflush(stdout)`，交互消息同样按即时可见的要求刷新。换行不保证管道中的标准输出立即可见；普通业务事件和统计不要求逐条强制刷新。
+
+文件日志的去向由日志 sink 配置决定，日志库的后端与故障行为见[日志选型与设计](logging.md)。
+
 ## JSON 配置文档
 
 `base::JsonConfigDocument` 负责配置文件读取、完整输入校验和源码所有权管理，供 `strategyd`、`marketd`、`tradingd` 及共享标的字典复用。公开接口位于 `include/yquant/base/json_config_document.h`，实现位于 `src/base/json_config_document.cc`；公开头文件不暴露 simdjson 类型。

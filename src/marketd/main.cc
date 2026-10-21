@@ -90,14 +90,14 @@ int main(int argc, char* argv[]) {
     PrintFailure(runner.error_stage(), status, runner.error_detail());
     return 1;
   }
-  std::fprintf(stderr, "yquant-marketd: Running config=%s\n", config_path);
-  std::fflush(stderr);
+  std::fprintf(stdout, "yquant-marketd: Running config=%s\n", config_path);
+  std::fflush(stdout);
   status = runner.Run(clock, signals, max_events);
   if (!status.ok()) {
     PrintFailure(runner.error_stage(), status, runner.error_detail());
     return 1;
   }
-  std::fprintf(stderr, "yquant-marketd: Stopped events=%llu\n",
+  std::fprintf(stdout, "yquant-marketd: Stopped events=%llu\n",
                static_cast<unsigned long long>(runner.event_count()));
   return 0;
 }

@@ -125,13 +125,13 @@ int main(int argc, char* argv[]) {
 
   const auto strategy_id = runner.strategy_id();
   std::fprintf(
-      stderr, "yquant-strategyd: Running strategy=%s strategy_id=%.*s\n",
+      stdout, "yquant-strategyd: Running strategy=%s strategy_id=%.*s\n",
       library_path, static_cast<int>(strategy_id.size()), strategy_id.data());
-  std::fflush(stderr);
+  std::fflush(stdout);
 
   const Status run_status = runner.Run(termination_signals);
   if (runner.ignored_quote_count() != 0) {
-    std::fprintf(stderr, "yquant-strategyd: ignored_quotes=%llu\n",
+    std::fprintf(stdout, "yquant-strategyd: ignored_quotes=%llu\n",
                  static_cast<unsigned long long>(runner.ignored_quote_count()));
   }
   if (!run_status.ok()) {

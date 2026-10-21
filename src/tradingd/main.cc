@@ -74,8 +74,8 @@ int main(int argc, char* argv[]) {
     Failure("initialize", status, server.error_detail());
     return 1;
   }
-  std::fprintf(stderr, "yquant-tradingd: Running port=%u\n", server.port());
-  std::fflush(stderr);
+  std::fprintf(stdout, "yquant-tradingd: Running port=%u\n", server.port());
+  std::fflush(stdout);
   bool stopping = false;
   for (;;) {
     bool stop = false;
@@ -99,6 +99,6 @@ int main(int argc, char* argv[]) {
     if (stopping && server.is_drained()) break;
     std::this_thread::yield();
   }
-  std::fputs("yquant-tradingd: Stopped\n", stderr);
+  std::fputs("yquant-tradingd: Stopped\n", stdout);
   return 0;
 }

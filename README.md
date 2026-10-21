@@ -106,7 +106,7 @@ cmake -P cmake/DownloadTestData.cmake
   --config ./build/debug/strategies/lifecycle_strategy.json
 ```
 
-`--strategy` 和 `--config` 均为必填参数，顺序不限。启动成功后输出 `Running` 和策略 ID。使用 `Ctrl+C` 或向进程发送 `SIGTERM` 停止，使用 `--help` 查看参数。路径以启动工作目录为基准；动态库文件名后缀由 CMake 的本机 `MODULE` 配置决定。
+`--strategy` 和 `--config` 均为必填参数，顺序不限。启动成功后向 `stdout` 输出 `Running` 和策略 ID。三个进程及示例策略的控制台流遵循[标准输出与诊断约定](docs/design/engineering.md#标准输出与诊断)。使用 `Ctrl+C` 或向进程发送 `SIGTERM` 停止，使用 `--help` 查看参数。路径以启动工作目录为基准；动态库文件名后缀由 CMake 的本机 `MODULE` 配置决定。
 
 生命周期示例的 `LifecycleConfig` 派生自 `StrategyConfig`，读取必填字符串 `parameters.startup_message`，将解码后 1 至 128 字节、无内嵌 NUL 的内容保存在自身定长存储中，拒绝未知参数。配套配置将消息设为 `lifecycle strategy started`，`OnStart` 读取该参数并输出 `lifecycle_strategy: startup_message=lifecycle strategy started`。
 

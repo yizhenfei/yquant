@@ -194,11 +194,11 @@ class OrderLifecycleStrategy final : public Strategy {
          state == OrderState::kRejected)) {
       terminal_reported_ = true;
       const int written = std::fprintf(
-          stderr,
+          stdout,
           "order_lifecycle: terminal state=%s cumulative=%" PRId64
           " leaves=%" PRId64 "\n",
           StateName(state), queried.cumulative_filled_qty, queried.leaves_qty);
-      return written < 0 || std::fflush(stderr) != 0 ? ErrorCode::kIoError
+      return written < 0 || std::fflush(stdout) != 0 ? ErrorCode::kIoError
                                                      : ErrorCode::kOk;
     }
     return ErrorCode::kOk;
@@ -246,11 +246,11 @@ class OrderLifecycleStrategy final : public Strategy {
       }
     }
     const int written = std::fprintf(
-        stderr,
+        stdout,
         "order_lifecycle: stopped fills=%" PRIu64 " filled_qty=%" PRId64
         " state=%s\n",
         fills_, filled_qty_, has_order ? StateName(final.state) : "none");
-    return written < 0 || std::fflush(stderr) != 0
+    return written < 0 || std::fflush(stdout) != 0
                ? ErrorCode::kIoError
                : ReportAccount(context, "final");
   }
@@ -303,19 +303,19 @@ class OrderLifecycleStrategy final : public Strategy {
       return ErrorCode::kCorrupt;
     }
     const int written = std::fprintf(
-        stderr,
+        stdout,
         "order_lifecycle: account %s cash=%" PRId64 " reserved=%" PRId64
         " available=%" PRId64 " position_total=%" PRId64
         " position_available=%" PRId64 " position_reserved=%" PRId64 "\n",
         stage, cash.balance, cash.reserved, cash.available, position.total_qty,
         position.available_qty, position.reserved_qty);
-    return written < 0 || std::fflush(stderr) != 0 ? ErrorCode::kIoError
+    return written < 0 || std::fflush(stdout) != 0 ? ErrorCode::kIoError
                                                    : ErrorCode::kOk;
   }
 
   // Low-frequency handshake output; no per-quote formatting or borrowed text.
   static ErrorCode PrintMarker(const char* text) noexcept {
-    return std::fputs(text, stderr) < 0 || std::fflush(stderr) != 0
+    return std::fputs(text, stdout) < 0 || std::fflush(stdout) != 0
                ? ErrorCode::kIoError
                : ErrorCode::kOk;
   }

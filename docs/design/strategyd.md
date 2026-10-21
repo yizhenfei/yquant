@@ -23,7 +23,7 @@
   --config ./build/debug/strategies/lifecycle_strategy.json
 ```
 
-`--strategy <path>` 与 `--config <path>` 为必填参数，各出现一次，顺序不限。缺少路径、空路径、重复参数或未知参数均输出用法并退出；`--help` 单独使用时输出用法并成功退出。
+`--strategy <path>` 与 `--config <path>` 为必填参数，各出现一次，顺序不限。缺少路径、空路径、重复参数或未知参数均向 `stderr` 输出用法并退出；`--help` 单独使用时向 `stdout` 输出用法并成功退出。
 
 `--market-data-config <path>` 为可选参数，最多出现一次，仅供宿主配置行情源。省略时标的字典为空，不接受行情订阅；不订阅行情的策略仍可正常启动和停止。行情配置的 `adapter` 只接受 `shm`；格式与命令示例见[行情驱动设计](market-data.md#配置与启动方式)，行情发布端见[行情进程设计](marketd.md)。
 
@@ -185,10 +185,10 @@ flowchart TD
 Main(args):
     options = ParseArguments(args)
     if 参数非法:
-        输出用法
+        向 stderr 输出用法
         return 2
     if 请求帮助:
-        输出用法
+        向 stdout 输出用法
         return 0
 
     屏蔽 SIGINT、SIGTERM，并安装只设置停止标志的处理函数
@@ -200,7 +200,7 @@ Main(args):
         LoadAndStart{options.strategy_path, options.config_path,
                      options.market_data_config_path, options.trading_config_path})
     if result 成功且 runner 处于 Running:
-        输出 Running 状态
+        向 stdout 输出 Running 状态并刷新
         result = runner.Run(termination_signals)
         # Run 在停止请求或运行错误后完成同步收尾再返回
 
@@ -250,7 +250,7 @@ Run 关闭策略请求入口与行情分派 → source.Stop() → 推进委托�
 | `OnStop` | 记录收尾错误，继续销毁实例、释放动态库句柄 |
 | `dlclose()` | 记录错误，以失败状态退出，不再访问策略代码 |
 
-每项资源只释放一次。已有错误不会因后续清理成功被覆盖；阶段、动态库路径、策略、行情及交易配置路径、已校验的策略 ID、错误码和诊断输出到标准错误流。正常启动输出明确的 `Running` 状态和策略 ID。旧或重复行情的累计忽略计数在停止后保留，非零时输出 `yquant-strategyd: ignored_quotes=N`。
+每项资源只释放一次。已有错误不会因后续清理成功被覆盖；失败时将阶段、动态库路径、策略、行情及交易配置路径、已校验的策略 ID、错误码和诊断输出到 `stderr`。正常启动向 `stdout` 输出明确的 `Running` 状态和策略 ID，并刷新以供监督进程读取。旧或重复行情的累计忽略计数在停止后保留，非零时向 `stdout` 输出 `yquant-strategyd: ignored_quotes=N`。控制台流的完整约定见[标准输出与诊断](engineering.md#标准输出与诊断)。
 
 失败收尾同样在策略销毁、动态库句柄释放后释放上下文资源。
 

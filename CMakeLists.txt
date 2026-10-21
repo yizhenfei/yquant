@@ -247,6 +247,28 @@ if(BUILD_TESTING)
 
   include(cmake/TradingTests.cmake)
 
+  add_executable(console_output_test tests/console_output_test.cc)
+  target_link_libraries(console_output_test PRIVATE
+    yquant::md GTest::gtest_main Threads::Threads)
+  target_compile_options(console_output_test PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_definitions(console_output_test PRIVATE
+    YQUANT_TEST_STRATEGYD_PATH="$<TARGET_FILE:yquant_strategyd>"
+    YQUANT_TEST_MARKETD_PATH="$<TARGET_FILE:yquant_marketd>"
+    YQUANT_TEST_TRADINGD_PATH="$<TARGET_FILE:yquant_tradingd>"
+    YQUANT_TEST_STRATEGY_PATH="$<TARGET_FILE:lifecycle_strategy>"
+    YQUANT_TEST_STRATEGY_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/lifecycle_strategy.json"
+    YQUANT_TEST_QUOTE_STRATEGY_PATH="$<TARGET_FILE:quote_observer_strategy>"
+    YQUANT_TEST_QUOTE_STRATEGY_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/quote_observer_strategy.json"
+    YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json")
+  add_dependencies(console_output_test
+    yquant_strategyd yquant_marketd yquant_tradingd lifecycle_strategy
+    quote_observer_strategy)
+  gtest_discover_tests(console_output_test
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    DISCOVERY_MODE PRE_TEST
+    DISCOVERY_TIMEOUT 30
+    PROPERTIES ${yquant_test_properties})
+
   add_executable(json_config_test
     tests/base/config_error_test.cc
     tests/base/json_config_document_test.cc)

@@ -141,12 +141,12 @@ class SharedAccountStrategy final : public strategy::Strategy {
     model::CashSnapshot cash;
     if (!context.trading().TryGetCash(cash)) return ErrorCode::kCorrupt;
     const int written = std::fprintf(
-        stderr,
+        stdout,
         "shared_account: order state=%s cumulative=%" PRId64 " cash=%" PRId64
         " reserved=%" PRId64 " available=%" PRId64 "\n",
         StateName(order.state), order.cumulative_filled_qty, cash.balance,
         cash.reserved, cash.available);
-    return written < 0 || std::fflush(stderr) != 0 ? ErrorCode::kIoError
+    return written < 0 || std::fflush(stdout) != 0 ? ErrorCode::kIoError
                                                    : ErrorCode::kOk;
   }
   ErrorCode OnFill(strategy::StrategyContext&,
@@ -163,18 +163,18 @@ class SharedAccountStrategy final : public strategy::Strategy {
     if (!context.trading().TryGetCash(cash)) return ErrorCode::kCorrupt;
     const bool known = context.trading().TryGetOrder(order_id_, order);
     const int written = std::fprintf(
-        stderr,
+        stdout,
         "shared_account: stopped state=%s filled_qty=%" PRId64 " cash=%" PRId64
         " reserved=%" PRId64 " available=%" PRId64 "\n",
         known ? StateName(order.state) : "none", filled_qty_, cash.balance,
         cash.reserved, cash.available);
-    return written < 0 || std::fflush(stderr) != 0 ? ErrorCode::kIoError
+    return written < 0 || std::fflush(stdout) != 0 ? ErrorCode::kIoError
                                                    : ErrorCode::kOk;
   }
 
  private:
   static ErrorCode Marker(const char* text) noexcept {
-    return std::fputs(text, stderr) < 0 || std::fflush(stderr) != 0
+    return std::fputs(text, stdout) < 0 || std::fflush(stdout) != 0
                ? ErrorCode::kIoError
                : ErrorCode::kOk;
   }

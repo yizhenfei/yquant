@@ -52,7 +52,7 @@ ErrorCode ParseError(simdjson::error_code result, std::string_view path,
 // already written. The text is borrowed only until this function returns.
 ErrorCode WriteReadiness(std::string_view text) noexcept {
   while (!text.empty()) {
-    const ssize_t written = write(STDERR_FILENO, text.data(), text.size());
+    const ssize_t written = write(STDOUT_FILENO, text.data(), text.size());
     if (written > 0) {
       text.remove_prefix(static_cast<std::size_t>(written));
     } else if (written == -1 && errno == EINTR) {
@@ -219,11 +219,11 @@ class QuoteObserverStrategy final : public Strategy {
     state_ = State::kStopped;
     // Summary formatting is confined to the low-frequency shutdown callback.
     const int written =
-        std::fprintf(stderr,
+        std::fprintf(stdout,
                      "quote_observer: ticks=%" PRIu64 " last_sequence=%" PRIu64
                      " max_age_ns=%" PRIu64 "\n",
                      ticks_, last_sequence_, max_age_ns_);
-    const int flush_result = std::fflush(stderr);
+    const int flush_result = std::fflush(stdout);
     return written < 0 || flush_result != 0 ? ErrorCode::kIoError
                                             : ErrorCode::kOk;
   }
