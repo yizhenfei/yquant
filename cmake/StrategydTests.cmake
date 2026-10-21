@@ -80,6 +80,8 @@ add_executable(yquant_strategyd_test
   tests/strategyd/shm_market_data_source_test.cc
   tests/strategyd/market_runner_test.cc
   tests/strategyd/strategy_context_test.cc
+  tests/strategyd/trading_persistence_test.cc
+  tests/strategyd/mock_trading_persistence_test.cc
   tests/strategyd/trading_test.cc
   tests/strategyd/trading_config_test.cc
   tests/strategyd/mock_trading_adapter_test.cc

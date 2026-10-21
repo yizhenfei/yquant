@@ -40,6 +40,20 @@ ReceiveResult WaitActive(Connection& connection, Message& output) {
   return result;
 }
 
+// connect() completing on the peer does not guarantee the nonblocking
+// listener's accept queue is observable in the same scheduling instant.
+base::Status AcceptWhenReady(Listener& listener, Connection& connection) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  do {
+    bool accepted = false;
+    const auto status = listener.Accept(connection, accepted);
+    if (!status.ok() || accepted) return status;
+    std::this_thread::yield();
+  } while (std::chrono::steady_clock::now() < deadline);
+  return {base::ErrorCode::kInvalidState, {}};
+}
+
 class ConnectedEndpoints : public testing::Test {
  protected:
   void SetUp() override {
@@ -48,9 +62,7 @@ class ConnectedEndpoints : public testing::Test {
     ASSERT_TRUE(listener_.Open(endpoint).ok());
     endpoint.port = listener_.port();
     ASSERT_TRUE(sender_.Connect(endpoint, kConnectTimeoutNs).ok());
-    bool accepted = false;
-    ASSERT_TRUE(listener_.Accept(receiver_, accepted).ok());
-    ASSERT_TRUE(accepted);
+    ASSERT_TRUE(AcceptWhenReady(listener_, receiver_).ok());
   }
   Listener listener_;
   Connection sender_;
@@ -81,9 +93,7 @@ class RawPeerEndpoints : public testing::Test {
                          sizeof(enabled)),
               0);
 #endif
-    bool accepted = false;
-    ASSERT_TRUE(listener_.Accept(receiver_, accepted).ok());
-    ASSERT_TRUE(accepted);
+    ASSERT_TRUE(AcceptWhenReady(listener_, receiver_).ok());
   }
   void TearDown() override {
     if (raw_fd_ >= 0) close(raw_fd_);

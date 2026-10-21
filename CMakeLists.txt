@@ -77,6 +77,7 @@ add_library(yquant_strategyd_runtime STATIC
   src/strategyd/market_data.cc
   src/strategyd/strategy_library.cc
   src/strategyd/strategy_runner.cc
+  src/strategyd/trading_persistence.cc
   src/strategyd/trading.cc
   src/strategyd/trading_config.cc)
 target_include_directories(yquant_strategyd_runtime PUBLIC
@@ -96,8 +97,11 @@ set_target_properties(yquant_strategyd PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 add_library(yquant_tradingd_runtime STATIC
+  src/tradingd/journal.cc
+  src/tradingd/recovery.cc
   src/tradingd/config.cc
-  src/tradingd/server.cc)
+  src/tradingd/server.cc
+  src/tradingd/server_persistence.cc)
 target_include_directories(yquant_tradingd_runtime PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(yquant_tradingd_runtime PUBLIC
   yquant_strategyd_runtime yquant_trading_wire
@@ -167,7 +171,7 @@ foreach(config IN ITEMS mock_source local tcp_source tcp_relay record_local
     "${CMAKE_BINARY_DIR}/marketd/${config}.json" COPYONLY)
 endforeach()
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/tradingd")
-foreach(config IN ITEMS local client_1 client_2)
+foreach(config IN ITEMS local persistent client_1 client_2)
   configure_file("examples/tradingd/${config}.json"
     "${CMAKE_BINARY_DIR}/tradingd/${config}.json" COPYONLY)
 endforeach()

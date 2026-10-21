@@ -5,12 +5,14 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <new>
 #include <thread>
 #include <utility>
 
 #include "gtest/gtest.h"
 #include "tradingd/connection.h"
+#include "tradingd/journal.h"
 #include "tradingd/server.h"
 
 namespace {
@@ -265,7 +267,19 @@ TEST(TradingdCppHeapCounter, CountsAllReplacementAllocationForms) {
   EXPECT_EQ(activity.deallocation_calls, 8U);
 }
 
-TEST(TradingdCppHeap, EstablishedOrderFillAndCancelHaveNoCppHeapActivity) {
+// Runs the full gateway path after authentication; cold identity persistence
+// and segment preparation finish before observing the owning thread.
+void CheckEstablishedTradingHeap(bool persistent) {
+  char directory[] = "/tmp/yquant-persistent-allocation-XXXXXX";
+  if (persistent) ASSERT_NE(mkdtemp(directory), nullptr);
+  struct Cleanup {
+    const char* path;
+    bool enabled;
+    ~Cleanup() {
+      std::error_code error;
+      if (enabled) std::filesystem::remove_all(path, error);
+    }
+  } cleanup{directory, persistent};
   TestClock clock;
   ServerConfig config;
   config.listen.port = 0;
@@ -287,6 +301,15 @@ TEST(TradingdCppHeap, EstablishedOrderFillAndCancelHaveNoCppHeapActivity) {
   config.trading.mode = strategyd::MockTradingMode::kFill;
   config.trading.report_interval_ns = 1000000;
   config.trading.initial_account.cash_balance = 1000000000;
+  if (persistent) {
+    std::snprintf(config.persistence.directory,
+                  sizeof(config.persistence.directory), "%s", directory);
+    std::snprintf(config.persistence.account_key,
+                  sizeof(config.persistence.account_key), "%s",
+                  "simulation/allocation/CNY");
+    config.persistence.initialize = true;
+    config.persistence.wal_segment_bytes = kMinWalSegmentBytes;
+  }
   Server server(clock);
   ASSERT_TRUE(server.Init(config).ok()) << server.error_detail();
   Endpoint endpoint;
@@ -329,6 +352,46 @@ TEST(TradingdCppHeap, EstablishedOrderFillAndCancelHaveNoCppHeapActivity) {
   EXPECT_EQ(observation.account.positions[0].available_qty, 0);
   EXPECT_EQ(activity.allocation_calls, 0U);
   EXPECT_EQ(activity.deallocation_calls, 0U);
+}
+
+TEST(TradingdCppHeap, EstablishedOrderFillAndCancelHaveNoCppHeapActivity) {
+  CheckEstablishedTradingHeap(false);
+}
+TEST(TradingdCppHeap, PersistentOrderFillAndCancelHaveNoCppHeapActivity) {
+  CheckEstablishedTradingHeap(true);
+}
+
+TEST(TradingdCppHeap, JournalAppendAndRotationHaveNoCppHeapActivity) {
+  char directory[] = "/tmp/yquant-journal-allocation-XXXXXX";
+  ASSERT_NE(::mkdtemp(directory), nullptr);
+  struct DirectoryCleanup {
+    const char* path;
+    ~DirectoryCleanup() {
+      std::error_code error;
+      std::filesystem::remove_all(path, error);
+    }
+  } cleanup{directory};
+  Journal journal;
+  JournalOptions options;
+  options.directory = directory;
+  options.segment_bytes = 65536;
+  options.sync_after_bytes = 4096;
+  ASSERT_TRUE(journal.Acquire(options).ok());
+  ASSERT_TRUE(journal.Start(1).ok());
+  std::array<std::byte, kJournalMaxPayloadBytes> payload{};
+  std::uint64_t lsn = 0;
+  base::Status status;
+  const auto activity = ObserveCppHeap([&]() noexcept {
+    for (unsigned i = 0; i < 8; ++i) {
+      status = journal.TryAppend(7, payload, lsn);
+      if (!status.ok()) break;
+    }
+  });
+  EXPECT_TRUE(status.ok()) << journal.error_detail();
+  EXPECT_EQ(lsn, 8);
+  EXPECT_EQ(activity.allocation_calls, 0U);
+  EXPECT_EQ(activity.deallocation_calls, 0U);
+  EXPECT_TRUE(journal.Close().ok());
 }
 
 }  // namespace

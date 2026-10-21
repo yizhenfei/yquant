@@ -6,6 +6,7 @@
 #include <new>
 
 #include "strategyd/trading_adapter.h"
+#include "strategyd/trading_storage.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -13,30 +14,6 @@ using base::ErrorCode;
 using model::OrderState;
 using model::OrderUpdateKind;
 constexpr std::uint64_t kCancelRetryNs = 10000000;
-constexpr std::size_t kFillLookupCapacity = 2 * kMaxTradingFills;
-constexpr std::size_t kBrokerLookupCapacity = 2 * kMaxTradingOrders;
-
-// Broker IDs are unique within this one configured session, independently of
-// local client identities. The lookup retains indices until Reset.
-std::size_t BrokerHash(const model::BrokerOrderId& broker) noexcept {
-  std::uint64_t hash = 14695981039346656037ULL;
-  for (const unsigned char byte : broker.view()) {
-    hash = (hash ^ byte) * 1099511628211ULL;
-  }
-  return hash & (kBrokerLookupCapacity - 1);
-}
-
-// Execution identity is order-scoped; only retained fill indices occupy the
-// fixed lookup table. Its load stays at or below one half.
-std::size_t FillHash(model::ClientOrderId order,
-                     const model::ExecutionId& execution) noexcept {
-  std::uint64_t hash =
-      (14695981039346656037ULL ^ order.value) * 1099511628211ULL;
-  for (const unsigned char byte : execution.view()) {
-    hash = (hash ^ byte) * 1099511628211ULL;
-  }
-  return hash & (kFillLookupCapacity - 1);
-}
 
 bool ValidSide(model::OrderSide side) noexcept {
   return side == model::OrderSide::kBuy || side == model::OrderSide::kSell;
@@ -94,50 +71,6 @@ bool ReleaseReservation(model::CashSnapshot& cash,
 }
 }  // namespace
 
-struct TradingImpl::Storage {
-  struct OrderRecord {
-    model::OrderSnapshot snapshot;
-    bool new_attempted = false;
-    bool cancel_attempted = false;
-    bool local_cancel_pending = false;
-    std::uint64_t retry_not_before_ns = 0;
-    std::size_t position_index = 0;
-    std::int64_t price_scale = 1;
-    // Remaining buy micro-yuan or sell shares, respectively. Fills release
-    // their matched portion; only definitive terminal events release the rest.
-    std::int64_t reserved_cash = 0;
-    std::int64_t reserved_qty = 0;
-  };
-  enum class RequestKind { kNew, kCancel };
-  struct Request {
-    RequestKind kind = RequestKind::kNew;
-    std::size_t order_index = 0;
-    model::CancelRequestId cancel_id;
-  };
-  std::array<OrderRecord, kMaxTradingOrders> orders = {};
-  std::array<model::Fill, kMaxTradingFills> fills = {};
-  std::array<std::uint16_t, kFillLookupCapacity> fill_lookup = {};
-  std::array<std::uint16_t, kBrokerLookupCapacity> broker_lookup = {};
-  std::array<Request, kMaxTradingRequests> requests = {};
-  std::array<std::size_t, kMaxLocalOrderUpdates> local_updates = {};
-  std::size_t order_count = 0;
-  std::size_t fill_count = 0;
-  std::size_t active_count = 0;
-  std::size_t pending_cancel_count = 0;
-  std::size_t request_head = 0;
-  std::size_t request_count = 0;
-  std::size_t local_head = 0;
-  std::size_t local_count = 0;
-  std::uint64_t last_cancel_id = 0;
-  std::size_t scan_cursor = 0;
-  bool scan_pending = false;
-  bool rescan_required = false;
-  std::optional<std::uint64_t> next_retry;
-  model::CashSnapshot cash;
-  std::array<model::PositionSnapshot, kMaxMarketDataInstruments> positions = {};
-  std::size_t position_count = 0;
-};
-
 TradingImpl::TradingImpl(const MonotonicClock& clock,
                          const MarketDataImpl& market_data) noexcept
     : clock_(clock), market_data_(market_data) {}
@@ -191,6 +124,9 @@ base::Status TradingImpl::Configure(
 void TradingImpl::Reset() noexcept {
   delete storage_;
   storage_ = nullptr;
+  sink_ = nullptr;
+  replaying_ = false;
+  replay_now_ = 0;
   running_ = false;
   stopping_ = false;
   phase_ = CallbackPhase::kNone;
@@ -216,6 +152,61 @@ bool TradingImpl::accepting_orders() const noexcept {
   return storage_ != nullptr && running_ && !stopping_ && business_callback;
 }
 
+std::uint64_t TradingImpl::mutation_revision() const noexcept {
+  return storage_ != nullptr ? storage_->mutation_revision : 0;
+}
+
+std::uint64_t TradingImpl::next_order_id() const noexcept {
+  return storage_ != nullptr ? storage_->next_order_id : 1;
+}
+
+std::uint64_t TradingImpl::next_cancel_id() const noexcept {
+  if (storage_ == nullptr) return 1;
+  return storage_->last_cancel_id != UINT64_MAX ? storage_->last_cancel_id + 1
+                                                : UINT64_MAX;
+}
+
+bool TradingImpl::TryGetOrderAt(std::size_t index,
+                                model::OrderSnapshot& out) const noexcept {
+  if (storage_ == nullptr || index >= storage_->order_count) return false;
+  out = storage_->orders[index].snapshot;
+  return true;
+}
+
+base::Status TradingImpl::SetNextOrderIdAtLeast(std::uint64_t id) noexcept {
+  if (storage_ == nullptr || running_ || phase_ != CallbackPhase::kNone ||
+      id == 0) {
+    return {Fail(ErrorCode::kInvalidState, "invalid cold order-ID reservation"),
+            {}};
+  }
+  if (id > storage_->next_order_id) storage_->next_order_id = id;
+  return {};
+}
+
+base::Status TradingImpl::SetNextCancelIdAtLeast(std::uint64_t id) noexcept {
+  if (storage_ == nullptr || running_ || phase_ != CallbackPhase::kNone ||
+      id == 0) {
+    return {
+        Fail(ErrorCode::kInvalidState, "invalid cold cancel-ID reservation"),
+        {}};
+  }
+  if (id - 1 > storage_->last_cancel_id) storage_->last_cancel_id = id - 1;
+  return {};
+}
+
+ErrorCode TradingImpl::BeforeCommit(TradingMutation& fact) noexcept {
+  if (storage_->mutation_revision == UINT64_MAX) {
+    return Fail(ErrorCode::kResourceExhausted, "ledger revision exhausted");
+  }
+  fact.revision = storage_->mutation_revision + 1;
+  if (sink_ != nullptr && !replaying_) {
+    const auto status = sink_->BeforeCommit(fact);
+    if (!status.ok())
+      return Fail(status.code, "ledger journal rejected mutation");
+  }
+  return ErrorCode::kOk;
+}
+
 ErrorCode TradingImpl::Fail(ErrorCode code, const char* detail) noexcept {
   std::snprintf(error_detail_, sizeof(error_detail_), "%s", detail);
   return code;
@@ -223,9 +214,14 @@ ErrorCode TradingImpl::Fail(ErrorCode code, const char* detail) noexcept {
 
 std::optional<std::size_t> TradingImpl::FindIndex(
     model::ClientOrderId id) const noexcept {
-  if (storage_ == nullptr || id.value == 0 || id.value > storage_->order_count)
-    return {};
-  return static_cast<std::size_t>(id.value - 1);
+  if (storage_ == nullptr || id.value == 0) return {};
+  auto slot = TradingOrderHash(id);
+  while (storage_->order_lookup[slot] != 0) {
+    const auto index = storage_->order_lookup[slot] - 1;
+    if (storage_->orders[index].snapshot.client_order_id == id) return index;
+    slot = (slot + 1) & (kOrderLookupCapacity - 1);
+  }
+  return {};
 }
 
 std::optional<std::size_t> TradingImpl::FindPosition(
@@ -287,18 +283,26 @@ ErrorCode TradingImpl::SubmitOrder(const model::OrderRequest& request,
     position.reserved_qty += request.quantity;
   }
   if (s.order_count == kMaxTradingOrders ||
+      s.next_order_id == std::numeric_limits<std::uint64_t>::max() ||
       s.request_count == kMaxTradingRequests) {
     return Fail(ErrorCode::kResourceExhausted,
                 "order or request capacity exhausted");
   }
   const auto index = s.order_count;
   model::OrderSnapshot order;
-  order.client_order_id.value = index + 1;
+  order.client_order_id.value = s.next_order_id;
   order.instrument_id = request.instrument_id;
   order.side = request.side;
   order.limit_price = request.limit_price;
   order.original_qty = request.quantity;
   order.leaves_qty = request.quantity;
+  TradingMutation fact;
+  fact.now = replaying_ ? replay_now_ : clock_.Now();
+  fact.kind = TradingMutationKind::kNewOrder;
+  fact.order_id = order.client_order_id;
+  fact.request = request;
+  const auto journal = BeforeCommit(fact);
+  if (journal != ErrorCode::kOk) return journal;
   auto& record = s.orders[index];
   record.snapshot = order;
   record.position_index =
@@ -313,8 +317,14 @@ ErrorCode TradingImpl::SubmitOrder(const model::OrderRequest& request,
   s.requests[(s.request_head + s.request_count) % kMaxTradingRequests] = {
       Storage::RequestKind::kNew, index, {}};
   ++s.request_count;
+  auto order_slot = TradingOrderHash(order.client_order_id);
+  while (s.order_lookup[order_slot] != 0)
+    order_slot = (order_slot + 1) & (kOrderLookupCapacity - 1);
+  s.order_lookup[order_slot] = static_cast<std::uint16_t>(index + 1);
   ++s.order_count;
   ++s.active_count;
+  ++s.next_order_id;
+  ++s.mutation_revision;
   out = order.client_order_id;
   return ErrorCode::kOk;
 }
@@ -327,6 +337,13 @@ ErrorCode TradingImpl::QueueCancel(std::size_t index) noexcept {
                 "cancel request capacity or ID exhausted");
   }
   const model::CancelRequestId id{s.last_cancel_id + 1};
+  TradingMutation fact;
+  fact.now = replaying_ ? replay_now_ : clock_.Now();
+  fact.kind = TradingMutationKind::kCancel;
+  fact.order_id = s.orders[index].snapshot.client_order_id;
+  fact.cancel_id = id;
+  const auto journal = BeforeCommit(fact);
+  if (journal != ErrorCode::kOk) return journal;
   auto& record = s.orders[index];
   s.requests[(s.request_head + s.request_count) % kMaxTradingRequests] = {
       Storage::RequestKind::kCancel, index, id};
@@ -337,6 +354,7 @@ ErrorCode TradingImpl::QueueCancel(std::size_t index) noexcept {
   record.cancel_attempted = false;
   record.retry_not_before_ns = 0;
   ++s.pending_cancel_count;
+  ++s.mutation_revision;
   return ErrorCode::kOk;
 }
 
@@ -402,6 +420,12 @@ base::Status TradingImpl::ProcessRequests(TradingAdapter& adapter,
     auto& record = s.orders[request.order_index];
     if (request.kind == Storage::RequestKind::kNew && stopping_) {
       if (s.local_count == kMaxLocalOrderUpdates) break;
+      TradingMutation fact;
+      fact.now = replaying_ ? replay_now_ : clock_.Now();
+      fact.kind = TradingMutationKind::kScheduleLocalCancel;
+      fact.order_id = record.snapshot.client_order_id;
+      const auto journal = BeforeCommit(fact);
+      if (journal != ErrorCode::kOk) return {journal, {}};
       // Reserving the local event and removing the send are one commit. The
       // snapshot stays PendingNew until the local event consumes event budget.
       s.local_updates[(s.local_head + s.local_count) % kMaxLocalOrderUpdates] =
@@ -410,10 +434,21 @@ base::Status TradingImpl::ProcessRequests(TradingAdapter& adapter,
       record.local_cancel_pending = true;
       s.request_head = (s.request_head + 1) % kMaxTradingRequests;
       --s.request_count;
+      ++s.mutation_revision;
       continue;
     }
+    TradingMutation fact;
+    fact.now = replaying_ ? replay_now_ : clock_.Now();
+    fact.kind = request.kind == Storage::RequestKind::kNew
+                    ? TradingMutationKind::kSendNew
+                    : TradingMutationKind::kSendCancel;
+    fact.order_id = record.snapshot.client_order_id;
+    fact.cancel_id = request.cancel_id;
+    const auto journal = BeforeCommit(fact);
+    if (journal != ErrorCode::kOk) return {journal, {}};
     s.request_head = (s.request_head + 1) % kMaxTradingRequests;
     --s.request_count;
+    ++s.mutation_revision;
     base::Status result;
     if (request.kind == Storage::RequestKind::kNew) {
       record.new_attempted = true;
@@ -517,6 +552,12 @@ ErrorCode TradingImpl::ApplyLocalUpdate(TradingDispatch& out) noexcept {
                           record.reserved_qty)) {
     return Fail(ErrorCode::kCorrupt, "invalid local cancellation reservation");
   }
+  TradingMutation fact;
+  fact.now = replaying_ ? replay_now_ : clock_.Now();
+  fact.kind = TradingMutationKind::kLocalCancel;
+  fact.order_id = record.snapshot.client_order_id;
+  const auto journal = BeforeCommit(fact);
+  if (journal != ErrorCode::kOk) return journal;
   s.cash = cash;
   s.positions[record.position_index] = position;
   record.reserved_cash = 0;
@@ -526,12 +567,14 @@ ErrorCode TradingImpl::ApplyLocalUpdate(TradingDispatch& out) noexcept {
   --s.active_count;
   s.local_head = (s.local_head + 1) % kMaxLocalOrderUpdates;
   --s.local_count;
+  ++s.mutation_revision;
   out = dispatch;
   return ErrorCode::kOk;
 }
 
 ErrorCode TradingImpl::ApplyEvent(const TradingEvent& event,
                                   TradingDispatch& out) noexcept {
+  const auto transaction_now = replaying_ ? replay_now_ : clock_.Now();
   const auto index = FindIndex(event.client_order_id);
   if (!index) return Fail(ErrorCode::kCorrupt, "report for an unknown order");
   auto& s = *storage_;
@@ -541,7 +584,7 @@ ErrorCode TradingImpl::ApplyEvent(const TradingEvent& event,
   const bool is_cancel = event.kind == OrderUpdateKind::kCanceled ||
                          event.kind == OrderUpdateKind::kCancelRejected;
   if (!ValidKind(event.kind) || event.report_sequence == 0 ||
-      event.receive_time_ns > clock_.Now() || event.reason.size > 128 ||
+      event.receive_time_ns > transaction_now || event.reason.size > 128 ||
       event.reason.text[event.reason.size] != '\0' ||
       event.cumulative_filled_qty < 0 ||
       event.cumulative_filled_qty > old.original_qty ||
@@ -581,7 +624,7 @@ ErrorCode TradingImpl::ApplyEvent(const TradingEvent& event,
       old.broker_order_id.empty() && !event.broker_order_id.empty();
   std::size_t broker_slot = 0;
   if (bind_broker) {
-    broker_slot = BrokerHash(event.broker_order_id);
+    broker_slot = TradingBrokerHash(event.broker_order_id);
     while (s.broker_lookup[broker_slot] != 0) {
       const auto bound_index = s.broker_lookup[broker_slot] - 1;
       if (s.orders[bound_index].snapshot.broker_order_id ==
@@ -639,7 +682,8 @@ ErrorCode TradingImpl::ApplyEvent(const TradingEvent& event,
       if (s.fill_count == kMaxTradingFills)
         return Fail(ErrorCode::kResourceExhausted,
                     "execution ledger capacity exhausted");
-      fill_slot = FillHash(event.client_order_id, event.fill.execution_id);
+      fill_slot =
+          TradingFillHash(event.client_order_id, event.fill.execution_id);
       while (s.fill_lookup[fill_slot] != 0) {
         const auto& previous = s.fills[s.fill_lookup[fill_slot] - 1];
         if (previous.client_order_id == event.client_order_id &&
@@ -673,7 +717,7 @@ ErrorCode TradingImpl::ApplyEvent(const TradingEvent& event,
         next.state = OrderState::kCanceled;
         next.leaves_qty = 0;
       } else if (old.state == OrderState::kWorking) {
-        const auto now = clock_.Now();
+        const auto now = transaction_now;
         if (now > UINT64_MAX - kCancelRetryNs)
           return Fail(ErrorCode::kResourceExhausted,
                       "cancel retry deadline overflows");
@@ -740,6 +784,13 @@ ErrorCode TradingImpl::ApplyEvent(const TradingEvent& event,
     reserved_cash = 0;
     reserved_qty = 0;
   }
+  TradingMutation fact;
+  fact.now = transaction_now;
+  fact.kind = TradingMutationKind::kReport;
+  fact.order_id = event.client_order_id;
+  fact.event = event;
+  const auto journal = BeforeCommit(fact);
+  if (journal != ErrorCode::kOk) return journal;
   // All failure paths precede this transaction: no partial fill, sequence or
   // request completion can escape a rejected source event.
   if (dispatch.has_fill) {
@@ -773,7 +824,126 @@ ErrorCode TradingImpl::ApplyEvent(const TradingEvent& event,
     }
   }
   dispatch.update.order = next;
+  ++s.mutation_revision;
   out = dispatch;
   return ErrorCode::kOk;
+}
+base::Status TradingImpl::ReplayMutation(const TradingMutation& fact,
+                                         TradingDispatch* out) noexcept {
+  if (storage_ == nullptr || running_ || phase_ != CallbackPhase::kNone ||
+      replaying_ || storage_->mutation_revision == UINT64_MAX ||
+      fact.revision != storage_->mutation_revision + 1) {
+    return {Fail(ErrorCode::kCorrupt, "invalid replay state or revision"), {}};
+  }
+  auto& s = *storage_;
+  const auto index = FindIndex(fact.order_id);
+  if (fact.kind != TradingMutationKind::kNewOrder && !index)
+    return {Fail(ErrorCode::kCorrupt, "unknown replay order"), {}};
+  replaying_ = true;
+  replay_now_ = fact.now;
+  ErrorCode result = ErrorCode::kOk;
+  TradingDispatch dispatch;
+  switch (fact.kind) {
+    case TradingMutationKind::kNewOrder: {
+      if (fact.order_id.value != s.next_order_id) {
+        result = Fail(ErrorCode::kCorrupt, "replay order identity mismatch");
+        break;
+      }
+      const auto saved_stopping = stopping_;
+      running_ = true;
+      stopping_ = false;
+      phase_ = CallbackPhase::kTick;
+      model::ClientOrderId id;
+      result = SubmitOrder(fact.request, id);
+      running_ = false;
+      stopping_ = saved_stopping;
+      phase_ = CallbackPhase::kNone;
+      break;
+    }
+    case TradingMutationKind::kCancel:
+      if (fact.cancel_id.value == 0 || s.last_cancel_id == UINT64_MAX ||
+          fact.cancel_id.value != s.last_cancel_id + 1 ||
+          s.orders[*index].snapshot.state != OrderState::kWorking ||
+          s.orders[*index].snapshot.cancel_pending) {
+        result = Fail(ErrorCode::kCorrupt, "invalid replay cancel");
+      } else {
+        result = QueueCancel(*index);
+      }
+      break;
+    case TradingMutationKind::kSendNew:
+    case TradingMutationKind::kSendCancel:
+    case TradingMutationKind::kScheduleLocalCancel: {
+      if (s.request_count == 0) {
+        result = Fail(ErrorCode::kCorrupt, "missing replay request");
+        break;
+      }
+      const auto request = s.requests[s.request_head];
+      const bool is_new = request.kind == Storage::RequestKind::kNew;
+      if (request.order_index != *index ||
+          request.cancel_id != fact.cancel_id ||
+          (is_new != (fact.kind != TradingMutationKind::kSendCancel)) ||
+          (fact.kind == TradingMutationKind::kScheduleLocalCancel &&
+           s.local_count == kMaxLocalOrderUpdates)) {
+        result = Fail(ErrorCode::kCorrupt, "replay request mismatch");
+        break;
+      }
+      auto& record = s.orders[*index];
+      if (fact.kind == TradingMutationKind::kScheduleLocalCancel) {
+        s.local_updates[(s.local_head + s.local_count) %
+                        kMaxLocalOrderUpdates] = *index;
+        ++s.local_count;
+        record.local_cancel_pending = true;
+      } else if (is_new) {
+        record.new_attempted = true;
+      } else {
+        record.cancel_attempted = true;
+      }
+      s.request_head = (s.request_head + 1) % kMaxTradingRequests;
+      --s.request_count;
+      ++s.mutation_revision;
+      break;
+    }
+    case TradingMutationKind::kLocalCancel:
+      if (s.local_count == 0 || s.local_updates[s.local_head] != *index)
+        result =
+            Fail(ErrorCode::kCorrupt, "replay local cancellation mismatch");
+      else
+        result = ApplyLocalUpdate(dispatch);
+      break;
+    case TradingMutationKind::kReport:
+      if (fact.event.client_order_id != fact.order_id)
+        result = Fail(ErrorCode::kCorrupt, "replay report identity mismatch");
+      else
+        result = ApplyEvent(fact.event, dispatch);
+      break;
+    default:
+      result = Fail(ErrorCode::kCorrupt, "unknown replay mutation");
+  }
+  replaying_ = false;
+  replay_now_ = 0;
+  if (result == ErrorCode::kOk && s.mutation_revision != fact.revision)
+    return {Fail(ErrorCode::kCorrupt, "replay fact did not commit"), {}};
+  if (result == ErrorCode::kOk && out != nullptr) *out = dispatch;
+  return {result, {}};
+}
+
+void TradingImpl::AbandonRecoveredRequests() noexcept {
+  if (storage_ == nullptr || running_ || phase_ != CallbackPhase::kNone) return;
+  auto& s = *storage_;
+  for (std::size_t offset = 0; offset < s.request_count; ++offset) {
+    const auto& request =
+        s.requests[(s.request_head + offset) % kMaxTradingRequests];
+    auto& record = s.orders[request.order_index];
+    if (request.kind == Storage::RequestKind::kNew)
+      record.new_attempted = true;
+    else
+      record.cancel_attempted = true;
+  }
+  s.request_count = 0;
+  s.request_head = 0;
+  s.scan_cursor = 0;
+  s.scan_pending = false;
+  s.rescan_required = false;
+  s.next_retry.reset();
 }
 }  // namespace yquant::strategyd

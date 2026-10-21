@@ -3,6 +3,7 @@
 
 #include "strategyd/market_data_config.h"
 #include "strategyd/trading_config.h"
+#include "tradingd/journal.h"
 #include "tradingd/protocol.h"
 
 namespace yquant::tradingd {
@@ -17,10 +18,31 @@ inline constexpr std::uint64_t kMinimumTimeoutNs =
 inline constexpr std::uint64_t kMaximumTimeoutNs =
     kMaximumTimeoutMs * kNanosecondsPerMillisecond;
 
+inline constexpr std::size_t kMaxAccountKeyBytes = 128;
+inline constexpr std::size_t kMinWalSegmentBytes = 4 * 1024 * 1024;
+inline constexpr std::size_t kMaxPersistencePathBytes = 4096;
+inline constexpr std::uint64_t kMinSnapshotIntervalMs = 1000;
+inline constexpr std::uint64_t kMaxSnapshotIntervalMs = 3600000;
+
+// An empty directory retains the in-memory mode. Initialization is an explicit
+// CLI/typed cold-path operation, never inferred from missing state files.
+struct PersistenceConfig {
+  char directory[kMaxPersistencePathBytes + 1] = {};
+  char account_key[kMaxAccountKeyBytes + 1] = {};
+  std::size_t wal_segment_bytes = kJournalDefaultSegmentBytes;
+  std::size_t reserve_segments = kJournalMinReserveSegments;
+  std::uint32_t sync_interval_ms = kJournalDefaultSyncIntervalMs;
+  std::size_t sync_after_bytes = kJournalDefaultSyncAfterBytes;
+  std::uint64_t snapshot_interval_ms = 60000;
+  bool initialize = false;
+  bool enabled() const noexcept { return directory[0] != '\0'; }
+};
+
 // Fixed owned startup values. All clients share this single account and its
 // instrument dictionary. No broker adapter other than mock is configured yet.
 struct ServerConfig {
   Endpoint listen;
+  PersistenceConfig persistence;
   strategyd::MarketDataConfig market_data;
   strategyd::TradingConfig trading;
   char token[kMaxTokenBytes + 1] = {};

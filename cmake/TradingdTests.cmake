@@ -1,4 +1,7 @@
 add_executable(yquant_tradingd_test
+  tests/tradingd/persistence_test.cc
+  tests/tradingd/recovery_test.cc
+  tests/tradingd/journal_test.cc
   tests/tradingd/protocol_test.cc
   tests/tradingd/connection_test.cc
   tests/tradingd/server_test.cc

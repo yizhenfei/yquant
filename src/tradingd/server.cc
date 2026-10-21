@@ -12,7 +12,10 @@
 #include "strategyd/mock_trading_adapter.h"
 #include "strategyd/trading.h"
 #include "strategyd/trading_adapter.h"
+#include "strategyd/trading_persistence.h"
 #include "tradingd/connection.h"
+#include "tradingd/journal.h"
+#include "tradingd/server_storage.h"
 
 namespace yquant::tradingd {
 namespace {
@@ -21,38 +24,6 @@ inline constexpr std::size_t kRequestsPerClient = 4;
 inline constexpr std::size_t kBrokerEventsPerService = 64;
 inline constexpr std::size_t kCancelScanPerService = 64;
 inline constexpr std::uint64_t kCancelRetryNs = 10000000;
-
-// Client-local identities remain retained even after a disconnected socket.
-struct LocalOrder {
-  model::ClientOrderId core_id;
-  model::OrderSnapshot rejected;
-  std::uint64_t report_sequence = 0;
-  model::CancelRequestId core_cancel;
-  model::CancelRequestId local_cancel;
-  std::uint64_t retry_at = 0;
-};
-
-struct Client {
-  Connection connection;
-  std::uint64_t id = 0;
-  bool authenticated = false;
-  bool stopping = false;
-  bool requested_stop = false;
-  bool drained_sent = false;
-  std::uint64_t last_receive = 0;
-  std::uint64_t last_heartbeat = 0;
-  std::uint64_t stop_time = 0;
-  std::array<InstrumentSpec, kMaxInstruments> instruments = {};
-  std::size_t instrument_count = 0;
-  std::array<LocalOrder, strategyd::kMaxTradingOrders> orders = {};
-  std::size_t order_count = 0;
-  std::uint64_t last_cancel_id = 0;
-};
-
-struct OrderOwner {
-  std::size_t client = 0;
-  std::size_t local = 0;
-};
 
 // Equality uses all token bytes to avoid a prefix-length timing comparison.
 bool SameToken(const char* left, const char* right) noexcept {
@@ -82,24 +53,6 @@ bool ClientDrained(const Client& client,
 }
 
 }  // namespace
-
-struct Server::Storage {
-  explicit Storage(const strategyd::MonotonicClock& clock) noexcept
-      : market_data(clock), trading(clock, market_data) {}
-  ServerConfig config;
-  Listener listener;
-  strategyd::MarketDataImpl market_data;
-  strategyd::TradingImpl trading;
-  strategyd::MockTradingAdapter adapter;
-  std::array<Client, kMaxClients> clients;
-  std::array<OrderOwner, strategyd::kMaxTradingOrders> owners = {};
-  AccountView account;
-  std::uint64_t generation = 0;
-  bool stopping = false;
-  std::uint64_t stop_time = 0;
-  std::size_t cancel_cursor = 0;
-  bool account_dirty = false;
-};
 
 Server::Server(const strategyd::MonotonicClock& clock) noexcept
     : clock_(clock) {}
@@ -140,10 +93,18 @@ base::Status Server::Init(const ServerConfig& config) noexcept {
   strategyd::TradingAccountSnapshot initial;
   if (status.ok()) status = s.adapter.ReadAccountSnapshot(initial);
   if (status.ok()) status = s.trading.Configure(initial);
+  if (status.ok()) status = s.StartPersistence();
   if (status.ok()) status = s.listener.Open(config.listen);
   if (!status.ok()) {
+    char detail[256];
+    std::snprintf(
+        detail, sizeof(detail),
+        "cannot initialize account/state/listener: %s%s",
+        s.persistence_detail[0] != '\0' ? s.persistence_detail
+                                        : s.journal.error_detail(),
+        status.system_error ? status.system_error.message().c_str() : "");
     Close();
-    return Fail(status.code, "cannot initialize trading account or listener");
+    return Fail(status.code, detail);
   }
   s.trading.SetRunning(true);
   s.account.revision = 1;
@@ -218,6 +179,11 @@ base::Status Server::Handle(std::size_t index, const Message& message,
     client.authenticated = true;
     client.instruments = message.instruments;
     client.instrument_count = message.instrument_count;
+    const auto registered = s.RegisterClient(index);
+    if (!registered.ok()) {
+      Disconnect(index);
+      return {};
+    }
     Message welcome;
     welcome.type = MessageType::kWelcome;
     welcome.generation = s.generation;
@@ -249,7 +215,7 @@ base::Status Server::Handle(std::size_t index, const Message& message,
     return {};
   }
   if (message.type == MessageType::kNewOrder) {
-    if (client.stopping || s.stopping ||
+    if (client.stopping || s.stopping || s.degraded ||
         message.order_id.value != client.order_count + 1 ||
         client.order_count == client.orders.size() ||
         !HasInstrument(client, message.request.instrument_id)) {
@@ -258,11 +224,22 @@ base::Status Server::Handle(std::size_t index, const Message& message,
     }
     const auto local_index = client.order_count++;
     auto& local = client.orders[local_index];
+    s.context_client = index;
+    s.context_local = local_index;
+    s.context_cancel = {};
     s.trading.BeginCallback(strategyd::CallbackPhase::kTick);
     const auto code = s.trading.SubmitOrder(message.request, local.core_id);
     s.trading.EndCallback();
+    s.context_client = kMaxClients;
+    if (code != base::ErrorCode::kOk && s.degraded) {
+      --client.order_count;
+      local = {};
+      Disconnect(index);
+      return {};
+    }
     if (code == base::ErrorCode::kOk) {
-      s.owners[local.core_id.value - 1] = {index, local_index};
+      s.BindOwner(s.trading.order_count() - 1,
+                  {local.core_id, index, local_index});
       ++s.account.revision;
       RefreshAccount();
       s.account_dirty = true;
@@ -284,6 +261,8 @@ base::Status Server::Handle(std::size_t index, const Message& message,
       order.report_sequence = ++local.report_sequence;
       order.receive_time_ns = now;
       local.rejected = order;
+      const auto recorded = s.PersistRejection(index, local_index, reply);
+      if (!recorded.ok()) return recorded;
       if (!client.connection.Queue(reply).ok()) Disconnect(index);
     }
     return {};
@@ -309,7 +288,11 @@ base::Status Server::Handle(std::size_t index, const Message& message,
       (message.broker_order_id.empty() ||
        message.broker_order_id == snapshot.broker_order_id)) {
     s.trading.BeginCallback(strategyd::CallbackPhase::kTick);
+    s.context_client = index;
+    s.context_local = message.order_id.value - 1;
+    s.context_cancel = message.cancel_id;
     code = s.trading.CancelOrder(local.core_id);
+    s.context_client = kMaxClients;
     s.trading.EndCallback();
   }
   if (code == base::ErrorCode::kOk) {
@@ -335,6 +318,9 @@ base::Status Server::Handle(std::size_t index, const Message& message,
     local.core_cancel = snapshot.cancel_request_id;
     local.local_cancel = message.cancel_id;
     if (!has_core) local.rejected = reply.update.order;
+    const auto recorded =
+        s.PersistRejection(index, message.order_id.value - 1, reply);
+    if (!recorded.ok()) return recorded;
     if (!client.connection.Queue(reply).ok()) Disconnect(index);
   }
   return {};
@@ -359,9 +345,10 @@ base::Status Server::Dispatch(std::uint64_t now) noexcept {
       return Fail(code, s.trading.error_detail());
     if (dispatch.update.order.client_order_id.value == 0) continue;
     const auto core_id = dispatch.update.order.client_order_id.value;
-    if (core_id == 0 || core_id > s.trading.order_count())
+    const auto owner_index = s.OwnerIndex({core_id});
+    if (owner_index == s.owners.size())
       return Fail(base::ErrorCode::kCorrupt, "missing order ownership");
-    const auto owner = s.owners[core_id - 1];
+    const auto owner = s.owners[owner_index];
     auto& client = s.clients[owner.client];
     auto& local = client.orders[owner.local];
     ++s.account.revision;
@@ -413,12 +400,16 @@ void Server::ScheduleClientCancels(std::uint64_t now) noexcept {
     auto& local = client.orders[owner.local];
     if (!client.stopping || local.retry_at > now) continue;
     model::OrderSnapshot order;
-    const model::ClientOrderId id{core_index + 1};
+    const model::ClientOrderId id = owner.core_id;
     if (!s.trading.TryGetOrder(id, order) ||
         order.state != model::OrderState::kWorking || order.cancel_pending)
       continue;
     s.trading.BeginCallback(strategyd::CallbackPhase::kTick);
+    s.context_client = owner.client;
+    s.context_local = owner.local;
+    s.context_cancel = {};
     const auto code = s.trading.CancelOrder(id);
+    s.context_client = kMaxClients;
     s.trading.EndCallback();
     if (code == base::ErrorCode::kOk) {
       (void)s.trading.TryGetOrder(id, order);
@@ -450,6 +441,11 @@ base::Status Server::Service(std::uint64_t now) noexcept {
   if (!storage_)
     return Fail(base::ErrorCode::kInvalidState, "server is not initialized");
   auto& s = *storage_;
+  s.PollCheckpoint(now);
+  if (s.degraded) {
+    BeginStopping(now);
+    s.trading.BeginStopping();
+  }
   if (!s.stopping) {
     for (std::size_t i = 0; i < s.config.max_clients; ++i) {
       auto& client = s.clients[i];
@@ -492,9 +488,18 @@ base::Status Server::Service(std::uint64_t now) noexcept {
       client.last_heartbeat = now;
     }
   }
+  if (s.degraded) {
+    BeginStopping(now);
+    s.trading.BeginStopping();
+  }
   ScheduleClientCancels(now);
   auto status = s.trading.ProcessRequests(s.adapter, now);
-  if (!status.ok()) return Fail(status.code, s.trading.error_detail());
+  if (!status.ok() && !s.degraded)
+    return Fail(status.code, s.trading.error_detail());
+  if (s.degraded) {
+    BeginStopping(now);
+    s.trading.BeginStopping();
+  }
   status = Dispatch(now);
   if (!status.ok()) return status;
   if (s.account_dirty) {
@@ -511,6 +516,8 @@ base::Status Server::Service(std::uint64_t now) noexcept {
         now - client.stop_time >= s.config.shutdown_timeout_ns)
       Disconnect(i);
   }
+  if (s.degraded && is_drained())
+    return Fail(s.persistence_failure.code, s.persistence_detail);
   if (s.stopping && !is_drained() && now >= s.stop_time &&
       now - s.stop_time >= s.config.shutdown_timeout_ns)
     return Fail(base::ErrorCode::kInvalidState,
@@ -565,7 +572,7 @@ void Server::ReportUnconfirmed() const noexcept {
   const auto& s = *storage_;
   for (std::size_t i = 0; i < s.trading.order_count(); ++i) {
     model::OrderSnapshot order;
-    if (!s.trading.TryGetOrder({i + 1}, order) ||
+    if (!s.trading.TryGetOrderAt(i, order) ||
         (model::IsTerminalOrderState(order.state) && !order.cancel_pending))
       continue;
     const auto owner = s.owners[i];
@@ -585,9 +592,33 @@ void Server::ReportUnconfirmed() const noexcept {
   }
 }
 
+base::Status Server::Finish() noexcept {
+  if (!storage_)
+    return Fail(base::ErrorCode::kInvalidState, "server is not initialized");
+  auto& s = *storage_;
+  if (!is_drained())
+    return Fail(base::ErrorCode::kInvalidState, "orders are not drained");
+  if (!s.config.persistence.enabled()) return {};
+  s.WaitCheckpoint();
+  if (s.degraded || s.checkpoint_failed.load(std::memory_order_acquire))
+    return Fail(
+        base::ErrorCode::kIoError,
+        "persistent state has an unrecorded range or checkpoint failure");
+  auto status = s.journal.Flush();
+  if (status.ok()) status = s.CaptureCheckpoint(clock_.Now());
+  if (status.ok()) status = s.PublishCheckpoint();
+  if (!status.ok())
+    return Fail(status.code, "final state synchronization failed");
+  return {};
+}
+
 void Server::Close() noexcept {
   if (!storage_) return;
+  storage_->trading.SetMutationSink(nullptr);
+  storage_->mock.SetMutationObserver(nullptr, nullptr);
+  storage_->StopCheckpoint();
   (void)storage_->adapter.Stop();
+  (void)storage_->journal.Close();
   storage_.reset();
 }
 

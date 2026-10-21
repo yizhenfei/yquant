@@ -139,6 +139,9 @@ cmake -P cmake/DownloadTestData.cmake
 
 另一个策略使用 `client_2.json`。跨机时修改服务端监听地址和客户端目标地址，各客户端保持不同身份。`tradingd` 统一检查与预占账户资源，向所属策略回送委托与成交，并推送共享账户快照。首版使用模拟柜台，协议、停止与故障边界见[共享交易网关](docs/design/tradingd.md)。
 
+需要跨重启保留交易状态时使用 `tradingd/persistent.json`。首次运行加 `--initialize-state`，后续启动省略该标志；默认每 10 ms 或累计 1 MiB 在后台同步，逐笔请求不等待真实落盘。配置与恢复边界见[交易网关持久化与恢复](docs/design/tradingd-persistence.md)。
+
+
 ## 行情进程
 
 `yquant-marketd` 按 JSON 组装 `Source → QuoteTick → Publisher[]`。输入支持模拟行情、共享内存、TCP 和历史文件回放；输出支持共享内存广播、TCP 分发和异步录制。接入与中继使用相同程序，由配置决定组合。
@@ -189,6 +192,7 @@ cmake --build --preset debug --target download_test_data
 - [共享内存行情订阅发布组件](docs/design/shared-memory-pubsub.md)：seqlock、独立游标、覆盖缺口和重启隔离。
 - [交易执行与账户账本](docs/design/trading.md)：限价委托、撤单与异步回报的执行闭环。
 - [共享交易网关](docs/design/tradingd.md)：多机策略共享账户、订单归属、TCP 协议和断线收尾。
+- [交易网关持久化与恢复](docs/design/tradingd-persistence.md)：mmap 日志、后台同步、快照和柜台对账设计。
 - [一档双边做市策略](docs/design/bbo-market-making.md)：策略伪代码、所需数据与回调语义。
 
 ## 参考系统与资料
