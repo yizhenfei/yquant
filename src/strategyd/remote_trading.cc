@@ -50,7 +50,8 @@ bool SameFill(const model::Fill& lhs, const model::Fill& rhs) noexcept {
          lhs.instrument_id == rhs.instrument_id && lhs.side == rhs.side &&
          lhs.price == rhs.price && lhs.quantity == rhs.quantity &&
          lhs.event_time_ns == rhs.event_time_ns &&
-         lhs.has_event_time == rhs.has_event_time;
+         lhs.has_event_time == rhs.has_event_time &&
+         lhs.position_effect == rhs.position_effect;
 }
 
 std::size_t ExecutionHash(model::ClientOrderId order,
@@ -132,6 +133,23 @@ base::Status RemoteTrading::Init(const TradingConfig& config,
     return {Fail(ErrorCode::kInvalidArgument,
                  "invalid remote endpoint or instrument dictionary"),
             {}};
+  // Wire v1 describes equity orders only. A common market dictionary may
+  // also hold futures; advertise only the supported execution subset.
+  tradingd::Message hello;
+  hello.type = tradingd::MessageType::kHello;
+  hello.client_id = config.remote.client_id;
+  std::memcpy(hello.token, config.remote.token, sizeof(hello.token));
+  for (std::size_t index = 0; index < dictionary.instrument_count; ++index) {
+    const auto& definition = dictionary.instruments[index].instrument;
+    if (definition.type == model::InstrumentType::kEquity) {
+      hello.instruments[hello.instrument_count++] = {definition.id,
+                                                     definition.price_decimals};
+    }
+  }
+  if (hello.instrument_count == 0)
+    return {Fail(ErrorCode::kUnsupported,
+                 "remote trading wire v1 requires an equity instrument"),
+            {}};
   storage_.reset(new (std::nothrow) Storage);
   if (storage_ == nullptr)
     return {Fail(ErrorCode::kResourceExhausted,
@@ -145,15 +163,6 @@ base::Status RemoteTrading::Init(const TradingConfig& config,
     connection_.Close();
     storage_.reset();
     return status;
-  }
-  tradingd::Message hello;
-  hello.type = tradingd::MessageType::kHello;
-  hello.client_id = config.remote.client_id;
-  std::memcpy(hello.token, config.remote.token, sizeof(hello.token));
-  hello.instrument_count = dictionary.instrument_count;
-  for (std::size_t index = 0; index < hello.instrument_count; ++index) {
-    const auto& definition = dictionary.instruments[index].instrument;
-    hello.instruments[index] = {definition.id, definition.price_decimals};
   }
   status = connection_.Queue(hello);
   if (!status.ok()) {
@@ -239,9 +248,9 @@ void RemoteTrading::BeginStopping() noexcept {
 }
 
 bool RemoteTrading::accepting_orders() const noexcept {
-  const bool business = phase_ == CallbackPhase::kTick ||
-                        phase_ == CallbackPhase::kOrderUpdate ||
-                        phase_ == CallbackPhase::kFill;
+  const bool business =
+      phase_ == CallbackPhase::kTick || phase_ == CallbackPhase::kOrderUpdate ||
+      phase_ == CallbackPhase::kFill || phase_ == CallbackPhase::kTimer;
   return storage_ != nullptr && !storage_->failed && running_ && !stopping_ &&
          business;
 }
@@ -258,6 +267,16 @@ ErrorCode RemoteTrading::SubmitOrder(const model::OrderRequest& request,
       request.limit_price <= 0 || request.quantity <= 0 ||
       definition.price_decimals > 6)
     return Fail(ErrorCode::kInvalidArgument, "invalid limit-order request");
+  if (definition.type != model::InstrumentType::kEquity ||
+      request.position_effect != model::PositionEffect::kNone)
+    return Fail(
+        ErrorCode::kUnsupported,
+        "remote trading wire v1 supports equity without position effects");
+  if (definition.price_tick <= 0 || definition.quantity_step <= 0 ||
+      request.limit_price % definition.price_tick != 0 ||
+      request.quantity % definition.quantity_step != 0)
+    return Fail(ErrorCode::kInvalidArgument,
+                "limit-order price or quantity is not aligned");
   constexpr std::array<std::int64_t, 7> kPriceScales = {
       1000000, 100000, 10000, 1000, 100, 10, 1};
   const auto scale = kPriceScales[definition.price_decimals];
@@ -325,7 +344,10 @@ bool RemoteTrading::TryGetCash(model::CashSnapshot& out) const noexcept {
 
 bool RemoteTrading::TryGetPosition(
     model::InstrumentId id, model::PositionSnapshot& out) const noexcept {
-  if (storage_ == nullptr || !market_data_.HasInstrument(id)) return false;
+  model::InstrumentDefinition definition;
+  if (storage_ == nullptr || !market_data_.TryGetInstrument(id, definition) ||
+      definition.type != model::InstrumentType::kEquity)
+    return false;
   for (std::size_t index = 0; index < storage_->account.position_count;
        ++index) {
     if (storage_->account.positions[index].instrument_id == id) {
@@ -335,6 +357,16 @@ bool RemoteTrading::TryGetPosition(
   }
   out = {id, 0, 0, 0};
   return true;
+}
+
+bool RemoteTrading::TryGetFuturesAccount(
+    model::FuturesAccountSnapshot&) const noexcept {
+  return false;
+}
+
+bool RemoteTrading::TryGetFuturesPosition(
+    model::InstrumentId, model::FuturesPositionSnapshot&) const noexcept {
+  return false;
 }
 
 base::Status RemoteTrading::ProcessRequests(TradingAdapter&, std::uint64_t now,
@@ -516,6 +548,7 @@ ErrorCode RemoteTrading::ApplyUpdate(const tradingd::Message& message,
       next.instrument_id != old.instrument_id || next.side != old.side ||
       next.limit_price != old.limit_price ||
       next.original_qty != old.original_qty ||
+      next.position_effect != model::PositionEffect::kNone ||
       next.cumulative_filled_qty < old.cumulative_filled_qty ||
       next.cumulative_filled_qty > old.original_qty ||
       (!old.broker_order_id.empty() &&
@@ -612,6 +645,7 @@ ErrorCode RemoteTrading::ApplyUpdate(const tradingd::Message& message,
     const auto& fill = message.fill;
     if (fill.client_order_id != id || fill.instrument_id != old.instrument_id ||
         fill.side != old.side || fill.broker_order_id != next.broker_order_id ||
+        fill.position_effect != model::PositionEffect::kNone ||
         fill.execution_id.empty() || fill.price <= 0 || fill.quantity <= 0 ||
         fill.quantity > old.original_qty - old.cumulative_filled_qty ||
         next.cumulative_filled_qty !=

@@ -17,7 +17,7 @@ inline constexpr std::uint64_t kDefaultTradingTimeoutNs =
     5000 * kTradingNanosecondsPerMillisecond;
 
 enum class MockTradingMode { kFill, kWorking, kReject };
-enum class TradingAdapterKind { kMock, kTcp };
+enum class TradingAdapterKind { kMock, kTcp, kSimulatedFutures };
 
 // An authenticated TCP endpoint. Credentials identify one configured strategy
 // client and are never shared between concurrently running strategyd instances.
@@ -41,8 +41,10 @@ struct TradingConfig {
 
 // Validates typed values too. Failure copies a field path/reason into error;
 // config is never modified. Each duration must be within 1..60000 ms. Initial
-// cash/quantities are nonnegative, positions are distinct, and reserved is
-// zero.
+// cash/quantities are nonnegative and positions are distinct. The adapter must
+// match the account type; equity/futures bootstrap inventories cannot mix.
+// Futures buckets are zero/zero or positive quantity/open_price pairs. The host
+// checks dictionary membership and contract steps when configuring ledgers.
 [[nodiscard]] base::Status ValidateTradingConfig(
     const TradingConfig& config, strategy::ConfigError& error) noexcept;
 

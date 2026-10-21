@@ -43,6 +43,121 @@ std::string CatalogWithEntries(std::size_t count) {
   return json;
 }
 
+struct InvalidField {
+  const char* name;
+  std::string_view from;
+  std::string_view to;
+};
+std::string Replace(std::string json, std::string_view from,
+                    std::string_view to) {
+  const auto position = json.find(from);
+  if (position != std::string::npos) json.replace(position, from.size(), to);
+  return json;
+}
+std::string FutureInstrument(bool mock = false) {
+  std::string instrument =
+      R"({"venue":"SHFE","symbol":"rb2501","price_decimals":0,)"
+      R"("instrument_type":"futures","price_tick":2,"quantity_step":5,)"
+      R"("contract_multiplier":10,"margin_rate_ppm":100000,)"
+      R"("open_fee_per_lot":1000,"close_today_fee_per_lot":2000,)"
+      R"("close_yesterday_fee_per_lot":3000)";
+  if (mock) {
+    instrument +=
+        R"(,"bid_price":3500,"bid_qty":10,"ask_price":3502,"ask_qty":20,"price_step":2)";
+  }
+  return instrument + '}';
+}
+
+TEST(InstrumentCatalogTest, LoadsOwnedFuturesSpecificationsAndExactFees) {
+  ConfigFile file(Replace(
+      R"({"instruments":[)" + FutureInstrument(false) + "]}",
+      R"("open_fee_per_lot":1000)", R"("open_fee_per_lot":9007199254740993)"));
+  ASSERT_TRUE(file.valid());
+  InstrumentCatalogLoader loader;
+  ASSERT_TRUE(loader.Load(file.path()).ok())
+      << loader.error().field_path << ": " << loader.error().message;
+  model::InstrumentId id;
+  ASSERT_EQ(model::MakeInstrumentId("SHFE", "rb2501", id), ErrorCode::kOk);
+  model::InstrumentDefinition definition;
+  ASSERT_TRUE(loader.Find(id, definition));
+  EXPECT_EQ(definition.venue, model::Venue::kShfe);
+  EXPECT_EQ(definition.symbol_view(), "rb2501");
+  EXPECT_EQ(definition.type, model::InstrumentType::kFutures);
+  EXPECT_EQ(definition.price_tick, 2);
+  EXPECT_EQ(definition.quantity_step, 5);
+  EXPECT_EQ(definition.contract_multiplier, 10);
+  EXPECT_EQ(definition.margin_rate_ppm, 100000);
+  EXPECT_EQ(definition.open_fee_per_lot, 9007199254740993LL);
+  EXPECT_EQ(definition.close_today_fee_per_lot, 2000);
+  EXPECT_EQ(definition.close_yesterday_fee_per_lot, 3000);
+  EXPECT_TRUE(model::IsValidInstrumentId(definition.id));
+  strategy::ConfigError error;
+  EXPECT_TRUE(
+      ValidateInstrumentDefinition(definition, "instrument", error).ok());
+}
+
+class InvalidFuturesCatalogTest
+    : public ::testing::TestWithParam<InvalidField> {};
+
+TEST_P(InvalidFuturesCatalogTest, RejectsInvalidContractSpecifications) {
+  const auto& item = GetParam();
+  ConfigFile file(
+      Replace(R"({"instruments":[)" + FutureInstrument(false) + "]}", item.from,
+              item.to));
+  ASSERT_TRUE(file.valid());
+  InstrumentCatalogLoader loader;
+  EXPECT_FALSE(loader.Load(file.path()).ok());
+  EXPECT_NE(loader.error().message[0], '\0');
+  EXPECT_EQ(loader.size(), 0U);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    FuturesSchema, InvalidFuturesCatalogTest,
+    ::testing::Values(
+        InvalidField{"MissingType", R"("instrument_type":"futures",)", ""},
+        InvalidField{"UnknownType", R"("futures")", R"("option")"},
+        InvalidField{"TypeString", R"("instrument_type":"futures")",
+                     R"("instrument_type":1)"},
+        InvalidField{"StockVenue", R"("SHFE")", R"("SSE")"},
+        InvalidField{"SymbolCase", R"("rb2501")", R"("RB2501")"},
+        InvalidField{"Month", R"("rb2501")", R"("rb2513")"},
+        InvalidField{"MissingTick", R"("price_tick":2,)", ""},
+        InvalidField{"MissingStep", R"("quantity_step":5,)", ""},
+        InvalidField{"MissingMultiplier", R"("contract_multiplier":10,)", ""},
+        InvalidField{"MissingMargin", R"("margin_rate_ppm":100000,)", ""},
+        InvalidField{"MissingOpenFee", R"("open_fee_per_lot":1000,)", ""},
+        InvalidField{"MissingTodayFee", R"("close_today_fee_per_lot":2000,)",
+                     ""},
+        InvalidField{"MissingYesterdayFee",
+                     R"(,"close_yesterday_fee_per_lot":3000)", ""},
+        InvalidField{"ZeroTick", R"("price_tick":2)", R"("price_tick":0)"},
+        InvalidField{"NegativeTick", R"("price_tick":2)", R"("price_tick":-1)"},
+        InvalidField{"TickString", R"("price_tick":2)", R"("price_tick":"2")"},
+        InvalidField{"ZeroStep", R"("quantity_step":5)",
+                     R"("quantity_step":0)"},
+        InvalidField{"FractionalStep", R"("quantity_step":5)",
+                     R"("quantity_step":5.0)"},
+        InvalidField{"ZeroMultiplier", R"("contract_multiplier":10)",
+                     R"("contract_multiplier":0)"},
+        InvalidField{"ZeroMargin", R"("margin_rate_ppm":100000)",
+                     R"("margin_rate_ppm":0)"},
+        InvalidField{"LargeMargin", R"("margin_rate_ppm":100000)",
+                     R"("margin_rate_ppm":1000001)"},
+        InvalidField{"NegativeOpenFee", R"("open_fee_per_lot":1000)",
+                     R"("open_fee_per_lot":-1)"},
+        InvalidField{"NegativeTodayFee", R"("close_today_fee_per_lot":2000)",
+                     R"("close_today_fee_per_lot":-1)"},
+        InvalidField{"NegativeYesterdayFee",
+                     R"("close_yesterday_fee_per_lot":3000)",
+                     R"("close_yesterday_fee_per_lot":-1)"},
+        InvalidField{"FeeOverflow", R"("open_fee_per_lot":1000)",
+                     R"("open_fee_per_lot":9223372036854775808)"},
+        InvalidField{"DuplicateDecodedField", R"("price_tick":2)",
+                     R"("price_tick":2,"\u0070rice_tick":2)"}),
+    [](const ::testing::TestParamInfo<InvalidField>& info) {
+      return info.param.name;
+    });
+
 TEST(InstrumentCatalogTest, LoadsUnsortedVenuesAndPreservesLeadingZeros) {
   InstrumentCatalogLoader loader;
   {

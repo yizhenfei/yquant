@@ -1,11 +1,14 @@
 #include "strategyd/market_data_config.h"
 
 #include <simdjson.h>
+#include <unistd.h>
 
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <limits>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 #include "strategyd/instrument_catalog.h"
@@ -66,21 +69,6 @@ base::Status ReadText(simdjson::ondemand::value value, std::string_view path,
                       strategy::ConfigError& error) noexcept {
   const auto code = value.get_string().get(out);
   return code ? JsonError(code, path, error) : base::Status{};
-}
-
-// Maps only supported venue codes; empty denotes invalid typed definitions.
-std::string_view VenueName(model::Venue venue) noexcept {
-  switch (venue) {
-    case model::Venue::kSse:
-      return "SSE";
-    case model::Venue::kSzse:
-      return "SZSE";
-    case model::Venue::kBse:
-      return "BSE";
-    case model::Venue::kUnknown:
-      return {};
-  }
-  return {};
 }
 
 // Loads an instrument reference and optional mock seed into temporary storage.
@@ -151,22 +139,15 @@ base::Status ParseInstrument(simdjson::ondemand::value value, std::size_t index,
                      "required field is missing", error);
     }
   }
-  if (venue == "SSE")
-    parsed.instrument.venue = model::Venue::kSse;
-  else if (venue == "SZSE")
-    parsed.instrument.venue = model::Venue::kSzse;
-  else if (venue == "BSE")
-    parsed.instrument.venue = model::Venue::kBse;
-  else
-    return Invalid(FieldPath(index, "venue").text, "unsupported venue", error);
   const auto id_result =
       model::MakeInstrumentId(venue, symbol, parsed.instrument.id);
   if (id_result != base::ErrorCode::kOk) {
     return Invalid(FieldPath(index, "symbol").text,
-                   "must contain exactly six ASCII digits", error);
+                   "invalid canonical venue/symbol", error);
   }
-  std::memcpy(parsed.instrument.symbol, symbol.data(),
-              sizeof(parsed.instrument.symbol));
+  parsed.instrument.venue =
+      static_cast<model::Venue>(parsed.instrument.id.value >> 32);
+  std::memcpy(parsed.instrument.symbol, symbol.data(), symbol.size());
   out = parsed;
   field_mask = seen;
   return {};
@@ -232,8 +213,12 @@ base::Status Parse(
   json_error = document.get_object().get(root);
   if (json_error) return JsonError(json_error, "$", error);
   constexpr std::string_view kFields[] = {
-      "source_id",         "adapter", "interval_ms",      "instruments",
-      "runtime_directory", "stream",  "poll_interval_us", "instrument_catalog"};
+      "source_id",         "adapter",
+      "interval_ms",       "instruments",
+      "runtime_directory", "stream",
+      "poll_interval_us",  "instrument_catalog",
+      "replay_path",       "replay_speed",
+      "replay_tail_ms"};
   constexpr std::string_view kInstrumentFields[] = {
       "venue",     "symbol",  "bid_price", "bid_qty",
       "ask_price", "ask_qty", "price_step"};
@@ -272,8 +257,10 @@ base::Status Parse(
             out.adapter = MarketDataAdapter::kMock;
           else if (adapter == "shm")
             out.adapter = MarketDataAdapter::kShm;
+          else if (adapter == "replay")
+            out.adapter = MarketDataAdapter::kReplay;
           else
-            result = Invalid(key, "must be mock or shm", error);
+            result = Invalid(key, "must be mock, shm, or replay", error);
         }
         break;
       }
@@ -308,18 +295,43 @@ base::Status Parse(
       case 7:
         result = ReadOwnedText(field.value(), key, catalog_reference, error);
         break;
+      case 8:
+        result = ReadOwnedText(field.value(), key, out.replay_path, error);
+        break;
+      case 9: {
+        std::uint64_t speed;
+        result = ReadUnsigned(field.value(), key, speed, error);
+        if (result.ok() && (speed == 0 || speed > 1000))
+          result = Invalid(key, "must be from 1 to 1000", error);
+        if (result.ok()) out.replay_speed = static_cast<std::uint32_t>(speed);
+        break;
+      }
+      case 10: {
+        std::uint64_t milliseconds;
+        result = ReadUnsigned(field.value(), key, milliseconds, error);
+        if (result.ok() && milliseconds > 60000)
+          result = Invalid(key, "must be from 0 to 60000", error);
+        if (result.ok()) out.replay_tail_ns = milliseconds * 1000000;
+        break;
+      }
     }
     if (!result.ok()) return result;
   }
   const bool mock = out.adapter == MarketDataAdapter::kMock;
+  const bool shm = out.adapter == MarketDataAdapter::kShm;
   // Source identity, adapter, catalog and selected instruments are common.
   // Transport settings belong only to their selected adapter.
   constexpr std::uint32_t kCommonFields =
       (1U << 0) | (1U << 1) | (1U << 3) | (1U << 7);
   constexpr std::uint32_t kMockFields = kCommonFields | (1U << 2);
   constexpr std::uint32_t kShmFields = kCommonFields | (1U << 4) | (1U << 5);
-  const std::uint32_t required = mock ? kMockFields : kShmFields;
-  const std::uint32_t allowed = mock ? kMockFields : kShmFields | (1U << 6);
+  constexpr std::uint32_t kReplayFields = kCommonFields | (1U << 8);
+  const std::uint32_t required = mock  ? kMockFields
+                                 : shm ? kShmFields
+                                       : kReplayFields;
+  const std::uint32_t allowed = mock  ? kMockFields
+                                : shm ? kShmFields | (1U << 6)
+                                      : kReplayFields | (1U << 9) | (1U << 10);
   for (std::size_t field = 0; field < std::size(kFields); ++field) {
     if ((required & (1U << field)) != 0 && (seen & (1U << field)) == 0)
       return Invalid(kFields[field], "required field is missing", error);
@@ -336,10 +348,48 @@ base::Status Parse(
       }
       if (!mock && present) {
         return Invalid(FieldPath(i, kInstrumentFields[field]).text,
-                       "field is not valid for shm adapter", error);
+                       "field is only valid for mock adapter", error);
       }
     }
   }
+  return {};
+}
+
+// Resolves JSON-relative input without opening it. Temporary joined bytes are
+// committed only after every length/I/O check succeeds; the CSV is read by its
+// source during Prepare, independently of later working-directory changes.
+base::Status ResolveReplayPath(const char* config_path,
+                               MarketDataConfig& config,
+                               strategy::ConfigError& error) noexcept {
+  if (config.adapter != MarketDataAdapter::kReplay ||
+      config.replay_path[0] == '/')
+    return {};
+  const std::string_view source(config_path);
+  const auto separator = source.rfind('/');
+  const auto directory = separator == source.npos
+                             ? std::string_view{}
+                             : source.substr(0, separator + 1);
+  char resolved[kMaxReplayPathLength + 1] = {};
+  std::size_t size = 0;
+  const auto append = [&](std::string_view part) {
+    if (part.size() > kMaxReplayPathLength - size) return false;
+    if (!part.empty()) std::memcpy(resolved + size, part.data(), part.size());
+    size += part.size();
+    return true;
+  };
+  if (source.empty() || source[0] != '/') {
+    char current[kMaxReplayPathLength + 1];
+    if (getcwd(current, sizeof(current)) == nullptr) {
+      error.Set("replay_path", "could not resolve current directory");
+      return {base::ErrorCode::kIoError, {errno, std::generic_category()}};
+    }
+    if (!append(current) || !append("/"))
+      return Invalid("replay_path", "resolved path exceeds 4095 bytes", error);
+  }
+  if (!append(directory) || !append(config.replay_path))
+    return Invalid("replay_path", "resolved path exceeds 4095 bytes", error);
+  resolved[size] = '\0';
+  std::memcpy(config.replay_path, resolved, size + 1);
   return {};
 }
 
@@ -393,10 +443,12 @@ base::Status ValidateMarketDataConfig(const MarketDataConfig& config,
   if (config.source_id.value == 0)
     return Invalid("source_id", "must not be zero", error);
   if (config.adapter != MarketDataAdapter::kMock &&
-      config.adapter != MarketDataAdapter::kShm)
+      config.adapter != MarketDataAdapter::kShm &&
+      config.adapter != MarketDataAdapter::kReplay)
     return Invalid("adapter", "unsupported adapter", error);
   const bool mock = config.adapter == MarketDataAdapter::kMock;
-  if (!mock) {
+  const bool replay = config.adapter == MarketDataAdapter::kReplay;
+  if (config.adapter == MarketDataAdapter::kShm) {
     const auto endpoint = ValidateShmEndpoint(config, error);
     if (!endpoint.ok()) return endpoint;
     if (config.interval_ns != 0)
@@ -404,8 +456,25 @@ base::Status ValidateMarketDataConfig(const MarketDataConfig& config,
                      error);
   } else if (config.runtime_directory[0] != '\0' || config.stream[0] != '\0' ||
              config.poll_interval_ns != 0) {
-    return Invalid("adapter", "mock adapter cannot use shm configuration",
+    return Invalid("adapter", "selected adapter cannot use shm configuration",
                    error);
+  }
+  if (replay) {
+    const auto* end = static_cast<const char*>(
+        std::memchr(config.replay_path, '\0', sizeof(config.replay_path)));
+    if (end == nullptr || config.replay_path[0] != '/')
+      return Invalid("replay_path", "must be an absolute bounded path", error);
+    if (config.replay_speed == 0 || config.replay_speed > 1000)
+      return Invalid("replay_speed", "must be from 1 to 1000", error);
+    if (config.replay_tail_ns > 60000000000ULL)
+      return Invalid("replay_tail_ms", "must be from 0 to 60000", error);
+    if (config.interval_ns != 0)
+      return Invalid("interval_ms", "field is not valid for replay adapter",
+                     error);
+  } else if (config.replay_path[0] != '\0' || config.replay_speed != 1 ||
+             config.replay_tail_ns != 1000000000) {
+    return Invalid("adapter",
+                   "selected adapter cannot use replay configuration", error);
   }
   if (mock &&
       (config.interval_ns < 1000000 || config.interval_ns > 60000000000ULL)) {
@@ -417,19 +486,14 @@ base::Status ValidateMarketDataConfig(const MarketDataConfig& config,
     return Invalid("instruments", "must contain from 1 to 64 instruments",
                    error);
   }
+  if (replay && config.instrument_count != 1)
+    return Invalid("instruments", "replay requires exactly one instrument",
+                   error);
   for (std::size_t i = 0; i < config.instrument_count; ++i) {
     const auto& item = config.instruments[i];
-    model::InstrumentId expected;
-    if (model::MakeInstrumentId(VenueName(item.instrument.venue),
-                                item.instrument.symbol_view(),
-                                expected) != base::ErrorCode::kOk ||
-        expected != item.instrument.id) {
-      return Invalid(FieldPath(i, "symbol").text, "invalid instrument identity",
-                     error);
-    }
-    if (item.instrument.price_decimals > model::kMaxPriceDecimals)
-      return Invalid(FieldPath(i, "price_decimals").text, "must be from 0 to 6",
-                     error);
+    const auto definition_status = ValidateInstrumentDefinition(
+        item.instrument, FieldPath(i, "").text, error);
+    if (!definition_status.ok()) return definition_status;
     if (!mock &&
         (item.bid_price != 0 || item.bid_qty != 0 || item.ask_price != 0 ||
          item.ask_qty != 0 || item.price_step != 0)) {
@@ -450,6 +514,22 @@ base::Status ValidateMarketDataConfig(const MarketDataConfig& config,
       if (item.price_step < 0)
         return Invalid(FieldPath(i, "price_step").text, "must be nonnegative",
                        error);
+      const auto& definition = item.instrument;
+      if (item.bid_price % definition.price_tick != 0)
+        return Invalid(FieldPath(i, "bid_price").text,
+                       "must be a multiple of price_tick", error);
+      if (item.ask_price % definition.price_tick != 0)
+        return Invalid(FieldPath(i, "ask_price").text,
+                       "must be a multiple of price_tick", error);
+      if (item.price_step % definition.price_tick != 0)
+        return Invalid(FieldPath(i, "price_step").text,
+                       "must be a multiple of price_tick", error);
+      if (item.bid_qty % definition.quantity_step != 0)
+        return Invalid(FieldPath(i, "bid_qty").text,
+                       "must be a multiple of quantity_step", error);
+      if (item.ask_qty % definition.quantity_step != 0)
+        return Invalid(FieldPath(i, "ask_qty").text,
+                       "must be a multiple of quantity_step", error);
       if (item.price_step >
               std::numeric_limits<std::int64_t>::max() - item.bid_price ||
           item.price_step >
@@ -505,6 +585,7 @@ base::Status MarketDataConfigLoader::Load(const char* path) noexcept {
                      "instrument is not defined in the catalog", error_);
     }
   }
+  if (result.ok()) result = ResolveReplayPath(path, parsed, error_);
   if (result.ok()) result = ValidateMarketDataConfig(parsed, error_);
   if (result.ok()) config_ = parsed;
   return result;

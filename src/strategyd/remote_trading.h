@@ -43,6 +43,13 @@ class RemoteTrading final : public TradingRuntime {
   [[nodiscard]] bool TryGetPosition(
       model::InstrumentId id,
       model::PositionSnapshot& out) const noexcept override;
+  // Wire version 1 exposes only the shared equity account. Futures queries
+  // always return false and preserve their output, including before Init.
+  [[nodiscard]] bool TryGetFuturesAccount(
+      model::FuturesAccountSnapshot& out) const noexcept override;
+  [[nodiscard]] bool TryGetFuturesPosition(
+      model::InstrumentId id,
+      model::FuturesPositionSnapshot& out) const noexcept override;
   [[nodiscard]] base::Status ProcessRequests(
       TradingAdapter& unused, std::uint64_t now,
       std::size_t limit = 64) noexcept override;

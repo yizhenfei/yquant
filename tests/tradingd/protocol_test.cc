@@ -387,5 +387,21 @@ TEST(TradingProtocol, MaximumReasonAndOpaqueBytesRoundTrip) {
   EXPECT_TRUE(output.update.reason.truncated);
 }
 
+TEST(TradingProtocol, VersionOneRejectsPositionEffectsWithoutDroppingFields) {
+  for (const auto effect :
+       {model::PositionEffect::kOpen, model::PositionEffect::kCloseToday,
+        model::PositionEffect::kCloseYesterday}) {
+    auto request = Example(MessageType::kNewOrder);
+    request.request.position_effect = effect;
+    ExpectEncodingRejected(request);
+    auto order = Example(MessageType::kOrderUpdate);
+    order.update.order.position_effect = effect;
+    ExpectEncodingRejected(order);
+    auto fill = Example(MessageType::kOrderUpdate);
+    fill.fill.position_effect = effect;
+    ExpectEncodingRejected(fill);
+  }
+}
+
 }  // namespace
 }  // namespace yquant::tradingd

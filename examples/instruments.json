@@ -504,6 +504,19 @@
       "venue": "SZSE",
       "symbol": "300916",
       "price_decimals": 4
+    },
+    {
+      "venue": "DCE",
+      "symbol": "a1805",
+      "instrument_type": "futures",
+      "price_decimals": 0,
+      "price_tick": 1,
+      "quantity_step": 1,
+      "contract_multiplier": 10,
+      "margin_rate_ppm": 100000,
+      "open_fee_per_lot": 2000000,
+      "close_today_fee_per_lot": 2000000,
+      "close_yesterday_fee_per_lot": 2000000
     }
   ]
 }

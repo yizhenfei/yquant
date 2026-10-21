@@ -9,7 +9,9 @@
 #include "gtest/gtest.h"
 #include "strategyd/market_data.h"
 #include "strategyd/mock_trading_adapter.h"
+#include "strategyd/simulated_futures_exchange.h"
 #include "strategyd/strategy_context.h"
+#include "strategyd/timer.h"
 #include "strategyd/trading.h"
 #include "strategyd/trading_adapter.h"
 #include "yquant/model/identifiers.h"
@@ -346,7 +348,8 @@ void CheckTradingHeap(bool cancel, bool sell = false) {
     account.positions[0] = {item.instrument.id, 128 * 201, 128 * 201, 0};
   }
   ASSERT_TRUE(trading.Configure(account).ok());
-  StrategyContextImpl context(clock, market_data, trading);
+  TimerImpl timer;
+  StrategyContextImpl context(clock, market_data, trading, timer);
   TradingConfig config;
   config.mode = cancel ? MockTradingMode::kWorking : MockTradingMode::kFill;
   config.initial_account = account;
@@ -381,6 +384,219 @@ TEST(TradingCppHeapTest, SellReservationsFillsAndQueriesHaveNoCppHeapActivity) {
 
 TEST(TradingCppHeapTest, SellCancelReleasesHaveNoCppHeapActivity) {
   CheckTradingHeap(true, true);
+}
+
+// Drains one real protocol path, including callback-side account queries and
+// duplicate reports. All reporting stays outside the allocation window.
+const char* ExerciseFuturesOrder(TradingImpl& trading,
+                                 SimulatedFuturesExchange& exchange,
+                                 TradingHeapClock& clock,
+                                 const model::OrderRequest& request,
+                                 bool cancel, std::size_t& fills) noexcept {
+  model::ClientOrderId id;
+  trading.BeginCallback(CallbackPhase::kTick);
+  const auto submitted = trading.SubmitOrder(request, id);
+  trading.EndCallback();
+  if (submitted != base::ErrorCode::kOk ||
+      !trading.ProcessRequests(exchange, clock.Now()).ok())
+    return "futures request failed";
+  for (std::size_t step = 0; step != 8; ++step) {
+    const auto deadline = exchange.next_deadline();
+    if (!deadline) return "futures exchange lost a pending event";
+    clock.now = std::max(clock.now, *deadline);
+    TradingEvent event;
+    const auto polled = exchange.Poll(clock.Now(), event);
+    if (!polled.status.ok() || polled.state != TradingPollState::kEvent)
+      return "futures exchange failed to publish a due event";
+    TradingDispatch dispatch;
+    if (trading.ApplyEvent(event, dispatch) != base::ErrorCode::kOk)
+      return "futures ledger rejected a valid report";
+    trading.BeginCallback(CallbackPhase::kOrderUpdate);
+    model::OrderSnapshot order;
+    model::FuturesAccountSnapshot account;
+    model::FuturesPositionSnapshot position;
+    if (!trading.TryGetOrder(id, order) ||
+        !trading.TryGetFuturesAccount(account) ||
+        !trading.TryGetFuturesPosition(request.instrument_id, position) ||
+        order != dispatch.update.order)
+      return "futures callback query differs from committed facts";
+    if (cancel && order.state == model::OrderState::kWorking &&
+        !order.cancel_pending &&
+        trading.CancelOrder(id) != base::ErrorCode::kOk)
+      return "futures cancel request failed";
+    trading.EndCallback();
+    if (dispatch.has_fill) {
+      trading.BeginCallback(CallbackPhase::kFill);
+      const bool queried =
+          trading.TryGetFuturesAccount(account) &&
+          trading.TryGetFuturesPosition(request.instrument_id, position);
+      trading.EndCallback();
+      if (!queried || dispatch.fill.position_effect != request.position_effect)
+        return "futures fill did not preserve its effect or account";
+      ++fills;
+    }
+    TradingDispatch duplicate;
+    if (trading.ApplyEvent(event, duplicate) != base::ErrorCode::kOk ||
+        duplicate.has_fill || duplicate.notify_order)
+      return "duplicate futures report was applied twice";
+    if (!trading.ProcessRequests(exchange, clock.Now()).ok() ||
+        !trading.TryGetOrder(id, order))
+      return "futures post-callback request or query failed";
+    if (model::IsTerminalOrderState(order.state) && !order.cancel_pending) {
+      if (order.state !=
+          (cancel ? model::OrderState::kCanceled : model::OrderState::kFilled))
+        return "futures order terminated in the wrong state";
+      return nullptr;
+    }
+  }
+  return "futures order exceeded the bounded protocol script";
+}
+
+// Repeatedly opens, revalues, closes through FIFO and cancels another opening
+// order. The real exchange matches quotes and returns acknowledgments/reports;
+// the real order ledger maintains reservations and normalized execution state.
+const char* ExerciseFutures(TradingImpl& trading,
+                            SimulatedFuturesExchange& exchange,
+                            TradingHeapClock& clock, model::InstrumentId id,
+                            std::size_t& fills) noexcept {
+  model::QuoteTick quote;
+  quote.source_id = {1};
+  quote.instrument_id = id;
+  quote.bid_qty = quote.ask_qty = 10;
+  quote.flags = static_cast<std::uint8_t>(model::QuoteFlag::kBidValid) |
+                static_cast<std::uint8_t>(model::QuoteFlag::kAskValid) |
+                static_cast<std::uint8_t>(model::QuoteFlag::kTradable);
+  for (std::size_t round = 0; round != 128; ++round) {
+    quote.sequence = 2 * round + 1;
+    quote.bid_price = 100;
+    quote.ask_price = 101;
+    quote.receive_time_ns = clock.Now();
+    if (trading.ApplyQuote(quote) != base::ErrorCode::kOk ||
+        !exchange.OnQuote(quote, clock.Now()).ok())
+      return "opening quote failed";
+    const auto opened = ExerciseFuturesOrder(
+        trading, exchange, clock,
+        {id, model::OrderSide::kBuy, 101, 2, model::PositionEffect::kOpen},
+        false, fills);
+    if (opened != nullptr) return opened;
+    quote.sequence = 2 * round + 2;
+    quote.bid_price = 102;
+    quote.ask_price = 103;
+    quote.receive_time_ns = clock.Now();
+    if (trading.ApplyQuote(quote) != base::ErrorCode::kOk ||
+        !exchange.OnQuote(quote, clock.Now()).ok())
+      return "closing mark/quote failed";
+    const auto closed =
+        ExerciseFuturesOrder(trading, exchange, clock,
+                             {id, model::OrderSide::kSell, 102, 2,
+                              model::PositionEffect::kCloseToday},
+                             false, fills);
+    if (closed != nullptr) return closed;
+    const auto canceled = ExerciseFuturesOrder(
+        trading, exchange, clock,
+        {id, model::OrderSide::kBuy, 100, 1, model::PositionEffect::kOpen},
+        true, fills);
+    if (canceled != nullptr) return canceled;
+    model::FuturesAccountSnapshot account;
+    model::FuturesPositionSnapshot position;
+    if (!trading.TryGetFuturesAccount(account) ||
+        !trading.TryGetFuturesPosition(id, position) || account.reserved != 0 ||
+        account.margin != 0 || account.unrealized_pnl != 0 ||
+        position.long_today.quantity != 0 ||
+        position.short_today.quantity != 0 ||
+        account.realized_pnl !=
+            static_cast<std::int64_t>(round + 1) * 20000000 ||
+        account.commission != static_cast<std::int64_t>(round + 1) * 10000000)
+      return "futures round did not settle FIFO, margin and fees";
+  }
+  return trading.is_drained() && exchange.is_drained()
+             ? nullptr
+             : "futures rounds retained outstanding work";
+}
+
+TEST(TradingCppHeapTest, FuturesFifoAndExchangeHotPathsHaveNoCppHeapActivity) {
+  TradingHeapClock clock;
+  MarketDataConfig market_config;
+  market_config.source_id = {1};
+  market_config.interval_ns = 1000000;
+  market_config.instrument_count = 1;
+  auto& item = market_config.instruments[0];
+  ASSERT_EQ(model::MakeInstrumentId("SHFE", "rb2701", item.instrument.id),
+            base::ErrorCode::kOk);
+  item.instrument.venue = model::Venue::kShfe;
+  std::copy_n("rb2701", 6, item.instrument.symbol);
+  item.instrument.type = model::InstrumentType::kFutures;
+  item.instrument.contract_multiplier = 10;
+  item.instrument.margin_rate_ppm = 100000;
+  item.instrument.open_fee_per_lot = 2000000;
+  item.instrument.close_today_fee_per_lot = 3000000;
+  item.instrument.close_yesterday_fee_per_lot = 1000000;
+  item.bid_price = 100;
+  item.ask_price = 101;
+  item.bid_qty = item.ask_qty = 10;
+  MarketDataImpl market(clock);
+  ASSERT_TRUE(market.Configure(market_config).ok());
+  TradingAccountSnapshot account;
+  account.type = model::AccountType::kFutures;
+  account.cash_balance = 1000000000000;
+  TradingImpl trading(clock, market);
+  ASSERT_TRUE(trading.Configure(account).ok());
+  TradingConfig config;
+  config.adapter = TradingAdapterKind::kSimulatedFutures;
+  config.initial_account = account;
+  SimulatedFuturesExchange exchange;
+  ASSERT_TRUE(exchange.Prepare(config).ok());
+  ASSERT_TRUE(exchange.Start(clock.Now()).ok());
+  trading.SetRunning(true);
+  const char* failure = nullptr;
+  std::size_t fills = 0;
+  const auto activity = ObserveCppHeap([&]() noexcept {
+    failure =
+        ExerciseFutures(trading, exchange, clock, item.instrument.id, fills);
+  });
+  EXPECT_EQ(failure, nullptr) << (failure == nullptr ? "" : failure);
+  EXPECT_EQ(fills, 256);
+  EXPECT_EQ(activity.allocation_calls, 0);
+  EXPECT_EQ(activity.deallocation_calls, 0);
+  EXPECT_TRUE(exchange.Stop().ok());
+}
+
+TEST(TimerCppHeapTest,
+     FirstUseAndRepeatedOneShotOperationsHaveNoCppHeapActivity) {
+  const char* failure = nullptr;
+  const auto activity = ObserveCppHeap([&]() noexcept {
+    TimerImpl timer;
+    timer.BeginCallback(CallbackPhase::kStart);
+    if (timer.Arm(0) != base::ErrorCode::kOk) {
+      failure = "startup timer could not be armed";
+      return;
+    }
+    timer.EndCallback();
+    timer.SetRunning(true);
+    const strategy::Timer& read_only = timer;
+    for (std::uint64_t now = 0; now < 4096; ++now) {
+      strategy::TimerEvent event;
+      if (read_only.deadline() != now || !timer.TryTakeDue(now, event) ||
+          event.deadline_ns != now || event.fire_time_ns != now ||
+          read_only.deadline()) {
+        failure = "one-shot dispatch or copied query was inconsistent";
+        return;
+      }
+      timer.BeginCallback(CallbackPhase::kTimer);
+      if (timer.Arm(now + 2) != base::ErrorCode::kOk ||
+          timer.Cancel() != base::ErrorCode::kOk || read_only.deadline() ||
+          timer.Arm(now + 1) != base::ErrorCode::kOk) {
+        failure = "callback replacement, cancellation or rearming failed";
+        return;
+      }
+      timer.EndCallback();
+    }
+    timer.BeginStopping();
+    if (read_only.deadline()) failure = "stopping retained a timer";
+  });
+  EXPECT_EQ(failure, nullptr) << (failure == nullptr ? "" : failure);
+  EXPECT_EQ(activity.allocation_calls, 0U);
+  EXPECT_EQ(activity.deallocation_calls, 0U);
 }
 
 }  // namespace

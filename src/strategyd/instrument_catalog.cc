@@ -49,22 +49,58 @@ struct FieldPath {
   }
 };
 
-// Parses one complete definition. Failure preserves out; decoded string views
-// are borrowed only until the definition has been copied to out.
+// Reads an exact signed integer; string, fractional and overflowing values
+// fail.
+base::Status ReadInteger(simdjson::ondemand::value value, std::string_view path,
+                         std::int64_t& out,
+                         strategy::ConfigError& error) noexcept {
+  const auto code = value.get_int64().get(out);
+  return code ? JsonError(code, path, error) : base::Status{};
+}
+
+// Reads unsigned integers without any intermediate floating-point conversion.
+base::Status ReadUnsigned(simdjson::ondemand::value value,
+                          std::string_view path, std::uint64_t& out,
+                          strategy::ConfigError& error) noexcept {
+  const auto code = value.get_uint64().get(out);
+  return code ? JsonError(code, path, error) : base::Status{};
+}
+
+// Borrows the decoded string only while the schema parser is alive.
+base::Status ReadText(simdjson::ondemand::value value, std::string_view path,
+                      std::string_view& out,
+                      strategy::ConfigError& error) noexcept {
+  const auto code = value.get_string().get(out);
+  return code ? JsonError(code, path, error) : base::Status{};
+}
+
+constexpr std::string_view kInstrumentFields[] = {
+    "venue",
+    "symbol",
+    "price_decimals",
+    "instrument_type",
+    "price_tick",
+    "quantity_step",
+    "contract_multiplier",
+    "margin_rate_ppm",
+    "open_fee_per_lot",
+    "close_today_fee_per_lot",
+    "close_yesterday_fee_per_lot"};
+constexpr std::size_t kFirstContractField = 6;
+
+// Parses complete shared metadata, retaining no parser views. Futures must
+// explicitly provide every contract specification; equity keeps unit defaults.
 base::Status ParseInstrument(simdjson::ondemand::value value, std::size_t index,
                              model::InstrumentDefinition& out,
                              strategy::ConfigError& error) noexcept {
-  const FieldPath object_path(index);
+  const FieldPath object_path(index, "");
   simdjson::ondemand::object object;
   auto json_error = value.get_object().get(object);
   if (json_error) return JsonError(json_error, object_path.text, error);
-
-  constexpr std::array<std::string_view, 3> kFields = {"venue", "symbol",
-                                                       "price_decimals"};
-  std::array<bool, kFields.size()> seen = {};
+  model::InstrumentDefinition parsed;
   std::string_view venue;
   std::string_view symbol;
-  std::uint64_t decimals = 0;
+  std::uint32_t seen = 0;
   for (auto field_result : object) {
     simdjson::ondemand::field field;
     json_error = std::move(field_result).get(field);
@@ -74,44 +110,110 @@ base::Status ParseInstrument(simdjson::ondemand::value value, std::size_t index,
     if (json_error) return JsonError(json_error, object_path.text, error);
     const FieldPath path(index, key);
     std::size_t position = 0;
-    while (position < kFields.size() && kFields[position] != key) ++position;
-    if (position == kFields.size()) {
+    while (position < std::size(kInstrumentFields) &&
+           kInstrumentFields[position] != key)
+      ++position;
+    if (position == std::size(kInstrumentFields)) {
       const auto result = Invalid(path.text, "unknown instrument field", error);
       error.truncated |= path.truncated;
       return result;
     }
-    seen[position] = true;
-    if (key == "venue")
-      json_error = field.value().get_string().get(venue);
-    else if (key == "symbol")
-      json_error = field.value().get_string().get(symbol);
-    else
-      json_error = field.value().get_uint64().get(decimals);
-    if (json_error) return JsonError(json_error, path.text, error);
+    seen |= 1U << position;
+    base::Status result;
+    switch (position) {
+      case 0:
+        result = ReadText(field.value(), path.text, venue, error);
+        break;
+      case 1:
+        result = ReadText(field.value(), path.text, symbol, error);
+        break;
+      case 2: {
+        std::uint64_t decimals;
+        result = ReadUnsigned(field.value(), path.text, decimals, error);
+        if (result.ok() && decimals > model::kMaxPriceDecimals) {
+          result = Invalid(path.text, "must be an integer from 0 to 6", error);
+        }
+        if (result.ok()) parsed.price_decimals = decimals;
+        break;
+      }
+      case 3: {
+        std::string_view type;
+        result = ReadText(field.value(), path.text, type, error);
+        if (result.ok()) {
+          if (type == "equity")
+            parsed.type = model::InstrumentType::kEquity;
+          else if (type == "futures")
+            parsed.type = model::InstrumentType::kFutures;
+          else
+            result = Invalid(path.text, "must be equity or futures", error);
+        }
+        break;
+      }
+      case 4:
+        result =
+            ReadInteger(field.value(), path.text, parsed.price_tick, error);
+        break;
+      case 5:
+        result =
+            ReadInteger(field.value(), path.text, parsed.quantity_step, error);
+        break;
+      case 6:
+        result = ReadInteger(field.value(), path.text,
+                             parsed.contract_multiplier, error);
+        break;
+      case 7:
+        result = ReadInteger(field.value(), path.text, parsed.margin_rate_ppm,
+                             error);
+        break;
+      case 8:
+        result = ReadInteger(field.value(), path.text, parsed.open_fee_per_lot,
+                             error);
+        break;
+      case 9:
+        result = ReadInteger(field.value(), path.text,
+                             parsed.close_today_fee_per_lot, error);
+        break;
+      case 10:
+        result = ReadInteger(field.value(), path.text,
+                             parsed.close_yesterday_fee_per_lot, error);
+        break;
+    }
+    if (!result.ok()) return result;
   }
-  for (std::size_t field = 0; field < kFields.size(); ++field) {
-    if (!seen[field])
-      return Invalid(FieldPath(index, kFields[field]).text,
+  for (std::size_t field = 0; field < 3; ++field) {
+    if ((seen & (1U << field)) == 0) {
+      return Invalid(FieldPath(index, kInstrumentFields[field]).text,
                      "required field is missing", error);
+    }
   }
-  if (decimals > model::kMaxPriceDecimals)
-    return Invalid(FieldPath(index, "price_decimals").text,
-                   "must be an integer from 0 to 6", error);
-
-  model::InstrumentDefinition parsed;
-  if (model::MakeInstrumentId(venue, symbol, parsed.id) !=
-      base::ErrorCode::kOk) {
-    if (venue != "SSE" && venue != "SZSE" && venue != "BSE")
-      return Invalid(FieldPath(index, "venue").text, "unsupported venue",
-                     error);
+  if (model::ParseVenue(venue) == model::Venue::kUnknown)
+    return Invalid(FieldPath(index, "venue").text, "unsupported venue", error);
+  const auto id_result = model::MakeInstrumentId(venue, symbol, parsed.id);
+  if (id_result != base::ErrorCode::kOk) {
     return Invalid(FieldPath(index, "symbol").text,
-                   "must contain exactly six ASCII digits", error);
+                   "invalid canonical symbol for venue", error);
   }
-  parsed.venue = venue == "SSE"    ? model::Venue::kSse
-                 : venue == "SZSE" ? model::Venue::kSzse
-                                   : model::Venue::kBse;
-  std::memcpy(parsed.symbol, symbol.data(), model::kSymbolLength);
-  parsed.price_decimals = static_cast<std::uint8_t>(decimals);
+  parsed.venue = static_cast<model::Venue>(parsed.id.value >> 32);
+  std::memcpy(parsed.symbol, symbol.data(), symbol.size());
+  if (parsed.type == model::InstrumentType::kFutures) {
+    for (std::size_t field = 4; field < std::size(kInstrumentFields); ++field) {
+      if ((seen & (1U << field)) == 0) {
+        return Invalid(FieldPath(index, kInstrumentFields[field]).text,
+                       "required futures specification is missing", error);
+      }
+    }
+  } else {
+    for (std::size_t field = kFirstContractField;
+         field < std::size(kInstrumentFields); ++field) {
+      if ((seen & (1U << field)) != 0) {
+        return Invalid(FieldPath(index, kInstrumentFields[field]).text,
+                       "field is only valid for futures", error);
+      }
+    }
+  }
+  const auto result =
+      ValidateInstrumentDefinition(parsed, object_path.text, error);
+  if (!result.ok()) return result;
   out = parsed;
   return {};
 }
@@ -168,6 +270,60 @@ base::Status ParseCatalog(const JsonConfigDocument& source,
 }
 
 }  // namespace
+
+base::Status ValidateInstrumentDefinition(
+    const model::InstrumentDefinition& definition, std::string_view field_path,
+    strategy::ConfigError& error) noexcept {
+  const auto invalid = [&](std::string_view field, std::string_view reason) {
+    char path[sizeof(strategy::ConfigError::field_path)] = {};
+    std::snprintf(path, sizeof(path), "%.*s%s%.*s",
+                  static_cast<int>(field_path.size()), field_path.data(),
+                  field_path.empty() || field_path.back() == '.' ? "" : ".",
+                  static_cast<int>(field.size()), field.data());
+    return Invalid(path, reason, error);
+  };
+  model::InstrumentId expected;
+  if (definition.symbol_view().size() >= model::kSymbolCapacity ||
+      model::MakeInstrumentId(model::VenueName(definition.venue),
+                              definition.symbol_view(),
+                              expected) != base::ErrorCode::kOk ||
+      expected != definition.id)
+    return invalid("symbol", "invalid instrument identity");
+  if (definition.price_decimals > model::kMaxPriceDecimals)
+    return invalid("price_decimals", "must be from 0 to 6");
+  if (definition.type != model::InstrumentType::kEquity &&
+      definition.type != model::InstrumentType::kFutures)
+    return invalid("instrument_type", "must be equity or futures");
+  const bool futures = definition.type == model::InstrumentType::kFutures;
+  if (futures != model::IsFuturesVenue(definition.venue))
+    return invalid("instrument_type", "instrument type does not match venue");
+  if (definition.price_tick <= 0)
+    return invalid("price_tick", "must be positive");
+  if (definition.quantity_step <= 0)
+    return invalid("quantity_step", "must be positive");
+  if (futures) {
+    if (definition.contract_multiplier <= 0)
+      return invalid("contract_multiplier", "must be positive");
+    if (definition.margin_rate_ppm <= 0 ||
+        definition.margin_rate_ppm > model::kMarginRateScale)
+      return invalid("margin_rate_ppm", "must be from 1 to 1000000");
+    if (definition.open_fee_per_lot < 0)
+      return invalid("open_fee_per_lot", "must be nonnegative");
+    if (definition.close_today_fee_per_lot < 0)
+      return invalid("close_today_fee_per_lot", "must be nonnegative");
+    if (definition.close_yesterday_fee_per_lot < 0)
+      return invalid("close_yesterday_fee_per_lot", "must be nonnegative");
+  } else if (definition.contract_multiplier != 1 ||
+             definition.margin_rate_ppm != 0 ||
+             definition.open_fee_per_lot != 0 ||
+             definition.close_today_fee_per_lot != 0 ||
+             definition.close_yesterday_fee_per_lot != 0) {
+    return invalid("instrument_type",
+                   "equity cannot use futures specifications");
+  }
+  error.Clear();
+  return {};
+}
 
 base::Status InstrumentCatalogLoader::Load(const char* path) noexcept {
   size_ = 0;

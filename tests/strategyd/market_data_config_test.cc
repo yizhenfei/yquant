@@ -5,7 +5,9 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -112,6 +114,11 @@ TEST(MarketDataConfigTest, LoadsExactTypedValuesAndDecodedStrings) {
   EXPECT_EQ(instrument.instrument.symbol_view(), "600000");
   EXPECT_EQ(instrument.instrument.id.value, (1ULL << 32) | 600000);
   EXPECT_EQ(instrument.instrument.price_decimals, 2U);
+  EXPECT_EQ(instrument.instrument.type, model::InstrumentType::kEquity);
+  EXPECT_EQ(instrument.instrument.price_tick, 1);
+  EXPECT_EQ(instrument.instrument.quantity_step, 1);
+  EXPECT_EQ(instrument.instrument.contract_multiplier, 1);
+  EXPECT_EQ(instrument.instrument.margin_rate_ppm, 0);
   EXPECT_EQ(instrument.bid_price, 1000);
   EXPECT_EQ(instrument.ask_price, 1001);
   EXPECT_EQ(instrument.bid_qty, 100);
@@ -407,6 +414,237 @@ TEST(MarketDataConfigTest, RejectsInvalidShmSchemaAndMixedAdapterFields) {
                            "\"adapter\":\"mock\",\"poll_interval_us\":0"));
   ASSERT_TRUE(mixed.valid());
   EXPECT_FALSE(loader.Load(mixed.path()).ok());
+}
+
+// A futures dictionary carries explicit settlement specifications regardless
+// of whether its quote seeds come from the mock adapter or a SHM stream.
+std::string FutureInstrument(bool mock = true) {
+  std::string instrument = R"({"venue":"SHFE","symbol":"rb2501")";
+  if (mock)
+    instrument +=
+        R"(,"bid_price":3500,"bid_qty":10,"ask_price":3502,"ask_qty":20,"price_step":2)";
+  return instrument + '}';
+}
+
+TEST(MarketDataConfigTest, ShmAcceptsFuturesMetadataWithoutMockSeeds) {
+  ConfigFile file(
+      R"({"instrument_catalog":")" +
+      std::string(YQUANT_TEST_INSTRUMENT_CATALOG_PATH) +
+      R"(","source_id":1,"adapter":"shm","runtime_directory":"/tmp/yquant",)"
+      R"("stream":"futures","instruments":[)" +
+      FutureInstrument(false) + "]}");
+  ASSERT_TRUE(file.valid());
+  MarketDataConfigLoader loader;
+  ASSERT_TRUE(loader.Load(file.path()).ok()) << loader.error().message;
+  EXPECT_EQ(loader.config().adapter, MarketDataAdapter::kShm);
+  EXPECT_EQ(loader.config().instruments[0].instrument.type,
+            model::InstrumentType::kFutures);
+  EXPECT_EQ(loader.config().instruments[0].bid_price, 0);
+}
+
+TEST(MarketDataConfigTest, RejectsSeedsOutsideCatalogTickAndQuantityUnits) {
+  const struct {
+    std::string_view from;
+    std::string_view to;
+  } cases[] = {{R"("bid_price":3500)", R"("bid_price":3501)"},
+               {R"("ask_price":3502)", R"("ask_price":3503)"},
+               {R"("price_step":2)", R"("price_step":1)"},
+               {R"("bid_qty":10)", R"("bid_qty":11)"},
+               {R"("ask_qty":20)", R"("ask_qty":21)"}};
+  for (const auto& item : cases) {
+    ConfigFile file(Replace(Json(FutureInstrument()), item.from, item.to));
+    ASSERT_TRUE(file.valid());
+    MarketDataConfigLoader loader;
+    EXPECT_FALSE(loader.Load(file.path()).ok());
+    EXPECT_EQ(loader.config().instrument_count, 0U);
+    EXPECT_NE(loader.error().message[0], '\0');
+  }
+}
+
+TEST(MarketDataConfigTest, TypedValidationChecksFuturesMetadataAndSeedUnits) {
+  ConfigFile file(Json(FutureInstrument()));
+  ASSERT_TRUE(file.valid());
+  MarketDataConfigLoader loader;
+  ASSERT_TRUE(loader.Load(file.path()).ok()) << loader.error().message;
+  const auto valid = loader.config();
+  strategy::ConfigError error;
+  const auto reject = [&](MarketDataConfig candidate, const char* field) {
+    EXPECT_EQ(ValidateMarketDataConfig(candidate, error).code,
+              base::ErrorCode::kInvalidArgument);
+    EXPECT_STREQ(error.field_path, field);
+  };
+  auto candidate = valid;
+  candidate.instruments[0].instrument.type = model::InstrumentType::kEquity;
+  reject(candidate, "instruments[0].instrument_type");
+  candidate = valid;
+  candidate.instruments[0].instrument.price_tick = 0;
+  reject(candidate, "instruments[0].price_tick");
+  candidate = valid;
+  candidate.instruments[0].instrument.quantity_step = -1;
+  reject(candidate, "instruments[0].quantity_step");
+  candidate = valid;
+  candidate.instruments[0].instrument.contract_multiplier = 0;
+  reject(candidate, "instruments[0].contract_multiplier");
+  candidate = valid;
+  candidate.instruments[0].instrument.margin_rate_ppm = 1000001;
+  reject(candidate, "instruments[0].margin_rate_ppm");
+  candidate = valid;
+  candidate.instruments[0].instrument.close_yesterday_fee_per_lot = -1;
+  reject(candidate, "instruments[0].close_yesterday_fee_per_lot");
+  candidate = valid;
+  candidate.instruments[0].bid_price = 3501;
+  reject(candidate, "instruments[0].bid_price");
+  candidate = valid;
+  candidate.instruments[0].ask_qty = 21;
+  reject(candidate, "instruments[0].ask_qty");
+  candidate = valid;
+  std::memset(candidate.instruments[0].instrument.symbol, 'x',
+              sizeof(candidate.instruments[0].instrument.symbol));
+  reject(candidate, "instruments[0].symbol");
+}
+
+TEST(MarketDataConfigTest, EquityRetainsDefaultsAndRejectsFuturesOnlyFields) {
+  for (const auto field :
+       {R"("contract_multiplier":1,)", R"("margin_rate_ppm":0,)",
+        R"("open_fee_per_lot":0,)"}) {
+    ConfigFile file(
+        Replace(Json(), R"("venue":)", std::string(field) + R"("venue":)"));
+    ASSERT_TRUE(file.valid());
+    MarketDataConfigLoader loader;
+    EXPECT_FALSE(loader.Load(file.path()).ok());
+  }
+  ConfigFile file(Replace(
+      Json(), R"("venue":)",
+      R"("instrument_type":"equity","price_tick":1,"quantity_step":100,"venue":)"));
+  ASSERT_TRUE(file.valid());
+  MarketDataConfigLoader loader;
+  EXPECT_FALSE(loader.Load(file.path()).ok());
+}
+
+std::string ReplayJson(std::string_view extra = "") {
+  return R"({"instrument_catalog":")" +
+         std::string(YQUANT_TEST_INSTRUMENT_CATALOG_PATH) +
+         R"(","source_id":1,"adapter":"replay","replay_path":"quotes.csv",)"
+         R"("instruments":[)" +
+         FutureInstrument(false) + "]" + std::string(extra) + '}';
+}
+
+TEST(MarketDataConfigTest,
+     ResolvesReplayPathAgainstConfigDirectoryAndDefaults) {
+  ConfigFile file(ReplayJson());
+  ASSERT_TRUE(file.valid());
+  MarketDataConfigLoader loader;
+  ASSERT_TRUE(loader.Load(file.path()).ok()) << loader.error().message;
+  EXPECT_EQ(loader.config().adapter, MarketDataAdapter::kReplay);
+  const std::string path(file.path());
+  const auto expected = path.substr(0, path.rfind('/') + 1) + "quotes.csv";
+  EXPECT_STREQ(loader.config().replay_path, expected.c_str());
+  EXPECT_EQ(loader.config().replay_speed, 1U);
+  EXPECT_EQ(loader.config().replay_tail_ns, 1000000000U);
+  EXPECT_EQ(loader.config().interval_ns, 0U);
+  EXPECT_EQ(loader.config().instruments[0].bid_price, 0);
+  ConfigFile absolute(Replace(ReplayJson(), "quotes.csv", "/tmp/futures.csv"));
+  ASSERT_TRUE(absolute.valid());
+  ASSERT_TRUE(loader.Load(absolute.path()).ok());
+  EXPECT_STREQ(loader.config().replay_path, "/tmp/futures.csv");
+}
+
+TEST(MarketDataConfigTest, ParsesReplaySpeedAndTailBoundariesExactly) {
+  for (const auto extra : {R"(,"replay_speed":1,"replay_tail_ms":0)",
+                           R"(,"replay_speed":1000,"replay_tail_ms":60000)"}) {
+    ConfigFile file(ReplayJson(extra));
+    ASSERT_TRUE(file.valid());
+    MarketDataConfigLoader loader;
+    ASSERT_TRUE(loader.Load(file.path()).ok()) << loader.error().message;
+    EXPECT_LE(loader.config().replay_speed, 1000U);
+    EXPECT_LE(loader.config().replay_tail_ns, 60000000000ULL);
+  }
+}
+
+class InvalidReplayMarketConfigTest
+    : public ::testing::TestWithParam<InvalidField> {};
+
+TEST_P(InvalidReplayMarketConfigTest, RejectsTransportAndTimingSchemaErrors) {
+  const auto& item = GetParam();
+  ConfigFile file(Replace(ReplayJson(), item.from, item.to));
+  ASSERT_TRUE(file.valid());
+  MarketDataConfigLoader loader;
+  EXPECT_FALSE(loader.Load(file.path()).ok());
+  EXPECT_NE(loader.error().message[0], '\0');
+  EXPECT_EQ(loader.config().instrument_count, 0U);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ReplaySchema, InvalidReplayMarketConfigTest,
+    ::testing::Values(
+        InvalidField{"MissingPath", R"("replay_path":"quotes.csv",)", ""},
+        InvalidField{"EmptyPath", "quotes.csv", ""},
+        InvalidField{"NulPath", "quotes.csv", R"(quotes\u0000.csv)"},
+        InvalidField{"SpeedZero", R"("source_id":1)",
+                     R"("source_id":1,"replay_speed":0)"},
+        InvalidField{"SpeedLarge", R"("source_id":1)",
+                     R"("source_id":1,"replay_speed":1001)"},
+        InvalidField{"SpeedFraction", R"("source_id":1)",
+                     R"("source_id":1,"replay_speed":1.0)"},
+        InvalidField{"SpeedString", R"("source_id":1)",
+                     R"("source_id":1,"replay_speed":"1")"},
+        InvalidField{"NegativeTail", R"("source_id":1)",
+                     R"("source_id":1,"replay_tail_ms":-1)"},
+        InvalidField{"LargeTail", R"("source_id":1)",
+                     R"("source_id":1,"replay_tail_ms":60001)"},
+        InvalidField{"MockInterval", R"("source_id":1)",
+                     R"("source_id":1,"interval_ms":1)"},
+        InvalidField{"ShmPoll", R"("source_id":1)",
+                     R"("source_id":1,"poll_interval_us":0)"},
+        InvalidField{"MockSeed", R"("venue":)", R"("bid_price":0,"venue":)"}),
+    [](const ::testing::TestParamInfo<InvalidField>& info) {
+      return info.param.name;
+    });
+
+TEST(MarketDataConfigTest,
+     ReplayRejectsLongResolvedPathsAndMultipleInstruments) {
+  ConfigFile long_path(
+      Replace(ReplayJson(), "quotes.csv", std::string(4095, 'a')));
+  ASSERT_TRUE(long_path.valid());
+  MarketDataConfigLoader loader;
+  EXPECT_FALSE(loader.Load(long_path.path()).ok());
+  EXPECT_STREQ(loader.error().field_path, "replay_path");
+  auto json = ReplayJson();
+  json = Replace(json, FutureInstrument(false),
+                 FutureInstrument(false) + ',' +
+                     Replace(FutureInstrument(false), "rb2501", "rb2502"));
+  ConfigFile multiple(json);
+  ASSERT_TRUE(multiple.valid());
+  EXPECT_FALSE(loader.Load(multiple.path()).ok());
+  EXPECT_STREQ(loader.error().field_path, "instruments");
+}
+
+TEST(MarketDataConfigTest, TypedReplayValidationRejectsInvalidSettings) {
+  ConfigFile file(ReplayJson());
+  ASSERT_TRUE(file.valid());
+  MarketDataConfigLoader loader;
+  ASSERT_TRUE(loader.Load(file.path()).ok());
+  const auto valid = loader.config();
+  strategy::ConfigError error;
+  auto candidate = valid;
+  candidate.replay_path[0] = 'r';
+  EXPECT_FALSE(ValidateMarketDataConfig(candidate, error).ok());
+  EXPECT_STREQ(error.field_path, "replay_path");
+  candidate = valid;
+  std::memset(candidate.replay_path, 'x', sizeof(candidate.replay_path));
+  EXPECT_FALSE(ValidateMarketDataConfig(candidate, error).ok());
+  candidate = valid;
+  candidate.replay_speed = 0;
+  EXPECT_FALSE(ValidateMarketDataConfig(candidate, error).ok());
+  EXPECT_STREQ(error.field_path, "replay_speed");
+  candidate = valid;
+  candidate.replay_tail_ns = 60000000001ULL;
+  EXPECT_FALSE(ValidateMarketDataConfig(candidate, error).ok());
+  EXPECT_STREQ(error.field_path, "replay_tail_ms");
+  candidate = valid;
+  candidate.instrument_count = 2;
+  EXPECT_FALSE(ValidateMarketDataConfig(candidate, error).ok());
+  EXPECT_STREQ(error.field_path, "instruments");
 }
 
 }  // namespace

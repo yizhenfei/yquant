@@ -71,6 +71,9 @@ target_link_libraries(yquant_trading_wire PUBLIC
 target_compile_options(yquant_trading_wire PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(yquant_strategyd_runtime STATIC
+  src/strategyd/futures_ledger.cc
+  src/strategyd/replay_market_data_source.cc
+  src/strategyd/simulated_futures_exchange.cc
   src/strategyd/mock_trading_adapter.cc
   src/strategyd/remote_trading.cc
   src/strategyd/shm_market_data_source.cc
@@ -78,6 +81,7 @@ add_library(yquant_strategyd_runtime STATIC
   src/strategyd/market_data.cc
   src/strategyd/strategy_library.cc
   src/strategyd/strategy_runner.cc
+  src/strategyd/timer.cc
   src/strategyd/trading.cc
   src/strategyd/trading_config.cc)
 target_include_directories(yquant_strategyd_runtime PUBLIC
@@ -150,6 +154,8 @@ yquant_add_strategy_example(parameterized_strategy)
 yquant_add_strategy_example(quote_observer_strategy)
 yquant_add_strategy_example(order_lifecycle_strategy)
 yquant_add_strategy_example(shared_account_strategy)
+yquant_add_strategy_example(bbo_market_making_strategy)
+yquant_add_strategy_example(futures_bbo_strategy)
 target_link_libraries(lifecycle_strategy PRIVATE simdjson::simdjson)
 target_link_libraries(parameterized_strategy PRIVATE simdjson::simdjson)
 target_link_libraries(quote_observer_strategy PRIVATE simdjson::simdjson)
@@ -157,12 +163,23 @@ target_link_libraries(order_lifecycle_strategy PRIVATE simdjson::simdjson)
 target_link_libraries(shared_account_strategy PRIVATE simdjson::simdjson)
 configure_file(examples/instruments.json
   "${CMAKE_BINARY_DIR}/instruments.json" COPYONLY)
+target_link_libraries(bbo_market_making_strategy PRIVATE simdjson::simdjson)
+target_link_libraries(futures_bbo_strategy PRIVATE simdjson::simdjson)
 configure_file(examples/strategies/mock_market_data.json
   "${CMAKE_BINARY_DIR}/strategies/mock_market_data.json" COPYONLY)
 configure_file(examples/strategies/shm_market_data.json
   "${CMAKE_BINARY_DIR}/strategies/shm_market_data.json" COPYONLY)
 configure_file(examples/strategies/mock_trading.json
   "${CMAKE_BINARY_DIR}/strategies/mock_trading.json" COPYONLY)
+configure_file(examples/strategies/bbo_mock_trading.json
+  "${CMAKE_BINARY_DIR}/strategies/bbo_mock_trading.json" COPYONLY)
+foreach(config IN ITEMS futures_market_data futures_trading)
+  configure_file("examples/strategies/${config}.json"
+    "${CMAKE_BINARY_DIR}/strategies/${config}.json" COPYONLY)
+endforeach()
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/data")
+configure_file(examples/data/a1805_20171227.csv
+  "${CMAKE_BINARY_DIR}/data/a1805_20171227.csv" COPYONLY)
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/marketd")
 foreach(config IN ITEMS mock_source local tcp_source tcp_relay record_local
                         replay_recording)
@@ -268,6 +285,8 @@ if(BUILD_TESTING)
     tests/strategyd/market_data_allocation_test.cc)
   target_link_libraries(market_data_allocation_test PRIVATE
     yquant_strategyd_runtime GTest::gtest_main yquant_compile_options)
+  target_compile_definitions(market_data_allocation_test PRIVATE
+    YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json")
   target_compile_options(market_data_allocation_test PRIVATE
     -Wall -Wextra -Wpedantic)
   gtest_discover_tests(market_data_allocation_test
@@ -279,6 +298,8 @@ if(BUILD_TESTING)
     tests/strategyd/trading_allocation_test.cc)
   target_link_libraries(trading_allocation_test PRIVATE
     yquant_strategyd_runtime GTest::gtest_main yquant_compile_options)
+  target_compile_definitions(trading_allocation_test PRIVATE
+    YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json")
   target_compile_options(trading_allocation_test PRIVATE
     -Wall -Wextra -Wpedantic)
   gtest_discover_tests(trading_allocation_test

@@ -3,6 +3,7 @@
 
 #include <cstdint>
 
+#include "yquant/model/futures.h"
 #include "yquant/model/identifiers.h"
 
 namespace yquant::model {
@@ -21,13 +22,15 @@ constexpr bool IsTerminalOrderState(OrderState state) noexcept {
          state == OrderState::kRejected;
 }
 
-// Limit-order request; prices use the shared instrument precision and quantity
-// is measured in shares. The service validates positive price and quantity.
+// Limit-order request; prices use the shared instrument precision. Equity
+// quantity is shares and requires kNone; futures quantity is lots and requires
+// an explicit opening or day-specific closing effect.
 struct OrderRequest {
   InstrumentId instrument_id;
   OrderSide side = OrderSide::kUnknown;
   std::int64_t limit_price = 0;
   std::int64_t quantity = 0;
+  PositionEffect position_effect = PositionEffect::kNone;
 };
 
 // Owned view of the latest local order state. Partial fills remain Working.
@@ -49,6 +52,7 @@ struct OrderSnapshot {
   std::uint64_t report_sequence = 0;
   // Last accepted broker report time; local operations do not refresh this.
   std::uint64_t receive_time_ns = 0;
+  PositionEffect position_effect = PositionEffect::kNone;
   friend bool operator==(const OrderSnapshot&,
                          const OrderSnapshot&) noexcept = default;
 };

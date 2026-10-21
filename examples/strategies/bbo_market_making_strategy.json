@@ -1,0 +1,12 @@
+{
+  "strategy_id": "bbo-market-making-example",
+  "parameters": {
+    "venue": "SSE",
+    "symbol": "600000",
+    "quote_qty": 100,
+    "min_position": 800,
+    "max_position": 1200,
+    "quote_timeout_ms": 500,
+    "retry_delay_ms": 10
+  }
+}

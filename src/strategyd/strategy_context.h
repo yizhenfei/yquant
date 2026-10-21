@@ -9,16 +9,20 @@
 namespace yquant::strategyd {
 
 // Callback view of independently owned host services. Owns neither state nor
-// resources; the runner serializes access and keeps both dependencies alive.
+// resources; the runner serializes access and keeps all dependencies alive.
 class StrategyContextImpl final : public strategy::StrategyContext {
  public:
-  // Borrows clock and both services for this view's entire lifetime. No
+  // Borrows clock and all services for this view's entire lifetime. No
   // reference returned to a strategy may outlive the callback in which it was
   // obtained.
   StrategyContextImpl(const MonotonicClock& clock,
                       strategy::MarketData& market_data,
-                      strategy::Trading& trading) noexcept
-      : clock_(clock), market_data_(market_data), trading_(&trading) {}
+                      strategy::Trading& trading,
+                      strategy::Timer& timer) noexcept
+      : clock_(clock),
+        market_data_(market_data),
+        trading_(&trading),
+        timer_(timer) {}
 
   // Selects the run's service before loading the strategy. The selected
   // service must outlive this context and cannot change during callbacks.
@@ -33,11 +37,14 @@ class StrategyContextImpl final : public strategy::StrategyContext {
   const strategy::Trading& trading() const noexcept override {
     return *trading_;
   }
+  strategy::Timer& timer() noexcept override { return timer_; }
+  const strategy::Timer& timer() const noexcept override { return timer_; }
 
  private:
   const MonotonicClock& clock_;
   strategy::MarketData& market_data_;
   strategy::Trading* trading_;
+  strategy::Timer& timer_;
 };
 
 }  // namespace yquant::strategyd

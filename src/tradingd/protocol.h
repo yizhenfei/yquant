@@ -86,6 +86,8 @@ struct Message {
   model::OrderReason reason;
 };
 
+// Wire version 1 supports equity instruments and PositionEffect::kNone only;
+// encoding a futures effect fails instead of silently dropping the field.
 // Explicit little-endian, versioned framing. Encoding/decoding are bounded,
 // allocation-free, reject noncanonical data and preserve outputs on failure.
 [[nodiscard]] base::Status EncodeMessage(const Message& message,

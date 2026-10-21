@@ -30,6 +30,13 @@ class TradingRuntime : public strategy::Trading {
   virtual void BeginCallback(CallbackPhase phase) noexcept = 0;
   virtual void EndCallback() noexcept = 0;
   virtual void BeginStopping() noexcept = 0;
+  // Marks accepted quotes before strategy callbacks. Local futures execution
+  // updates its account; remote stock execution needs no local valuation.
+  // Failure preserves the account and owns a diagnostic through error_detail.
+  [[nodiscard]] virtual base::ErrorCode ApplyQuote(
+      const model::QuoteTick&) noexcept {
+    return base::ErrorCode::kOk;
+  }
   // Performs bounded transport work outside callbacks. The remote runtime
   // owns its connection and does not use the supplied local adapter.
   [[nodiscard]] virtual base::Status ProcessRequests(

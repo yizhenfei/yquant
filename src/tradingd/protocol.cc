@@ -38,7 +38,8 @@ bool ValidAmount(std::int64_t price, std::int64_t quantity) noexcept {
 }
 
 bool ValidOrder(const model::OrderSnapshot& order) noexcept {
-  if (order.client_order_id.value == 0 ||
+  if (order.position_effect != model::PositionEffect::kNone ||
+      order.client_order_id.value == 0 ||
       !ValidInstrument(order.instrument_id) || !ValidSide(order.side) ||
       !ValidAmount(order.limit_price, order.original_qty) ||
       order.cumulative_filled_qty < 0 ||
@@ -57,7 +58,8 @@ bool ValidOrder(const model::OrderSnapshot& order) noexcept {
 
 bool ValidFill(const model::Fill& fill,
                const model::OrderSnapshot& order) noexcept {
-  return fill.client_order_id == order.client_order_id &&
+  return fill.position_effect == model::PositionEffect::kNone &&
+         fill.client_order_id == order.client_order_id &&
          fill.broker_order_id == order.broker_order_id &&
          !fill.broker_order_id.empty() && !fill.execution_id.empty() &&
          fill.instrument_id == order.instrument_id && fill.side == order.side &&
@@ -372,6 +374,7 @@ bool WritePayload(Writer& writer, const Message& message) noexcept {
       break;
     case MessageType::kNewOrder:
       if (message.order_id.value == 0 ||
+          message.request.position_effect != model::PositionEffect::kNone ||
           !ValidInstrument(message.request.instrument_id) ||
           !ValidSide(message.request.side) ||
           !ValidAmount(message.request.limit_price, message.request.quantity))
@@ -450,6 +453,7 @@ void ReadPayload(Reader& reader, Message& message) noexcept {
       message.request.limit_price = reader.Signed();
       message.request.quantity = reader.Signed();
       if (message.order_id.value == 0 ||
+          message.request.position_effect != model::PositionEffect::kNone ||
           !ValidInstrument(message.request.instrument_id) ||
           !ValidSide(message.request.side) ||
           !ValidAmount(message.request.limit_price, message.request.quantity))

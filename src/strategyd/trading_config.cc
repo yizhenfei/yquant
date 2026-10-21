@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <string_view>
 #include <utility>
 
@@ -139,6 +140,146 @@ base::Status ParsePositions(simdjson::ondemand::value value,
   return {};
 }
 
+// Owns a path for diagnostics from the separate futures bootstrap schema.
+struct FuturesFieldPath {
+  char text[256] = {};
+  bool truncated = false;
+  FuturesFieldPath(std::size_t index, std::string_view key) noexcept {
+    const auto size =
+        key.empty()
+            ? std::snprintf(text, sizeof(text),
+                            "initial_futures_positions[%zu]", index)
+            : std::snprintf(text, sizeof(text),
+                            "initial_futures_positions[%zu].%.*s", index,
+                            static_cast<int>(key.size()), key.data());
+    truncated = size < 0 || static_cast<std::size_t>(size) >= sizeof(text);
+  }
+};
+
+// Reads one FIFO bootstrap bucket; validation runs on the complete typed
+// result.
+base::Status ParseBucket(simdjson::ondemand::value value, std::string_view path,
+                         FuturesInitialBucket& out,
+                         strategy::ConfigError& error) noexcept {
+  simdjson::ondemand::object object;
+  auto code = value.get_object().get(object);
+  if (code) return JsonError(code, path, error);
+  std::uint32_t seen = 0;
+  for (auto item : object) {
+    simdjson::ondemand::field field;
+    code = std::move(item).get(field);
+    if (code) return JsonError(code, path, error);
+    std::string_view key;
+    code = field.unescaped_key().get(key);
+    if (code) return JsonError(code, path, error);
+    char full_path[256];
+    const auto size = std::snprintf(full_path, sizeof(full_path), "%.*s.%.*s",
+                                    static_cast<int>(path.size()), path.data(),
+                                    static_cast<int>(key.size()), key.data());
+    if (key != "quantity" && key != "open_price") {
+      const auto status = Invalid(full_path, "unknown bucket field", error);
+      error.truncated |=
+          size < 0 || static_cast<std::size_t>(size) >= sizeof(full_path);
+      return status;
+    }
+    std::int64_t parsed;
+    code = field.value().get_int64().get(parsed);
+    if (code) return JsonError(code, full_path, error);
+    if (key == "quantity") {
+      seen |= 1;
+      out.quantity = parsed;
+    } else {
+      seen |= 2;
+      out.open_price = parsed;
+    }
+  }
+  if (seen != 3)
+    return Invalid(path, "quantity and open_price are required", error);
+  return {};
+}
+
+// Futures inventory is kept separate from equity quantity/availability fields.
+base::Status ParseFuturesPosition(simdjson::ondemand::value value,
+                                  std::size_t index,
+                                  FuturesInitialPosition& out,
+                                  strategy::ConfigError& error) noexcept {
+  constexpr std::array<std::string_view, 7> kFields = {
+      "venue",          "symbol",      "reference_price", "long_today",
+      "long_yesterday", "short_today", "short_yesterday"};
+  const FuturesFieldPath object_path(index, {});
+  simdjson::ondemand::object object;
+  auto code = value.get_object().get(object);
+  if (code) return JsonError(code, object_path.text, error);
+  std::uint32_t seen = 0;
+  std::string_view venue, symbol;
+  for (auto item : object) {
+    simdjson::ondemand::field field;
+    code = std::move(item).get(field);
+    if (code) return JsonError(code, object_path.text, error);
+    std::string_view key;
+    code = field.unescaped_key().get(key);
+    if (code) return JsonError(code, object_path.text, error);
+    const FuturesFieldPath path(index, key);
+    std::size_t offset = 0;
+    while (offset < kFields.size() && key != kFields[offset]) ++offset;
+    if (offset == kFields.size()) {
+      const auto status =
+          Invalid(path.text, "unknown futures position field", error);
+      error.truncated |= path.truncated;
+      return status;
+    }
+    seen |= 1U << offset;
+    if (offset < 2) {
+      code = field.value().get_string().get(offset == 0 ? venue : symbol);
+    } else if (offset == 2) {
+      code = field.value().get_int64().get(out.reference_price);
+    } else {
+      FuturesInitialBucket* buckets[] = {&out.long_today, &out.long_yesterday,
+                                         &out.short_today,
+                                         &out.short_yesterday};
+      const auto status =
+          ParseBucket(field.value(), path.text, *buckets[offset - 3], error);
+      if (!status.ok()) return status;
+    }
+    if (code) return JsonError(code, path.text, error);
+  }
+  for (std::size_t offset = 0; offset < kFields.size(); ++offset)
+    if ((seen & (1U << offset)) == 0)
+      return Invalid(FuturesFieldPath(index, kFields[offset]).text,
+                     "required field is missing", error);
+  if (model::MakeInstrumentId(venue, symbol, out.instrument_id) !=
+          base::ErrorCode::kOk ||
+      !model::IsFuturesVenue(
+          static_cast<model::Venue>(out.instrument_id.value >> 32)))
+    return Invalid(FuturesFieldPath(index, "symbol").text,
+                   "requires a supported futures venue and contract symbol",
+                   error);
+  return {};
+}
+
+// Consumes all bootstrap positions before publishing any configuration.
+base::Status ParseFuturesPositions(simdjson::ondemand::value value,
+                                   TradingAccountSnapshot& account,
+                                   strategy::ConfigError& error) noexcept {
+  simdjson::ondemand::array array;
+  auto code = value.get_array().get(array);
+  if (code) return JsonError(code, "initial_futures_positions", error);
+  for (auto item : array) {
+    if (account.futures_position_count == account.futures_positions.size())
+      return Invalid("initial_futures_positions",
+                     "at most 64 positions are allowed", error);
+    simdjson::ondemand::value parsed;
+    code = std::move(item).get(parsed);
+    if (code) return JsonError(code, "initial_futures_positions", error);
+    const auto status = ParseFuturesPosition(
+        parsed, account.futures_position_count,
+        account.futures_positions[account.futures_position_count], error);
+    if (!status.ok()) return status;
+    ++account.futures_position_count;
+  }
+  return {};
+}
+
 // Parses exactly one strict object after generic syntax/UTF-8/duplicate-key
 // validation. Writes only temporary typed values; no parser views escape.
 base::Status Parse(const JsonConfigDocument& source, TradingConfig& config,
@@ -153,18 +294,20 @@ base::Status Parse(const JsonConfigDocument& source, TradingConfig& config,
   simdjson::ondemand::object root;
   json_error = document.get_object().get(root);
   if (json_error) return JsonError(json_error, "$", error);
-  constexpr std::array<std::string_view, 12> kFields = {"adapter",
-                                                        "mode",
-                                                        "report_interval_ms",
-                                                        "shutdown_timeout_ms",
-                                                        "initial_cash",
-                                                        "initial_positions",
-                                                        "address",
-                                                        "port",
-                                                        "client_id",
-                                                        "token",
-                                                        "connect_timeout_ms",
-                                                        "heartbeat_timeout_ms"};
+  constexpr std::array<std::string_view, 13> kFields = {
+      "adapter",
+      "mode",
+      "report_interval_ms",
+      "shutdown_timeout_ms",
+      "initial_cash",
+      "initial_positions",
+      "address",
+      "port",
+      "client_id",
+      "token",
+      "connect_timeout_ms",
+      "heartbeat_timeout_ms",
+      "initial_futures_positions"};
   std::uint32_t seen = 0;
   for (auto field_result : root) {
     simdjson::ondemand::field field;
@@ -186,8 +329,11 @@ base::Status Parse(const JsonConfigDocument& source, TradingConfig& config,
           config.adapter = TradingAdapterKind::kMock;
         else if (value == "tcp")
           config.adapter = TradingAdapterKind::kTcp;
-        else
-          return Invalid(key, "must be mock or tcp", error);
+        else if (value == "simulated_futures") {
+          config.adapter = TradingAdapterKind::kSimulatedFutures;
+          config.initial_account.type = model::AccountType::kFutures;
+        } else
+          return Invalid(key, "must be mock, tcp or simulated_futures", error);
       } else if (position == 1) {
         if (value == "fill")
           config.mode = MockTradingMode::kFill;
@@ -231,9 +377,12 @@ base::Status Parse(const JsonConfigDocument& source, TradingConfig& config,
       json_error =
           field.value().get_int64().get(config.initial_account.cash_balance);
       if (json_error) return JsonError(json_error, key, error);
-    } else if (position == 5) {
+    } else if (position == 5 || position == 12) {
       const auto status =
-          ParsePositions(field.value(), config.initial_account, error);
+          position == 5
+              ? ParsePositions(field.value(), config.initial_account, error)
+              : ParseFuturesPositions(field.value(), config.initial_account,
+                                      error);
       if (!status.ok()) return status;
     } else {
       std::uint64_t value;
@@ -253,9 +402,14 @@ base::Status Parse(const JsonConfigDocument& source, TradingConfig& config,
       (1U << 0) | (1U << 6) | (1U << 7) | (1U << 8) | (1U << 9);
   constexpr std::uint32_t kTcpAllowed =
       kTcpRequired | (1U << 3) | (1U << 10) | (1U << 11);
+  constexpr std::uint32_t kFuturesFields =
+      (1U << 0) | (1U << 2) | (1U << 3) | (1U << 4) | (1U << 12);
   const bool tcp = config.adapter == TradingAdapterKind::kTcp;
-  const auto required = tcp ? kTcpRequired : kMockFields;
-  const auto allowed = tcp ? kTcpAllowed : kMockFields;
+  const bool futures = config.adapter == TradingAdapterKind::kSimulatedFutures;
+  const auto required = tcp       ? kTcpRequired
+                        : futures ? kFuturesFields
+                                  : kMockFields;
+  const auto allowed = tcp ? kTcpAllowed : required;
   for (std::size_t position = 0; position < kFields.size(); ++position) {
     const auto bit = 1U << position;
     if ((seen & bit) != 0 && (allowed & bit) == 0)
@@ -276,6 +430,14 @@ base::Status ValidateTradingConfig(const TradingConfig& config,
       kMinimumTradingDurationMs * kTradingNanosecondsPerMillisecond;
   constexpr std::uint64_t kMaximum =
       kMaximumTradingDurationMs * kTradingNanosecondsPerMillisecond;
+  if (config.adapter != TradingAdapterKind::kMock &&
+      config.adapter != TradingAdapterKind::kTcp &&
+      config.adapter != TradingAdapterKind::kSimulatedFutures)
+    return Invalid("adapter", "must be mock, tcp or simulated_futures", error);
+  const bool futures = config.adapter == TradingAdapterKind::kSimulatedFutures;
+  if (config.initial_account.type !=
+      (futures ? model::AccountType::kFutures : model::AccountType::kCash))
+    return Invalid("adapter", "adapter and account type must agree", error);
   if (config.shutdown_timeout_ns < kMinimum ||
       config.shutdown_timeout_ns > kMaximum)
     return Invalid("shutdown_timeout_ms",
@@ -311,13 +473,12 @@ base::Status ValidateTradingConfig(const TradingConfig& config,
       return Invalid("heartbeat_timeout_ms",
                      "must be from 1 to 60000 milliseconds", error);
     if (config.initial_account.cash_balance != 0 ||
-        config.initial_account.position_count != 0)
+        config.initial_account.position_count != 0 ||
+        config.initial_account.futures_position_count != 0)
       return Invalid("initial_cash", "remote account is owned by tradingd",
                      error);
     return {};
   }
-  if (config.adapter != TradingAdapterKind::kMock)
-    return Invalid("adapter", "must be mock or tcp", error);
   if (config.mode != MockTradingMode::kFill &&
       config.mode != MockTradingMode::kWorking &&
       config.mode != MockTradingMode::kReject)
@@ -330,6 +491,47 @@ base::Status ValidateTradingConfig(const TradingConfig& config,
   if (account.cash_balance < 0) {
     return Invalid("initial_cash",
                    "must be a nonnegative int64 microyuan value", error);
+  }
+  if ((futures && account.position_count != 0) ||
+      (!futures && account.futures_position_count != 0))
+    return Invalid(futures ? "initial_positions" : "initial_futures_positions",
+                   "account types cannot be mixed", error);
+  if (account.futures_position_count > account.futures_positions.size())
+    return Invalid("initial_futures_positions",
+                   "at most 64 positions are allowed", error);
+  for (std::size_t index = 0; index < account.futures_position_count; ++index) {
+    const auto& position = account.futures_positions[index];
+    if (!model::IsValidInstrumentId(position.instrument_id) ||
+        !model::IsFuturesVenue(
+            static_cast<model::Venue>(position.instrument_id.value >> 32)))
+      return Invalid(FuturesFieldPath(index, "symbol").text,
+                     "invalid futures instrument identity", error);
+    if (position.reference_price <= 0)
+      return Invalid(FuturesFieldPath(index, "reference_price").text,
+                     "must be positive", error);
+    const FuturesInitialBucket* buckets[] = {
+        &position.long_today, &position.long_yesterday, &position.short_today,
+        &position.short_yesterday};
+    constexpr std::string_view kNames[] = {"long_today", "long_yesterday",
+                                           "short_today", "short_yesterday"};
+    std::int64_t gross = 0;
+    for (std::size_t bucket = 0; bucket < std::size(buckets); ++bucket) {
+      const auto& entry = *buckets[bucket];
+      if (entry.quantity < 0 || entry.open_price < 0 ||
+          ((entry.quantity == 0) != (entry.open_price == 0)))
+        return Invalid(FuturesFieldPath(index, kNames[bucket]).text,
+                       "quantity and open_price must both be zero or positive",
+                       error);
+      if (entry.quantity > std::numeric_limits<std::int64_t>::max() - gross)
+        return Invalid(FuturesFieldPath(index, kNames[bucket]).text,
+                       "gross quantity exceeds int64", error);
+      gross += entry.quantity;
+    }
+    for (std::size_t previous = 0; previous < index; ++previous)
+      if (account.futures_positions[previous].instrument_id ==
+          position.instrument_id)
+        return Invalid(FuturesFieldPath(index, "symbol").text,
+                       "duplicate initial position", error);
   }
   if (account.position_count > account.positions.size()) {
     return Invalid("initial_positions", "at most 64 positions are allowed",

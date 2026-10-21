@@ -137,6 +137,13 @@ base::ErrorCode MarketDataImpl::ApplyQuote(const model::QuoteTick& tick,
     return base::ErrorCode::kCorrupt;
   }
   auto& slot = instruments_[*index];
+  const auto& definition = slot.definition;
+  if (tick.bid_price % definition.price_tick != 0 ||
+      tick.ask_price % definition.price_tick != 0 ||
+      tick.bid_qty % definition.quantity_step != 0 ||
+      tick.ask_qty % definition.quantity_step != 0) {
+    return base::ErrorCode::kCorrupt;
+  }
   if (slot.has_quote && tick.sequence <= slot.latest.sequence) {
     accepted = false;
     return base::ErrorCode::kOk;

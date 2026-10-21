@@ -29,7 +29,7 @@ class ShmMarketDataSourceTest : public ::testing::Test {
       const auto* symbol = i == 0 ? "600000" : "600001";
       ASSERT_EQ(model::MakeInstrumentId("SSE", symbol, instrument.id),
                 base::ErrorCode::kOk);
-      std::memcpy(instrument.symbol, symbol, sizeof(instrument.symbol));
+      std::memcpy(instrument.symbol, symbol, 6);
       instrument.price_decimals = 2;
     }
   }

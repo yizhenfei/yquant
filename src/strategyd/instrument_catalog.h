@@ -43,6 +43,14 @@ class InstrumentCatalogLoader {
   strategy::ConfigError error_;
 };
 
+// Validates identity and all immutable accounting units without allocation.
+// Failure fills a diagnostic beneath field_path and leaves definition
+// unchanged; success clears error. Used by file loaders and typed host
+// configurations.
+[[nodiscard]] base::Status ValidateInstrumentDefinition(
+    const model::InstrumentDefinition& definition, std::string_view field_path,
+    strategy::ConfigError& error) noexcept;
+
 // Resolves reference relative to config_path's directory and writes an absolute
 // NUL-terminated path to out. Empty, embedded-NUL or overlong references and
 // insufficient output space return kInvalidArgument; filesystem errors return

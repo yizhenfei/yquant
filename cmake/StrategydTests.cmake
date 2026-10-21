@@ -53,6 +53,25 @@ yquant_add_trading_fixture(bulk 4)
 yquant_add_trading_fixture(partial_cancel 6)
 yquant_add_trading_fixture(insufficient 8)
 
+function(yquant_add_timer_fixture name mode)
+  add_library(strategyd_timer_${name} MODULE tests/strategyd/timer_fixture.cc)
+  target_link_libraries(strategyd_timer_${name} PRIVATE yquant::strategy_api)
+  target_compile_definitions(strategyd_timer_${name} PRIVATE
+    YQUANT_TEST_TIMER_MODE=${mode})
+  target_compile_options(strategyd_timer_${name} PRIVATE
+    -Wall -Wextra -Wpedantic)
+  set_target_properties(strategyd_timer_${name} PROPERTIES
+    PREFIX "" CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES)
+endfunction()
+yquant_add_timer_fixture(basic 0)
+yquant_add_timer_fixture(cancel 1)
+yquant_add_timer_fixture(replace 2)
+yquant_add_timer_fixture(rearm 3)
+yquant_add_timer_fixture(trading 4)
+yquant_add_timer_fixture(fail 5)
+yquant_add_timer_fixture(fair 6)
+yquant_add_timer_fixture(past 7)
+
 add_executable(strategyd_signal_launcher
   tests/strategyd/signal_inheritance_launcher.cc)
 target_link_libraries(strategyd_signal_launcher PRIVATE yquant_compile_options)
@@ -75,17 +94,28 @@ set_target_properties(strategyd_fixture_missing_dependency PROPERTIES
 
 add_executable(yquant_strategyd_test
   tests/strategyd/instrument_catalog_test.cc
+  tests/strategyd/replay_market_data_source_test.cc
   tests/strategyd/market_model_test.cc
   tests/strategyd/market_data_config_test.cc
   tests/strategyd/mock_market_data_source_test.cc
   tests/strategyd/shm_market_data_source_test.cc
   tests/strategyd/market_runner_test.cc
   tests/strategyd/strategy_context_test.cc
+  tests/strategyd/remote_timer_runner_test.cc
+  tests/strategyd/futures_host_test.cc
+  tests/strategyd/futures_exchange_test.cc
+  tests/strategyd/futures_bbo_test.cc
+  tests/strategyd/futures_process_test.cc
+  tests/strategyd/futures_ledger_test.cc
   tests/strategyd/trading_test.cc
   tests/strategyd/trading_config_test.cc
   tests/strategyd/mock_trading_adapter_test.cc
   tests/strategyd/trading_runner_test.cc
   tests/strategyd/trading_process_test.cc
+  tests/strategyd/timer_test.cc
+  tests/strategyd/timer_runner_test.cc
+  tests/strategyd/bbo_strategy_test.cc
+  tests/strategyd/bbo_process_test.cc
   tests/strategyd/strategy_config_test.cc
   tests/strategyd/strategy_config_loader_test.cc
   tests/strategyd/strategy_runner_test.cc
@@ -122,9 +152,27 @@ target_compile_definitions(yquant_strategyd_test PRIVATE
   YQUANT_TEST_ORDER_EXAMPLE_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/order_lifecycle_strategy.json"
   YQUANT_TEST_TRADING_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/mock_trading.json"
   YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/trading_strategy.json")
+target_compile_definitions(yquant_strategyd_test PRIVATE
+  YQUANT_TEST_BBO_EXAMPLE_PATH="$<TARGET_FILE:bbo_market_making_strategy>"
+  YQUANT_TEST_BBO_EXAMPLE_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/bbo_market_making_strategy.json"
+  YQUANT_TEST_BBO_TRADING_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/bbo_mock_trading.json")
+target_compile_definitions(yquant_strategyd_test PRIVATE
+  YQUANT_TEST_FUTURES_BBO_PATH="$<TARGET_FILE:futures_bbo_strategy>"
+  YQUANT_TEST_FUTURES_STRATEGY_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/futures_bbo_strategy.json"
+  YQUANT_TEST_FUTURES_MARKET_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/futures_market_data.json"
+  YQUANT_TEST_FUTURES_TRADING_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/futures_trading.json")
 add_dependencies(yquant_strategyd_test
+  futures_bbo_strategy
   yquant_strategyd lifecycle_strategy parameterized_strategy
-  quote_observer_strategy order_lifecycle_strategy strategyd_signal_launcher)
+  quote_observer_strategy order_lifecycle_strategy bbo_market_making_strategy
+  strategyd_signal_launcher)
+
+foreach(name IN ITEMS basic cancel replace rearm trading fail fair past)
+  string(TOUPPER "${name}" upper_name)
+  target_compile_definitions(yquant_strategyd_test PRIVATE
+    YQUANT_TEST_TIMER_${upper_name}_PATH="$<TARGET_FILE:strategyd_timer_${name}>")
+  add_dependencies(yquant_strategyd_test strategyd_timer_${name})
+endforeach()
 
 foreach(name IN ITEMS normal cancel update_fail fill_fail bulk partial_cancel
     insufficient)

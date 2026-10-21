@@ -7,6 +7,7 @@
 #include "strategyd/trading_config.h"
 #include "yquant/base/status.h"
 #include "yquant/model/order.h"
+#include "yquant/model/quote_tick.h"
 #include "yquant/model/trading_event.h"
 
 namespace yquant::strategyd {
@@ -49,6 +50,13 @@ class TradingAdapter {
   // instrument membership before publishing this snapshot to the strategy.
   [[nodiscard]] virtual base::Status ReadAccountSnapshot(
       TradingAccountSnapshot& out) noexcept = 0;
+  // Observes an accepted quote before the strategy callback. Simulation may
+  // schedule matching facts, delivered later through Poll; never calls back
+  // into the strategy. Live adapters can retain this no-op implementation.
+  [[nodiscard]] virtual base::Status OnQuote(const model::QuoteTick&,
+                                             std::uint64_t) noexcept {
+    return {};
+  }
   // Success means adapter-local acceptance, not broker acknowledgement. Inputs
   // are borrowed during the call only. The host treats any failed send as an
   // uncertain attempt and never automatically resends the same request.

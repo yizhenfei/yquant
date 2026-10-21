@@ -209,6 +209,7 @@ base::Status Server::Handle(std::size_t index, const Message& message,
       model::InstrumentDefinition instrument;
       if (!s.market_data.TryGetInstrument(message.instruments[i].id,
                                           instrument) ||
+          instrument.type != model::InstrumentType::kEquity ||
           instrument.price_decimals != message.instruments[i].price_decimals) {
         Disconnect(index);
         return {};

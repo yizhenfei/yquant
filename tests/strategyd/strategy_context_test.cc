@@ -2,6 +2,7 @@
 
 #include "gtest/gtest.h"
 #include "strategyd/market_data.h"
+#include "strategyd/timer.h"
 #include "strategyd/trading.h"
 #include "yquant/model/identifiers.h"
 
@@ -61,7 +62,8 @@ TEST(StrategyContextTest, EmptyDictionaryPreservesOutputsAndHasNoSource) {
   ContextTestClock clock;
   MarketDataImpl market_data(clock);
   TradingImpl trading(clock, market_data);
-  StrategyContextImpl context(clock, market_data, trading);
+  TimerImpl timer;
+  StrategyContextImpl context(clock, market_data, trading, timer);
   const auto definition = ContextConfig().instruments[0].instrument;
   auto unchanged_definition = definition;
   EXPECT_EQ(context.market_data().FindInstrument("SSE", "600000",
@@ -89,7 +91,8 @@ TEST(StrategyContextTest, ResolvesDefinitionsAndRegistersOnlyDuringStart) {
   ContextTestClock clock;
   MarketDataImpl market_data(clock);
   TradingImpl trading(clock, market_data);
-  StrategyContextImpl context(clock, market_data, trading);
+  TimerImpl timer;
+  StrategyContextImpl context(clock, market_data, trading, timer);
   const auto config = ContextConfig();
   ASSERT_TRUE(market_data.Configure(config).ok());
   const auto definition = config.instruments[0].instrument;
@@ -129,7 +132,8 @@ TEST(StrategyContextTest, KeepsAcceptedSnapshotAndRejectsMismatchedSource) {
   ContextTestClock clock;
   MarketDataImpl market_data(clock);
   TradingImpl trading(clock, market_data);
-  StrategyContextImpl context(clock, market_data, trading);
+  TimerImpl timer;
+  StrategyContextImpl context(clock, market_data, trading, timer);
   const strategy::StrategyContext& read_only_context = context;
   const auto config = ContextConfig({17});
   ASSERT_TRUE(market_data.Configure(config).ok());
@@ -215,6 +219,46 @@ TEST(StrategyContextTest, BoundServicesKeepTheSameInstrumentIndependent) {
   EXPECT_EQ(snapshot, first_quote);
   ASSERT_TRUE(second_service.TryGetLatestQuote(id, snapshot));
   EXPECT_EQ(snapshot, second_quote);
+}
+
+TEST(StrategyContextTest,
+     QuoteTickAndQuantityStepFailuresPreserveCacheAndOutput) {
+  ContextTestClock clock;
+  MarketDataImpl market_data(clock);
+  auto config = ContextConfig();
+  auto& item = config.instruments[0];
+  item.instrument.price_tick = 2;
+  item.instrument.quantity_step = 5;
+  item.ask_price = 1002;
+  item.price_step = 2;
+  ASSERT_TRUE(market_data.Configure(config).ok());
+  const auto id = item.instrument.id;
+  market_data.BeginCallback(CallbackPhase::kStart);
+  ASSERT_EQ(market_data.SubscribeQuotes(id), ErrorCode::kOk);
+  market_data.EndCallback();
+  auto valid = ContextQuote(id, 2);
+  valid.ask_price = 1002;
+  bool accepted = false;
+  ASSERT_EQ(market_data.ApplyQuote(valid, accepted), ErrorCode::kOk);
+  ASSERT_TRUE(accepted);
+  for (std::size_t field = 0; field != 4; ++field) {
+    auto invalid = valid;
+    invalid.sequence = 3;
+    if (field == 0) ++invalid.bid_price;
+    if (field == 1) ++invalid.ask_price;
+    if (field == 2) ++invalid.bid_qty;
+    if (field == 3) ++invalid.ask_qty;
+    accepted = true;
+    EXPECT_EQ(market_data.ApplyQuote(invalid, accepted), ErrorCode::kCorrupt);
+    EXPECT_TRUE(accepted);
+    model::QuoteTick cached;
+    ASSERT_TRUE(market_data.TryGetLatestQuote(id, cached));
+    EXPECT_EQ(cached, valid);
+    // Old report sequences do not bypass structural/unit validation either.
+    invalid.sequence = 1;
+    EXPECT_EQ(market_data.ApplyQuote(invalid, accepted), ErrorCode::kCorrupt);
+    EXPECT_TRUE(accepted);
+  }
 }
 
 }  // namespace

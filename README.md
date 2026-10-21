@@ -43,6 +43,8 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 - `examples/tradingd/`：共享交易网关与策略客户端配置。
 - `examples/marketd/`：本机分发、TCP 中继、历史回放与录制配置。
 - `examples/strategies/`：用户策略动态库示例。
+- `examples/data/`：国内期货历史报价样本、来源与许可。
+- `scripts/`：本地运行辅助脚本。
 - `tests/base/`：基础组件测试。
 - `tests/strategyd/`：策略运行时与进程集成测试。
 - `tests/md/`、`tests/marketd/`：行情组件与多进程分发测试。
@@ -76,7 +78,7 @@ cmake -P cmake/DownloadTestData.cmake
 
 ## 策略进程
 
-`yquant-strategyd` 读取 JSON 配置并加载用户策略动态库，全部校验成功后调用 `OnStart(context)`。主线程驱动行情、交易请求及委托和成交回报。收到停止信号后，宿主停止行情和策略新请求，自动撤单并处理回报；排空后调用 `OnStop(context)`、销毁实例并释放动态库句柄。
+`yquant-strategyd` 读取 JSON 配置并加载用户策略动态库，全部校验成功后调用 `OnStart(context)`。主线程驱动行情、交易请求、委托与成交回报及策略定时事件。收到停止信号后，宿主停止行情和策略新请求，自动撤单并处理回报；排空后调用 `OnStop(context)`、销毁实例并释放动态库句柄。
 
 构建后运行生命周期策略示例：
 
@@ -90,7 +92,7 @@ cmake -P cmake/DownloadTestData.cmake
 
 生命周期示例的 `LifecycleConfig` 派生自 `StrategyConfig`，读取必填字符串 `parameters.startup_message`，将解码后 1 至 128 字节、无内嵌 NUL 的内容保存在自身定长存储中，拒绝未知参数。配套配置将消息设为 `lifecycle strategy started`，`OnStart` 读取该参数并输出 `lifecycle_strategy: startup_message=lifecycle strategy started`。
 
-用户策略继承 `yquant::strategy::Strategy`，导出 `YQuantGetStrategyPlugin()`，通过描述符提供创建和销毁函数。回调通过 `context.market_data()` 访问行情，通过 `context.trading()` 提交、撤销和查询委托，通过 `context.Now()` 查询单调时间。接口及所有权约定见[策略进程与动态策略加载设计](docs/design/strategyd.md)。
+用户策略继承 `yquant::strategy::Strategy`，导出 `YQuantGetStrategyPlugin()`，通过描述符提供创建和销毁函数。回调通过 `context.market_data()` 访问行情，通过 `context.trading()` 提交、撤销和查询委托，通过 `context.Now()` 查询单调时间，通过 `context.timer()` 登记一次性时间唤醒。接口及所有权约定见[策略进程与动态策略加载设计](docs/design/strategyd.md)。
 
 配置文件包含 `strategy_id` 和 `parameters`。框架校验公共字段，策略内嵌的 `StrategyConfig` 派生对象解析自定义参数；无自定义参数时使用基类并填写空对象。配置 ID 为 1 至 64 字节的 UTF-8 字符串，文件上限为 1 MiB，JSON 容器嵌套最多 64 层。
 
@@ -105,7 +107,7 @@ cmake -P cmake/DownloadTestData.cmake
   --market-data-config ./build/debug/strategies/mock_market_data.json
 ```
 
-`--market-data-config` 为可选的宿主行情配置，可选择模拟源或共享内存源，并将行情服务绑定到配置中的唯一来源。配置通过 `instrument_catalog` 引用[共享标的文件](examples/instruments.json)，`instruments` 只列运行标的身份及模拟源所需的价量参数，价格精度统一从字典读取。示例使用来源 `1`，每 100 ms 生成 `SSE/600000` 的一档报价；观察策略只通过 `parameters.venue` 和 `parameters.symbol` 选择标的。首次行情输出 `quote_observer: first quote received`，停止时输出 `ticks`、`last_sequence` 和 `max_age_ns` 汇总。省略行情配置时，两个不订阅行情的示例仍可运行。路径规则与字典格式见[行情驱动设计](docs/design/market-data.md#共享标的字典)。
+`--market-data-config` 为可选的宿主行情配置，可选择模拟源、共享内存源或历史回放源，并将行情服务绑定到配置中的唯一来源。配置通过 `instrument_catalog` 引用[共享标的文件](examples/instruments.json)，`instruments` 只列运行标的身份及模拟源所需的价量参数，价格精度统一从字典读取。示例使用来源 `1`，每 100 ms 生成 `SSE/600000` 的一档报价；观察策略只通过 `parameters.venue` 和 `parameters.symbol` 选择标的。首次行情输出 `quote_observer: first quote received`，停止时输出 `ticks`、`last_sequence` 和 `max_age_ns` 汇总。省略行情配置时，两个不订阅行情的示例仍可运行。路径规则与字典格式见[行情驱动设计](docs/design/market-data.md#共享标的字典)。
 
 运行单笔限价委托示例：
 
@@ -140,6 +142,27 @@ cmake -P cmake/DownloadTestData.cmake
 另一个策略使用 `client_2.json`。跨机时修改服务端监听地址和客户端目标地址，各客户端保持不同身份。`tradingd` 统一检查与预占账户资源，向所属策略回送委托与成交，并推送共享账户快照。首版使用模拟柜台，协议、停止与故障边界见[共享交易网关](docs/design/tradingd.md)。
 
 网关与策略宿主从同一[共享标的字典](docs/design/market-data.md#共享标的字典)解析各自运行清单，客户端运行范围须为网关子集。示例策略只配置场所、代码、方向和数量，行情来源由策略宿主绑定。
+
+运行有底仓双边报价策略：
+
+```sh
+./scripts/run_bbo_strategy.sh
+
+# 保持挂单，观察随行情撤旧补新。
+./scripts/run_bbo_strategy.sh working
+```
+
+脚本使用已编译的 Debug 产物，默认以 `fill` 模式生成模拟成交。它自动定位项目目录，在临时目录中保存本次柜台配置与 `run.log`，启动时打印路径，不修改示例配置。运行 3～5 秒后按 `Ctrl+C`，查看 `bbo_market_making: stopped` 汇总；资金以微元计量，正常收尾的 `cash_reserved`、`reserved_qty` 和 `slots` 均为零。
+
+样例使用 3 万元现金、1,000 股总持仓和 800 股可卖底仓，买卖各挂 100 股。`working` 模式保持挂单，策略跟随行情撤旧补新。行情过期撤单和失败重试使用主线程定时器。交易规则与直接运行命令见[有底仓双边策略](docs/design/bbo-market-making.md)。
+
+运行零持仓启动的国内期货双边策略：
+
+```sh
+./scripts/run_futures_strategy.sh
+```
+
+脚本回放大商所豆一期货 `a1805` 在 2017-12-27 的 744 条真实买卖一报价，以 100 倍速度运行，约 20 秒后自动撤单收尾。交易所由进程内模拟实现，支持买卖开仓、平今平昨、保证金预占、手续费与损益。启动时打印本次配置和日志目录，结束时查看 `futures_bbo: stopped` 汇总。数据来源、计量和撮合规则见[国内期货模拟交易](docs/design/domestic-futures.md)。
 
 ## 行情进程
 
@@ -185,13 +208,15 @@ cmake --build --preset debug --target download_test_data
 - [SPSC 队列设计](docs/design/spsc-queue.md)：低延迟内存消息队列设计。
 - [策略进程与动态策略加载设计](docs/design/strategyd.md)：生命周期接口、动态库协议与命令执行流程。
 - [策略配置设计](docs/design/strategy-config.md)：JSON 分层、强类型配置与启动校验。
+- [国内期货模拟交易](docs/design/domestic-futures.md)：开平仓、期货账本、模拟撮合与历史报价回放。
+- [策略定时事件](docs/design/strategy-timer.md)：主线程的一次性时间唤醒、调度与生命周期。
 - [行情驱动与策略事件循环](docs/design/market-data.md)：一档报价、策略上下文、模拟行情源与事件分派。
 - [行情进程设计](docs/design/marketd.md)：可配置行情管线、本机广播和跨机中继。
 - [行情回放与录制](docs/design/market-data-replay.md)：真实 CSV 转换、回放时序和异步录制格式。
 - [共享内存行情订阅发布组件](docs/design/shared-memory-pubsub.md)：seqlock、独立游标、覆盖缺口和重启隔离。
 - [交易执行与账户账本](docs/design/trading.md)：限价委托、撤单与异步回报的执行闭环。
 - [共享交易网关](docs/design/tradingd.md)：多机策略共享账户、订单归属、TCP 协议和断线收尾。
-- [一档双边做市策略](docs/design/bbo-market-making.md)：策略伪代码、所需数据与回调语义。
+- [有底仓的一档双边报价策略](docs/design/bbo-market-making.md)：库存约束、撤补、过期撤单与失败退避。
 
 ## 参考系统与资料
 

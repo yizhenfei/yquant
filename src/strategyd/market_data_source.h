@@ -44,6 +44,9 @@ class MarketDataSource {
   // Poll-driven transports may remain idle at an already-due deadline. The
   // host checks termination between bounded batches, including empty reads.
   virtual bool is_poll_driven() const noexcept { return false; }
+  // Finite sources become finished only after their final quote and optional
+  // tail have been consumed by Poll. Live sources remain unfinished.
+  virtual bool finished() const noexcept { return false; }
   // Cold maintenance runs once between bounded batches. It may perform I/O or
   // allocate, but must not wait for new data or invoke callbacks. A failure is
   // terminal for the current source; the host calls Stop before returning it.

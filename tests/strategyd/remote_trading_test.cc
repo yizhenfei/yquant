@@ -27,7 +27,7 @@ class RemoteTradingTest : public ::testing::Test {
   void SetUp() override {
     dictionary.source_id = {1};
     dictionary.interval_ns = 1000000;
-    dictionary.instrument_count = 1;
+    dictionary.instrument_count = 2;
     auto& item = dictionary.instruments[0];
     ASSERT_EQ(model::MakeInstrumentId("SSE", "600000", item.instrument.id),
               ErrorCode::kOk);
@@ -40,6 +40,20 @@ class RemoteTradingTest : public ::testing::Test {
     item.bid_qty = 100;
     item.ask_qty = 100;
     item.price_step = 1;
+    auto& future = dictionary.instruments[1];
+    ASSERT_EQ(model::MakeInstrumentId("SHFE", "rb2701", future.instrument.id),
+              ErrorCode::kOk);
+    futures_instrument = future.instrument.id;
+    future.instrument.venue = model::Venue::kShfe;
+    std::memcpy(future.instrument.symbol, "rb2701", 6);
+    future.instrument.type = model::InstrumentType::kFutures;
+    future.instrument.contract_multiplier = 10;
+    future.instrument.margin_rate_ppm = 100000;
+    future.bid_price = 3200;
+    future.ask_price = 3201;
+    future.bid_qty = 10;
+    future.ask_qty = 10;
+    future.price_step = 1;
     ASSERT_TRUE(market.Configure(dictionary).ok());
     config.adapter = TradingAdapterKind::kTcp;
     config.remote.client_id = 9;
@@ -68,6 +82,8 @@ class RemoteTradingTest : public ::testing::Test {
           return;
         std::this_thread::yield();
       }
+      EXPECT_EQ(hello.instrument_count, 1U);
+      EXPECT_EQ(hello.instruments[0].id, instrument);
       Message welcome;
       welcome.type = MessageType::kWelcome;
       welcome.generation = generation;
@@ -190,6 +206,7 @@ class RemoteTradingTest : public ::testing::Test {
   tradingd::Connection peer;
   tradingd::AccountView account;
   model::InstrumentId instrument;
+  model::InstrumentId futures_instrument;
   static constexpr std::uint64_t generation = 77;
 };
 
@@ -464,6 +481,50 @@ INSTANTIATE_TEST_SUITE_P(
     [](const ::testing::TestParamInfo<InvalidRemoteUpdate>& info) {
       return info.param.name;
     });
+
+TEST_F(RemoteTradingTest, FuturesQueriesPreserveOutputsWithMixedCatalog) {
+  model::FuturesAccountSnapshot account_out;
+  account_out.balance = 47;
+  const auto account_before = account_out;
+  model::FuturesPositionSnapshot position_out;
+  position_out.instrument_id = futures_instrument;
+  position_out.long_today.quantity = 3;
+  const auto position_before = position_out;
+  EXPECT_FALSE(remote.TryGetFuturesAccount(account_out));
+  EXPECT_EQ(account_out, account_before);
+  EXPECT_FALSE(remote.TryGetFuturesPosition(futures_instrument, position_out));
+  EXPECT_EQ(position_out, position_before);
+  model::PositionSnapshot equity_out{instrument, 17, 13, 4};
+  const auto equity_before = equity_out;
+  EXPECT_FALSE(remote.TryGetPosition(futures_instrument, equity_out));
+  EXPECT_EQ(equity_out, equity_before);
+}
+
+TEST_F(RemoteTradingTest, TimerRequestsRejectFuturesEffectsWithoutConsumingId) {
+  model::ClientOrderId id{77};
+  remote.BeginCallback(CallbackPhase::kTimer);
+  EXPECT_TRUE(remote.accepting_orders());
+  model::OrderRequest request{instrument, model::OrderSide::kBuy, 1001, 10,
+                              model::PositionEffect::kOpen};
+  EXPECT_EQ(remote.SubmitOrder(request, id), ErrorCode::kUnsupported);
+  EXPECT_EQ(id.value, 77U);
+  request.instrument_id = futures_instrument;
+  request.limit_price = 3201;
+  EXPECT_EQ(remote.SubmitOrder(request, id), ErrorCode::kUnsupported);
+  EXPECT_EQ(id.value, 77U);
+  request.instrument_id = instrument;
+  request.limit_price = 1001;
+  request.position_effect = model::PositionEffect::kNone;
+  ASSERT_EQ(remote.SubmitOrder(request, id), ErrorCode::kOk);
+  EXPECT_EQ(id.value, 1U);
+  remote.EndCallback();
+  MockTradingAdapter unused;
+  ASSERT_TRUE(remote.ProcessRequests(unused, clock.now).ok());
+  const auto sent = Receive();
+  EXPECT_EQ(sent.type, MessageType::kNewOrder);
+  EXPECT_EQ(sent.request.position_effect, model::PositionEffect::kNone);
+  EXPECT_EQ(sent.request.instrument_id, instrument);
+}
 
 }  // namespace
 }  // namespace yquant::strategyd

@@ -341,6 +341,179 @@ TEST(TradingConfigTest, TypedAccountValidationChecksReservationsAndBounds) {
   EXPECT_STREQ(error.field_path, "initial_positions[0].symbol");
 }
 
+constexpr std::string_view kFuturesJson =
+    R"({"adapter":"simulated_futures","report_interval_ms":1,)"
+    R"("shutdown_timeout_ms":5000,"initial_cash":100000000000,)"
+    R"("initial_futures_positions":[]})";
+
+TEST(FuturesTradingConfigTest, FlatAccountNeedsNoInventoryOrMockMode) {
+  ConfigFile file(kFuturesJson);
+  TradingConfigLoader loader;
+  ASSERT_TRUE(loader.Load(file.path()).ok()) << loader.error().message;
+  EXPECT_EQ(loader.config().adapter, TradingAdapterKind::kSimulatedFutures);
+  EXPECT_EQ(loader.config().initial_account.type, model::AccountType::kFutures);
+  EXPECT_EQ(loader.config().initial_account.cash_balance, 100000000000LL);
+  EXPECT_EQ(loader.config().initial_account.futures_position_count, 0U);
+}
+
+// Four buckets preserve long/short and today/yesterday independently.
+std::string FuturesPositionJson() {
+  std::string json(kFuturesJson);
+  json.replace(json.find("[]"), 2,
+               R"([{"venue":"SHFE","symbol":"rb2701","reference_price":3200,)"
+               R"("long_today":{"quantity":1,"open_price":3190},)"
+               R"("long_yesterday":{"quantity":2,"open_price":3180},)"
+               R"("short_today":{"quantity":3,"open_price":3220},)"
+               R"("short_yesterday":{"quantity":0,"open_price":0}}])");
+  return json;
+}
+
+TEST(FuturesTradingConfigTest, LoadsIndependentBucketsAndOwnsValues) {
+  TradingConfigLoader loader;
+  {
+    ConfigFile file(FuturesPositionJson());
+    ASSERT_TRUE(loader.Load(file.path()).ok()) << loader.error().message;
+  }
+  const auto& account = loader.config().initial_account;
+  ASSERT_EQ(account.futures_position_count, 1U);
+  const auto& position = account.futures_positions[0];
+  EXPECT_EQ(position.long_today.quantity, 1);
+  EXPECT_EQ(position.long_yesterday.quantity, 2);
+  EXPECT_EQ(position.short_today.open_price, 3220);
+  EXPECT_EQ(position.short_yesterday.open_price, 0);
+  EXPECT_EQ(position.reference_price, 3200);
+  EXPECT_TRUE(model::IsValidInstrumentId(position.instrument_id));
+}
+
+TEST(FuturesTradingConfigTest, RejectsMixedMissingAndMalformedSchema) {
+  for (const auto& tokens :
+       {std::pair{"\"initial_futures_positions\":[]",
+                  "\"initial_positions\":[]"},
+        std::pair{"\"initial_futures_positions\":[]",
+                  "\"initial_futures_positions\":[],\"mode\":\"fill\""},
+        std::pair{"\"initial_futures_positions\":[]",
+                  "\"initial_futures_positions\":null"}}) {
+    std::string json(kFuturesJson);
+    json.replace(json.find(tokens.first), std::string_view(tokens.first).size(),
+                 tokens.second);
+    ConfigFile file(json);
+    TradingConfigLoader loader;
+    EXPECT_FALSE(loader.Load(file.path()).ok());
+    EXPECT_EQ(loader.config().adapter, TradingAdapterKind::kMock);
+  }
+  for (const auto& tokens :
+       {std::pair{"\"quantity\":1", "\"quantity\":-1"},
+        std::pair{"\"open_price\":3190", "\"open_price\":0"},
+        std::pair{"\"reference_price\":3200", "\"reference_price\":0"},
+        std::pair{"\"symbol\":\"rb2701\"", "\"symbol\":\"RB2701\""},
+        std::pair{"\"quantity\":1", "\"quantity\":1.0"},
+        std::pair{"\"quantity\":1", "\"quantity\":1,\"unknown\":0"}}) {
+    std::string json = FuturesPositionJson();
+    json.replace(json.find(tokens.first), std::string_view(tokens.first).size(),
+                 tokens.second);
+    ConfigFile file(json);
+    TradingConfigLoader loader;
+    EXPECT_FALSE(loader.Load(file.path()).ok()) << json;
+  }
+}
+
+TEST(FuturesTradingConfigTest, TypedValidationChecksAdapterAndGrossOverflow) {
+  TradingConfig config;
+  strategy::ConfigError error;
+  config.adapter = TradingAdapterKind::kSimulatedFutures;
+  EXPECT_FALSE(ValidateTradingConfig(config, error).ok());
+  config.initial_account.type = model::AccountType::kFutures;
+  EXPECT_TRUE(ValidateTradingConfig(config, error).ok());
+  config.initial_account.futures_position_count = 1;
+  auto& position = config.initial_account.futures_positions[0];
+  ASSERT_EQ(model::MakeInstrumentId("SHFE", "rb2701", position.instrument_id),
+            base::ErrorCode::kOk);
+  position.reference_price = 3200;
+  position.long_today = {INT64_MAX, 3200};
+  position.short_today = {1, 3200};
+  EXPECT_FALSE(ValidateTradingConfig(config, error).ok());
+  position.short_today = {};
+  EXPECT_TRUE(ValidateTradingConfig(config, error).ok());
+  config.adapter = static_cast<TradingAdapterKind>(9);
+  EXPECT_FALSE(ValidateTradingConfig(config, error).ok());
+}
+
+TEST(FuturesTradingConfigTest,
+     RequiresCompleteTypedPositionAndRejectsDuplicates) {
+  for (const auto& removed :
+       {std::string("\"adapter\":\"simulated_futures\","),
+        std::string("\"report_interval_ms\":1,"),
+        std::string("\"shutdown_timeout_ms\":5000,"),
+        std::string("\"initial_cash\":100000000000,"),
+        std::string(",\"initial_futures_positions\":[]")}) {
+    std::string json(kFuturesJson);
+    json.erase(json.find(removed), removed.size());
+    ConfigFile file(json);
+    TradingConfigLoader loader;
+    EXPECT_FALSE(loader.Load(file.path()).ok()) << json;
+  }
+  auto json = FuturesPositionJson();
+  const auto begin = json.find("[{"), end = json.find("}]") + 1;
+  const auto position = json.substr(begin + 1, end - begin - 1);
+  json.replace(begin, end - begin + 1, "[" + position + "," + position + "]");
+  ConfigFile duplicate(json);
+  TradingConfigLoader loader;
+  EXPECT_FALSE(loader.Load(duplicate.path()).ok());
+  EXPECT_STREQ(loader.error().field_path,
+               "initial_futures_positions[1].symbol");
+  json = FuturesPositionJson();
+  const std::string bucket =
+      "\"short_yesterday\":{\"quantity\":0,\"open_price\":0}";
+  const auto offset = json.find(bucket);
+  json.erase(offset - 1, bucket.size() + 1);
+  ConfigFile missing(json);
+  EXPECT_FALSE(loader.Load(missing.path()).ok());
+  EXPECT_STREQ(loader.error().field_path,
+               "initial_futures_positions[0].short_yesterday");
+}
+
+TEST(FuturesTradingConfigTest, HonorsPositionCapacityWithoutAliasingContracts) {
+  auto json = FuturesPositionJson();
+  const auto begin = json.find("[{"), end = json.find("}]") + 1;
+  const auto position = json.substr(begin + 1, end - begin - 1);
+  for (const std::size_t count : {64U, 65U}) {
+    std::string positions = "[";
+    for (std::size_t index = 0; index < count; ++index) {
+      if (index) positions += ',';
+      auto entry = position;
+      char symbol[8];
+      std::snprintf(symbol, sizeof(symbol), "rb%02zu%02zu", index / 12,
+                    index % 12 + 1);
+      entry.replace(entry.find("rb2701"), 6, symbol);
+      positions += entry;
+    }
+    positions += ']';
+    auto input = json;
+    input.replace(begin, end - begin + 1, positions);
+    ConfigFile file(input);
+    TradingConfigLoader loader;
+    EXPECT_EQ(loader.Load(file.path()).ok(), count == 64)
+        << loader.error().message;
+  }
+}
+
+TEST(FuturesTradingConfigTest, MarksTruncatedUnknownPositionAndBucketPaths) {
+  for (const bool nested : {false, true}) {
+    auto json = FuturesPositionJson();
+    const std::string key(400, 'x');
+    const std::string marker =
+        nested ? "\"quantity\":1" : "\"reference_price\":3200";
+    json.insert(json.find(marker), "\"" + key + "\":0,");
+    ConfigFile file(json);
+    TradingConfigLoader loader;
+    EXPECT_FALSE(loader.Load(file.path()).ok());
+    EXPECT_TRUE(loader.error().truncated);
+    EXPECT_NE(std::string_view(loader.error().field_path)
+                  .find("initial_futures_positions[0]."),
+              std::string_view::npos);
+  }
+}
+
 }  // namespace
 }  // namespace yquant::strategyd
 

@@ -27,8 +27,10 @@ class TradingImpl final : public TradingRuntime {
   TradingImpl& operator=(const TradingImpl&) = delete;
   // Validates and copies bootstrap before allocating fixed storage. IDs must
   // be known/unique, cash nonnegative, and positions unreserved with
-  // 0 <= available <= total. Failure preserves the existing ledger; an initial
-  // failure leaves the service disabled.
+  // 0 <= available <= total, with all quantities aligned to quantity_step.
+  // Futures use four directional/day FIFO buckets and
+  // simulated gross margin; the account cannot mix equity/futures inventory.
+  // Failure preserves the existing ledger; initial failure leaves it disabled.
   [[nodiscard]] base::Status Configure(
       const TradingAccountSnapshot& account) noexcept;
   // Frees owned storage outside callbacks; invalidates order/account queries.
@@ -54,6 +56,18 @@ class TradingImpl final : public TradingRuntime {
   [[nodiscard]] bool TryGetPosition(
       model::InstrumentId id,
       model::PositionSnapshot& out) const noexcept override;
+  [[nodiscard]] bool TryGetFuturesAccount(
+      model::FuturesAccountSnapshot& out) const noexcept override;
+  [[nodiscard]] bool TryGetFuturesPosition(
+      model::InstrumentId id,
+      model::FuturesPositionSnapshot& out) const noexcept override;
+
+  // Marks an accepted quote before its strategy callback. Disabled/cash
+  // accounts need no valuation and succeed. Futures failures preserve the
+  // entire account/position and copy a diagnostic; incomplete quotes retain
+  // the previous mark. Never invokes callbacks or allocates.
+  [[nodiscard]] base::ErrorCode ApplyQuote(
+      const model::QuoteTick& tick) noexcept override;
 
   // Sends/removes each request at most once, marking attempted before Send.
   // While stopping, new orders become queued local cancellations instead.

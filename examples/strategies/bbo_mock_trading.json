@@ -1,0 +1,15 @@
+{
+  "adapter": "mock",
+  "mode": "working",
+  "report_interval_ms": 1,
+  "shutdown_timeout_ms": 5000,
+  "initial_cash": 30000000000,
+  "initial_positions": [
+    {
+      "venue": "SSE",
+      "symbol": "600000",
+      "total_qty": 1000,
+      "available_qty": 800
+    }
+  ]
+}

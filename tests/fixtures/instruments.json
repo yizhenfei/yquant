@@ -359,6 +359,45 @@
       "venue": "SZSE",
       "symbol": "000895",
       "price_decimals": 4
+    },
+    {
+      "venue": "SHFE",
+      "symbol": "rb2701",
+      "instrument_type": "futures",
+      "price_decimals": 0,
+      "price_tick": 1,
+      "quantity_step": 1,
+      "contract_multiplier": 10,
+      "margin_rate_ppm": 100000,
+      "open_fee_per_lot": 0,
+      "close_today_fee_per_lot": 0,
+      "close_yesterday_fee_per_lot": 0
+    },
+    {
+      "venue": "SHFE",
+      "symbol": "rb2501",
+      "instrument_type": "futures",
+      "price_decimals": 0,
+      "price_tick": 2,
+      "quantity_step": 5,
+      "contract_multiplier": 10,
+      "margin_rate_ppm": 100000,
+      "open_fee_per_lot": 1000,
+      "close_today_fee_per_lot": 2000,
+      "close_yesterday_fee_per_lot": 3000
+    },
+    {
+      "venue": "SHFE",
+      "symbol": "rb2502",
+      "instrument_type": "futures",
+      "price_decimals": 0,
+      "price_tick": 2,
+      "quantity_step": 5,
+      "contract_multiplier": 10,
+      "margin_rate_ppm": 100000,
+      "open_fee_per_lot": 1000,
+      "close_today_fee_per_lot": 2000,
+      "close_yesterday_fee_per_lot": 3000
     }
   ]
 }

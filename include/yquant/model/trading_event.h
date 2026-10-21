@@ -67,6 +67,7 @@ struct Fill {
   std::uint64_t event_time_ns = 0;
   std::uint64_t receive_time_ns = 0;
   bool has_event_time = false;
+  PositionEffect position_effect = PositionEffect::kNone;
 };
 
 }  // namespace yquant::model
