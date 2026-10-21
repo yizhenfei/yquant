@@ -78,6 +78,14 @@ cmake -P cmake/DownloadTestData.cmake
 
 日志接口位于 `yquant/base/logging.h`。Debug 默认编译保留 DEBUG 及以上级别，其他构建保留 INFO 及以上；可在配置时使用 `-DYQUANT_LOG_COMPILED_LEVEL=TRACE` 等选项调整。
 
+### VS Code
+
+用 VS Code 打开仓库根目录，安装工作区推荐的 C/C++ 和 CMake Tools 扩展。本机需先安装上述构建工具，并确保 VS Code 能找到 CMake、Ninja 和编译器；扩展不包含这些工具。
+
+工作区设置让 C/C++ 从 CMake Tools 获取编译参数，默认标准为 C++20，并在打开项目时自动配置 CMake。新 checkout 或 worktree 首次打开时，通过 `CMake: Select Configure Preset` 选择 `debug`，等待配置成功；需要手动重试时执行 `CMake: Configure`。生成的构建目录不纳入 Git，每个新目录都需要完成配置，无须先编译整个项目。
+
+若仍出现 `std` 没有成员 `optional` 等诊断，执行 `C/C++: Log Diagnostics`，检查当前文件的标准为 C++20、编译器路径有效且配置来自当前工作区。修正配置后可执行 `C/C++: Reset IntelliSense Database` 刷新索引。
+
 ## 日志进程
 
 日志默认由进程内后台线程写盘。设置 `LogConfig::backend = LogBackend::kLogd` 后，业务进程通过共享内存 SPSC 队列向 `yquant-logd` 发送日志，不启动本地写盘线程。
