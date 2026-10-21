@@ -225,6 +225,13 @@ target_link_libraries(yquant_base PUBLIC
   yquant_compile_options fmt::fmt Threads::Threads)
 target_compile_options(yquant_base PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(yquant_logd src/logd/main.cc)
+target_link_libraries(yquant_logd PRIVATE yquant::base)
+target_compile_options(yquant_logd PRIVATE -Wall -Wextra -Wpedantic)
+set_target_properties(yquant_logd PROPERTIES
+  OUTPUT_NAME yquant-logd
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
 set(YQUANT_LOG_COMPILED_LEVEL "" CACHE STRING
   "Log compile threshold: empty (Debug DEBUG, otherwise INFO), TRACE, DEBUG, INFO, WARNING, ERROR, or CRITICAL")
 set_property(CACHE YQUANT_LOG_COMPILED_LEVEL PROPERTY STRINGS
@@ -271,7 +278,11 @@ if(BUILD_TESTING)
     DISCOVERY_TIMEOUT 30
     PROPERTIES ${yquant_test_properties})
 
-  add_executable(logging_test tests/base/logging_test.cc)
+  add_executable(logging_test tests/base/logging_test.cc
+    tests/base/logging_process_test.cc)
+  add_dependencies(logging_test yquant_logd)
+  target_compile_definitions(logging_test PRIVATE
+    YQUANT_LOGD_PATH="$<TARGET_FILE:yquant_logd>")
   target_include_directories(logging_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
   target_link_libraries(logging_test PRIVATE yquant::base GTest::gtest_main)
   target_compile_options(logging_test PRIVATE -Wall -Wextra -Wpedantic)

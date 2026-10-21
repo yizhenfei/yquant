@@ -2,6 +2,7 @@
 
 #include <fcntl.h>
 #include <pthread.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -20,6 +21,7 @@
 #include <string_view>
 
 #include "base/internal/logging_backend.h"
+#include "base/internal/logging_shared.h"
 
 namespace yquant::base {
 namespace {
@@ -27,6 +29,7 @@ namespace {
 std::atomic<const internal::LogBackendHooks*> backend_hooks{nullptr};
 constexpr std::size_t kPathCapacity = kMaxLogPathBytes;
 constexpr std::size_t kFramesPerPoll = 64;
+constexpr timespec kShutdownPollInterval{0, 1000000};
 
 int OpenFile(const internal::LogBackendHooks* hooks, const char* path,
              int flags, mode_t mode) noexcept {
@@ -167,6 +170,14 @@ struct LogManagerImpl {
     std::uint64_t file_bytes = 0;
     std::uint64_t max_file_bytes = 0;
     std::uint64_t archive_sequence = 0;
+    SharedLogState* shared = nullptr;
+    std::size_t mapping_bytes = 0;
+    int queue_fd = -1;
+    char queue_path[kPathCapacity]{};
+    char temporary_path[kPathCapacity]{};
+    bool published = false;
+    bool sink = false;
+    bool finished = false;
     bool failed = false;
     Status first_error;
     LogErrorStage first_stage = LogErrorStage::kNone;
@@ -214,6 +225,9 @@ struct LogManagerImpl {
                static_cast<std::uint32_t>(status.system_error.value()))
            << 16);
       channel.logger->backend_error_.store(packed, std::memory_order_release);
+      if (channel.sink && channel.shared != nullptr) {
+        channel.shared->backend_error.store(packed, std::memory_order_release);
+      }
     }
     if (final_result.status.ok()) {
       final_result.status = status;
@@ -229,23 +243,126 @@ struct LogManagerImpl {
                 SystemStatus(ErrorCode::kIoError, saved_errno));
   }
 
+  // Creates a private mapped file. Link publishes it only after all resources
+  // and atomic objects are initialized; readers never see a partial layout.
+  Status MapSink(Channel& channel) noexcept {
+    const auto length =
+        std::snprintf(channel.temporary_path, sizeof(channel.temporary_path),
+                      "%s.XXXXXX", channel.queue_path);
+    if (length < 0 ||
+        static_cast<std::size_t>(length) >= sizeof(channel.temporary_path)) {
+      channel.temporary_path[0] = '\0';
+      return {ErrorCode::kInvalidArgument, {}};
+    }
+    channel.queue_fd = mkstemp(channel.temporary_path);
+    if (channel.queue_fd < 0) {
+      channel.temporary_path[0] = '\0';
+      return SystemStatus(ErrorCode::kIoError, errno);
+    }
+    if (fcntl(channel.queue_fd, F_SETFD, FD_CLOEXEC) < 0 ||
+        ftruncate(channel.queue_fd, static_cast<off_t>(channel.mapping_bytes)) <
+            0) {
+      return SystemStatus(ErrorCode::kIoError, errno);
+    }
+    void* region = mmap(nullptr, channel.mapping_bytes, PROT_READ | PROT_WRITE,
+                        MAP_SHARED, channel.queue_fd, 0);
+    if (region == MAP_FAILED) return SystemStatus(ErrorCode::kIoError, errno);
+    channel.shared = new (region) SharedLogState;
+    channel.shared->capacity = channel.queue_capacity;
+    channel.queue_memory =
+        reinterpret_cast<std::byte*>(region) + sizeof(SharedLogState);
+    return {};
+  }
+
+  // A queue is single-session. Claiming is permanent, including after failure
+  // or producer death, so another process cannot silently replace its writer.
+  Status MapProducer(Channel& channel) noexcept {
+    channel.queue_fd =
+        open(channel.queue_path, O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (channel.queue_fd < 0) return SystemStatus(ErrorCode::kIoError, errno);
+    struct stat metadata{};
+    if (fstat(channel.queue_fd, &metadata) < 0) {
+      return SystemStatus(ErrorCode::kIoError, errno);
+    }
+    if (!S_ISREG(metadata.st_mode) ||
+        metadata.st_size != static_cast<off_t>(channel.mapping_bytes)) {
+      return {ErrorCode::kInvalidArgument, {}};
+    }
+    void* region = mmap(nullptr, channel.mapping_bytes, PROT_READ | PROT_WRITE,
+                        MAP_SHARED, channel.queue_fd, 0);
+    if (region == MAP_FAILED) return SystemStatus(ErrorCode::kIoError, errno);
+    channel.shared = static_cast<SharedLogState*>(region);
+    if (channel.shared->magic != kSharedLogMagic ||
+        channel.shared->capacity != channel.queue_capacity) {
+      return {ErrorCode::kInvalidArgument, {}};
+    }
+    std::uint64_t expected = 0;
+    if (channel.shared->consumer_done.load(std::memory_order_acquire) != 0 ||
+        !channel.shared->producer_claimed.compare_exchange_strong(
+            expected, 1, std::memory_order_acq_rel)) {
+      return {ErrorCode::kInvalidState, {}};
+    }
+    channel.queue_memory =
+        reinterpret_cast<std::byte*>(region) + sizeof(SharedLogState);
+    if (channel.logger->producer_.Attach(
+            {channel.queue_memory, channel.queue_bytes},
+            SpscQueue::Role::kProducer) != SpscStatus::kSuccess) {
+      return {ErrorCode::kCorrupt, {}};
+    }
+    channel.logger->shared_state_ = channel.shared;
+    channel.logger->active_.store(1, std::memory_order_release);
+    return {};
+  }
+
+  // Endpoints must already be detached. Only the sink owns the queue pathname.
+  void ReleaseStorage(Channel& channel) noexcept {
+    if (channel.shared != nullptr) {
+      (void)munmap(channel.shared, channel.mapping_bytes);
+      channel.shared = nullptr;
+    } else {
+      std::free(channel.queue_memory);
+    }
+    channel.queue_memory = nullptr;
+    if (channel.queue_fd >= 0) {
+      (void)close(channel.queue_fd);
+      channel.queue_fd = -1;
+    }
+    if (channel.published) {
+      (void)unlink(channel.queue_path);
+      channel.published = false;
+    }
+    if (channel.temporary_path[0] != '\0') {
+      (void)unlink(channel.temporary_path);
+      channel.temporary_path[0] = '\0';
+    }
+    channel.logger->shared_state_ = nullptr;
+  }
+
   Status PrepareChannel(Channel& channel) noexcept {
     const auto bytes = SpscQueue::RequiredBytes(channel.queue_capacity);
     channel.queue_bytes = bytes.bytes;
-    void* region = nullptr;
-    const int error = posix_memalign(&region, SpscQueue::required_alignment(),
-                                     channel.queue_bytes);
-    if (error != 0) {
-      return SystemStatus(ErrorCode::kResourceExhausted, error);
+    channel.mapping_bytes = bytes.bytes + sizeof(SharedLogState);
+    if (config.backend == LogBackend::kLogd) return MapProducer(channel);
+    if (channel.sink) {
+      const auto status = MapSink(channel);
+      if (!status.ok()) return status;
+    } else {
+      void* region = nullptr;
+      const int error = posix_memalign(&region, SpscQueue::required_alignment(),
+                                       channel.queue_bytes);
+      if (error != 0) {
+        return SystemStatus(ErrorCode::kResourceExhausted, error);
+      }
+      channel.queue_memory = static_cast<std::byte*>(region);
     }
-    channel.queue_memory = static_cast<std::byte*>(region);
     const std::span memory(channel.queue_memory, channel.queue_bytes);
     if (SpscQueue::Initialize(memory, channel.queue_capacity) !=
             SpscStatus::kSuccess ||
         channel.consumer.Attach(memory, SpscQueue::Role::kConsumer) !=
             SpscStatus::kSuccess ||
-        channel.logger->producer_.Attach(memory, SpscQueue::Role::kProducer) !=
-            SpscStatus::kSuccess) {
+        (!channel.sink &&
+         channel.logger->producer_.Attach(memory, SpscQueue::Role::kProducer) !=
+             SpscStatus::kSuccess)) {
       return {ErrorCode::kInternalError, {}};
     }
     channel.batch = static_cast<std::byte*>(std::malloc(config.batch_bytes));
@@ -299,7 +416,16 @@ struct LogManagerImpl {
     if (hooks != nullptr && hooks->on_queue_ready != nullptr) {
       hooks->on_queue_ready(hooks->context, channel.logger, memory);
     }
-    channel.logger->active_.store(1, std::memory_order_release);
+    if (channel.sink) {
+      if (link(channel.temporary_path, channel.queue_path) < 0) {
+        return SystemStatus(ErrorCode::kIoError, errno);
+      }
+      channel.published = true;
+      (void)unlink(channel.temporary_path);
+      channel.temporary_path[0] = '\0';
+    } else {
+      channel.logger->active_.store(1, std::memory_order_release);
+    }
     return {};
   }
 
@@ -323,8 +449,7 @@ struct LogManagerImpl {
     }
     std::free(channel.batch);
     channel.batch = nullptr;
-    std::free(channel.queue_memory);
-    channel.queue_memory = nullptr;
+    ReleaseStorage(channel);
     channel.queue_bytes = 0;
     channel.batch_used = 0;
     channel.file_bytes = 0;
@@ -360,6 +485,11 @@ struct LogManagerImpl {
             static_cast<std::uint64_t>(progress.tv_sec) * 1000000000ULL +
                 static_cast<std::uint64_t>(progress.tv_nsec),
             std::memory_order_release);
+        if (channel.shared != nullptr) {
+          channel.shared->last_write_ns.store(
+              channel.logger->last_write_ns_.load(std::memory_order_relaxed),
+              std::memory_order_release);
+        }
       }
     }
     channel.batch_used = 0;
@@ -431,7 +561,9 @@ struct LogManagerImpl {
     if (channel.failed) {
       return false;
     }
-    if (channel.logger->queue_fault_.load(std::memory_order_acquire) != 0) {
+    if (channel.logger->queue_fault_.load(std::memory_order_acquire) != 0 ||
+        (channel.shared != nullptr &&
+         channel.shared->queue_fault.load(std::memory_order_acquire) != 0)) {
       RecordError(channel, index, LogErrorStage::kQueue,
                   {ErrorCode::kCorrupt, {}});
       return false;
@@ -488,7 +620,25 @@ struct LogManagerImpl {
     return Flush(channel, index);
   }
 
-  void FinishChannel(Channel& channel, std::size_t index) noexcept {
+  // stream_ended must be observed before the final drain, so an end marker
+  // published after an empty read cannot turn a partial drain into success.
+  void FinishChannel(Channel& channel, std::size_t index,
+                     bool stream_ended = false) noexcept {
+    if (channel.sink && !stream_ended) {
+      // An early consumer shutdown cannot acknowledge a complete producer
+      // stream. Reject new calls even if no producer has connected yet.
+      if (channel.shared->producer_claimed.load(std::memory_order_acquire) !=
+          0) {
+        RecordError(channel, index, LogErrorStage::kSync,
+                    SystemStatus(ErrorCode::kIoError, EPIPE));
+      } else {
+        const auto packed =
+            static_cast<std::uint64_t>(ErrorCode::kIoError) |
+            (static_cast<std::uint64_t>(LogErrorStage::kSync) << 8) |
+            (static_cast<std::uint64_t>(EPIPE) << 16);
+        channel.shared->backend_error.store(packed, std::memory_order_release);
+      }
+    }
     if (!channel.failed) {
       (void)Flush(channel, index);
     }
@@ -518,8 +668,12 @@ struct LogManagerImpl {
     }
     std::free(channel.batch);
     channel.batch = nullptr;
-    std::free(channel.queue_memory);
-    channel.queue_memory = nullptr;
+    if (channel.shared != nullptr) {
+      channel.shared->consumer_done.store(1, std::memory_order_release);
+    } else {
+      ReleaseStorage(channel);
+    }
+    channel.finished = true;
   }
 
   void WaitIdle() noexcept {
@@ -578,7 +732,18 @@ struct LogManagerImpl {
       Unlock();
       bool more = false;
       for (std::size_t channel = 0; channel < count; ++channel) {
-        more |= Drain(channels[channel], channel);
+        auto& current = channels[channel];
+        if (current.finished) continue;
+        // Observe end-of-stream BEFORE draining so the empty observation cannot
+        // precede the producer's final publication.
+        const bool ended =
+            current.shared != nullptr &&
+            current.shared->producer_done.load(std::memory_order_acquire) != 0;
+        const bool pending = Drain(current, channel);
+        more |= pending;
+        if ((ended && !pending) || (current.sink && current.failed)) {
+          FinishChannel(current, channel, ended);
+        }
       }
       if (stopping && !more) {
         break;
@@ -588,7 +753,18 @@ struct LogManagerImpl {
       }
     }
     for (std::size_t index = 0; index < channel_count; ++index) {
-      FinishChannel(channels[index], index);
+      auto& channel = channels[index];
+      if (!channel.finished) {
+        const bool ended =
+            channel.shared != nullptr &&
+            channel.shared->producer_done.load(std::memory_order_acquire) != 0;
+        if (ended) {
+          while (Drain(channel, index)) {
+          }
+        }
+        FinishChannel(channel, index, ended);
+      }
+      if (channels[index].shared != nullptr) ReleaseStorage(channels[index]);
     }
   }
 
@@ -629,7 +805,9 @@ Status LogManager::Initialize(const LogConfig& config) noexcept {
   if (impl_ != nullptr) {
     return {ErrorCode::kInvalidState, {}};
   }
-  if (config.max_loggers == 0 || config.batch_bytes < kMaxLogBytes ||
+  if ((config.backend != LogBackend::kThread &&
+       config.backend != LogBackend::kLogd) ||
+      config.max_loggers == 0 || config.batch_bytes < kMaxLogBytes ||
       config.batch_bytes >
           static_cast<std::size_t>(std::numeric_limits<ssize_t>::max()) ||
       config.max_loggers > (std::numeric_limits<std::size_t>::max() -
@@ -658,8 +836,10 @@ Status LogManager::Initialize(const LogConfig& config) noexcept {
   }
   if (error == 0) {
     candidate->condition_initialized = true;
-    error = pthread_create(&candidate->thread, nullptr,
-                           internal::LogManagerImpl::ThreadMain, candidate);
+    if (config.backend == LogBackend::kThread) {
+      error = pthread_create(&candidate->thread, nullptr,
+                             internal::LogManagerImpl::ThreadMain, candidate);
+    }
   }
   if (error != 0) {
     if (candidate->condition_initialized) {
@@ -672,32 +852,52 @@ Status LogManager::Initialize(const LogConfig& config) noexcept {
     delete candidate;
     return SystemStatus(ErrorCode::kResourceExhausted, error);
   }
-  candidate->thread_started = true;
-  candidate->Lock();
-  while (!candidate->ready) {
-    candidate->Wait();
+  candidate->thread_started = config.backend == LogBackend::kThread;
+  if (candidate->thread_started) {
+    candidate->Lock();
+    while (!candidate->ready) candidate->Wait();
+    candidate->Unlock();
   }
-  candidate->Unlock();
   impl_ = candidate;
   return {};
 }
 
 CreateLoggerResult LogManager::CreateLogger(
     const LoggerConfig& config) noexcept {
+  return CreateChannel(config, false);
+}
+
+Status LogManager::CreateLogSink(const LoggerConfig& config) noexcept {
+  return CreateChannel(config, true).status;
+}
+
+CreateLoggerResult LogManager::CreateChannel(const LoggerConfig& config,
+                                             bool sink) noexcept {
   if (impl_ == nullptr || impl_->shutdown_complete) {
     return {{ErrorCode::kInvalidState, {}}, nullptr};
   }
   const auto required = SpscQueue::RequiredBytes(config.queue_capacity);
-  if (required.status != SpscStatus::kSuccess) {
+  if (required.status != SpscStatus::kSuccess ||
+      required.bytes >
+          static_cast<std::uint64_t>(std::numeric_limits<off_t>::max()) -
+              sizeof(internal::SharedLogState)) {
     return {{ErrorCode::kInvalidArgument, {}}, nullptr};
   }
-  if (config.name.empty() || config.name.size() > kMaxLogNameBytes ||
+  const bool producer = impl_->config.backend == LogBackend::kLogd;
+  const bool shared = producer || sink;
+  if ((producer && sink) ||
+      (shared && (config.queue_path.empty() ||
+                  config.queue_path.size() >= kPathCapacity - 8 ||
+                  config.queue_path.find('\0') != std::string_view::npos)) ||
+      (!shared && !config.queue_path.empty()) ||
+      (producer && (!config.file_path.empty() || config.max_file_bytes != 0)) ||
+      config.name.empty() || config.name.size() > kMaxLogNameBytes ||
       config.name.find('\0') != std::string_view::npos ||
       config.name.find_first_of("\r\n") != std::string_view::npos ||
-      config.file_path.empty() ||
+      (!producer && config.file_path.empty()) ||
       config.file_path.size() >= kPathCapacity - 21 ||
       config.file_path.find('\0') != std::string_view::npos ||
-      config.file_path.back() == '/' ||
+      (!config.file_path.empty() && config.file_path.back() == '/') ||
       config.queue_capacity < kMaxLogBytes + 4 ||
       config.minimum_level < LogLevel::kTrace ||
       config.minimum_level > LogLevel::kOff) {
@@ -707,7 +907,8 @@ CreateLoggerResult LogManager::CreateLogger(
     return {{ErrorCode::kResourceExhausted, {}}, nullptr};
   }
   for (std::size_t index = 0; index < impl_->channel_count; ++index) {
-    if (config.file_path == impl_->channels[index].file_path) {
+    if ((!producer && config.file_path == impl_->channels[index].file_path) ||
+        (shared && config.queue_path == impl_->channels[index].queue_path)) {
       return {{ErrorCode::kInvalidArgument, {}}, nullptr};
     }
   }
@@ -718,20 +919,35 @@ CreateLoggerResult LogManager::CreateLogger(
   }
   auto& channel = impl_->channels[impl_->channel_count];
   channel.logger = logger;
+  channel.sink = sink;
+  if (shared) {
+    (void)CopyText(config.queue_path, channel.queue_path,
+                   sizeof(channel.queue_path));
+  }
   (void)CopyText(config.file_path, channel.file_path,
                  sizeof(channel.file_path));
   channel.queue_capacity = config.queue_capacity;
   channel.max_file_bytes = config.max_file_bytes;
-  impl_->Lock();
-  impl_->pending_index = impl_->channel_count;
-  impl_->request_done = false;
-  impl_->request_pending = true;
-  impl_->Signal();
-  while (!impl_->request_done) {
-    impl_->Wait();
+  Status status;
+  if (producer) {
+    status = impl_->PrepareChannel(channel);
+    if (status.ok()) {
+      ++impl_->channel_count;
+    } else {
+      impl_->RollBackChannel(channel);
+    }
+  } else {
+    impl_->Lock();
+    impl_->pending_index = impl_->channel_count;
+    impl_->request_done = false;
+    impl_->request_pending = true;
+    impl_->Signal();
+    while (!impl_->request_done) {
+      impl_->Wait();
+    }
+    status = impl_->request_status;
+    impl_->Unlock();
   }
-  const auto status = impl_->request_status;
-  impl_->Unlock();
   if (!status.ok()) {
     delete logger;
     channel.logger = nullptr;
@@ -755,6 +971,37 @@ ShutdownResult LogManager::Shutdown() noexcept {
     if (logger->producer_.attached() &&
         logger->producer_.Detach() != SpscStatus::kSuccess) {
       std::abort();
+    }
+  }
+  if (impl_->config.backend == LogBackend::kLogd) {
+    timespec started{};
+    (void)clock_gettime(CLOCK_MONOTONIC, &started);
+    for (std::size_t index = 0; index < impl_->channel_count; ++index) {
+      impl_->channels[index].shared->producer_done.store(
+          1, std::memory_order_release);
+    }
+    for (std::size_t index = 0; index < impl_->channel_count; ++index) {
+      auto& channel = impl_->channels[index];
+      while (channel.shared->consumer_done.load(std::memory_order_acquire) ==
+             0) {
+        timespec now{};
+        (void)clock_gettime(CLOCK_MONOTONIC, &now);
+        const auto elapsed =
+            static_cast<std::uint64_t>(now.tv_sec - started.tv_sec) *
+                1000000000ULL +
+            now.tv_nsec - started.tv_nsec;
+        if (elapsed >= impl_->config.shutdown_timeout_ns) {
+          impl_->RecordError(channel, index, LogErrorStage::kSync,
+                             SystemStatus(ErrorCode::kIoError, ETIMEDOUT));
+          break;
+        }
+        (void)nanosleep(&kShutdownPollInterval, nullptr);
+      }
+      const auto backend = channel.logger->backend_status();
+      if (!backend.status.ok() && !channel.failed) {
+        impl_->RecordError(channel, index, backend.stage, backend.status);
+      }
+      impl_->ReleaseStorage(channel);
     }
   }
   impl_->Lock();

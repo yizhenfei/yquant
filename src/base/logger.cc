@@ -11,6 +11,8 @@
 #include <cassert>
 #include <cstring>
 
+#include "base/internal/logging_shared.h"
+
 namespace yquant::base {
 namespace {
 
@@ -142,7 +144,10 @@ LogCounters Logger::counters() const noexcept {
 }
 
 LogBackendStatus Logger::backend_status() const noexcept {
-  const auto error = backend_error_.load(std::memory_order_acquire);
+  const auto error =
+      shared_state_ != nullptr
+          ? shared_state_->backend_error.load(std::memory_order_acquire)
+          : backend_error_.load(std::memory_order_acquire);
   const auto native_error = static_cast<int>(error >> 16);
   const auto system_error =
       native_error == 0
@@ -150,7 +155,9 @@ LogBackendStatus Logger::backend_status() const noexcept {
           : std::error_code(native_error, std::generic_category());
   return {{static_cast<ErrorCode>(error & 0xff), system_error},
           static_cast<LogErrorStage>((error >> 8) & 0xff),
-          last_write_ns_.load(std::memory_order_relaxed)};
+          shared_state_ != nullptr
+              ? shared_state_->last_write_ns.load(std::memory_order_relaxed)
+              : last_write_ns_.load(std::memory_order_relaxed)};
 }
 
 Logger::Call::~Call() noexcept {
@@ -170,7 +177,10 @@ Logger::Call Logger::BeginCall(LogLevel level) noexcept {
     counters_.reentrant_records_total.fetch_add(1, std::memory_order_relaxed);
     return {};
   }
-  if (active_.load(std::memory_order_acquire) == 0) {
+  if (active_.load(std::memory_order_acquire) == 0 ||
+      (shared_state_ != nullptr &&
+       (shared_state_->backend_error.load(std::memory_order_acquire) != 0 ||
+        shared_state_->consumer_done.load(std::memory_order_acquire) != 0))) {
     counters_.queue_errors_total.fetch_add(1, std::memory_order_relaxed);
     return {};
   }
@@ -182,6 +192,9 @@ Logger::Call Logger::BeginCall(LogLevel level) noexcept {
     } else {
       counters_.queue_errors_total.fetch_add(1, std::memory_order_relaxed);
       queue_fault_.store(1, std::memory_order_release);
+      if (shared_state_ != nullptr) {
+        shared_state_->queue_fault.store(1, std::memory_order_release);
+      }
       active_.store(0, std::memory_order_release);
     }
     return {};
@@ -205,7 +218,10 @@ void Logger::WriteHeader(internal::LogBufferWriter& writer, LogLevel level,
 }
 
 void Logger::Publish(std::size_t size, bool truncated) noexcept {
-  if (active_.load(std::memory_order_acquire) == 0) {
+  if (active_.load(std::memory_order_acquire) == 0 ||
+      (shared_state_ != nullptr &&
+       (shared_state_->backend_error.load(std::memory_order_acquire) != 0 ||
+        shared_state_->consumer_done.load(std::memory_order_acquire) != 0))) {
     counters_.queue_errors_total.fetch_add(1, std::memory_order_relaxed);
     return;
   }
@@ -223,6 +239,9 @@ void Logger::Publish(std::size_t size, bool truncated) noexcept {
   } else {
     counters_.queue_errors_total.fetch_add(1, std::memory_order_relaxed);
     queue_fault_.store(1, std::memory_order_release);
+    if (shared_state_ != nullptr) {
+      shared_state_->queue_fault.store(1, std::memory_order_release);
+    }
     active_.store(0, std::memory_order_release);
   }
 }

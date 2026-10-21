@@ -19,6 +19,7 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 核心策略进程命名为 `yquant-strategyd`。
 行情进程命名为 `yquant-marketd`。
 共享交易网关命名为 `yquant-tradingd`。
+日志进程命名为 `yquant-logd`。
 
 ## 目标平台
 
@@ -36,6 +37,7 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 - `include/yquant/md/`：共享内存行情订阅发布与标准报价帧。
 - `include/yquant/strategy/`：策略开发接口与动态库协议。
 - `src/base/`：基础组件及内部实现。
+- `src/logd/`：独立日志进程。
 - `src/strategyd/`：策略进程与动态库加载实现。
 - `src/md/`：共享内存映射、seqlock 协议和报价编解码。
 - `src/marketd/`：行情进程、配置、输入与输出适配器。
@@ -75,6 +77,21 @@ cmake -P cmake/DownloadTestData.cmake
 当前数据集是 [DolphinDB 股票回放样本](https://github.com/dolphindb/Tutorials_CN/blob/master/stock_market_replay.md)中的快照文件，保存为 `test_data/dolphindb/2020-12-31/snapshot.csv`。实际文件包含 2020-12-31 的 100 只深市 A 股、367,171 条十档盘口快照，买卖一价量字段为 `BidPX1`、`BidSize1`、`OfferPX1`、`OfferSize1`。下载来源与归档、CSV 的 SHA256 固定在 `cmake/TestDataManifest.cmake`；已有归档可用于离线恢复缺失或损坏的 CSV。
 
 日志接口位于 `yquant/base/logging.h`。Debug 默认编译保留 DEBUG 及以上级别，其他构建保留 INFO 及以上；可在配置时使用 `-DYQUANT_LOG_COMPILED_LEVEL=TRACE` 等选项调整。
+
+## 日志进程
+
+日志默认由进程内后台线程写盘。设置 `LogConfig::backend = LogBackend::kLogd` 后，业务进程通过共享内存 SPSC 队列向 `yquant-logd` 发送日志，不启动本地写盘线程。
+
+先启动 logd，队列及日志文件的父目录须存在，队列文件须不存在：
+
+```sh
+./build/debug/bin/yquant-logd \
+  --channel /tmp/strategy-log.queue /tmp/strategy.log
+```
+
+业务进程使用 `LogManager::Initialize()` 选择 `kLogd`，再通过 `LoggerConfig::queue_path` 连接队列；生产端不配置 `file_path`。多通道重复传入 `--channel QUEUE_FILE LOG_FILE`，每条队列只接收一个 Logger。队列容量默认 1 MiB，`--capacity` 和 `--max-file-bytes` 必须放在所有 `--channel` 之前，统一配置消费端容量和轮转阈值；两端的队列容量须一致。
+
+退出顺序为业务进程调用 `Shutdown()`、收到排空及文件同步确认，再向 logd 发送 `SIGTERM` 或 `SIGINT`。每条队列只供一次生产者会话使用；新会话重新启动 logd 并创建新队列。进程异常退出后的队列恢复与错误语义见[日志设计](docs/design/logging.md#跨进程日志)。
 
 ## 策略进程
 
