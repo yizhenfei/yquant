@@ -74,6 +74,14 @@ cmake -P cmake/DownloadTestData.cmake
 
 日志接口位于 `yquant/base/logging.h`。Debug 默认编译保留 DEBUG 及以上级别，其他构建保留 INFO 及以上；可在配置时使用 `-DYQUANT_LOG_COMPILED_LEVEL=TRACE` 等选项调整。
 
+### VS Code
+
+使用 VS Code 打开仓库根目录，安装推荐的 C/C++ 和 CMake Tools 扩展。工作区通过 CMake Tools 提供 IntelliSense 编译参数，同时指定 `build/debug/compile_commands.json`，以 C++20 和项目头文件目录作为后备配置。
+
+在命令面板执行 `CMake: Select Configure Preset` 选择 `debug`，再执行 `CMake: Configure`，生成编译数据库。CMake 和 Ninja 需要在 VS Code 的运行环境中可用；个人工具路径放在用户设置中，不写入仓库配置。切换构建 preset 时，CMake Tools 提供对应构建的编译参数。
+
+已有编译数据库时，重新加载窗口即可读取工作区配置。如果仍显示旧诊断，执行 `C/C++: Reset IntelliSense Database`。头文件的语言标准、系统 SDK、宏和第三方依赖路径应与 CMake 编译参数保持一致。
+
 ## 策略进程
 
 `yquant-strategyd` 读取 JSON 配置并加载用户策略动态库，全部校验成功后调用 `OnStart(context)`。主线程驱动行情、交易请求及委托和成交回报。收到停止信号后，宿主停止行情和策略新请求，自动撤单并处理回报；排空后调用 `OnStop(context)`、销毁实例并释放动态库句柄。
