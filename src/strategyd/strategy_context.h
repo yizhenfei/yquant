@@ -3,7 +3,7 @@
 
 #include <cstdint>
 
-#include "strategyd/monotonic_clock.h"
+#include "yquant/base/monotonic_clock.h"
 #include "yquant/strategy/strategy_context.h"
 
 namespace yquant::strategyd {
@@ -15,7 +15,7 @@ class StrategyContextImpl final : public strategy::StrategyContext {
   // Borrows clock and both services for this view's entire lifetime. No
   // reference returned to a strategy may outlive the callback in which it was
   // obtained.
-  StrategyContextImpl(const MonotonicClock& clock,
+  StrategyContextImpl(const base::MonotonicClock& clock,
                       strategy::MarketData& market_data,
                       strategy::Trading& trading) noexcept
       : clock_(clock), market_data_(market_data), trading_(&trading) {}
@@ -35,7 +35,7 @@ class StrategyContextImpl final : public strategy::StrategyContext {
   }
 
  private:
-  const MonotonicClock& clock_;
+  const base::MonotonicClock& clock_;
   strategy::MarketData& market_data_;
   strategy::Trading* trading_;
 };

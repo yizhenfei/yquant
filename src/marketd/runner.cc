@@ -102,8 +102,8 @@ base::Status MarketdRunner::Init(const MarketdConfig& config,
   return {};
 }
 
-base::Status MarketdRunner::Run(const strategyd::MonotonicClock& clock,
-                                strategyd::EventLoopEnvironment& environment,
+base::Status MarketdRunner::Run(const base::MonotonicClock& clock,
+                                base::EventLoopEnvironment& environment,
                                 std::uint64_t max_events) noexcept {
   if (!source_)
     return Fail({base::ErrorCode::kInvalidState, {}}, "run",

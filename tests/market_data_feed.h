@@ -13,8 +13,8 @@
 #include <thread>
 #include <vector>
 
-#include "strategyd/market_data_config.h"
 #include "yquant/base/json_config_document.h"
+#include "yquant/md/market_data_config.h"
 #include "yquant/md/mock_quote_source.h"
 #include "yquant/md/quote_codec.h"
 #include "yquant/md/shm_broadcast.h"
@@ -44,7 +44,7 @@ class MarketDataFeed {
     const auto option =
         std::find(arguments.begin(), arguments.end(), "--market-data-config");
     if (option == arguments.end() || option + 1 == arguments.end()) return 0;
-    strategyd::MarketDataConfigLoader loader;
+    md::MarketDataConfigLoader loader;
     if (!loader.Load((option + 1)->c_str()).ok()) return 0;
     const auto& host = loader.config();
     constexpr std::string_view kEndpoint = "/tmp/yquant-test-feed";

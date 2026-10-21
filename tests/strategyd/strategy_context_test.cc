@@ -2,23 +2,23 @@
 
 #include "gtest/gtest.h"
 #include "strategyd/market_data.h"
-#include "strategyd/trading.h"
 #include "yquant/model/identifiers.h"
+#include "yquant/trading/trading.h"
 
 namespace yquant::strategyd {
 namespace {
 
 using base::ErrorCode;
 
-class ContextTestClock final : public MonotonicClock {
+class ContextTestClock final : public base::MonotonicClock {
  public:
   std::uint64_t Now() const noexcept override { return now; }
   std::uint64_t now = 1000;
 };
 
 // Two dictionary entries allow testing a known but unsubscribed instrument.
-MarketDataConfig ContextConfig(model::SourceId source_id = {1}) {
-  MarketDataConfig config;
+md::MarketDataConfig ContextConfig(model::SourceId source_id = {1}) {
+  md::MarketDataConfig config;
   config.source_id = source_id;
 
   config.instrument_count = 2;
@@ -55,7 +55,7 @@ model::QuoteTick ContextQuote(model::InstrumentId id, std::uint64_t sequence,
 TEST(StrategyContextTest, EmptyDictionaryPreservesOutputsAndHasNoSource) {
   ContextTestClock clock;
   MarketDataImpl market_data(clock);
-  TradingImpl trading(clock, market_data);
+  trading::TradingImpl trading(clock, market_data.instruments());
   StrategyContextImpl context(clock, market_data, trading);
   const auto definition = ContextConfig().instruments[0].instrument;
   auto unchanged_definition = definition;
@@ -70,7 +70,7 @@ TEST(StrategyContextTest, EmptyDictionaryPreservesOutputsAndHasNoSource) {
   EXPECT_EQ(untouched, original);
   EXPECT_EQ(context.market_data().SubscribeQuotes(definition.id),
             ErrorCode::kInvalidState);
-  market_data.BeginCallback(CallbackPhase::kStart);
+  market_data.BeginCallback(strategy::CallbackPhase::kStart);
   EXPECT_EQ(context.market_data().SubscribeQuotes(definition.id),
             ErrorCode::kUnsupported);
   market_data.EndCallback();
@@ -83,7 +83,7 @@ TEST(StrategyContextTest, EmptyDictionaryPreservesOutputsAndHasNoSource) {
 TEST(StrategyContextTest, ResolvesDefinitionsAndRegistersOnlyDuringStart) {
   ContextTestClock clock;
   MarketDataImpl market_data(clock);
-  TradingImpl trading(clock, market_data);
+  trading::TradingImpl trading(clock, market_data.instruments());
   StrategyContextImpl context(clock, market_data, trading);
   const auto config = ContextConfig();
   ASSERT_TRUE(market_data.Configure(config).ok());
@@ -95,7 +95,7 @@ TEST(StrategyContextTest, ResolvesDefinitionsAndRegistersOnlyDuringStart) {
   EXPECT_EQ(context.market_data().FindInstrument("SZSE", "600000", found),
             ErrorCode::kInvalidArgument);
   EXPECT_EQ(found, definition);
-  market_data.BeginCallback(CallbackPhase::kStart);
+  market_data.BeginCallback(strategy::CallbackPhase::kStart);
   EXPECT_EQ(context.market_data().SubscribeQuotes({definition.id.value + 2}),
             ErrorCode::kInvalidArgument);
   EXPECT_EQ(context.market_data().SubscribeQuotes({}),
@@ -109,8 +109,9 @@ TEST(StrategyContextTest, ResolvesDefinitionsAndRegistersOnlyDuringStart) {
   EXPECT_EQ(market_data.subscriptions()[0], definition.id);
   market_data.EndCallback();
   for (const auto phase :
-       {CallbackPhase::kNone, CallbackPhase::kTick, CallbackPhase::kOrderUpdate,
-        CallbackPhase::kFill, CallbackPhase::kStop}) {
+       {strategy::CallbackPhase::kNone, strategy::CallbackPhase::kTick,
+        strategy::CallbackPhase::kOrderUpdate, strategy::CallbackPhase::kFill,
+        strategy::CallbackPhase::kStop}) {
     market_data.BeginCallback(phase);
     EXPECT_EQ(context.market_data().SubscribeQuotes(
                   config.instruments[1].instrument.id),
@@ -123,13 +124,13 @@ TEST(StrategyContextTest, ResolvesDefinitionsAndRegistersOnlyDuringStart) {
 TEST(StrategyContextTest, KeepsAcceptedSnapshotAndRejectsMismatchedSource) {
   ContextTestClock clock;
   MarketDataImpl market_data(clock);
-  TradingImpl trading(clock, market_data);
+  trading::TradingImpl trading(clock, market_data.instruments());
   StrategyContextImpl context(clock, market_data, trading);
   const strategy::StrategyContext& read_only_context = context;
   const auto config = ContextConfig({17});
   ASSERT_TRUE(market_data.Configure(config).ok());
   const auto id = config.instruments[0].instrument.id;
-  market_data.BeginCallback(CallbackPhase::kStart);
+  market_data.BeginCallback(strategy::CallbackPhase::kStart);
   ASSERT_EQ(context.market_data().SubscribeQuotes(id), ErrorCode::kOk);
   market_data.EndCallback();
   auto snapshot = ContextQuote(id, 99);
@@ -188,10 +189,10 @@ TEST(StrategyContextTest, BoundServicesKeepTheSameInstrumentIndependent) {
   ASSERT_EQ(id, second_config.instruments[0].instrument.id);
   strategy::MarketData& first_service = first;
   strategy::MarketData& second_service = second;
-  first.BeginCallback(CallbackPhase::kStart);
+  first.BeginCallback(strategy::CallbackPhase::kStart);
   ASSERT_EQ(first_service.SubscribeQuotes(id), ErrorCode::kOk);
   first.EndCallback();
-  second.BeginCallback(CallbackPhase::kStart);
+  second.BeginCallback(strategy::CallbackPhase::kStart);
   ASSERT_EQ(second_service.SubscribeQuotes(id), ErrorCode::kOk);
   second.EndCallback();
 

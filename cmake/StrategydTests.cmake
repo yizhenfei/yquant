@@ -75,13 +75,10 @@ set_target_properties(strategyd_fixture_missing_dependency PROPERTIES
 
 add_executable(yquant_strategyd_test
   tests/strategyd/market_model_test.cc
-  tests/strategyd/market_data_config_test.cc
   tests/strategyd/shm_market_data_source_test.cc
   tests/strategyd/market_runner_test.cc
   tests/strategyd/strategy_context_test.cc
-  tests/strategyd/trading_test.cc
-  tests/strategyd/trading_config_test.cc
-  tests/strategyd/mock_trading_adapter_test.cc
+  tests/strategyd/remote_trading_test.cc
   tests/strategyd/trading_runner_test.cc
   tests/strategyd/trading_process_test.cc
   tests/strategyd/strategy_config_test.cc
@@ -90,7 +87,7 @@ add_executable(yquant_strategyd_test
   tests/strategyd/strategyd_process_test.cc)
 target_include_directories(yquant_strategyd_test PRIVATE src)
 target_link_libraries(yquant_strategyd_test PRIVATE
-  yquant_strategyd_runtime GTest::gtest_main yquant_compile_options)
+  yquant_strategyd_objects GTest::gtest_main yquant_compile_options)
 target_compile_options(yquant_strategyd_test PRIVATE -Wall -Wextra -Wpedantic)
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/test_data")
 configure_file("tests/fixtures/instruments.json"

@@ -35,19 +35,19 @@ MarketDataPollResult ShmMarketDataSource::PollError(
 }
 
 base::Status ShmMarketDataSource::Prepare(
-    const MarketDataConfig& config) noexcept {
+    const md::MarketDataConfig& config) noexcept {
   if (state_ != State::kUnprepared) {
     return Error({base::ErrorCode::kInvalidState, {}},
                  "source can only be prepared once before activation");
   }
   base::ConfigError error;
-  const auto result = ValidateMarketDataConfig(config, error);
+  const auto result = md::ValidateMarketDataConfig(config, error);
   if (!result.ok()) {
     std::snprintf(error_detail_, sizeof(error_detail_), "%s: %s",
                   error.field_path, error.message);
     return result;
   }
-  if (config.adapter != MarketDataAdapter::kShm) {
+  if (config.adapter != md::MarketDataAdapter::kShm) {
     return Error({base::ErrorCode::kInvalidArgument, {}},
                  "shm source requires adapter=shm");
   }
@@ -64,13 +64,13 @@ base::Status ShmMarketDataSource::Start(
     return Error({base::ErrorCode::kInvalidState, {}},
                  "source must be prepared before activation");
   }
-  if (subscriptions.size() > kMaxMarketDataInstruments) {
+  if (subscriptions.size() > md::kMaxMarketDataInstruments) {
     return Error({base::ErrorCode::kInvalidArgument, {}},
                  "too many market data subscriptions");
   }
-  std::array<std::uint64_t, kMaxMarketDataInstruments> instruments{};
+  std::array<std::uint64_t, md::kMaxMarketDataInstruments> instruments{};
   std::size_t instrument_count = 0;
-  std::array<bool, kMaxMarketDataInstruments> selected = {};
+  std::array<bool, md::kMaxMarketDataInstruments> selected = {};
   for (const auto id : subscriptions) {
     std::size_t index = 0;
     while (index < config_.instrument_count &&

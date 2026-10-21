@@ -8,11 +8,11 @@
 
 #include "gtest/gtest.h"
 #include "strategyd/market_data.h"
-#include "strategyd/mock_trading_adapter.h"
 #include "strategyd/strategy_context.h"
-#include "strategyd/trading.h"
-#include "strategyd/trading_adapter.h"
 #include "yquant/model/identifiers.h"
+#include "yquant/trading/mock_trading_adapter.h"
+#include "yquant/trading/trading.h"
+#include "yquant/trading/trading_adapter.h"
 
 namespace {
 
@@ -138,7 +138,7 @@ void operator delete[](void* memory, std::align_val_t,
 namespace yquant::strategyd {
 namespace {
 
-class TradingHeapClock final : public MonotonicClock {
+class TradingHeapClock final : public base::MonotonicClock {
  public:
   std::uint64_t Now() const noexcept override { return now; }
   std::uint64_t now = 0;
@@ -146,7 +146,8 @@ class TradingHeapClock final : public MonotonicClock {
 
 // Runs accepted requests, idle checks, normalized reports and callback-side
 // queries without test reporting inside the allocation observation window.
-const char* ExerciseOrders(TradingImpl& trading, MockTradingAdapter& adapter,
+const char* ExerciseOrders(trading::TradingImpl& trading,
+                           trading::MockTradingAdapter& adapter,
                            StrategyContextImpl& context,
                            TradingHeapClock& clock,
                            model::InstrumentId instrument, bool cancel,
@@ -170,7 +171,7 @@ const char* ExerciseOrders(TradingImpl& trading, MockTradingAdapter& adapter,
       return "account query failed before request";
     }
     model::ClientOrderId id;
-    trading.BeginCallback(CallbackPhase::kTick);
+    trading.BeginCallback(strategy::CallbackPhase::kTick);
     const auto submitted = context.trading().SubmitOrder(
         {instrument, sell ? model::OrderSide::kSell : model::OrderSide::kBuy,
          1001, 201},
@@ -213,25 +214,26 @@ const char* ExerciseOrders(TradingImpl& trading, MockTradingAdapter& adapter,
       if (!context.trading().TryGetOrder(id, before)) {
         return "pending order was not queryable";
       }
-      TradingEvent event;
+      trading::TradingEvent event;
       event.report_sequence = 999;
       clock.now = *deadline - 1;
       const auto idle = adapter.Poll(clock.Now(), event);
-      if (idle.state != TradingPollState::kIdle || !idle.status.ok() ||
+      if (idle.state != trading::TradingPollState::kIdle || !idle.status.ok() ||
           event.report_sequence != 999) {
         return "idle poll modified its output";
       }
       clock.now = *deadline;
       const auto polled = adapter.Poll(clock.Now(), event);
-      if (polled.state != TradingPollState::kEvent || !polled.status.ok()) {
+      if (polled.state != trading::TradingPollState::kEvent ||
+          !polled.status.ok()) {
         return "scheduled broker event was not produced";
       }
-      TradingDispatch dispatch;
+      trading::TradingDispatch dispatch;
       if (trading.ApplyEvent(event, dispatch) != base::ErrorCode::kOk ||
           !dispatch.notify_order) {
         return "valid broker event was not committed";
       }
-      trading.BeginCallback(CallbackPhase::kOrderUpdate);
+      trading.BeginCallback(strategy::CallbackPhase::kOrderUpdate);
       model::CashSnapshot committed_cash;
       model::PositionSnapshot committed_position;
       if (!read_only.trading().TryGetCash(committed_cash) ||
@@ -251,7 +253,7 @@ const char* ExerciseOrders(TradingImpl& trading, MockTradingAdapter& adapter,
       }
       trading.EndCallback();
       if (dispatch.has_fill) {
-        trading.BeginCallback(CallbackPhase::kFill);
+        trading.BeginCallback(strategy::CallbackPhase::kFill);
         if (!read_only.trading().TryGetOrder(id, snapshot) ||
             snapshot.cumulative_filled_qty !=
                 before.cumulative_filled_qty + dispatch.fill.quantity) {
@@ -261,7 +263,7 @@ const char* ExerciseOrders(TradingImpl& trading, MockTradingAdapter& adapter,
         ++fill_count;
         filled_qty += dispatch.fill.quantity;
       }
-      TradingDispatch duplicate;
+      trading::TradingDispatch duplicate;
       if (trading.ApplyEvent(event, duplicate) != base::ErrorCode::kOk ||
           duplicate.notify_order || duplicate.has_fill) {
         return "duplicate report was dispatched twice";
@@ -322,7 +324,7 @@ const char* ExerciseOrders(TradingImpl& trading, MockTradingAdapter& adapter,
 // first Poll inside the observation. Covers both fills and cancel outcomes.
 void CheckTradingHeap(bool cancel, bool sell = false) {
   TradingHeapClock clock;
-  MarketDataConfig market_config;
+  md::MarketDataConfig market_config;
   market_config.source_id = {1};
 
   market_config.instrument_count = 1;
@@ -335,8 +337,8 @@ void CheckTradingHeap(bool cancel, bool sell = false) {
 
   MarketDataImpl market_data(clock);
   ASSERT_TRUE(market_data.Configure(market_config).ok());
-  TradingImpl trading(clock, market_data);
-  TradingAccountSnapshot account;
+  trading::TradingImpl trading(clock, market_data.instruments());
+  trading::TradingAccountSnapshot account;
   account.cash_balance = 1000000000000000;
   if (sell) {
     account.position_count = 1;
@@ -344,10 +346,11 @@ void CheckTradingHeap(bool cancel, bool sell = false) {
   }
   ASSERT_TRUE(trading.Configure(account).ok());
   StrategyContextImpl context(clock, market_data, trading);
-  TradingConfig config;
-  config.mode = cancel ? MockTradingMode::kWorking : MockTradingMode::kFill;
+  trading::TradingConfig config;
+  config.mode = cancel ? trading::MockTradingMode::kWorking
+                       : trading::MockTradingMode::kFill;
   config.initial_account = account;
-  MockTradingAdapter adapter;
+  trading::MockTradingAdapter adapter;
   ASSERT_TRUE(adapter.Prepare(config).ok());
   ASSERT_TRUE(adapter.Start(clock.Now()).ok());
   trading.SetRunning(true);

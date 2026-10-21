@@ -6,7 +6,7 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 
 项目不使用 C++ 异常。
 
-日志等基础组件统一组织在 `yquant_base` 静态库中，供上层模块复用。
+公共实现按职责组织为 `yquant_base`、`yquant_md` 和 `yquant_trading` 静态库，供可执行程序复用。
 
 ## 程序命名
 
@@ -33,22 +33,28 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 
 - `include/yquant/base/`：基础组件公开头文件。
 - `include/yquant/model/`：交易领域公共类型。
-- `include/yquant/md/`：共享内存行情广播与标准报价帧。
+- `include/yquant/md/`：标的字典与运行范围、行情配置、模拟报价、编解码与广播。
+- `include/yquant/trading/`：交易账本、柜台接入、交易配置与网关传输。
 - `include/yquant/strategy/`：策略开发接口与动态库协议。
 - `src/base/`：基础组件及内部实现，包括内存广播队列和共享内存封装。
-- `src/strategyd/`：策略进程与动态库加载实现。
-- `src/md/`：行情事件广播适配与报价编解码。
-- `src/marketd/`：行情进程、配置、输入与输出适配器。
-- `src/tradingd/`：共享账户交易网关、跨机协议与 TCP 连接。
+- `src/md/`：行情库实现。
+- `src/trading/`：交易库实现。
+- `src/strategyd/`：策略程序专用的动态库加载、行情服务、远端交易服务与调度。
+- `src/marketd/`：行情程序专用的配置、输入与输出适配及调度。
+- `src/tradingd/`：交易网关专用的配置、账户服务与请求路由。
 - `examples/tradingd/`：共享交易网关与策略客户端配置。
 - `examples/marketd/`：本机分发、TCP 中继、历史回放与录制配置。
 - `examples/strategies/`：用户策略动态库示例。
 - `tests/base/`：基础组件测试。
+- `tests/trading/`：交易账本、配置、模拟柜台与网关传输组件测试。
 - `tests/strategyd/`：策略运行时与进程集成测试。
 - `tests/md/`、`tests/marketd/`：行情组件与多进程分发测试。
+- `tests/tradingd/`：交易网关服务与多进程共享账户测试。
 - `cmake/`：依赖与编译配置。
 - `docs/design/`：架构与组件设计。
 - `docs/research/`：系统研究资料与记录。
+
+库与程序的依赖边界、CMake 目标见[目录与模块](docs/design/engineering.md#目录与模块)。
 
 ## 构建与测试
 

@@ -9,7 +9,7 @@
 #include <thread>
 #include <utility>
 
-#include "strategyd/trading_limits.h"
+#include "yquant/trading/trading_limits.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -20,7 +20,7 @@ constexpr std::uint64_t kHeartbeatIntervalNs = 250000000;
 // Idle polls yield the current batch while keeping the low-latency event loop
 // polling. A future deadline also satisfies the runner's empty-read contract.
 constexpr std::uint64_t kPollRetryNs = 1;
-constexpr std::size_t kExecutionLookupCapacity = 2 * kMaxTradingFills;
+constexpr std::size_t kExecutionLookupCapacity = 2 * trading::kMaxTradingFills;
 
 std::uint64_t SaturatingAdd(std::uint64_t value,
                             std::uint64_t amount) noexcept {
@@ -32,8 +32,8 @@ bool ValidId(model::InstrumentId id) noexcept {
   return venue >= 1 && venue <= 3 && (id.value & UINT32_MAX) <= 999999;
 }
 
-bool SameAccount(const tradingd::AccountView& lhs,
-                 const tradingd::AccountView& rhs) noexcept {
+bool SameAccount(const trading::AccountView& lhs,
+                 const trading::AccountView& rhs) noexcept {
   if (lhs.revision != rhs.revision || lhs.cash != rhs.cash ||
       lhs.position_count != rhs.position_count)
     return false;
@@ -78,13 +78,13 @@ struct RemoteTrading::Storage {
     bool cancel = false;
     model::CancelRequestId cancel_id;
   };
-  std::array<OrderRecord, kMaxTradingOrders> orders = {};
-  std::array<Request, kMaxTradingRequests> requests = {};
-  std::array<std::size_t, kMaxLocalOrderUpdates> local_updates = {};
-  std::array<model::Fill, kMaxTradingFills> fills = {};
+  std::array<OrderRecord, trading::kMaxTradingOrders> orders = {};
+  std::array<Request, trading::kMaxTradingRequests> requests = {};
+  std::array<std::size_t, trading::kMaxLocalOrderUpdates> local_updates = {};
+  std::array<model::Fill, trading::kMaxTradingFills> fills = {};
   std::array<std::uint16_t, kExecutionLookupCapacity> fill_lookup = {};
-  tradingd::AccountView account;
-  RemoteTradingConfig config;
+  trading::AccountView account;
+  trading::RemoteTradingConfig config;
   std::size_t order_count = 0;
   std::size_t request_head = 0;
   std::size_t request_count = 0;
@@ -101,9 +101,9 @@ struct RemoteTrading::Storage {
   bool failed = false;
 };
 
-RemoteTrading::RemoteTrading(const MonotonicClock& clock,
-                             const MarketDataImpl& market_data) noexcept
-    : clock_(clock), market_data_(market_data) {}
+RemoteTrading::RemoteTrading(const base::MonotonicClock& clock,
+                             const md::InstrumentScope& instruments) noexcept
+    : clock_(clock), instruments_(instruments) {}
 RemoteTrading::~RemoteTrading() noexcept { Reset(); }
 
 ErrorCode RemoteTrading::Fail(ErrorCode code, const char* detail) noexcept {
@@ -118,17 +118,18 @@ base::Status RemoteTrading::FailSession(base::Status status,
   return status;
 }
 
-base::Status RemoteTrading::Init(const TradingConfig& config,
-                                 const MarketDataConfig& dictionary) noexcept {
-  if (storage_ != nullptr || phase_ != CallbackPhase::kNone)
+base::Status RemoteTrading::Init(
+    const trading::TradingConfig& config,
+    const md::MarketDataConfig& dictionary) noexcept {
+  if (storage_ != nullptr || phase_ != strategy::CallbackPhase::kNone)
     return {
         Fail(ErrorCode::kInvalidState, "remote trading already initialized"),
         {}};
   base::ConfigError error;
-  auto status = ValidateTradingConfig(config, error);
-  if (!status.ok() || config.adapter != TradingAdapterKind::kTcp ||
+  auto status = trading::ValidateTradingConfig(config, error);
+  if (!status.ok() || config.adapter != trading::TradingAdapterKind::kTcp ||
       dictionary.instrument_count == 0 ||
-      dictionary.instrument_count > tradingd::kMaxInstruments)
+      dictionary.instrument_count > trading::kMaxInstruments)
     return {Fail(ErrorCode::kInvalidArgument,
                  "invalid remote endpoint or instrument dictionary"),
             {}};
@@ -146,8 +147,8 @@ base::Status RemoteTrading::Init(const TradingConfig& config,
     storage_.reset();
     return status;
   }
-  tradingd::Message hello;
-  hello.type = tradingd::MessageType::kHello;
+  trading::Message hello;
+  hello.type = trading::MessageType::kHello;
   hello.client_id = config.remote.client_id;
   std::memcpy(hello.token, config.remote.token, sizeof(hello.token));
   hello.instrument_count = dictionary.instrument_count;
@@ -163,11 +164,11 @@ base::Status RemoteTrading::Init(const TradingConfig& config,
     return status;
   }
   const auto start = std::chrono::steady_clock::now();
-  tradingd::Message welcome;
+  trading::Message welcome;
   for (;;) {
     const auto received = connection_.Poll(welcome);
-    if (received.state == tradingd::ReceiveState::kMessage) break;
-    if (received.state != tradingd::ReceiveState::kIdle) {
+    if (received.state == trading::ReceiveState::kMessage) break;
+    if (received.state != trading::ReceiveState::kIdle) {
       status = received.status.ok() ? base::Status{ErrorCode::kIoError, {}}
                                     : received.status;
       (void)Fail(status.code, "remote trading handshake failed");
@@ -187,7 +188,7 @@ base::Status RemoteTrading::Init(const TradingConfig& config,
     }
     std::this_thread::yield();
   }
-  bool valid = welcome.type == tradingd::MessageType::kWelcome &&
+  bool valid = welcome.type == trading::MessageType::kWelcome &&
                welcome.generation != 0 &&
                welcome.instrument_count == hello.instrument_count;
   for (std::size_t index = 0; valid && index < hello.instrument_count;
@@ -229,7 +230,7 @@ void RemoteTrading::Reset() noexcept {
   storage_.reset();
   running_ = false;
   stopping_ = false;
-  phase_ = CallbackPhase::kNone;
+  phase_ = strategy::CallbackPhase::kNone;
   error_detail_[0] = '\0';
 }
 
@@ -239,9 +240,9 @@ void RemoteTrading::BeginStopping() noexcept {
 }
 
 bool RemoteTrading::accepting_orders() const noexcept {
-  const bool business = phase_ == CallbackPhase::kTick ||
-                        phase_ == CallbackPhase::kOrderUpdate ||
-                        phase_ == CallbackPhase::kFill;
+  const bool business = phase_ == strategy::CallbackPhase::kTick ||
+                        phase_ == strategy::CallbackPhase::kOrderUpdate ||
+                        phase_ == strategy::CallbackPhase::kFill;
   return storage_ != nullptr && !storage_->failed && running_ && !stopping_ &&
          business;
 }
@@ -252,7 +253,7 @@ ErrorCode RemoteTrading::SubmitOrder(const model::OrderRequest& request,
     return Fail(ErrorCode::kInvalidState,
                 "orders require a running business callback");
   model::InstrumentDefinition definition;
-  if (!market_data_.TryGetInstrument(request.instrument_id, definition) ||
+  if (!instruments_.TryGetInstrument(request.instrument_id, definition) ||
       (request.side != model::OrderSide::kBuy &&
        request.side != model::OrderSide::kSell) ||
       request.limit_price <= 0 || request.quantity <= 0 ||
@@ -325,7 +326,7 @@ bool RemoteTrading::TryGetCash(model::CashSnapshot& out) const noexcept {
 
 bool RemoteTrading::TryGetPosition(
     model::InstrumentId id, model::PositionSnapshot& out) const noexcept {
-  if (storage_ == nullptr || !market_data_.HasInstrument(id)) return false;
+  if (storage_ == nullptr || !instruments_.HasInstrument(id)) return false;
   for (std::size_t index = 0; index < storage_->account.position_count;
        ++index) {
     if (storage_->account.positions[index].instrument_id == id) {
@@ -337,9 +338,10 @@ bool RemoteTrading::TryGetPosition(
   return true;
 }
 
-base::Status RemoteTrading::ProcessRequests(TradingAdapter&, std::uint64_t now,
+base::Status RemoteTrading::ProcessRequests(trading::TradingAdapter&,
+                                            std::uint64_t now,
                                             std::size_t limit) noexcept {
-  if (phase_ != CallbackPhase::kNone)
+  if (phase_ != strategy::CallbackPhase::kNone)
     return {Fail(ErrorCode::kInvalidState, "cannot send inside a callback"),
             {}};
   if (storage_ == nullptr) return {};
@@ -363,15 +365,15 @@ base::Status RemoteTrading::ProcessRequests(TradingAdapter&, std::uint64_t now,
       ++s.local_count;
     } else {
       if (!connection_.can_queue()) break;
-      tradingd::Message message;
+      trading::Message message;
       message.generation = s.generation;
       message.order_id = record.snapshot.client_order_id;
       if (request.cancel) {
-        message.type = tradingd::MessageType::kCancelOrder;
+        message.type = trading::MessageType::kCancelOrder;
         message.cancel_id = request.cancel_id;
         message.broker_order_id = record.snapshot.broker_order_id;
       } else {
-        message.type = tradingd::MessageType::kNewOrder;
+        message.type = trading::MessageType::kNewOrder;
         const auto& order = record.snapshot;
         message.request = {order.instrument_id, order.side, order.limit_price,
                            order.original_qty};
@@ -390,15 +392,15 @@ base::Status RemoteTrading::ProcessRequests(TradingAdapter&, std::uint64_t now,
   }
   if (stopping_ && s.request_count == 0 && !s.stop_sent &&
       connection_.can_queue()) {
-    tradingd::Message stop;
-    stop.type = tradingd::MessageType::kStop;
+    trading::Message stop;
+    stop.type = trading::MessageType::kStop;
     stop.generation = s.generation;
     status = connection_.Queue(stop);
     if (!status.ok()) return FailSession(status, connection_.error_detail());
     s.stop_sent = true;
   }
   if (!s.drained && now >= s.next_heartbeat_ns && connection_.can_queue()) {
-    tradingd::Message heartbeat;
+    trading::Message heartbeat;
     heartbeat.generation = s.generation;
     status = connection_.Queue(heartbeat);
     if (!status.ok()) return FailSession(status, connection_.error_detail());
@@ -445,20 +447,21 @@ std::size_t RemoteTrading::order_count() const noexcept {
   return storage_ == nullptr ? 0 : storage_->order_count;
 }
 
-ErrorCode RemoteTrading::ApplyEvent(const TradingEvent&,
-                                    TradingDispatch&) noexcept {
+ErrorCode RemoteTrading::ApplyEvent(const trading::TradingEvent&,
+                                    trading::TradingDispatch&) noexcept {
   return Fail(ErrorCode::kInvalidState,
               "remote runtime does not accept local adapter events");
 }
 
-ErrorCode RemoteTrading::ApplyLocalUpdate(TradingDispatch& out) noexcept {
+ErrorCode RemoteTrading::ApplyLocalUpdate(
+    trading::TradingDispatch& out) noexcept {
   if (storage_ == nullptr || storage_->local_count == 0)
     return Fail(ErrorCode::kInvalidState, "no local cancellation available");
   auto& s = *storage_;
   auto& record = s.orders[s.local_updates[s.local_head]];
   if (record.attempted || record.snapshot.state != OrderState::kPendingNew)
     return Fail(ErrorCode::kCorrupt, "invalid pending local cancellation");
-  TradingDispatch dispatch;
+  trading::TradingDispatch dispatch;
   dispatch.notify_order = true;
   dispatch.update.kind = OrderUpdateKind::kCanceledBeforeSend;
   dispatch.update.order = record.snapshot;
@@ -472,7 +475,7 @@ ErrorCode RemoteTrading::ApplyLocalUpdate(TradingDispatch& out) noexcept {
   return ErrorCode::kOk;
 }
 
-ErrorCode RemoteTrading::ValidateAccount(const tradingd::AccountView& account,
+ErrorCode RemoteTrading::ValidateAccount(const trading::AccountView& account,
                                          bool initial) noexcept {
   const auto& cash = account.cash;
   if (account.revision == 0 || cash.balance < 0 || cash.reserved < 0 ||
@@ -500,9 +503,9 @@ ErrorCode RemoteTrading::ValidateAccount(const tradingd::AccountView& account,
   return ErrorCode::kOk;
 }
 
-ErrorCode RemoteTrading::ApplyUpdate(const tradingd::Message& message,
+ErrorCode RemoteTrading::ApplyUpdate(const trading::Message& message,
                                      std::uint64_t now,
-                                     TradingDispatch& out) noexcept {
+                                     trading::TradingDispatch& out) noexcept {
   auto& s = *storage_;
   const auto& wire = message.update;
   const auto& next = wire.order;
@@ -639,7 +642,7 @@ ErrorCode RemoteTrading::ApplyUpdate(const tradingd::Message& message,
         return Fail(ErrorCode::kCorrupt, "broker ID belongs to another order");
     }
   }
-  TradingDispatch dispatch;
+  trading::TradingDispatch dispatch;
   dispatch.notify_order = message.notify_order;
   dispatch.has_fill = message.has_fill;
   dispatch.update = wire;
@@ -666,7 +669,8 @@ ErrorCode RemoteTrading::ApplyUpdate(const tradingd::Message& message,
   return ErrorCode::kOk;
 }
 
-base::Status RemoteTrading::Poll(std::uint64_t now, TradingDispatch& out,
+base::Status RemoteTrading::Poll(std::uint64_t now,
+                                 trading::TradingDispatch& out,
                                  bool& event) noexcept {
   if (storage_ == nullptr)
     return {Fail(ErrorCode::kInvalidState, "remote trading is disabled"), {}};
@@ -677,14 +681,14 @@ base::Status RemoteTrading::Poll(std::uint64_t now, TradingDispatch& out,
   if (now < s.last_received_ns)
     return FailSession({ErrorCode::kCorrupt, {}},
                        "remote polling clock regressed");
-  tradingd::Message message;
+  trading::Message message;
   const auto received = connection_.Poll(message);
-  if (received.state == tradingd::ReceiveState::kIdle) {
+  if (received.state == trading::ReceiveState::kIdle) {
     s.next_poll_ns = SaturatingAdd(now, kPollRetryNs);
     event = false;
     return {};
   }
-  if (received.state != tradingd::ReceiveState::kMessage) {
+  if (received.state != trading::ReceiveState::kMessage) {
     const auto code =
         received.status.ok() ? ErrorCode::kIoError : received.status.code;
     return FailSession({code, received.status.system_error},
@@ -693,24 +697,24 @@ base::Status RemoteTrading::Poll(std::uint64_t now, TradingDispatch& out,
   if (message.generation != s.generation)
     return FailSession({ErrorCode::kCorrupt, {}},
                        "remote trading generation changed");
-  if (s.drained && message.type != tradingd::MessageType::kHeartbeat)
+  if (s.drained && message.type != trading::MessageType::kHeartbeat)
     return FailSession({ErrorCode::kCorrupt, {}},
                        "remote update followed drain acknowledgement");
-  TradingDispatch dispatch;
+  trading::TradingDispatch dispatch;
   auto code = ErrorCode::kOk;
   bool notification = false;
   switch (message.type) {
-    case tradingd::MessageType::kOrderUpdate:
+    case trading::MessageType::kOrderUpdate:
       code = ApplyUpdate(message, now, dispatch);
       notification = dispatch.notify_order || dispatch.has_fill;
       break;
-    case tradingd::MessageType::kAccount:
+    case trading::MessageType::kAccount:
       code = ValidateAccount(message.account, false);
       if (code == ErrorCode::kOk) s.account = message.account;
       break;
-    case tradingd::MessageType::kHeartbeat:
+    case trading::MessageType::kHeartbeat:
       break;
-    case tradingd::MessageType::kDrained:
+    case trading::MessageType::kDrained:
       if (!stopping_ || !s.stop_sent || s.drained)
         code = Fail(ErrorCode::kCorrupt,
                     "unexpected remote drain acknowledgement");
@@ -728,7 +732,7 @@ base::Status RemoteTrading::Poll(std::uint64_t now, TradingDispatch& out,
         if (code == ErrorCode::kOk) s.drained = true;
       }
       break;
-    case tradingd::MessageType::kError:
+    case trading::MessageType::kError:
       code = Fail(message.error_code == ErrorCode::kOk ? ErrorCode::kCorrupt
                                                        : message.error_code,
                   message.reason.text);

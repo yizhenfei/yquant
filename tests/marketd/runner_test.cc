@@ -13,7 +13,7 @@ namespace yquant::marketd {
 namespace {
 
 // Advances one mock interval per source poll; no wall-clock waiting is needed.
-class AdvancingClock final : public strategyd::MonotonicClock {
+class AdvancingClock final : public base::MonotonicClock {
  public:
   std::uint64_t Now() const noexcept override {
     now_ += 1000000;
@@ -25,7 +25,7 @@ class AdvancingClock final : public strategyd::MonotonicClock {
 };
 
 // Requests stop at a selected batch boundary and records any unexpected waits.
-class Environment final : public strategyd::EventLoopEnvironment {
+class Environment final : public base::EventLoopEnvironment {
  public:
   base::Status CheckStop(bool& out) noexcept override {
     ++checks;

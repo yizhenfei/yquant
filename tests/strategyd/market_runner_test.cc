@@ -8,9 +8,9 @@
 #include <string>
 
 #include "gtest/gtest.h"
-#include "strategyd/event_loop_environment.h"
 #include "strategyd/market_data_source.h"
 #include "strategyd/strategy_runner.h"
+#include "yquant/base/event_loop_environment.h"
 #include "yquant/model/identifiers.h"
 #include "yquant/model/quote_tick.h"
 
@@ -120,7 +120,7 @@ class ControlledSource final : public MarketDataSource {
     return scripted_ && next_quote_ == quotes_.size();
   }
 
-  base::Status Prepare(const MarketDataConfig&) noexcept override {
+  base::Status Prepare(const md::MarketDataConfig&) noexcept override {
     ++prepare_calls;
     return fail_prepare ? Fail("injected prepare failure") : base::Status{};
   }
@@ -196,7 +196,7 @@ class ControlledSource final : public MarketDataSource {
 
 // Test environment never sleeps: it stops at a selected source boundary or
 // exposes a deterministic wait/check failure to the runner's cleanup path.
-class TestEventLoopEnvironment final : public EventLoopEnvironment {
+class TestEventLoopEnvironment final : public base::EventLoopEnvironment {
  public:
   const ControlledSource* source = nullptr;
   bool fail_check = false;
@@ -599,7 +599,9 @@ class MaintenanceSource final : public MarketDataSource {
   int poll_calls = 0;
   int stop_calls = 0;
 
-  base::Status Prepare(const MarketDataConfig&) noexcept override { return {}; }
+  base::Status Prepare(const md::MarketDataConfig&) noexcept override {
+    return {};
+  }
   base::Status Start(std::span<const model::InstrumentId>,
                      std::uint64_t) noexcept override {
     return {};
@@ -627,13 +629,13 @@ class MaintenanceSource final : public MarketDataSource {
   }
 };
 
-class MaintenanceClock final : public MonotonicClock {
+class MaintenanceClock final : public base::MonotonicClock {
  public:
   std::uint64_t now = 0;
   std::uint64_t Now() const noexcept override { return now; }
 };
 
-class MaintenanceEnvironment final : public EventLoopEnvironment {
+class MaintenanceEnvironment final : public base::EventLoopEnvironment {
  public:
   explicit MaintenanceEnvironment(MaintenanceClock& clock) : clock_(clock) {}
   base::Status CheckStop(bool& out) noexcept override {

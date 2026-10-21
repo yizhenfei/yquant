@@ -18,13 +18,15 @@
 | --- | --- |
 | `StrategyContext` | 提供时间及行情、交易服务的访问入口，回调期间借用 |
 | `Trading` | 策略可见的交易接口，通过 `context.trading()` 访问 |
-| `TradingImpl` | 可写的委托、持仓与资金账本、预占、成交去重记录和待发送请求，供进程内模拟运行时或共享网关使用 |
-| `RemoteTrading` | 策略宿主内的远端运行时，保存本策略订单缓存和网关发布的账户视图 |
-| `TradingAdapter` | 宿主内部的柜台接入边界，提供初始账户快照、发送请求和规范化回报，不调用策略 |
-| `MockTradingAdapter` | 以定时脚本生成受理、成交或撤单结果，由宿主持有 |
+| `trading::TradingImpl` | 可写的委托、持仓与资金账本、预占、成交去重记录和待发送请求，供进程内模拟运行时或共享网关使用 |
+| `trading::TradingRuntime` | 策略交易服务的生命周期及请求、事件处理边界，供本地账本与远端服务实现 |
+| `trading::TradingAdapter` | 柜台接入边界，提供初始账户快照、发送请求和规范化回报，不调用策略 |
+| `trading::MockTradingAdapter` | 以定时脚本生成受理、成交或撤单结果，由使用方持有 |
+| `md::InstrumentScope` | 持有运行范围内的只读标的定义，供行情和交易独立查询 |
+| `strategyd::RemoteTrading` | 策略程序专用的远端运行时，保存本策略订单缓存和网关发布的账户视图 |
 | `StrategyRunner` | 驱动请求、行情、交易回报及停止排空，串行调用策略 |
 
-`TradingImpl` 使用与行情服务相同的标的定义，价格精度与标的身份只有一份来源。上下文借用行情和交易服务，服务与时钟的存活时间覆盖全部策略回调及实例销毁。
+公共交易实现使用 `yquant::trading` 命名空间，构建为 `yquant_trading`。`TradingImpl` 借用 `md::InstrumentScope`，不依赖策略程序的行情服务；策略进程将 `MarketDataImpl` 内嵌的范围提供给交易服务，网关自行持有范围，价格精度与标的身份均来自[共享标的字典](market-data.md#共享标的字典)。借用范围与 `base::MonotonicClock` 的存活时间覆盖交易服务；上下文及策略服务的存活时间覆盖全部策略回调及实例销毁。库与程序的归属规则见[目录与模块](engineering.md#目录与模块)。
 
 ## 委托模型
 
@@ -223,6 +225,8 @@ base::ErrorCode OnFill(
 
 `OnStart` 可查询初始账户、初始化策略和声明行情订阅，首个行情回调触发交易。这样启动失败时仍可直接销毁实例，不会留下启动回调发出的委托。
 
+行情与交易服务使用 `strategy::CallbackPhase` 表达回调门禁阶段，枚举定义在公共 `include/yquant/strategy/callback_phase.h` 中，由调用方在回调前后切换。公共交易实现不借用策略程序的阶段类型或回调服务。
+
 ## 柜台回报与委托账本
 
 ### 规范化事件
@@ -388,7 +392,7 @@ flowchart TD
 
 `--trading-config <path>` 为可选参数，省略时仍提供可查询的空交易服务，允许阶段内的交易请求返回 `kUnsupported`。本阶段启用交易时还须提供行情配置，从[共享标的字典](market-data.md#共享标的字典)解析其中的运行清单，以此建立本进程可交易范围；不要求策略订阅全部可交易标的。指定交易配置却缺少行情配置路径时，按命令行用法错误退出，退出码为 2。
 
-交易配置由宿主加载，字段如下，全部必填且拒绝未知字段：
+交易配置通过公共 `trading::TradingConfigLoader` 加载，并以 `trading::ValidateTradingConfig()` 校验类型化结果。模拟柜台字段如下，全部必填且拒绝未知字段：
 
 ```json
 {
@@ -464,13 +468,17 @@ OnFill(context, fill):
 | `include/yquant/strategy/trading.h` | 策略交易接口 |
 | `include/yquant/strategy/strategy_context.h` | 交易服务访问器 |
 | `include/yquant/strategy/strategy.h` | 委托和成交回调 |
-| `src/strategyd/trading_account.h` | 柜台初始账户快照 |
-| `src/strategyd/trading.h/.cc` | 本地请求、委托与账户账本、预占及成交幂等 |
-| `src/strategyd/trading_adapter.h` | 宿主接入与规范化事件协议 |
-| `src/strategyd/mock_trading_adapter.h/.cc` | 定时模拟回报 |
-| `src/strategyd/trading_config.h/.cc` | 宿主交易配置加载与校验 |
+| `include/yquant/trading/trading_account.h` | 柜台初始账户快照 |
+| `include/yquant/trading/trading.h`、`src/trading/trading.cc` | 本地请求、委托与账户账本、预占及成交幂等 |
+| `include/yquant/trading/trading_runtime.h` | 本地账本及远端服务共用的运行时边界与分派结果 |
+| `include/yquant/trading/trading_adapter.h` | 柜台接入与规范化事件协议 |
+| `include/yquant/trading/trading_limits.h` | 交易记录和请求的容量上限 |
+| `include/yquant/trading/mock_trading_adapter.h`、`src/trading/mock_trading_adapter.cc` | 定时模拟回报 |
+| `include/yquant/trading/trading_config.h`、`src/trading/trading_config.cc` | 交易配置加载与校验 |
+| `src/strategyd/remote_trading.h/.cc` | 策略侧远端交易请求与只读账户视图 |
 | `src/strategyd/strategy_runner.h/.cc` | 双来源调度、停止排空与最终释放 |
 | `examples/strategies/order_lifecycle_strategy.cc` | 单笔委托闭环示例及配套 JSON |
+| `tests/trading/` | 公共交易配置、账本、模拟柜台、协议及连接测试 |
 
 公共接口签名或布局变化时更新 `kStrategyPluginAbiVersion`，宿主、示例与测试动态库统一重编译，不保留旧接口转发。
 

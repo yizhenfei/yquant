@@ -10,8 +10,8 @@
 #include <utility>
 
 #include "gtest/gtest.h"
-#include "tradingd/connection.h"
 #include "tradingd/server.h"
+#include "yquant/trading/connection.h"
 
 namespace {
 
@@ -118,7 +118,7 @@ void operator delete[](void* memory, std::align_val_t,
 namespace yquant::tradingd {
 namespace {
 
-class TestClock final : public strategyd::MonotonicClock {
+class TestClock final : public base::MonotonicClock {
  public:
   std::uint64_t Now() const noexcept override { return now; }
   std::uint64_t now = 1000000;
@@ -135,24 +135,26 @@ struct Observation {
   bool revision_regressed = false;
   model::Fill fill;
   model::OrderSnapshot canceled;
-  AccountView account;
+  trading::AccountView account;
 };
 
 // Owns all values needed for assertions; the observation path never calls
 // GoogleTest or grows a container while allocation tracking is enabled.
-void Capture(const Message& message, Observation& observation) noexcept {
-  if (message.type == MessageType::kWelcome)
+void Capture(const trading::Message& message,
+             Observation& observation) noexcept {
+  if (message.type == trading::MessageType::kWelcome)
     observation.generation = message.generation;
-  if (message.type == MessageType::kWelcome ||
-      message.type == MessageType::kAccount ||
-      message.type == MessageType::kOrderUpdate) {
+  if (message.type == trading::MessageType::kWelcome ||
+      message.type == trading::MessageType::kAccount ||
+      message.type == trading::MessageType::kOrderUpdate) {
     observation.revision_regressed |=
         message.account.revision < observation.previous_revision;
     observation.previous_revision = message.account.revision;
     observation.account = message.account;
   }
-  if (message.type == MessageType::kAccount) observation.saw_account = true;
-  if (message.type != MessageType::kOrderUpdate) return;
+  if (message.type == trading::MessageType::kAccount)
+    observation.saw_account = true;
+  if (message.type != trading::MessageType::kOrderUpdate) return;
   if (message.update.kind == model::OrderUpdateKind::kAccepted)
     observation.saw_accepted = true;
   if (message.has_fill) {
@@ -168,22 +170,24 @@ void Capture(const Message& message, Observation& observation) noexcept {
 
 // Drives one established connection on the same thread as its server, so the
 // counter sees encoding, kernel I/O, account changes and complete decoding.
-const char* Cycle(Server& server, Connection& client, const TestClock& clock,
-                  Observation& observation) noexcept {
+const char* Cycle(Server& server, trading::Connection& client,
+                  const TestClock& clock, Observation& observation) noexcept {
   if (!client.Service().ok()) return "client service failed";
   if (!server.Service(clock.now).ok()) return "server service failed";
-  for (std::size_t count = 0; count < kConnectionQueueFrames; ++count) {
-    Message message;
+  for (std::size_t count = 0; count < trading::kConnectionQueueFrames;
+       ++count) {
+    trading::Message message;
     const auto result = client.Poll(message);
-    if (result.state == ReceiveState::kIdle) break;
-    if (result.state != ReceiveState::kMessage) return "client receive failed";
+    if (result.state == trading::ReceiveState::kIdle) break;
+    if (result.state != trading::ReceiveState::kMessage)
+      return "client receive failed";
     Capture(message, observation);
   }
   return nullptr;
 }
 
 template <typename Done>
-const char* PumpUntil(Server& server, Connection& client,
+const char* PumpUntil(Server& server, trading::Connection& client,
                       const TestClock& clock, Observation& observation,
                       Done done) noexcept {
   const auto deadline =
@@ -201,11 +205,11 @@ const char* PumpUntil(Server& server, Connection& client,
 // Sending the cancel between acceptance and the first fill deliberately lets
 // a partial fill arrive with cancel_pending set. Its earlier cancel deadline
 // then removes the final-fill plan and releases the unfilled reservation.
-const char* Exercise(Server& server, Connection& client, TestClock& clock,
-                     model::InstrumentId instrument,
+const char* Exercise(Server& server, trading::Connection& client,
+                     TestClock& clock, model::InstrumentId instrument,
                      Observation& observation) noexcept {
-  Message order;
-  order.type = MessageType::kNewOrder;
+  trading::Message order;
+  order.type = trading::MessageType::kNewOrder;
   order.generation = observation.generation;
   order.order_id = {1};
   order.request = {instrument, model::OrderSide::kBuy, 1000, 10};
@@ -219,13 +223,14 @@ const char* Exercise(Server& server, Connection& client, TestClock& clock,
                                       [&] { return observation.saw_accepted; }))
     return failure;
   clock.now += 500000;
-  Message cancel;
-  cancel.type = MessageType::kCancelOrder;
+  trading::Message cancel;
+  cancel.type = trading::MessageType::kCancelOrder;
   cancel.generation = observation.generation;
   cancel.order_id = {1};
   cancel.cancel_id = {1};
   if (!client.Queue(cancel).ok()) return "cancel queue failed";
-  for (std::size_t count = 0; count < kConnectionQueueFrames; ++count) {
+  for (std::size_t count = 0; count < trading::kConnectionQueueFrames;
+       ++count) {
     if (const auto* failure = Cycle(server, client, clock, observation))
       return failure;
   }
@@ -280,17 +285,17 @@ TEST(TradingdCppHeap, EstablishedOrderFillAndCancelHaveNoCppHeapActivity) {
   std::memcpy(item.instrument.symbol, "600000", model::kSymbolLength);
   item.instrument.price_decimals = 2;
 
-  config.trading.mode = strategyd::MockTradingMode::kFill;
+  config.trading.mode = trading::MockTradingMode::kFill;
   config.trading.report_interval_ns = 1000000;
   config.trading.initial_account.cash_balance = 1000000000;
   Server server(clock);
   ASSERT_TRUE(server.Init(config).ok()) << server.error_detail();
-  Endpoint endpoint;
+  trading::Endpoint endpoint;
   endpoint.port = server.port();
-  Connection client;
+  trading::Connection client;
   ASSERT_TRUE(client.Connect(endpoint, 1000000000).ok());
-  Message hello;
-  hello.type = MessageType::kHello;
+  trading::Message hello;
+  hello.type = trading::MessageType::kHello;
   hello.client_id = 41;
   std::memcpy(hello.token, config.token, sizeof(hello.token));
   hello.instrument_count = 1;

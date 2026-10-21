@@ -2,6 +2,13 @@
 
 目标平台见项目 [README](README.md#目标平台)。
 
+## 工程结构
+
+- 共享代码按职责组织为库，公共接口放在 `include/yquant/<组件>/`，实现放在 `src/<组件>/`，使用对应组件命名空间和独立 CMake target。
+- `src/strategyd/`、`src/marketd/`、`src/tradingd/` 只保存对应可执行程序的专用代码；程序之间不得包含彼此的私有头文件或链接彼此的实现目标。
+- 多个程序需要同一实现时，先提炼到所属库；公共库不得依赖程序目录中的类型、头文件或源码。
+- 程序私有 `OBJECT` 目标只供该程序和其单元测试使用，不作为其他程序的共享库。程序的 `src` 包含路径不向外导出。
+
 ## C++ 编码风格
 
 - C++ 代码以 [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html) 为基础；本文件及组件设计中的明确约定优先。

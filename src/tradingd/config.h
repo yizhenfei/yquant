@@ -1,10 +1,10 @@
 #ifndef YQUANT_TRADINGD_CONFIG_H_
 #define YQUANT_TRADINGD_CONFIG_H_
 
-#include "strategyd/market_data_config.h"
-#include "strategyd/trading_config.h"
-#include "tradingd/protocol.h"
 #include "yquant/base/config_error.h"
+#include "yquant/md/market_data_config.h"
+#include "yquant/trading/protocol.h"
+#include "yquant/trading/trading_config.h"
 
 namespace yquant::tradingd {
 
@@ -21,11 +21,11 @@ inline constexpr std::uint64_t kMaximumTimeoutNs =
 // Fixed owned startup values. All clients share this single account and its
 // instrument dictionary. No broker adapter other than mock is configured yet.
 struct ServerConfig {
-  Endpoint listen;
-  strategyd::MarketDataConfig market_data;
-  strategyd::TradingConfig trading;
-  char token[kMaxTokenBytes + 1] = {};
-  std::size_t max_clients = kMaxClients;
+  trading::Endpoint listen;
+  md::MarketDataConfig market_data;
+  trading::TradingConfig trading;
+  char token[trading::kMaxTokenBytes + 1] = {};
+  std::size_t max_clients = trading::kMaxClients;
   std::uint64_t heartbeat_timeout_ns = 5000000000;
   std::uint64_t shutdown_timeout_ns = 5000000000;
 };

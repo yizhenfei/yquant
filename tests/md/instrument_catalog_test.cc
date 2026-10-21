@@ -7,7 +7,7 @@
 #include <type_traits>
 
 #include "gtest/gtest.h"
-#include "strategyd/test_config_file.h"
+#include "test_config_file.h"
 #include "yquant/model/identifiers.h"
 #include "yquant/model/instrument.h"
 
@@ -15,7 +15,7 @@ namespace yquant::md {
 namespace {
 
 using base::ErrorCode;
-using ::yquant::strategyd::testing::ConfigFile;
+using ::yquant::testing::ConfigFile;
 
 static_assert(!std::is_move_constructible_v<InstrumentCatalog>);
 static_assert(!std::is_move_assignable_v<InstrumentCatalog>);

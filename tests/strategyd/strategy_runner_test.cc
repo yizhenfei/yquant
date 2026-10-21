@@ -81,7 +81,7 @@ void ExpectLifecycle(const std::string& events, const std::string& expected) {
 }
 
 // Lifecycle-only runners still stop through the public event-loop entry.
-class ImmediateStopEnvironment final : public EventLoopEnvironment {
+class ImmediateStopEnvironment final : public base::EventLoopEnvironment {
  public:
   base::Status CheckStop(bool& out) noexcept override {
     out = true;

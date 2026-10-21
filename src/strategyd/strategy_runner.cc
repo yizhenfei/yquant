@@ -4,18 +4,18 @@
 #include <limits>
 
 #include "strategyd/strategy_config_loader.h"
-#include "strategyd/trading_config.h"
+#include "yquant/trading/trading_config.h"
 
 namespace yquant::strategyd {
 
-StrategyRunner::StrategyRunner(const MonotonicClock* clock,
-                               MarketDataSource* source,
-                               EventLoopEnvironment* environment,
-                               TradingAdapter* trading_adapter) noexcept
+StrategyRunner::StrategyRunner(
+    const base::MonotonicClock* clock, MarketDataSource* source,
+    base::EventLoopEnvironment* environment,
+    trading::TradingAdapter* trading_adapter) noexcept
     : clock_(clock != nullptr ? *clock : default_clock_),
       market_data_(clock_),
-      trading_(clock_, market_data_),
-      remote_trading_(clock_, market_data_),
+      trading_(clock_, market_data_.instruments()),
+      remote_trading_(clock_, market_data_.instruments()),
       context_(clock_, market_data_, trading_),
       source_(source),
       trading_adapter_(trading_adapter != nullptr ? *trading_adapter
@@ -103,9 +103,9 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
     return result_;
   }
 
-  MarketDataConfig dictionary;
+  md::MarketDataConfig dictionary;
   if (command.market_data_config_path != nullptr) {
-    MarketDataConfigLoader market_loader;
+    md::MarketDataConfigLoader market_loader;
     const auto status = market_loader.Load(command.market_data_config_path);
     if (!status.ok()) {
       SetConfigError(status, "market_data_config", market_loader.error());
@@ -145,7 +145,7 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
       Finalize();
       return result_;
     }
-    TradingConfigLoader trading_loader;
+    trading::TradingConfigLoader trading_loader;
     const auto loaded = trading_loader.Load(command.trading_config_path);
     if (!loaded.ok()) {
       SetConfigError(loaded, "trading_config", trading_loader.error());
@@ -155,7 +155,7 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
     shutdown_timeout_ns_ = trading_loader.config().shutdown_timeout_ns;
     trading_prepared_ = true;
     remote_trading_selected_ =
-        trading_loader.config().adapter == TradingAdapterKind::kTcp;
+        trading_loader.config().adapter == trading::TradingAdapterKind::kTcp;
     if (remote_trading_selected_) {
       trading_runtime_ = &remote_trading_;
       context_.SetTrading(*trading_runtime_);
@@ -185,7 +185,7 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
       if (CancelStartupIfRequested()) {
         return result_;
       }
-      TradingAccountSnapshot account;
+      trading::TradingAccountSnapshot account;
       const auto snapshot = trading_adapter_.ReadAccountSnapshot(account);
       if (!snapshot.ok()) {
         SetError(snapshot, "trading_account", trading_adapter_.error_detail());
@@ -266,7 +266,7 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
   if (CancelStartupIfRequested()) {
     return result_;
   }
-  BeginCallback(CallbackPhase::kStart);
+  BeginCallback(strategy::CallbackPhase::kStart);
   const base::ErrorCode start_result = instance_->OnStart(context_);
   EndCallback();
   if (start_result != base::ErrorCode::kOk) {
@@ -341,7 +341,7 @@ void CopyIdHex(std::string_view value, char (&out)[129]) noexcept {
 
 // Logs an unapplied source event even if an earlier callback error remains the
 // primary exit reason. Called only on the low-frequency failure path.
-void ReportUnapplied(const TradingEvent& event) noexcept {
+void ReportUnapplied(const trading::TradingEvent& event) noexcept {
   char broker[129];
   char execution[129];
   CopyIdHex(event.broker_order_id.view(), broker);
@@ -384,7 +384,7 @@ std::optional<std::uint64_t> StrategyRunner::next_deadline() const noexcept {
   return deadline;
 }
 
-void StrategyRunner::BeginCallback(CallbackPhase phase) noexcept {
+void StrategyRunner::BeginCallback(strategy::CallbackPhase phase) noexcept {
   callback_active_ = true;
   market_data_.BeginCallback(phase);
   trading_runtime_->BeginCallback(phase);
@@ -470,7 +470,8 @@ bool StrategyRunner::FinishStoppingIfReady() noexcept {
   return false;
 }
 
-void StrategyRunner::CheckStop(EventLoopEnvironment& environment) noexcept {
+void StrategyRunner::CheckStop(
+    base::EventLoopEnvironment& environment) noexcept {
   bool stop = false;
   const auto status = environment.CheckStop(stop);
   if (!status.ok()) {
@@ -496,7 +497,7 @@ bool StrategyRunner::DispatchQuote(const model::QuoteTick& tick) noexcept {
     }
     return true;
   }
-  BeginCallback(CallbackPhase::kTick);
+  BeginCallback(strategy::CallbackPhase::kTick);
   const auto result = instance_->OnTick(context_, tick);
   EndCallback();
   if (result != base::ErrorCode::kOk) {
@@ -508,12 +509,13 @@ bool StrategyRunner::DispatchQuote(const model::QuoteTick& tick) noexcept {
   return true;
 }
 
-bool StrategyRunner::DispatchTrading(const TradingDispatch& dispatch) noexcept {
+bool StrategyRunner::DispatchTrading(
+    const trading::TradingDispatch& dispatch) noexcept {
   if (!callbacks_enabled_) {
     return true;
   }
   if (dispatch.notify_order) {
-    BeginCallback(CallbackPhase::kOrderUpdate);
+    BeginCallback(strategy::CallbackPhase::kOrderUpdate);
     const auto code = instance_->OnOrderUpdate(context_, dispatch.update);
     EndCallback();
     if (code != base::ErrorCode::kOk) {
@@ -526,7 +528,7 @@ bool StrategyRunner::DispatchTrading(const TradingDispatch& dispatch) noexcept {
     }
   }
   if (dispatch.has_fill) {
-    BeginCallback(CallbackPhase::kFill);
+    BeginCallback(strategy::CallbackPhase::kFill);
     const auto code = instance_->OnFill(context_, dispatch.fill);
     EndCallback();
     if (code != base::ErrorCode::kOk) {
@@ -580,7 +582,7 @@ bool StrategyRunner::PollTrading() noexcept {
       IsDue(remote_trading_selected_ ? trading_runtime_->next_deadline()
                                      : trading_adapter_.next_deadline(),
             now);
-  TradingDispatch dispatch;
+  trading::TradingDispatch dispatch;
   if (local && (!remote || prefer_local_)) {
     prefer_local_ = false;
     const auto code = trading_runtime_->ApplyLocalUpdate(dispatch);
@@ -602,9 +604,10 @@ bool StrategyRunner::PollTrading() noexcept {
     if (!event) return true;
   } else {
     prefer_local_ = true;
-    TradingEvent event;
+    trading::TradingEvent event;
     const auto polled = trading_adapter_.Poll(now, event);
-    if (!polled.status.ok() || polled.state == TradingPollState::kError) {
+    if (!polled.status.ok() ||
+        polled.state == trading::TradingPollState::kError) {
       const auto status = polled.status.ok()
                               ? base::Status{base::ErrorCode::kCorrupt, {}}
                               : polled.status;
@@ -612,7 +615,7 @@ bool StrategyRunner::PollTrading() noexcept {
       StopAfterError(false);
       return false;
     }
-    if (polled.state == TradingPollState::kIdle) {
+    if (polled.state == trading::TradingPollState::kIdle) {
       if (IsDue(trading_adapter_.next_deadline(), now)) {
         SetError({base::ErrorCode::kCorrupt, {}}, "trading_poll",
                  "idle trading adapter retained an already-due deadline");
@@ -621,7 +624,7 @@ bool StrategyRunner::PollTrading() noexcept {
       }
       return true;
     }
-    if (polled.state != TradingPollState::kEvent) {
+    if (polled.state != trading::TradingPollState::kEvent) {
       SetError({base::ErrorCode::kCorrupt, {}}, "trading_poll",
                "adapter returned an unknown polling state");
       StopAfterError(false);
@@ -671,7 +674,8 @@ void StrategyRunner::ProcessBatch() noexcept {
   }
 }
 
-base::Status StrategyRunner::Run(EventLoopEnvironment& environment) noexcept {
+base::Status StrategyRunner::Run(
+    base::EventLoopEnvironment& environment) noexcept {
   if (state_ != RunnerState::kRunning || callback_active_) {
     return {base::ErrorCode::kInvalidState, {}};
   }
@@ -796,7 +800,7 @@ void StrategyRunner::Finalize() noexcept {
   }
   if (started_) {
     started_ = false;
-    BeginCallback(CallbackPhase::kStop);
+    BeginCallback(strategy::CallbackPhase::kStop);
     const auto stopped = instance_->OnStop(context_);
     EndCallback();
     SetError({stopped, {}}, "stop", "strategy OnStop returned an error");

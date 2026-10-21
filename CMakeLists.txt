@@ -25,14 +25,22 @@ include(cmake/Dependencies.cmake)
 find_package(Threads REQUIRED)
 include(cmake/TestData.cmake)
 
+add_library(yquant_model INTERFACE)
+add_library(yquant::model ALIAS yquant_model)
+target_include_directories(yquant_model INTERFACE
+  "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>")
+target_link_libraries(yquant_model INTERFACE yquant_compile_options)
+
 add_library(yquant_strategy_api INTERFACE)
 add_library(yquant::strategy_api ALIAS yquant_strategy_api)
 target_include_directories(yquant_strategy_api INTERFACE
   "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>")
-target_link_libraries(yquant_strategy_api INTERFACE yquant_compile_options)
+target_link_libraries(yquant_strategy_api INTERFACE yquant::model yquant_compile_options)
 
 add_library(yquant_md STATIC
   src/md/instrument_catalog.cc
+  src/md/market_data_config.cc
+  src/md/instrument_scope.cc
   src/md/mock_quote_config.cc
   src/md/mock_quote_source.cc
   src/md/event_codec.cc
@@ -43,70 +51,68 @@ target_include_directories(yquant_md PUBLIC
   "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
   PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(yquant_md PUBLIC
-  yquant::base yquant_compile_options Threads::Threads)
+  yquant::base yquant::model yquant_compile_options Threads::Threads)
 target_link_libraries(yquant_md PRIVATE simdjson::simdjson)
 target_compile_options(yquant_md PRIVATE -Wall -Wextra -Wpedantic)
 
-# Host dictionary/receive configuration and termination handling are shared.
-add_library(yquant_host_support STATIC
-  src/strategyd/market_data_config.cc
-  src/strategyd/termination_signals.cc)
-target_include_directories(yquant_host_support PUBLIC
-  "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(yquant_host_support PUBLIC yquant::strategy_api
-  PRIVATE yquant::base yquant::md simdjson::simdjson Threads::Threads)
-target_compile_options(yquant_host_support PRIVATE -Wall -Wextra -Wpedantic)
+add_library(yquant_trading STATIC
+  src/trading/protocol.cc
+  src/trading/connection.cc
+  src/trading/mock_trading_adapter.cc
+  src/trading/trading.cc
+  src/trading/trading_config.cc)
+add_library(yquant::trading ALIAS yquant_trading)
+target_include_directories(yquant_trading PUBLIC
+  "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
+  PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(yquant_trading PUBLIC
+  yquant::base yquant::md yquant::strategy_api
+  PRIVATE simdjson::simdjson Threads::Threads)
+target_compile_options(yquant_trading PRIVATE -Wall -Wextra -Wpedantic)
 
-add_library(yquant_trading_wire STATIC
-  src/tradingd/protocol.cc
-  src/tradingd/connection.cc)
-target_include_directories(yquant_trading_wire PUBLIC "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(yquant_trading_wire PUBLIC
-  yquant::strategy_api Threads::Threads)
-target_compile_options(yquant_trading_wire PRIVATE -Wall -Wextra -Wpedantic)
-
-add_library(yquant_strategyd_runtime STATIC
-  src/strategyd/mock_trading_adapter.cc
+# Application object targets contain only their own private implementation.
+# They are reused solely by the matching executable and its unit tests.
+add_library(yquant_strategyd_objects OBJECT
   src/strategyd/remote_trading.cc
   src/strategyd/shm_market_data_source.cc
   src/strategyd/strategy_config_loader.cc
   src/strategyd/market_data.cc
   src/strategyd/strategy_library.cc
-  src/strategyd/strategy_runner.cc
-  src/strategyd/trading.cc
-  src/strategyd/trading_config.cc)
-target_include_directories(yquant_strategyd_runtime PUBLIC
+  src/strategyd/strategy_runner.cc)
+target_include_directories(yquant_strategyd_objects PRIVATE
   "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(yquant_strategyd_runtime PUBLIC
-  yquant::strategy_api yquant_host_support yquant_trading_wire
-  PRIVATE yquant::md simdjson::simdjson Threads::Threads ${CMAKE_DL_LIBS})
-target_compile_options(yquant_strategyd_runtime PRIVATE
+target_link_libraries(yquant_strategyd_objects PUBLIC
+  yquant::strategy_api yquant::base yquant::md yquant::trading
+  PRIVATE simdjson::simdjson Threads::Threads ${CMAKE_DL_LIBS})
+target_compile_options(yquant_strategyd_objects PRIVATE
   -Wall -Wextra -Wpedantic)
 
 add_executable(yquant_strategyd src/strategyd/main.cc)
+target_include_directories(yquant_strategyd PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(yquant_strategyd PRIVATE
-  yquant_strategyd_runtime Threads::Threads)
+  yquant_strategyd_objects Threads::Threads)
 target_compile_options(yquant_strategyd PRIVATE -Wall -Wextra -Wpedantic)
 set_target_properties(yquant_strategyd PROPERTIES
   OUTPUT_NAME yquant-strategyd
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
-add_library(yquant_tradingd_runtime STATIC
+add_library(yquant_tradingd_objects OBJECT
   src/tradingd/config.cc
   src/tradingd/server.cc)
-target_include_directories(yquant_tradingd_runtime PUBLIC "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(yquant_tradingd_runtime PUBLIC
-  yquant_strategyd_runtime yquant_trading_wire
+target_include_directories(yquant_tradingd_objects PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(yquant_tradingd_objects PUBLIC
+  yquant::base yquant::md yquant::trading
   PRIVATE simdjson::simdjson Threads::Threads)
-target_compile_options(yquant_tradingd_runtime PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_options(yquant_tradingd_objects PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(yquant_tradingd src/tradingd/main.cc)
-target_link_libraries(yquant_tradingd PRIVATE yquant_tradingd_runtime)
+target_include_directories(yquant_tradingd PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(yquant_tradingd PRIVATE yquant_tradingd_objects)
 target_compile_options(yquant_tradingd PRIVATE -Wall -Wextra -Wpedantic)
 set_target_properties(yquant_tradingd PROPERTIES
   OUTPUT_NAME yquant-tradingd
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
-add_library(yquant_marketd_runtime STATIC
+add_library(yquant_marketd_objects OBJECT
   src/marketd/adapters.cc
   src/marketd/config.cc
   src/marketd/csv_replay.cc
@@ -114,15 +120,16 @@ add_library(yquant_marketd_runtime STATIC
   src/marketd/replay_source.cc
   src/marketd/runner.cc
   src/marketd/tcp_transport.cc)
-target_include_directories(yquant_marketd_runtime PUBLIC
+target_include_directories(yquant_marketd_objects PRIVATE
   "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(yquant_marketd_runtime PUBLIC
-  yquant::md yquant::base yquant_host_support
+target_link_libraries(yquant_marketd_objects PUBLIC
+  yquant::md yquant::base
   PRIVATE simdjson::simdjson Threads::Threads)
-target_compile_options(yquant_marketd_runtime PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_options(yquant_marketd_objects PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(yquant_marketd src/marketd/main.cc)
-target_link_libraries(yquant_marketd PRIVATE yquant_marketd_runtime)
+target_include_directories(yquant_marketd PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(yquant_marketd PRIVATE yquant_marketd_objects)
 target_compile_options(yquant_marketd PRIVATE -Wall -Wextra -Wpedantic)
 set_target_properties(yquant_marketd PROPERTIES
   OUTPUT_NAME yquant-marketd
@@ -177,6 +184,7 @@ foreach(config IN ITEMS replay_market_data replay_observer)
 endforeach()
 
 add_library(yquant_base STATIC
+  src/base/termination_signals.cc
   src/base/json_config_document.cc
   src/base/path.cc
   src/base/broadcast_queue.cc
@@ -218,8 +226,26 @@ else()
     "Unknown YQUANT_LOG_COMPILED_LEVEL: ${YQUANT_LOG_COMPILED_LEVEL}")
 endif()
 
+include(cmake/ProjectBoundaries.cmake)
+
 if(BUILD_TESTING)
   include(GoogleTest)
+
+  add_test(NAME Project.LibraryBoundaries
+    COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${PROJECT_SOURCE_DIR}"
+      -P "${PROJECT_SOURCE_DIR}/tests/cmake/library_boundaries_test.cmake")
+
+
+  add_executable(process_services_test tests/base/monotonic_clock_test.cc)
+  target_link_libraries(process_services_test PRIVATE yquant::base GTest::gtest_main)
+  target_compile_options(process_services_test PRIVATE -Wall -Wextra -Wpedantic)
+  gtest_discover_tests(process_services_test
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    DISCOVERY_MODE PRE_TEST
+    DISCOVERY_TIMEOUT 30
+    PROPERTIES ${yquant_test_properties})
+
+  include(cmake/TradingTests.cmake)
 
   add_executable(json_config_test
     tests/base/config_error_test.cc
@@ -326,14 +352,16 @@ if(BUILD_TESTING)
   include(cmake/TradingdTests.cmake)
   foreach(target IN ITEMS yquant_strategyd_test yquant_marketd_test
                           yquant_tradingd_test)
-    target_include_directories(${target} PRIVATE "${PROJECT_SOURCE_DIR}/tests")
+    target_include_directories(${target} PRIVATE
+      "${PROJECT_SOURCE_DIR}/tests" "${PROJECT_SOURCE_DIR}/src")
   endforeach()
 
   # Keep replacement global allocation functions isolated from other tests.
   add_executable(market_data_allocation_test
     tests/strategyd/market_data_allocation_test.cc)
+  target_include_directories(market_data_allocation_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
   target_link_libraries(market_data_allocation_test PRIVATE
-    yquant_strategyd_runtime GTest::gtest_main yquant_compile_options)
+    yquant_strategyd_objects GTest::gtest_main yquant_compile_options)
   target_compile_options(market_data_allocation_test PRIVATE
     -Wall -Wextra -Wpedantic)
   gtest_discover_tests(market_data_allocation_test
@@ -344,8 +372,9 @@ if(BUILD_TESTING)
 
   add_executable(trading_allocation_test
     tests/strategyd/trading_allocation_test.cc)
+  target_include_directories(trading_allocation_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
   target_link_libraries(trading_allocation_test PRIVATE
-    yquant_strategyd_runtime GTest::gtest_main yquant_compile_options)
+    yquant_strategyd_objects GTest::gtest_main yquant_compile_options)
   target_compile_options(trading_allocation_test PRIVATE
     -Wall -Wextra -Wpedantic)
   gtest_discover_tests(trading_allocation_test

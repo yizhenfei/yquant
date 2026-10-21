@@ -11,13 +11,13 @@
 
 #include "gtest/gtest.h"
 #include "scoped_working_directory.h"
-#include "strategyd/market_data_config.h"
-#include "tradingd/connection.h"
+#include "yquant/md/market_data_config.h"
+#include "yquant/trading/connection.h"
 
 namespace yquant::tradingd {
 namespace {
 
-class TestClock final : public strategyd::MonotonicClock {
+class TestClock final : public base::MonotonicClock {
  public:
   std::uint64_t Now() const noexcept override { return now; }
   std::uint64_t now = 1000000;
@@ -37,15 +37,15 @@ ServerConfig Config() {
   std::memcpy(item.instrument.symbol, "600000", model::kSymbolLength);
   item.instrument.price_decimals = 2;
 
-  config.trading.mode = strategyd::MockTradingMode::kWorking;
+  config.trading.mode = trading::MockTradingMode::kWorking;
   config.trading.initial_account.cash_balance = 1000000000;
   return config;
 }
 
 struct Peer {
-  Connection connection;
+  trading::Connection connection;
   std::uint64_t generation = 0;
-  std::vector<Message> received;
+  std::vector<trading::Message> received;
 };
 
 class ServerTest : public ::testing::Test {
@@ -62,11 +62,11 @@ class ServerTest : public ::testing::Test {
 
   void Connect(Peer& peer, std::uint64_t id = 1,
                const char* token = "test-token") {
-    Endpoint endpoint;
+    trading::Endpoint endpoint;
     endpoint.port = server.port();
     ASSERT_TRUE(peer.connection.Connect(endpoint, 1000000000).ok());
-    Message hello;
-    hello.type = MessageType::kHello;
+    trading::Message hello;
+    hello.type = trading::MessageType::kHello;
     hello.client_id = id;
     std::snprintf(hello.token, sizeof(hello.token), "%s", token);
     hello.instrument_count = 1;
@@ -74,7 +74,7 @@ class ServerTest : public ::testing::Test {
     ASSERT_TRUE(peer.connection.Queue(hello).ok());
     Pump();
     for (const auto& message : peer.received)
-      if (message.type == MessageType::kWelcome)
+      if (message.type == trading::MessageType::kWelcome)
         peer.generation = message.generation;
   }
 
@@ -86,9 +86,9 @@ class ServerTest : public ::testing::Test {
       ASSERT_TRUE(server.Service(clock.now).ok()) << server.error_detail();
       for (auto* peer : {&first, &second}) {
         for (int count = 0; count < 64 && peer->connection.open(); ++count) {
-          Message message;
+          trading::Message message;
           const auto result = peer->connection.Poll(message);
-          if (result.state == ReceiveState::kMessage)
+          if (result.state == trading::ReceiveState::kMessage)
             peer->received.push_back(message);
           else
             break;
@@ -105,8 +105,8 @@ class ServerTest : public ::testing::Test {
 
   void Order(Peer& peer, std::uint64_t id, std::int64_t qty,
              model::OrderSide side = model::OrderSide::kBuy) {
-    Message message;
-    message.type = MessageType::kNewOrder;
+    trading::Message message;
+    message.type = trading::MessageType::kNewOrder;
     message.generation = peer.generation;
     message.order_id = {id};
     message.request = {config.market_data.instruments[0].instrument.id, side,
@@ -114,19 +114,21 @@ class ServerTest : public ::testing::Test {
     ASSERT_TRUE(peer.connection.Queue(message).ok());
   }
 
-  const Message* Update(const Peer& peer, model::OrderUpdateKind kind,
-                        std::uint64_t order_id = 1) const {
+  const trading::Message* Update(const Peer& peer, model::OrderUpdateKind kind,
+                                 std::uint64_t order_id = 1) const {
     for (auto it = peer.received.rbegin(); it != peer.received.rend(); ++it)
-      if (it->type == MessageType::kOrderUpdate && it->update.kind == kind &&
+      if (it->type == trading::MessageType::kOrderUpdate &&
+          it->update.kind == kind &&
           it->update.order.client_order_id.value == order_id)
         return &*it;
     return nullptr;
   }
 
-  bool Has(const Peer& peer, MessageType type) const {
-    return std::any_of(
-        peer.received.begin(), peer.received.end(),
-        [type](const Message& message) { return message.type == type; });
+  bool Has(const Peer& peer, trading::MessageType type) const {
+    return std::any_of(peer.received.begin(), peer.received.end(),
+                       [type](const trading::Message& message) {
+                         return message.type == type;
+                       });
   }
 
   TestClock clock;
@@ -139,7 +141,7 @@ class ServerTest : public ::testing::Test {
 TEST_F(ServerTest, HandshakeReturnsAuthoritativeAccountAndSubset) {
   Connect(first);
   ASSERT_NE(first.generation, 0U);
-  ASSERT_EQ(first.received.front().type, MessageType::kWelcome);
+  ASSERT_EQ(first.received.front().type, trading::MessageType::kWelcome);
   const auto& welcome = first.received.front();
   EXPECT_EQ(welcome.instrument_count, 1U);
   EXPECT_EQ(welcome.account.revision, 1U);
@@ -149,7 +151,7 @@ TEST_F(ServerTest, HandshakeReturnsAuthoritativeAccountAndSubset) {
 
 TEST_F(ServerTest, WrongTokenDoesNotAuthenticate) {
   Connect(first, 1, "incorrect-token");
-  EXPECT_FALSE(Has(first, MessageType::kWelcome));
+  EXPECT_FALSE(Has(first, trading::MessageType::kWelcome));
   EXPECT_EQ(first.generation, 0U);
 }
 
@@ -191,7 +193,7 @@ TEST_F(ServerTest, MultipleClientsCannotReserveTheSameShares) {
 }
 
 TEST_F(ServerTest, IdenticalLocalOrderIdsRouteFillsOnlyToTheirOwners) {
-  config.trading.mode = strategyd::MockTradingMode::kFill;
+  config.trading.mode = trading::MockTradingMode::kFill;
   Restart();
   Connect(first, 11);
   Connect(second, 22);
@@ -243,15 +245,15 @@ TEST_F(ServerTest, StopDrainsOneClientWithoutStoppingOtherClients) {
   Order(second, 1, 20);
   Pump();
   Advance();
-  Message stop;
-  stop.type = MessageType::kStop;
+  trading::Message stop;
+  stop.type = trading::MessageType::kStop;
   stop.generation = first.generation;
   ASSERT_TRUE(first.connection.Queue(stop).ok());
   Pump();
-  EXPECT_FALSE(Has(first, MessageType::kDrained));
+  EXPECT_FALSE(Has(first, trading::MessageType::kDrained));
   Advance();
   Advance();
-  ASSERT_TRUE(Has(first, MessageType::kDrained));
+  ASSERT_TRUE(Has(first, trading::MessageType::kDrained));
   const auto* canceled = Update(first, model::OrderUpdateKind::kCanceled);
   ASSERT_NE(canceled, nullptr);
   EXPECT_EQ(canceled->update.cancel_request_id.value, 0U);
@@ -267,20 +269,20 @@ TEST_F(ServerTest, DisconnectIdentityCannotBeReusedWithinGeneration) {
   first.connection.Close();
   Pump();
   Connect(second, 11);
-  EXPECT_FALSE(Has(second, MessageType::kWelcome));
+  EXPECT_FALSE(Has(second, trading::MessageType::kWelcome));
 }
 
 TEST_F(ServerTest, DrainedClientReceivesNoFurtherAccountBroadcasts) {
-  config.trading.mode = strategyd::MockTradingMode::kFill;
+  config.trading.mode = trading::MockTradingMode::kFill;
   Restart();
   Connect(first, 11);
   Connect(second, 22);
-  Message stop;
-  stop.type = MessageType::kStop;
+  trading::Message stop;
+  stop.type = trading::MessageType::kStop;
   stop.generation = first.generation;
   ASSERT_TRUE(first.connection.Queue(stop).ok());
   Pump();
-  ASSERT_TRUE(Has(first, MessageType::kDrained));
+  ASSERT_TRUE(Has(first, trading::MessageType::kDrained));
   first.received.clear();
   Order(second, 1, 10);
   Pump();
@@ -288,8 +290,8 @@ TEST_F(ServerTest, DrainedClientReceivesNoFurtherAccountBroadcasts) {
   Advance();
   Advance();
   EXPECT_NE(Update(second, model::OrderUpdateKind::kFill), nullptr);
-  EXPECT_FALSE(Has(first, MessageType::kAccount));
-  EXPECT_FALSE(Has(first, MessageType::kOrderUpdate));
+  EXPECT_FALSE(Has(first, trading::MessageType::kAccount));
+  EXPECT_FALSE(Has(first, trading::MessageType::kOrderUpdate));
 }
 
 TEST_F(ServerTest, IncorrectGenerationDisconnectsAndCancelsTheClient) {
@@ -297,8 +299,8 @@ TEST_F(ServerTest, IncorrectGenerationDisconnectsAndCancelsTheClient) {
   Order(first, 1, 60);
   Pump();
   Advance();
-  Message wrong;
-  wrong.type = MessageType::kHeartbeat;
+  trading::Message wrong;
+  wrong.type = trading::MessageType::kHeartbeat;
   wrong.generation = first.generation ^ 1;
   ASSERT_TRUE(first.connection.Queue(wrong).ok());
   Pump();
@@ -310,7 +312,7 @@ TEST_F(ServerTest, IncorrectGenerationDisconnectsAndCancelsTheClient) {
 
 TEST_F(ServerTest,
        CancelFilledOrderReportsRejectionWithoutInventingCancellation) {
-  config.trading.mode = strategyd::MockTradingMode::kFill;
+  config.trading.mode = trading::MockTradingMode::kFill;
   Restart();
   Connect(first, 11);
   Order(first, 1, 10);
@@ -319,8 +321,8 @@ TEST_F(ServerTest,
   Advance();
   Advance();
   ASSERT_NE(Update(first, model::OrderUpdateKind::kFill), nullptr);
-  Message cancel;
-  cancel.type = MessageType::kCancelOrder;
+  trading::Message cancel;
+  cancel.type = trading::MessageType::kCancelOrder;
   cancel.generation = first.generation;
   cancel.order_id = {1};
   cancel.cancel_id = {1};
@@ -346,12 +348,12 @@ TEST_F(ServerTest, ShutdownWaitsForConfirmedCancellations) {
   Advance();
   Advance();
   EXPECT_TRUE(server.is_drained());
-  EXPECT_FALSE(Has(first, MessageType::kDrained));
+  EXPECT_FALSE(Has(first, trading::MessageType::kDrained));
   EXPECT_EQ(server.account().cash.reserved, 0);
 }
 
 TEST_F(ServerTest, AccountRevisionsDoNotRegressAndOrdersUseClientSequences) {
-  config.trading.mode = strategyd::MockTradingMode::kFill;
+  config.trading.mode = trading::MockTradingMode::kFill;
   Restart();
   Connect(first, 11);
   Order(first, 1, 10);
@@ -362,13 +364,13 @@ TEST_F(ServerTest, AccountRevisionsDoNotRegressAndOrdersUseClientSequences) {
   std::uint64_t revision = 0;
   std::uint64_t report = 0;
   for (const auto& message : first.received) {
-    if (message.type == MessageType::kWelcome ||
-        message.type == MessageType::kAccount ||
-        message.type == MessageType::kOrderUpdate) {
+    if (message.type == trading::MessageType::kWelcome ||
+        message.type == trading::MessageType::kAccount ||
+        message.type == trading::MessageType::kOrderUpdate) {
       EXPECT_GE(message.account.revision, revision);
       revision = message.account.revision;
     }
-    if (message.type == MessageType::kOrderUpdate)
+    if (message.type == trading::MessageType::kOrderUpdate)
       EXPECT_EQ(message.update.order.report_sequence, ++report);
   }
   EXPECT_GT(revision, 1U);
@@ -403,7 +405,7 @@ TEST(TradingdConfigTest,
   config.heartbeat_timeout_ns = 999999999;
   EXPECT_FALSE(ValidateConfig(config, error).ok());
   config = Config();
-  config.trading.adapter = strategyd::TradingAdapterKind::kTcp;
+  config.trading.adapter = trading::TradingAdapterKind::kTcp;
   EXPECT_FALSE(ValidateConfig(config, error).ok());
 }
 
@@ -527,7 +529,7 @@ TEST(TradingdConfigTest, NestedMarketConfigAndClientShareCatalogDefinitions) {
   ConfigLoader gateway;
   ASSERT_TRUE(gateway.Load(files.Path("gateway/server.json").c_str()).ok())
       << gateway.error().field_path << ": " << gateway.error().message;
-  strategyd::MarketDataConfigLoader client;
+  md::MarketDataConfigLoader client;
   ASSERT_TRUE(client.Load(files.Path("clients/market.json").c_str()).ok())
       << client.error().field_path << ": " << client.error().message;
   ASSERT_EQ(gateway.config().market_data.instrument_count, 1U);

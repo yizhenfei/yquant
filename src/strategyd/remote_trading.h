@@ -3,29 +3,37 @@
 
 #include <memory>
 
-#include "strategyd/trading_config.h"
-#include "strategyd/trading_runtime.h"
-#include "tradingd/connection.h"
+#include "yquant/base/monotonic_clock.h"
+#include "yquant/md/instrument_scope.h"
+#include "yquant/trading/connection.h"
+#include "yquant/trading/trading_config.h"
+#include "yquant/trading/trading_runtime.h"
 
 namespace yquant::strategyd {
 
 // Main-thread TCP trading client. Orders are locally queued, while account
 // reservations and final risk acceptance belong to tradingd. A failed stream
 // terminates this session; uncertain commands are never resent automatically.
-class RemoteTrading final : public TradingRuntime {
+class RemoteTrading final : public trading::TradingRuntime {
  public:
-  RemoteTrading(const MonotonicClock& clock,
-                const MarketDataImpl& market_data) noexcept;
+  // Borrows clock and instrument scope for the entire client lifetime.
+  RemoteTrading(const base::MonotonicClock& clock,
+                const md::InstrumentScope& instruments) noexcept;
   ~RemoteTrading() noexcept override;
   // Allocates fixed storage and completes the bounded authenticated handshake
   // before exposing an account. Failure leaves the client disabled and owns
   // a diagnostic. Dictionary and config are borrowed only during this call.
-  [[nodiscard]] base::Status Init(const TradingConfig& config,
-                                  const MarketDataConfig& dictionary) noexcept;
+  [[nodiscard]] base::Status Init(
+      const trading::TradingConfig& config,
+      const md::MarketDataConfig& dictionary) noexcept;
   void Reset() noexcept override;
   void SetRunning(bool running) noexcept override { running_ = running; }
-  void BeginCallback(CallbackPhase phase) noexcept override { phase_ = phase; }
-  void EndCallback() noexcept override { phase_ = CallbackPhase::kNone; }
+  void BeginCallback(strategy::CallbackPhase phase) noexcept override {
+    phase_ = phase;
+  }
+  void EndCallback() noexcept override {
+    phase_ = strategy::CallbackPhase::kNone;
+  }
   void BeginStopping() noexcept override;
   bool accepting_orders() const noexcept override;
   // Success only commits a local request; tradingd may subsequently reject it.
@@ -44,7 +52,7 @@ class RemoteTrading final : public TradingRuntime {
       model::InstrumentId id,
       model::PositionSnapshot& out) const noexcept override;
   [[nodiscard]] base::Status ProcessRequests(
-      TradingAdapter& unused, std::uint64_t now,
+      trading::TradingAdapter& unused, std::uint64_t now,
       std::size_t limit = 64) noexcept override;
   [[nodiscard]] base::Status ScheduleStopping(
       std::uint64_t now, std::size_t max_scan = 64) noexcept override;
@@ -54,13 +62,15 @@ class RemoteTrading final : public TradingRuntime {
   std::size_t order_count() const noexcept override;
   const char* error_detail() const noexcept override { return error_detail_; }
   [[nodiscard]] base::ErrorCode ApplyEvent(
-      const TradingEvent& event, TradingDispatch& out) noexcept override;
+      const trading::TradingEvent& event,
+      trading::TradingDispatch& out) noexcept override;
   [[nodiscard]] base::ErrorCode ApplyLocalUpdate(
-      TradingDispatch& out) noexcept override;
+      trading::TradingDispatch& out) noexcept override;
   // Commits at most one incoming message and its complete account before
   // callbacks. Idle sets event=false and advances polling to a future deadline.
   // Failure preserves out and event and makes the session unusable.
-  [[nodiscard]] base::Status Poll(std::uint64_t now, TradingDispatch& out,
+  [[nodiscard]] base::Status Poll(std::uint64_t now,
+                                  trading::TradingDispatch& out,
                                   bool& event) noexcept;
 
  private:
@@ -68,22 +78,22 @@ class RemoteTrading final : public TradingRuntime {
   // Validates a complete account, including unknown local instruments, without
   // mutating the cached view. Equal revisions require identical content.
   [[nodiscard]] base::ErrorCode ValidateAccount(
-      const tradingd::AccountView& account, bool initial) noexcept;
+      const trading::AccountView& account, bool initial) noexcept;
   // Validates identity, state and increments before committing order/account.
-  [[nodiscard]] base::ErrorCode ApplyUpdate(const tradingd::Message& message,
-                                            std::uint64_t now,
-                                            TradingDispatch& out) noexcept;
+  [[nodiscard]] base::ErrorCode ApplyUpdate(
+      const trading::Message& message, std::uint64_t now,
+      trading::TradingDispatch& out) noexcept;
   base::ErrorCode Fail(base::ErrorCode code, const char* detail) noexcept;
   // Marks a session unusable after uncertain transport or invalid peer data.
   base::Status FailSession(base::Status status, const char* detail) noexcept;
 
-  const MonotonicClock& clock_;
-  const MarketDataImpl& market_data_;
+  const base::MonotonicClock& clock_;
+  const md::InstrumentScope& instruments_;
   std::unique_ptr<Storage> storage_;
-  tradingd::Connection connection_;
+  trading::Connection connection_;
   bool running_ = false;
   bool stopping_ = false;
-  CallbackPhase phase_ = CallbackPhase::kNone;
+  strategy::CallbackPhase phase_ = strategy::CallbackPhase::kNone;
   char error_detail_[256] = {};
 };
 

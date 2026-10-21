@@ -9,9 +9,9 @@
 #include "gtest/gtest.h"
 #include "strategyd/market_data.h"
 #include "strategyd/strategy_context.h"
-#include "strategyd/trading.h"
 #include "yquant/md/mock_quote_source.h"
 #include "yquant/model/identifiers.h"
+#include "yquant/trading/trading.h"
 
 namespace {
 
@@ -138,7 +138,7 @@ namespace yquant::strategyd {
 namespace {
 
 // Test clock shares the source/context time domain without wall-clock sleeps.
-class ManualClock final : public MonotonicClock {
+class ManualClock final : public base::MonotonicClock {
  public:
   std::uint64_t Now() const noexcept override { return now; }
   std::uint64_t now = 0;
@@ -186,7 +186,7 @@ const char* ExerciseMarketData(md::MockQuoteSource& source,
         return "context did not accept a fresh quote";
       }
       ++counts.quotes;
-      market_data.BeginCallback(CallbackPhase::kTick);
+      market_data.BeginCallback(strategy::CallbackPhase::kTick);
       model::QuoteTick snapshot;
       if (!context.market_data().TryGetLatestQuote(tick.instrument_id,
                                                    snapshot) ||
@@ -277,7 +277,7 @@ TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
   md::MockQuoteConfig config;
   config.source_id = {17};
   config.interval_ns = 1000000;
-  config.instrument_count = kMaxMarketDataInstruments;
+  config.instrument_count = md::kMaxMarketDataInstruments;
   for (std::size_t index = 0; index < config.instrument_count; ++index) {
     auto& item = config.instruments[index];
     item.instrument.venue = model::Venue::kSse;
@@ -298,15 +298,15 @@ TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
   }
   ManualClock clock;
   MarketDataImpl market_data(clock);
-  TradingImpl trading(clock, market_data);
+  trading::TradingImpl trading(clock, market_data.instruments());
   StrategyContextImpl context(clock, market_data, trading);
-  MarketDataConfig host;
+  md::MarketDataConfig host;
   host.source_id = config.source_id;
   host.instrument_count = config.instrument_count;
   for (std::size_t i = 0; i < host.instrument_count; ++i)
     host.instruments[i].instrument = config.instruments[i].instrument;
   ASSERT_TRUE(market_data.Configure(host).ok());
-  market_data.BeginCallback(CallbackPhase::kStart);
+  market_data.BeginCallback(strategy::CallbackPhase::kStart);
   for (std::size_t index = 0; index < config.instrument_count; ++index) {
     ASSERT_EQ(context.market_data().SubscribeQuotes(
                   config.instruments[index].instrument.id),
@@ -327,10 +327,10 @@ TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
                            config.interval_ns, config.instrument_count, counts);
   });
   EXPECT_EQ(failure, nullptr) << (failure == nullptr ? "" : failure);
-  EXPECT_EQ(counts.quotes, 128U * kMaxMarketDataInstruments);
+  EXPECT_EQ(counts.quotes, 128U * md::kMaxMarketDataInstruments);
   EXPECT_EQ(counts.idle, 128U);
   EXPECT_EQ(counts.duplicates, counts.quotes);
-  EXPECT_EQ(counts.old_quotes, 127U * kMaxMarketDataInstruments);
+  EXPECT_EQ(counts.old_quotes, 127U * md::kMaxMarketDataInstruments);
   EXPECT_EQ(counts.rejected, counts.quotes);
   EXPECT_EQ(counts.query_misses, 2 * counts.quotes);
   EXPECT_EQ(activity.allocation_calls, 0U);

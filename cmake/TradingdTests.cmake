@@ -1,11 +1,8 @@
 add_executable(yquant_tradingd_test
-  tests/tradingd/protocol_test.cc
-  tests/tradingd/connection_test.cc
   tests/tradingd/server_test.cc
-  tests/tradingd/process_test.cc
-  tests/strategyd/remote_trading_test.cc)
+  tests/tradingd/process_test.cc)
 target_link_libraries(yquant_tradingd_test PRIVATE
-  yquant_tradingd_runtime GTest::gtest_main Threads::Threads)
+  yquant_tradingd_objects GTest::gtest_main Threads::Threads)
 target_compile_options(yquant_tradingd_test PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(yquant_tradingd_test PRIVATE
   YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json"
@@ -22,8 +19,9 @@ gtest_discover_tests(yquant_tradingd_test
   PROPERTIES ${yquant_test_properties})
 
 add_executable(yquant_tradingd_allocation_test tests/tradingd/allocation_test.cc)
+target_include_directories(yquant_tradingd_allocation_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(yquant_tradingd_allocation_test PRIVATE
-  yquant_tradingd_runtime GTest::gtest_main Threads::Threads)
+  yquant_tradingd_objects GTest::gtest_main Threads::Threads)
 target_compile_options(yquant_tradingd_allocation_test PRIVATE
   -Wall -Wextra -Wpedantic)
 target_compile_definitions(yquant_tradingd_allocation_test PRIVATE

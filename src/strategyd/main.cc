@@ -3,17 +3,17 @@
 #include <string_view>
 
 #include "strategyd/strategy_runner.h"
-#include "strategyd/termination_signals.h"
 #include "yquant/base/status.h"
+#include "yquant/base/termination_signals.h"
 
 namespace {
 
 using yquant::base::ErrorCode;
 using yquant::base::Status;
+using yquant::base::TerminationSignals;
 using yquant::strategyd::LoadAndStart;
 using yquant::strategyd::RunnerState;
 using yquant::strategyd::StrategyRunner;
-using yquant::strategyd::TerminationSignals;
 
 void PrintUsage(FILE* output) noexcept {
   std::fputs(

@@ -19,7 +19,8 @@ using base::internal::JsonError;
 using base::internal::ParseConfigObject;
 using base::internal::ReadConfigText;
 
-base::Status Listen(simdjson::ondemand::value value, Endpoint& endpoint,
+base::Status Listen(simdjson::ondemand::value value,
+                    trading::Endpoint& endpoint,
                     base::ConfigError& error) noexcept {
   simdjson::ondemand::object object;
   auto code = value.get_object().get(object);
@@ -86,7 +87,7 @@ base::Status Parse(const base::JsonConfigDocument& source, ServerConfig& config,
       status = Listen(field.value(), config.listen, error);
     } else if (index < 4) {
       char* target = index == 1 ? market_path : trading_path;
-      const auto capacity = strategyd::kMaxRuntimeDirectoryLength + 1;
+      const auto capacity = md::kMaxRuntimeDirectoryLength + 1;
       status = ReadConfigText(field.value(),
                               {index == 3 ? config.token : target,
                                index == 3 ? sizeof(config.token) : capacity},
@@ -96,7 +97,7 @@ base::Status Parse(const base::JsonConfigDocument& source, ServerConfig& config,
       code = field.value().get_uint64().get(number);
       if (code) return JsonError(code, key, error);
       if (index == 4) {
-        if (number == 0 || number > kMaxClients)
+        if (number == 0 || number > trading::kMaxClients)
           return InvalidConfig(key, "must be from 1 to 16", error);
         config.max_clients = static_cast<std::size_t>(number);
       } else {
@@ -121,8 +122,8 @@ base::Status Parse(const base::JsonConfigDocument& source, ServerConfig& config,
 // value and sets the corresponding configuration field diagnostic.
 base::Status Resolve(char* value, std::string_view field,
                      base::ConfigError& error) noexcept {
-  const auto status = base::ResolvePath(
-      value, {value, strategyd::kMaxRuntimeDirectoryLength + 1});
+  const auto status =
+      base::ResolvePath(value, {value, md::kMaxRuntimeDirectoryLength + 1});
   if (!status.ok())
     error.Set(field, status.code == base::ErrorCode::kIoError
                          ? "cannot resolve path from working directory"
@@ -142,9 +143,9 @@ base::Status ValidateConfig(const ServerConfig& config,
     return InvalidConfig("listen.address", "must be a numeric IPv4 address",
                          error);
   const auto length = strnlen(config.token, sizeof(config.token));
-  if (length == 0 || length > kMaxTokenBytes)
+  if (length == 0 || length > trading::kMaxTokenBytes)
     return InvalidConfig("token", "must contain from 1 to 64 bytes", error);
-  if (config.max_clients == 0 || config.max_clients > kMaxClients)
+  if (config.max_clients == 0 || config.max_clients > trading::kMaxClients)
     return InvalidConfig("max_clients", "must be from 1 to 16", error);
   if (config.heartbeat_timeout_ns < kMinimumTimeoutNs ||
       config.heartbeat_timeout_ns > kMaximumTimeoutNs)
@@ -154,11 +155,11 @@ base::Status ValidateConfig(const ServerConfig& config,
       config.shutdown_timeout_ns > kMaximumTimeoutNs)
     return InvalidConfig("shutdown_timeout_ms", "must be from 1000 to 60000 ms",
                          error);
-  auto status = strategyd::ValidateMarketDataScope(config.market_data, error);
+  auto status = md::ValidateMarketDataScope(config.market_data, error);
   if (!status.ok()) return status;
-  status = strategyd::ValidateTradingConfig(config.trading, error);
+  status = trading::ValidateTradingConfig(config.trading, error);
   if (!status.ok()) return status;
-  if (config.trading.adapter != strategyd::TradingAdapterKind::kMock)
+  if (config.trading.adapter != trading::TradingAdapterKind::kMock)
     return InvalidConfig("trading_config.adapter", "must be mock", error);
   for (std::size_t i = 0; i < config.trading.initial_account.position_count;
        ++i) {
@@ -183,21 +184,21 @@ base::Status ConfigLoader::Load(const char* path) noexcept {
     return status;
   }
   ServerConfig parsed;
-  char market_path[strategyd::kMaxRuntimeDirectoryLength + 1] = {};
-  char trading_path[strategyd::kMaxRuntimeDirectoryLength + 1] = {};
+  char market_path[md::kMaxRuntimeDirectoryLength + 1] = {};
+  char trading_path[md::kMaxRuntimeDirectoryLength + 1] = {};
   status = Parse(document, parsed, market_path, trading_path, error_);
   if (!status.ok()) return status;
   status = Resolve(market_path, "market_data_config", error_);
   if (!status.ok()) return status;
   status = Resolve(trading_path, "trading_config", error_);
   if (!status.ok()) return status;
-  strategyd::MarketDataConfigLoader market_loader;
+  md::MarketDataConfigLoader market_loader;
   status = market_loader.Load(market_path);
   if (!status.ok()) {
     error_ = market_loader.error();
     return status;
   }
-  strategyd::TradingConfigLoader trading_loader;
+  trading::TradingConfigLoader trading_loader;
   status = trading_loader.Load(trading_path);
   if (!status.ok()) {
     error_ = trading_loader.error();

@@ -3,10 +3,10 @@
 #include <string_view>
 #include <thread>
 
-#include "strategyd/monotonic_clock.h"
-#include "strategyd/termination_signals.h"
 #include "tradingd/config.h"
 #include "tradingd/server.h"
+#include "yquant/base/monotonic_clock.h"
+#include "yquant/base/termination_signals.h"
 
 namespace {
 
@@ -61,13 +61,13 @@ int main(int argc, char* argv[]) {
     std::fputs("yquant-tradingd: configuration valid\n", stdout);
     return 0;
   }
-  yquant::strategyd::TerminationSignals signals;
+  yquant::base::TerminationSignals signals;
   status = signals.Prepare();
   if (!status.ok()) {
     Failure("signal_setup", status, "cannot prepare termination signals");
     return 1;
   }
-  yquant::strategyd::SteadyMonotonicClock clock;
+  yquant::base::SteadyMonotonicClock clock;
   yquant::tradingd::Server server(clock);
   status = server.Init(loader.config());
   if (!status.ok()) {

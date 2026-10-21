@@ -9,12 +9,12 @@
 
 #include "base/internal/json_config_parser.h"
 #include "gtest/gtest.h"
-#include "strategyd/test_config_file.h"
+#include "test_config_file.h"
 
 namespace yquant::base {
 namespace {
 
-using ::yquant::strategyd::testing::ConfigFile;
+using ::yquant::testing::ConfigFile;
 
 TEST(JsonConfigDocumentTest, OwnsUnchangedPaddedSourceUntilReset) {
   JsonConfigDocument source;

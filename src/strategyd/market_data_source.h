@@ -5,8 +5,8 @@
 #include <optional>
 #include <span>
 
-#include "strategyd/market_data_config.h"
 #include "yquant/base/status.h"
+#include "yquant/md/market_data_config.h"
 #include "yquant/model/quote_tick.h"
 
 namespace yquant::strategyd {
@@ -29,7 +29,7 @@ class MarketDataSource {
   // Copies validated configuration; does not activate or publish quotes.
   // A failed call leaves a new source unprepared and safe to Stop().
   [[nodiscard]] virtual base::Status Prepare(
-      const MarketDataConfig& config) noexcept = 0;
+      const md::MarketDataConfig& config) noexcept = 0;
   // Copies subscriptions and schedules from the host's monotonic now. Failure
   // retains prepared state; no references to input remain after return.
   [[nodiscard]] virtual base::Status Start(

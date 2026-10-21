@@ -10,12 +10,12 @@
 #include <string>
 
 #include "gtest/gtest.h"
-#include "strategyd/event_loop_environment.h"
 #include "strategyd/market_data_source.h"
-#include "strategyd/mock_trading_adapter.h"
 #include "strategyd/strategy_runner.h"
-#include "strategyd/trading_adapter.h"
 #include "test_config_file.h"
+#include "yquant/base/event_loop_environment.h"
+#include "yquant/trading/mock_trading_adapter.h"
+#include "yquant/trading/trading_adapter.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -62,7 +62,7 @@ class TradingEventPipe {
   std::string previous_;
 };
 
-class TradingClock final : public MonotonicClock {
+class TradingClock final : public base::MonotonicClock {
  public:
   std::uint64_t Now() const noexcept override { return now; }
   std::uint64_t now = 0;
@@ -103,7 +103,9 @@ class TradingQuoteSource final : public MarketDataSource {
   std::optional<std::uint64_t> service_deadline;
   IdleClockStep idle;
 
-  base::Status Prepare(const MarketDataConfig&) noexcept override { return {}; }
+  base::Status Prepare(const md::MarketDataConfig&) noexcept override {
+    return {};
+  }
   base::Status Start(std::span<const model::InstrumentId> ids,
                      std::uint64_t) noexcept override {
     if (ids.size() != 1) return {ErrorCode::kInvalidArgument, {}};
@@ -172,7 +174,7 @@ class TradingQuoteSource final : public MarketDataSource {
 
 // Counts adapter-boundary facts while using the actual mock's scheduling and
 // fill rules. Faults alter only normalized input or a send result.
-class ObservedTradingAdapter final : public TradingAdapter {
+class ObservedTradingAdapter final : public trading::TradingAdapter {
  public:
   bool duplicate_first = false;
   bool sequence_gap = false;
@@ -192,7 +194,7 @@ class ObservedTradingAdapter final : public TradingAdapter {
   const TradingQuoteSource* observed_source = nullptr;
   std::array<int, 16> source_polls_at_reports = {};
 
-  base::Status Prepare(const TradingConfig& config) noexcept override {
+  base::Status Prepare(const trading::TradingConfig& config) noexcept override {
     initial_account_ = config.initial_account;
     return mock_.Prepare(config);
   }
@@ -200,7 +202,7 @@ class ObservedTradingAdapter final : public TradingAdapter {
     return mock_.Start(now);
   }
   base::Status ReadAccountSnapshot(
-      TradingAccountSnapshot& out) noexcept override {
+      trading::TradingAccountSnapshot& out) noexcept override {
     ++account_reads;
     if (fail_account_read) return {ErrorCode::kIoError, {}};
     out = initial_account_;
@@ -225,18 +227,18 @@ class ObservedTradingAdapter final : public TradingAdapter {
     ++send_cancels;
     return mock_.SendCancel(id, broker, cancel_id, now);
   }
-  TradingPollResult Poll(std::uint64_t now,
-                         TradingEvent& out) noexcept override {
+  trading::TradingPollResult Poll(
+      std::uint64_t now, trading::TradingEvent& out) noexcept override {
     if (idle.Poll(now)) return {};
     if (pending_duplicate_) {
       pending_duplicate_ = false;
       out = duplicate_;
       ++published;
-      return {TradingPollState::kEvent, {}};
+      return {trading::TradingPollState::kEvent, {}};
     }
     if (never_report) return {};
     auto result = mock_.Poll(now, out);
-    if (result.state == TradingPollState::kEvent) {
+    if (result.state == trading::TradingPollState::kEvent) {
       if (observed_source != nullptr &&
           published < static_cast<int>(source_polls_at_reports.size())) {
         source_polls_at_reports[static_cast<std::size_t>(published)] =
@@ -280,16 +282,16 @@ class ObservedTradingAdapter final : public TradingAdapter {
   }
 
  private:
-  MockTradingAdapter mock_;
-  TradingAccountSnapshot initial_account_;
-  TradingEvent duplicate_;
+  trading::MockTradingAdapter mock_;
+  trading::TradingAccountSnapshot initial_account_;
+  trading::TradingEvent duplicate_;
   bool pending_duplicate_ = false;
   bool waiting_ = false;
 };
 
 // Advances the shared monotonic clock only when Run asks to wait. A bounded
 // watchdog converts accidental spinning or an unplanned wait into test failure.
-class TradingLoopEnvironment final : public EventLoopEnvironment {
+class TradingLoopEnvironment final : public base::EventLoopEnvironment {
  public:
   explicit TradingLoopEnvironment(TradingClock& clock) : clock_(clock) {}
   const TradingQuoteSource* source = nullptr;

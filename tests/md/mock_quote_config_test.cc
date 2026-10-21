@@ -12,14 +12,14 @@
 
 #include "gtest/gtest.h"
 #include "scoped_working_directory.h"
-#include "strategyd/test_config_file.h"
+#include "test_config_file.h"
 #include "yquant/base/json_config_document.h"
 #include "yquant/model/identifiers.h"
 
 namespace yquant::md {
 namespace {
 
-using ::yquant::strategyd::testing::ConfigFile;
+using ::yquant::testing::ConfigFile;
 
 constexpr std::string_view kInstrument =
     R"({"venue":"SSE","symbol":"600000",)"

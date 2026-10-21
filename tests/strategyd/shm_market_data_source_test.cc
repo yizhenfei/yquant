@@ -20,7 +20,7 @@ class ShmMarketDataSourceTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ASSERT_NE(mkdtemp(directory_), nullptr);
-    config_.adapter = MarketDataAdapter::kShm;
+    config_.adapter = md::MarketDataAdapter::kShm;
     config_.source_id = {1};
     std::strcpy(config_.runtime_directory, directory_);
     std::strcpy(config_.stream, "quotes");
@@ -73,7 +73,7 @@ class ShmMarketDataSourceTest : public ::testing::Test {
   }
 
   char directory_[64] = "/tmp/yquant-shm-source-XXXXXX";
-  MarketDataConfig config_;
+  md::MarketDataConfig config_;
   md::ShmPublisher publisher_;
 };
 

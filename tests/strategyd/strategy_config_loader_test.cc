@@ -10,7 +10,7 @@
 namespace yquant::strategyd {
 namespace {
 
-using testing::ConfigFile;
+using ::yquant::testing::ConfigFile;
 
 struct InvalidConfig {
   const char* name;

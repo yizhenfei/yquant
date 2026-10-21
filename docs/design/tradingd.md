@@ -19,13 +19,16 @@ flowchart LR
 
 | 组件 | 职责 |
 | --- | --- |
-| `Server` | 身份握手、请求归属、共享账户受理、柜台驱动、回报路由、断线撤单与排空 |
-| `TradingImpl` | 网关内部唯一可写的委托、成交、资金和持仓账本，复用既有整数计算与事件校验 |
-| `Connection` | 有界的非阻塞 TCP 收发、帧完整性、逐方向连续序号及背压 |
-| `RemoteTrading` | `strategyd` 内部的交易服务实现，维护本策略委托缓存和共享账户只读快照 |
-| `TradingRuntime` | 宿主对本机模拟运行时与远端运行时共用的生命周期边界 |
+| `tradingd::Server` | 网关程序专用的身份握手、请求归属、共享账户受理、柜台驱动、回报路由、断线撤单与排空 |
+| `md::InstrumentScope` | 网关持有的运行标的范围，供握手校验及交易账本查询 |
+| `trading::TradingImpl` | 网关唯一可写的委托、成交、资金和持仓账本，复用公共整数计算与事件校验 |
+| `trading::Connection` | 两端共用的有界非阻塞 TCP 收发、帧完整性、逐方向连续序号及背压 |
+| `trading::TradingRuntime` | 本机账本与策略侧远端服务共用的生命周期边界 |
+| `strategyd::RemoteTrading` | 策略程序专用的交易服务，维护本策略委托缓存和共享账户只读快照 |
 
 各进程内部串行驱动交易，不在策略回调栈内处理远端回报。策略通过 `context.trading()` 访问公共 [Trading 接口](../../include/yquant/strategy/trading.h)，进程内与共享模式复用该接口。本机模拟模式保留原行为。
+
+网关与策略客户端通过公共 `yquant::trading` 库复用账本、配置、模拟柜台、协议和连接。网关自行持有 `md::InstrumentScope` 并提供给账本，客户端借用策略宿主的标的范围；公共交易代码不依赖 `strategyd::MarketDataImpl`。协议定义与编解码位于 `include/yquant/trading/protocol.h`、`src/trading/protocol.cc`，连接位于 `include/yquant/trading/connection.h`、`src/trading/connection.cc`。`src/tradingd/` 仅保留网关配置、服务器及入口，`RemoteTrading` 保留在 `src/strategyd/`；构建归属见[目录与模块](engineering.md#目录与模块)。
 
 ## 账户与事件一致性
 
@@ -57,7 +60,7 @@ flowchart LR
 | `Heartbeat` | 空闲连接活性检测 |
 | `Error` | 协议定义的显式错误结果 |
 
-`receive_time_ns` 在每个接收进程用本地单调时钟重新赋值，不跨进程比较单调时间。报价、订单和成交的业务事件时间仍使用各自模型约定。
+`receive_time_ns` 在每个接收进程用本地 `base::MonotonicClock` 重新赋值，时钟域遵循[公共进程基础设施](engineering.md#进程基础设施)约定。报价、订单和成交的业务事件时间仍使用各自模型约定。
 
 ## 资源与故障边界
 
@@ -89,7 +92,7 @@ flowchart LR
 }
 ```
 
-两个引用配置路径遵循[路径解析约定](../../README.md#路径解析)，基于进程工作目录解析，柜台配置只能选择 `adapter: "mock"`；行情配置引用共享标的字典并声明网关运行范围，不启动行情源。行情配置中的 `instrument_catalog` 同样基于进程工作目录解析。`max_clients` 为 1 至 16，超时范围为 1000 至 60000 ms。JSON 监听端口为 1 至 65535，类型化组件接口支持端口零供测试。
+两个引用配置分别由 `md::MarketDataConfigLoader` 和 `trading::TradingConfigLoader` 解析，路径遵循[路径解析约定](../../README.md#路径解析)。柜台配置只能选择 `adapter: "mock"`；行情配置引用共享标的字典并声明网关运行范围，不启动行情源。`max_clients` 为 1 至 16，超时范围为 1000 至 60000 ms。JSON 监听端口为 1 至 65535，类型化组件接口支持端口零供测试。
 
 客户端配置见 [client_1.json](../../examples/tradingd/client_1.json) 与 [client_2.json](../../examples/tradingd/client_2.json)：
 

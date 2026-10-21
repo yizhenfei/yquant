@@ -169,7 +169,7 @@ flowchart TD
 
 ### 主循环与信号
 
-`main()` 持有 `StrategyRunner`，通过 `Handle(LoadAndStart)` 启动策略，再调用 `Run(environment)` 驱动主循环。行情批次处理与单条报价分派是 `StrategyRunner` 的私有实现，外部不直接调用。
+`main()` 持有 `StrategyRunner`，通过 `Handle(LoadAndStart)` 启动策略，再调用 `Run(environment)` 驱动主循环。等待环境及信号实现采用公共[进程基础设施](engineering.md#进程基础设施)中的 `base::EventLoopEnvironment` 与 `base::TerminationSignals`。行情批次处理与单条报价分派是 `StrategyRunner` 的私有实现，外部不直接调用。
 
 主线程在动态库加载或策略代码执行前，通过 `pthread_sigmask()` 屏蔽 `SIGINT`、`SIGTERM`，使用 `sigaction()` 安装处理函数。处理函数只将 `volatile sig_atomic_t` 停止标志置位，不调用策略、记录日志或释放资源。普通代码、SDK 调用和全部策略回调执行时保持这两个信号被屏蔽。
 
@@ -258,7 +258,7 @@ Run 关闭策略请求入口与行情分派 → source.Stop() → 推进委托�
 
 ## 工程组织与构建
 
-公开接口放入 `yquant::strategy`，加载器和命令分派保持为策略进程的内部实现。
+策略 SDK 放入 `yquant::strategy`。动态库加载、策略配置、行情回调服务、远端交易服务和主循环属于策略程序私有实现；行情配置与标的范围、交易账本、协议及进程基础设施通过公共库使用。库和程序对象目标的边界见[目录与模块](engineering.md#目录与模块)，构建目标见[构建与依赖](engineering.md#构建与依赖)。
 
 ```text
 include/yquant/model/identifiers.h         来源与标的标识
@@ -269,15 +269,15 @@ include/yquant/strategy/strategy_config.h   配置基类、策略 ID 与配置�
 include/yquant/strategy/strategy_context.h  单调时间及行情、交易服务访问器
 include/yquant/strategy/market_data.h       策略可见的行情接口
 include/yquant/strategy/trading.h           策略可见的交易接口
+include/yquant/strategy/callback_phase.h    服务共用的回调门禁阶段
 include/yquant/strategy/strategy_plugin.h   动态库入口与描述符
 src/strategyd/main.cc                       参数与主线程调度
 src/strategyd/strategy_runner.h/.cc         命令分派、事件循环与生命周期管理
-src/strategyd/market_data.h/.cc             行情服务实现与状态
+src/strategyd/market_data.h/.cc             策略行情订阅、缓存与回调状态
+src/strategyd/remote_trading.h/.cc          策略侧远端交易服务与账户视图
 src/strategyd/strategy_context.h            上下文薄视图
 src/strategyd/strategy_library.h/.cc        动态库加载与释放
 src/strategyd/strategy_config_loader.h/.cc  策略公共字段与原始参数片段加载
-include/yquant/base/json_config_document.h / src/base/json_config_document.cc    通用 JSON 文档读取与完整校验
-src/strategyd/termination_signals.h/.cc     信号屏蔽、检查与期限等待
 examples/strategies/lifecycle_strategy.cc   最小用户策略动态库
 examples/strategies/parameterized_strategy.cc 强类型参数策略示例
 examples/strategies/quote_observer_strategy.cc 行情订阅与快照观察示例
@@ -286,17 +286,15 @@ tests/strategyd/strategy_fixture.cc         生命周期及失败场景的测试
 tests/strategyd/missing_dependency.cc       缺失依赖场景的测试库
 ```
 
-| CMake target | 类型与用途 |
+示例动态库使用以下 CMake 目标：
+
+| CMake target | 用途 |
 | --- | --- |
-| `yquant_strategy_api`，别名 `yquant::strategy_api` | `INTERFACE`，提供公开头文件与编译要求 |
-| `yquant_strategyd_runtime` | 内部静态库，供程序和运行时测试复用加载、账本、调度及生命周期逻辑 |
-| `yquant_host_support` | 宿主行情接收配置与退出信号支持 |
-| `yquant_md`，别名 `yquant::md` | 行情事件广播适配与报价帧编解码 |
-| `yquant_strategyd` | 可执行程序，`OUTPUT_NAME` 为 `yquant-strategyd` |
-| `lifecycle_strategy` | `MODULE`，用户策略示例，不链接进策略进程 |
-| `parameterized_strategy` | `MODULE`，展示派生强类型配置，通过私有依赖解析自定义参数 |
-| `quote_observer_strategy` | `MODULE`，订阅行情，检查回调快照并输出停止汇总；行情生产端提供模拟或其他上游输入，宿主通过共享内存接收 |
-| `order_lifecycle_strategy` | `MODULE`，提交一次限价委托，检查委托与成交回调及最终状态 |
+| `lifecycle_strategy` | 用户策略生命周期及配置示例 |
+| `parameterized_strategy` | 展示派生强类型配置，通过私有依赖解析自定义参数 |
+| `quote_observer_strategy` | 订阅行情，检查回调快照并输出停止汇总；行情生产端提供模拟或其他上游输入，宿主通过共享内存接收 |
+| `order_lifecycle_strategy` | 提交一次限价委托，检查委托与成交回调及最终状态 |
+| `shared_account_strategy` | 连接共享交易网关，检查本策略委托及共享账户视图 |
 
 程序输出到 `build/<preset>/bin/`，策略模块输出到 `build/<preset>/strategies/`。示例模块去掉默认 `lib` 前缀，使用 CMake 的本机模块后缀；Linux 示例为 `lifecycle_strategy.so`。macOS 使用本机 `MODULE` 产物，测试与构建命令通过 `$<TARGET_FILE:...>` 取得实际路径，不手写后缀。
 
