@@ -20,11 +20,11 @@ inline constexpr std::size_t kMaxInstrumentCatalogPathLength = 4095;
 // Owns a sorted, bounded instrument dictionary shared through a static file.
 // Load performs file I/O and allocation during initialization; Find copies a
 // definition without I/O or allocation. Serialize Load and all queries.
-class InstrumentCatalogLoader {
+class InstrumentCatalog {
  public:
-  InstrumentCatalogLoader() noexcept = default;
-  InstrumentCatalogLoader(const InstrumentCatalogLoader&) = delete;
-  InstrumentCatalogLoader& operator=(const InstrumentCatalogLoader&) = delete;
+  InstrumentCatalog() noexcept = default;
+  InstrumentCatalog(const InstrumentCatalog&) = delete;
+  InstrumentCatalog& operator=(const InstrumentCatalog&) = delete;
 
   // Replaces the catalog from strict JSON. Failure leaves size() zero and no
   // queryable definitions; error() owns diagnostics until the next Load.

@@ -20,8 +20,8 @@ namespace {
 using base::ErrorCode;
 using testing::ConfigFile;
 
-static_assert(!std::is_move_constructible_v<InstrumentCatalogLoader>);
-static_assert(!std::is_move_assignable_v<InstrumentCatalogLoader>);
+static_assert(!std::is_move_constructible_v<InstrumentCatalog>);
+static_assert(!std::is_move_assignable_v<InstrumentCatalog>);
 
 constexpr std::string_view kSingleInstrument =
     R"({"instruments":[{"venue":"SSE","symbol":"600000","price_decimals":2}]})";
@@ -44,7 +44,7 @@ std::string CatalogWithEntries(std::size_t count) {
 }
 
 TEST(InstrumentCatalogTest, LoadsUnsortedVenuesAndPreservesLeadingZeros) {
-  InstrumentCatalogLoader loader;
+  InstrumentCatalog catalog;
   {
     ConfigFile file(
         R"({"instruments":[)"
@@ -52,9 +52,9 @@ TEST(InstrumentCatalogTest, LoadsUnsortedVenuesAndPreservesLeadingZeros) {
         R"({"venue":"SSE","symbol":"000001","price_decimals":0},)"
         R"({"venue":"SZSE","symbol":"000001","price_decimals":2}]})");
     ASSERT_TRUE(file.valid());
-    ASSERT_TRUE(loader.Load(file.path()).ok()) << loader.error().message;
+    ASSERT_TRUE(catalog.Load(file.path()).ok()) << catalog.error().message;
   }
-  ASSERT_EQ(loader.size(), 3U);
+  ASSERT_EQ(catalog.size(), 3U);
   const struct {
     std::string_view venue;
     model::Venue expected_venue;
@@ -70,7 +70,7 @@ TEST(InstrumentCatalogTest, LoadsUnsortedVenuesAndPreservesLeadingZeros) {
     ASSERT_EQ(model::MakeInstrumentId(item.venue, "000001", id),
               ErrorCode::kOk);
     model::InstrumentDefinition definition;
-    ASSERT_TRUE(loader.Find(id, definition));
+    ASSERT_TRUE(catalog.Find(id, definition));
     EXPECT_EQ(definition.id, id);
     EXPECT_EQ(definition.venue, item.expected_venue);
     EXPECT_EQ(definition.symbol_view(), "000001");
@@ -81,11 +81,11 @@ TEST(InstrumentCatalogTest, LoadsUnsortedVenuesAndPreservesLeadingZeros) {
   unchanged.id = {123};
   unchanged.price_decimals = 5;
   auto out = unchanged;
-  EXPECT_FALSE(loader.Find({}, out));
+  EXPECT_FALSE(catalog.Find({}, out));
   EXPECT_EQ(out, unchanged);
   model::InstrumentId unknown;
   ASSERT_EQ(model::MakeInstrumentId("SSE", "999999", unknown), ErrorCode::kOk);
-  EXPECT_FALSE(loader.Find(unknown, out));
+  EXPECT_FALSE(catalog.Find(unknown, out));
   EXPECT_EQ(out, unchanged);
 }
 
@@ -94,17 +94,17 @@ TEST(InstrumentCatalogTest, SupportsMoreThan64EntriesAndEnforces16384Limit) {
     SCOPED_TRACE(count);
     ConfigFile file(CatalogWithEntries(count));
     ASSERT_TRUE(file.valid());
-    InstrumentCatalogLoader loader;
-    const auto result = loader.Load(file.path());
+    InstrumentCatalog catalog;
+    const auto result = catalog.Load(file.path());
     if (count <= 16384) {
-      ASSERT_TRUE(result.ok()) << loader.error().message;
-      EXPECT_EQ(loader.size(), count);
+      ASSERT_TRUE(result.ok()) << catalog.error().message;
+      EXPECT_EQ(catalog.size(), count);
       model::InstrumentDefinition last;
-      EXPECT_TRUE(loader.Find({(std::uint64_t{1} << 32) | (count - 1)}, last));
+      EXPECT_TRUE(catalog.Find({(std::uint64_t{1} << 32) | (count - 1)}, last));
     } else {
       EXPECT_EQ(result.code, ErrorCode::kInvalidArgument);
-      EXPECT_EQ(loader.size(), 0U);
-      EXPECT_STREQ(loader.error().field_path, "instruments");
+      EXPECT_EQ(catalog.size(), 0U);
+      EXPECT_STREQ(catalog.error().field_path, "instruments");
     }
   }
 }
@@ -136,14 +136,14 @@ TEST(InstrumentCatalogTest, RejectsInvalidSchemaTypesAndPrecision) {
       R"({"instruments":[{"venue":"SSE","\u0076enue":"SSE","symbol":"600000","price_decimals":2}]})",
       R"({"instruments":[{"venue":"SSE","symbol":"600000","price_decimals":2},{"venue":"SSE","symbol":"600000","price_decimals":4}]})",
   };
-  InstrumentCatalogLoader loader;
+  InstrumentCatalog catalog;
   for (const auto json : cases) {
     SCOPED_TRACE(json);
     ConfigFile file(json);
     ASSERT_TRUE(file.valid());
-    EXPECT_EQ(loader.Load(file.path()).code, ErrorCode::kInvalidArgument);
-    EXPECT_EQ(loader.size(), 0U);
-    EXPECT_NE(loader.error().message[0], '\0');
+    EXPECT_EQ(catalog.Load(file.path()).code, ErrorCode::kInvalidArgument);
+    EXPECT_EQ(catalog.size(), 0U);
+    EXPECT_NE(catalog.error().message[0], '\0');
   }
 }
 
@@ -153,30 +153,30 @@ TEST(InstrumentCatalogTest, FailedReloadHidesAllDefinitionsAndCanLoadAgain) {
       R"({"instruments":[{"venue":"SSE","symbol":"000001","price_decimals":2},1]})");
   ASSERT_TRUE(valid.valid());
   ASSERT_TRUE(invalid.valid());
-  InstrumentCatalogLoader loader;
-  ASSERT_TRUE(loader.Load(valid.path()).ok());
+  InstrumentCatalog catalog;
+  ASSERT_TRUE(catalog.Load(valid.path()).ok());
   model::InstrumentId id;
   ASSERT_EQ(model::MakeInstrumentId("SSE", "600000", id), ErrorCode::kOk);
   model::InstrumentDefinition out;
-  ASSERT_TRUE(loader.Find(id, out));
+  ASSERT_TRUE(catalog.Find(id, out));
   const auto unchanged = out;
 
-  EXPECT_FALSE(loader.Load(invalid.path()).ok());
-  EXPECT_EQ(loader.size(), 0U);
-  EXPECT_FALSE(loader.Find(id, out));
+  EXPECT_FALSE(catalog.Load(invalid.path()).ok());
+  EXPECT_EQ(catalog.size(), 0U);
+  EXPECT_FALSE(catalog.Find(id, out));
   EXPECT_EQ(out, unchanged);
   model::InstrumentId partially_parsed;
   ASSERT_EQ(model::MakeInstrumentId("SSE", "000001", partially_parsed),
             ErrorCode::kOk);
-  EXPECT_FALSE(loader.Find(partially_parsed, out));
+  EXPECT_FALSE(catalog.Find(partially_parsed, out));
   EXPECT_EQ(out, unchanged);
 
-  ASSERT_TRUE(loader.Load(valid.path()).ok());
-  EXPECT_TRUE(loader.Find(id, out));
-  EXPECT_EQ(loader.error().message[0], '\0');
-  EXPECT_FALSE(loader.Load(nullptr).ok());
-  EXPECT_EQ(loader.size(), 0U);
-  EXPECT_FALSE(loader.Find(id, out));
+  ASSERT_TRUE(catalog.Load(valid.path()).ok());
+  EXPECT_TRUE(catalog.Find(id, out));
+  EXPECT_EQ(catalog.error().message[0], '\0');
+  EXPECT_FALSE(catalog.Load(nullptr).ok());
+  EXPECT_EQ(catalog.size(), 0U);
+  EXPECT_FALSE(catalog.Find(id, out));
   EXPECT_EQ(out, unchanged);
 }
 

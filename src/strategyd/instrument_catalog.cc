@@ -169,7 +169,7 @@ base::Status ParseCatalog(const JsonConfigDocument& source,
 
 }  // namespace
 
-base::Status InstrumentCatalogLoader::Load(const char* path) noexcept {
+base::Status InstrumentCatalog::Load(const char* path) noexcept {
   size_ = 0;
   error_.Clear();
   JsonConfigDocument document;
@@ -205,8 +205,8 @@ base::Status InstrumentCatalogLoader::Load(const char* path) noexcept {
   return {};
 }
 
-bool InstrumentCatalogLoader::Find(
-    model::InstrumentId id, model::InstrumentDefinition& out) const noexcept {
+bool InstrumentCatalog::Find(model::InstrumentId id,
+                             model::InstrumentDefinition& out) const noexcept {
   if (size_ == 0) return false;
   const auto end = definitions_.get() + size_;
   const auto found = std::lower_bound(

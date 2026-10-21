@@ -485,7 +485,7 @@ base::Status MarketDataConfigLoader::Load(const char* path) noexcept {
   result = ResolveInstrumentCatalogPath(path, catalog_reference, catalog_path,
                                         error_);
   if (!result.ok()) return result;
-  InstrumentCatalogLoader catalog;
+  InstrumentCatalog catalog;
   result = catalog.Load(catalog_path);
   if (!result.ok()) {
     const auto& cause = catalog.error();
