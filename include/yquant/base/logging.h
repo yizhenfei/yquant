@@ -96,7 +96,13 @@ struct LogBackendStatus {
   std::uint64_t last_write_monotonic_ns = 0;
 };
 
+// Thread mode owns an in-process writer. Logd mode only maps producer queues.
+enum class LogBackend { kThread, kLogd };
+
 struct LogConfig {
+  LogBackend backend = LogBackend::kThread;
+  // Logd Shutdown waits at most this long across all channels for durable ACKs.
+  std::uint64_t shutdown_timeout_ns = 5000000000ULL;
   std::size_t max_loggers = 16;
   std::size_t batch_bytes = 65536;
   std::uint64_t idle_sleep_ns = 1000000;
@@ -111,6 +117,9 @@ struct LoggerConfig {
   LogLevel minimum_level = LogLevel::kInfo;
   std::uint64_t min_interval_ns = 0;
   std::uint64_t max_file_bytes = 0;
+  // Required in logd mode; logd must publish this queue before CreateLogger.
+  // file_path and max_file_bytes are configured at the consumer in that mode.
+  std::string_view queue_path;
 };
 
 class Logger;
@@ -124,6 +133,7 @@ struct [[nodiscard]] CreateLoggerResult {
 namespace internal {
 
 struct LogManagerImpl;
+struct SharedLogState;
 
 // Called only from a failing constant evaluation, producing a compile error.
 void InvalidLogFormat();
@@ -329,6 +339,8 @@ class Logger final {
   void Publish(std::size_t size, bool truncated) noexcept;
 
   SpscQueue producer_;
+  // Borrowed mapping; stable until Shutdown, null for in-process producers.
+  internal::SharedLogState* shared_state_ = nullptr;
   std::atomic<std::uint64_t> active_{0};
   std::atomic<std::uint64_t> queue_fault_{0};
   std::atomic<std::uint64_t> backend_error_{0};
@@ -353,14 +365,29 @@ class LogManager final {
   LogManager(LogManager&&) = delete;
   LogManager& operator=(LogManager&&) = delete;
 
+  // Management calls are serialized by the caller. Initialize starts a writer
+  // thread only in kThread mode. Failure leaves the manager uninitialized.
   [[nodiscard]] Status Initialize(const LogConfig& config = {}) noexcept;
+  // Success returns a manager-owned Logger borrowed until Shutdown. In logd
+  // mode the queue must exist and match queue_capacity, and file_path and
+  // max_file_bytes must be unset. Failure returns a null logger.
   [[nodiscard]] CreateLoggerResult CreateLogger(
       const LoggerConfig& config) noexcept;
+  // Thread mode only: creates a shared queue and its file consumer for logd.
+  // queue_path must not exist; parent directories must exist. One producer
+  // session is permitted. Success publishes the queue atomically. Failure
+  // rolls back resources; an existing queue file is never replaced.
+  [[nodiscard]] Status CreateLogSink(const LoggerConfig& config) noexcept;
+  // Join all producers before calling. Logd mode publishes end-of-stream and
+  // waits for file sync/close, reporting ETIMEDOUT if the deadline expires.
+  // Releases all Logger borrows; repeated calls return the saved result.
   [[nodiscard]] ShutdownResult Shutdown() noexcept;
   // Error slots remain valid until manager destruction; inspect after Shutdown.
   [[nodiscard]] LogChannelError channel_error(std::size_t index) const noexcept;
 
  private:
+  [[nodiscard]] CreateLoggerResult CreateChannel(const LoggerConfig& config,
+                                                 bool sink) noexcept;
   internal::LogManagerImpl* impl_ = nullptr;
 };
 

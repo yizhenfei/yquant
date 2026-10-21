@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <new>
 #include <span>
@@ -153,17 +154,28 @@ int ReenterLogger(Logger& logger) noexcept {
   return 42;
 }
 
-TEST(LoggingCppHeapTest, FirstCallAndSteadyStateHaveNoCppHeapActivity) {
+void CheckLoggingHeap(bool shared) {
   char filename[] = "/tmp/yquant-log-allocation-XXXXXX";
   const int fd = mkstemp(filename);
   ASSERT_GE(fd, 0);
   ASSERT_EQ(close(fd), 0);
   LogManager manager;
-  ASSERT_TRUE(manager.Initialize({}).ok());
+  LogConfig manager_config;
+  if (shared) manager_config.backend = LogBackend::kLogd;
+  ASSERT_TRUE(manager.Initialize(manager_config).ok());
   LoggerConfig config;
   config.name = "allocation";
   config.file_path = filename;
   config.queue_capacity = 1U << 20;
+  LogManager sink;
+  char queue_path[128];
+  if (shared) {
+    ASSERT_TRUE(sink.Initialize().ok());
+    std::snprintf(queue_path, sizeof(queue_path), "%s.queue", filename);
+    config.queue_path = queue_path;
+    ASSERT_TRUE(sink.CreateLogSink(config).ok());
+    config.file_path = {};
+  }
   const auto created = manager.CreateLogger(config);
   ASSERT_TRUE(created.status.ok());
   ASSERT_NE(created.logger, nullptr);
@@ -194,7 +206,16 @@ TEST(LoggingCppHeapTest, FirstCallAndSteadyStateHaveNoCppHeapActivity) {
   EXPECT_EQ(counts.reentrant_records_total, 1U);
   EXPECT_EQ(counts.truncated_records_total, 1U);
   EXPECT_TRUE(manager.Shutdown().status.ok());
+  EXPECT_TRUE(sink.Shutdown().status.ok());
   EXPECT_EQ(unlink(filename), 0);
+}
+
+TEST(LoggingCppHeapTest, FirstCallAndSteadyStateHaveNoCppHeapActivity) {
+  CheckLoggingHeap(false);
+}
+
+TEST(LoggingCppHeapTest, LogdFirstCallAndSteadyStateHaveNoCppHeapActivity) {
+  CheckLoggingHeap(true);
 }
 
 }  // namespace
