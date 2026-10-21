@@ -156,19 +156,16 @@ TEST(TradingProcessTest, RejectedOrderDoesNotFailTheProcess) {
       std::string::npos);
 }
 
-TEST(TradingProcessTest, OrderExampleRemainsIdleWithoutTradingConfiguration) {
+TEST(TradingProcessTest, RejectsMissingGatewayConfiguration) {
   auto arguments = OrderExampleArguments(YQUANT_TEST_ORDER_EXAMPLE_CONFIG_PATH,
                                          YQUANT_TEST_TRADING_CONFIG_PATH);
   arguments.resize(arguments.size() - 2);
   Process child;
   ASSERT_EQ(child.Start(arguments), 0);
-  ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
-  ASSERT_TRUE(child.Signal(SIGTERM));
   ASSERT_TRUE(child.Wait()) << child.output();
-  EXPECT_EQ(child.exit_code(), 0) << child.output();
-  EXPECT_NE(child.output().find(
-                "order_lifecycle: stopped fills=0 filled_qty=0 state=none\n"),
-            std::string::npos);
+  EXPECT_EQ(child.exit_code(), 2) << child.output();
+  EXPECT_NE(child.output().find("Usage:"), std::string::npos);
+  EXPECT_TRUE(child.events().empty());
 }
 
 TEST(TradingProcessTest, InvalidTradingConfigPrecedesDynamicLibraryLoading) {

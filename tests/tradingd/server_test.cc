@@ -429,7 +429,7 @@ TEST(TradingdConfigTest,
   config.heartbeat_timeout_ns = 999999999;
   EXPECT_FALSE(ValidateConfig(config, error).ok());
   config = Config();
-  config.trading.adapter = trading::TradingAdapterKind::kTcp;
+  config.trading.adapter = static_cast<trading::TradingAdapterKind>(99);
   EXPECT_FALSE(ValidateConfig(config, error).ok());
 }
 

@@ -1,4 +1,4 @@
-#include "strategyd/remote_trading.h"
+#include "strategyd/trading_service_impl.h"
 
 #include <array>
 #include <chrono>
@@ -63,7 +63,7 @@ std::size_t ExecutionHash(model::ClientOrderId order,
 }
 }  // namespace
 
-struct RemoteTrading::Storage {
+struct TradingServiceImpl::Storage {
   struct OrderRecord {
     model::OrderSnapshot snapshot;
     model::OrderUpdate last_wire_update;
@@ -84,7 +84,7 @@ struct RemoteTrading::Storage {
   std::array<model::Fill, trading::kMaxTradingFills> fills = {};
   std::array<std::uint16_t, kExecutionLookupCapacity> fill_lookup = {};
   trading::AccountView account;
-  trading::RemoteTradingConfig config;
+  trading::TradingClientConfig config;
   std::size_t order_count = 0;
   std::size_t request_head = 0;
   std::size_t request_count = 0;
@@ -101,25 +101,27 @@ struct RemoteTrading::Storage {
   bool failed = false;
 };
 
-RemoteTrading::RemoteTrading(const base::MonotonicClock& clock,
-                             const md::InstrumentScope& instruments) noexcept
+TradingServiceImpl::TradingServiceImpl(
+    const base::MonotonicClock& clock,
+    const md::InstrumentScope& instruments) noexcept
     : clock_(clock), instruments_(instruments) {}
-RemoteTrading::~RemoteTrading() noexcept { Reset(); }
+TradingServiceImpl::~TradingServiceImpl() noexcept { Reset(); }
 
-ErrorCode RemoteTrading::Fail(ErrorCode code, const char* detail) noexcept {
+ErrorCode TradingServiceImpl::Fail(ErrorCode code,
+                                   const char* detail) noexcept {
   std::snprintf(error_detail_, sizeof(error_detail_), "%s", detail);
   return code;
 }
 
-base::Status RemoteTrading::FailSession(base::Status status,
-                                        const char* detail) noexcept {
+base::Status TradingServiceImpl::FailSession(base::Status status,
+                                             const char* detail) noexcept {
   if (storage_ != nullptr) storage_->failed = true;
   (void)Fail(status.code, detail);
   return status;
 }
 
-base::Status RemoteTrading::Init(
-    const trading::TradingConfig& config,
+base::Status TradingServiceImpl::Init(
+    const trading::TradingClientConfig& config,
     const md::MarketDataConfig& dictionary) noexcept {
   error_stage_ = "trading_connect";
   if (storage_ != nullptr || accept_requests_)
@@ -127,9 +129,8 @@ base::Status RemoteTrading::Init(
         Fail(ErrorCode::kInvalidState, "remote trading already initialized"),
         {}};
   base::ConfigError error;
-  auto status = trading::ValidateTradingConfig(config, error);
-  if (!status.ok() || config.adapter != trading::TradingAdapterKind::kTcp ||
-      dictionary.instrument_count == 0 ||
+  auto status = trading::ValidateTradingClientConfig(config, error);
+  if (!status.ok() || dictionary.instrument_count == 0 ||
       dictionary.instrument_count > trading::kMaxInstruments)
     return {Fail(ErrorCode::kInvalidArgument,
                  "invalid remote endpoint or instrument dictionary"),
@@ -139,9 +140,8 @@ base::Status RemoteTrading::Init(
     return {Fail(ErrorCode::kResourceExhausted,
                  "cannot allocate fixed remote trading storage"),
             {}};
-  storage_->config = config.remote;
-  status = connection_.Connect(config.remote.endpoint,
-                               config.remote.connect_timeout_ns);
+  storage_->config = config;
+  status = connection_.Connect(config.endpoint, config.connect_timeout_ns);
   if (!status.ok()) {
     (void)Fail(status.code, connection_.error_detail());
     connection_.Close();
@@ -150,8 +150,8 @@ base::Status RemoteTrading::Init(
   }
   trading::Message hello;
   hello.type = trading::MessageType::kHello;
-  hello.client_id = config.remote.client_id;
-  std::memcpy(hello.token, config.remote.token, sizeof(hello.token));
+  hello.client_id = config.client_id;
+  std::memcpy(hello.token, config.token, sizeof(hello.token));
   hello.instrument_count = dictionary.instrument_count;
   for (std::size_t index = 0; index < hello.instrument_count; ++index) {
     const auto& definition = dictionary.instruments[index].instrument;
@@ -180,8 +180,7 @@ base::Status RemoteTrading::Init(
     const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
                              std::chrono::steady_clock::now() - start)
                              .count();
-    if (static_cast<std::uint64_t>(elapsed) >=
-        config.remote.connect_timeout_ns) {
+    if (static_cast<std::uint64_t>(elapsed) >= config.connect_timeout_ns) {
       connection_.Close();
       storage_.reset();
       return {Fail(ErrorCode::kIoError, "remote trading welcome timed out"),
@@ -226,7 +225,7 @@ base::Status RemoteTrading::Init(
   return {};
 }
 
-void RemoteTrading::Reset() noexcept {
+void TradingServiceImpl::Reset() noexcept {
   connection_.Close();
   storage_.reset();
   prefer_local_ = true;
@@ -235,18 +234,18 @@ void RemoteTrading::Reset() noexcept {
   error_detail_[0] = '\0';
 }
 
-void RemoteTrading::BeginStopping() noexcept {
+void TradingServiceImpl::BeginStopping() noexcept {
   accept_requests_ = false;
   stopping_ = true;
 }
 
-bool RemoteTrading::accepting_orders() const noexcept {
+bool TradingServiceImpl::accepting_orders() const noexcept {
   return storage_ != nullptr && !storage_->failed && accept_requests_ &&
          !stopping_;
 }
 
-ErrorCode RemoteTrading::SubmitOrder(const model::OrderRequest& request,
-                                     model::ClientOrderId& out) noexcept {
+ErrorCode TradingServiceImpl::SubmitOrder(const model::OrderRequest& request,
+                                          model::ClientOrderId& out) noexcept {
   if (!accepting_orders())
     return Fail(ErrorCode::kInvalidState, "trading requests are not enabled");
   model::InstrumentDefinition definition;
@@ -283,7 +282,7 @@ ErrorCode RemoteTrading::SubmitOrder(const model::OrderRequest& request,
   return ErrorCode::kOk;
 }
 
-ErrorCode RemoteTrading::CancelOrder(model::ClientOrderId id) noexcept {
+ErrorCode TradingServiceImpl::CancelOrder(model::ClientOrderId id) noexcept {
   if (!accepting_orders())
     return Fail(ErrorCode::kInvalidState,
                 "cancellation requires a running business callback");
@@ -307,21 +306,21 @@ ErrorCode RemoteTrading::CancelOrder(model::ClientOrderId id) noexcept {
   return ErrorCode::kOk;
 }
 
-bool RemoteTrading::TryGetOrder(model::ClientOrderId id,
-                                model::OrderSnapshot& out) const noexcept {
+bool TradingServiceImpl::TryGetOrder(model::ClientOrderId id,
+                                     model::OrderSnapshot& out) const noexcept {
   if (storage_ == nullptr || id.value == 0 || id.value > storage_->order_count)
     return false;
   out = storage_->orders[id.value - 1].snapshot;
   return true;
 }
 
-bool RemoteTrading::TryGetCash(model::CashSnapshot& out) const noexcept {
+bool TradingServiceImpl::TryGetCash(model::CashSnapshot& out) const noexcept {
   if (storage_ == nullptr) return false;
   out = storage_->account.cash;
   return true;
 }
 
-bool RemoteTrading::TryGetPosition(
+bool TradingServiceImpl::TryGetPosition(
     model::InstrumentId id, model::PositionSnapshot& out) const noexcept {
   if (storage_ == nullptr || !instruments_.HasInstrument(id)) return false;
   for (std::size_t index = 0; index < storage_->account.position_count;
@@ -335,8 +334,8 @@ bool RemoteTrading::TryGetPosition(
   return true;
 }
 
-base::Status RemoteTrading::ProcessRequests(std::uint64_t now,
-                                            std::size_t limit) noexcept {
+base::Status TradingServiceImpl::ProcessRequests(std::uint64_t now,
+                                                 std::size_t limit) noexcept {
   error_stage_ = "trading_send";
   if (accept_requests_)
     return {Fail(ErrorCode::kInvalidState,
@@ -409,13 +408,8 @@ base::Status RemoteTrading::ProcessRequests(std::uint64_t now,
   return {};
 }
 
-base::Status RemoteTrading::ScheduleStopping(std::uint64_t,
-                                             std::size_t) noexcept {
-  // The gateway owns automatic cancellation and reports completion via Drained.
-  return {};
-}
-
-std::optional<std::uint64_t> RemoteTrading::next_deadline() const noexcept {
+std::optional<std::uint64_t> TradingServiceImpl::next_deadline()
+    const noexcept {
   if (storage_ == nullptr) return {};
   const auto& s = *storage_;
   if (s.request_count != 0 || s.local_count != 0 || (stopping_ && !s.stop_sent))
@@ -423,16 +417,16 @@ std::optional<std::uint64_t> RemoteTrading::next_deadline() const noexcept {
   return s.next_poll_ns;
 }
 
-bool RemoteTrading::has_local_updates() const noexcept {
+bool TradingServiceImpl::has_local_updates() const noexcept {
   return storage_ != nullptr && storage_->local_count != 0;
 }
 
-bool RemoteTrading::has_ready_event(std::uint64_t now) const noexcept {
+bool TradingServiceImpl::has_ready_event(std::uint64_t now) const noexcept {
   return has_local_updates() ||
          (storage_ != nullptr && storage_->next_poll_ns <= now);
 }
 
-bool RemoteTrading::is_drained() const noexcept {
+bool TradingServiceImpl::is_drained() const noexcept {
   if (storage_ == nullptr) return true;
   const auto& s = *storage_;
   if (!s.drained || s.request_count != 0 || s.local_count != 0 ||
@@ -446,11 +440,11 @@ bool RemoteTrading::is_drained() const noexcept {
   return true;
 }
 
-std::size_t RemoteTrading::order_count() const noexcept {
+std::size_t TradingServiceImpl::order_count() const noexcept {
   return storage_ == nullptr ? 0 : storage_->order_count;
 }
 
-ErrorCode RemoteTrading::ApplyLocalUpdate(
+ErrorCode TradingServiceImpl::ApplyLocalUpdate(
     trading::TradingDispatch& out) noexcept {
   if (storage_ == nullptr || storage_->local_count == 0)
     return Fail(ErrorCode::kInvalidState, "no local cancellation available");
@@ -472,8 +466,8 @@ ErrorCode RemoteTrading::ApplyLocalUpdate(
   return ErrorCode::kOk;
 }
 
-ErrorCode RemoteTrading::ValidateAccount(const trading::AccountView& account,
-                                         bool initial) noexcept {
+ErrorCode TradingServiceImpl::ValidateAccount(
+    const trading::AccountView& account, bool initial) noexcept {
   const auto& cash = account.cash;
   if (account.revision == 0 || cash.balance < 0 || cash.reserved < 0 ||
       cash.reserved > cash.balance ||
@@ -500,9 +494,9 @@ ErrorCode RemoteTrading::ValidateAccount(const trading::AccountView& account,
   return ErrorCode::kOk;
 }
 
-ErrorCode RemoteTrading::ApplyUpdate(const trading::Message& message,
-                                     std::uint64_t now,
-                                     trading::TradingDispatch& out) noexcept {
+ErrorCode TradingServiceImpl::ApplyUpdate(
+    const trading::Message& message, std::uint64_t now,
+    trading::TradingDispatch& out) noexcept {
   auto& s = *storage_;
   const auto& wire = message.update;
   const auto& next = wire.order;
@@ -666,9 +660,9 @@ ErrorCode RemoteTrading::ApplyUpdate(const trading::Message& message,
   return ErrorCode::kOk;
 }
 
-base::Status RemoteTrading::Poll(std::uint64_t now,
-                                 trading::TradingDispatch& out,
-                                 bool& event) noexcept {
+base::Status TradingServiceImpl::Poll(std::uint64_t now,
+                                      trading::TradingDispatch& out,
+                                      bool& event) noexcept {
   error_stage_ = "trading_poll";
   if (accept_requests_)
     return {Fail(ErrorCode::kInvalidState,

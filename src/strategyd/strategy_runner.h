@@ -28,7 +28,7 @@ struct LoadAndStart {
   const char* library_path;
   StrategyConfigLoader& config;
   const md::MarketDataConfig& market_data;
-  const trading::TradingConfig* trading_config = nullptr;
+  const trading::TradingClientConfig& trading_config;
 };
 
 struct Stop {};

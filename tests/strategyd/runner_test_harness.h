@@ -3,8 +3,8 @@
 
 #include <memory>
 
+#include "mock_trading_service.h"
 #include "strategyd/strategy_assembly.h"
-#include "yquant/trading/mock_trading_adapter.h"
 
 namespace yquant::strategyd {
 
@@ -49,41 +49,47 @@ class RunnerTestHarness {
       : clock_(default_clock_),
         environment_(default_environment_),
         source_(idle_source_),
-        assembly_(clock_, default_adapter_) {}
+        service_(default_service_),
+        assembly_(clock_) {}
   RunnerTestHarness(base::EventLoopEnvironment& environment,
                     MarketDataSource& source) noexcept
       : clock_(default_clock_),
         environment_(environment),
         source_(source),
-        assembly_(clock_, default_adapter_) {}
+        service_(default_service_),
+        assembly_(clock_) {}
   RunnerTestHarness(const base::MonotonicClock& clock,
                     base::EventLoopEnvironment& environment,
                     MarketDataSource& source) noexcept
       : clock_(clock),
         environment_(environment),
         source_(source),
-        assembly_(clock_, default_adapter_) {}
+        service_(default_service_),
+        assembly_(clock_) {}
   RunnerTestHarness(const base::MonotonicClock& clock,
                     base::EventLoopEnvironment& environment,
                     MarketDataSource& source,
-                    trading::TradingAdapter& adapter) noexcept
+                    trading::TradingService& service) noexcept
       : clock_(clock),
         environment_(environment),
         source_(source),
-        assembly_(clock_, adapter) {}
+        service_(service),
+        assembly_(clock_) {}
 
   base::Status Handle(StrategyOptions options) noexcept {
     if (runner_ != nullptr) return runner_->Handle(assembly_.start_command());
     if (finished_) return {base::ErrorCode::kInvalidState, {}};
     if (options.market_data_config_path == nullptr)
       options.market_data_config_path = YQUANT_TEST_MARKET_DATA_CONFIG_PATH;
+    if (options.trading_config_path == nullptr)
+      options.trading_config_path = YQUANT_TEST_TRADING_CLIENT_CONFIG_PATH;
     const auto loaded = assembly_.Load(options, environment_);
     if (!loaded.ok() || assembly_.cancelled()) {
       finished_ = true;
       return loaded;
     }
     runner_ = std::make_unique<StrategyRunner>(clock_, environment_, source_,
-                                               assembly_.trading());
+                                               service_);
     return runner_->Handle(assembly_.start_command());
   }
   base::Status Handle(Stop command) noexcept {
@@ -124,10 +130,11 @@ class RunnerTestHarness {
   base::SteadyMonotonicClock default_clock_;
   IdleTestEnvironment default_environment_;
   IdleTestSource idle_source_;
-  trading::MockTradingAdapter default_adapter_;
+  testing::MockTradingService default_service_;
   const base::MonotonicClock& clock_;
   base::EventLoopEnvironment& environment_;
   MarketDataSource& source_;
+  trading::TradingService& service_;
   StrategyAssembly assembly_;
   std::unique_ptr<StrategyRunner> runner_;
   bool finished_ = false;

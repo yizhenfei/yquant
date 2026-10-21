@@ -132,14 +132,7 @@ class OrderLifecycleStrategy final : public Strategy {
     const auto found = market_data.FindInstrument(
         config_.venue(), config_.symbol(), instrument_);
     if (found != ErrorCode::kOk) return found;
-    account_available_ = context.trading().TryGetCash(initial_cash_);
-    if (account_available_ &&
-        (!context.trading().TryGetPosition(instrument_.id, initial_position_) ||
-         initial_cash_.reserved != 0 ||
-         initial_cash_.available != initial_cash_.balance ||
-         initial_position_.reserved_qty != 0)) {
-      return ErrorCode::kCorrupt;
-    }
+    if (CheckAccount(context, {}) != ErrorCode::kOk) return ErrorCode::kCorrupt;
     const auto subscribed = market_data.SubscribeQuotes(instrument_.id);
     if (subscribed != ErrorCode::kOk) return subscribed;
     const auto printed = PrintMarker("order_lifecycle: ready\n");
@@ -217,15 +210,8 @@ class OrderLifecycleStrategy final : public Strategy {
         CheckAccount(context, queried) != ErrorCode::kOk) {
       return ErrorCode::kCorrupt;
     }
-    const auto fill_cost = fill.price * PriceScale() * fill.quantity;
-    CashSnapshot cash;
-    if (!context.trading().TryGetCash(cash) ||
-        cash.balance != initial_cash_.balance - filled_cost_ - fill_cost) {
-      return ErrorCode::kCorrupt;
-    }
     awaiting_fill_ = false;
     filled_qty_ += fill.quantity;
-    filled_cost_ += fill_cost;
     ++fills_;
     return ReportAccount(context, "fill");
   }
@@ -238,13 +224,6 @@ class OrderLifecycleStrategy final : public Strategy {
                        CheckAccount(context, final) != ErrorCode::kOk))) {
       return ErrorCode::kCorrupt;
     }
-    if (account_available_) {
-      CashSnapshot cash;
-      if (!context.trading().TryGetCash(cash) ||
-          cash.balance != initial_cash_.balance - filled_cost_) {
-        return ErrorCode::kCorrupt;
-      }
-    }
     const int written = std::fprintf(
         stdout,
         "order_lifecycle: stopped fills=%" PRIu64 " filled_qty=%" PRId64
@@ -256,46 +235,28 @@ class OrderLifecycleStrategy final : public Strategy {
   }
 
  private:
-  std::int64_t PriceScale() const noexcept {
-    std::int64_t scale = 1;
-    for (std::uint8_t digits = instrument_.price_decimals; digits < 6;
-         ++digits) {
-      scale *= 10;
-    }
-    return scale;
-  }
-
-  // Account facts must be visible at entry to both trading callbacks. Buys
-  // reserve the remaining limit cost; newly bought shares are not sellable.
-  // Exact actual execution costs are checked when OnFill supplies its price.
+  // Gateway snapshots may include other strategies and advance before this
+  // client's order status. Validate their own invariants independently.
   ErrorCode CheckAccount(const StrategyContext& context,
-                         const OrderSnapshot& order) const noexcept {
+                         const OrderSnapshot&) const noexcept {
     CashSnapshot cash;
     PositionSnapshot position;
-    if (!account_available_ || !context.trading().TryGetCash(cash) ||
-        !context.trading().TryGetPosition(instrument_.id, position)) {
-      return ErrorCode::kCorrupt;
-    }
-    const auto unit_price = order.limit_price * PriceScale();
-    if (cash.balance <
-            initial_cash_.balance - unit_price * order.cumulative_filled_qty ||
-        cash.balance > initial_cash_.balance ||
-        cash.reserved != unit_price * order.leaves_qty ||
+    if (!context.trading().TryGetCash(cash) ||
+        !context.trading().TryGetPosition(instrument_.id, position) ||
+        cash.balance < 0 || cash.reserved < 0 || cash.reserved > cash.balance ||
         cash.available != cash.balance - cash.reserved ||
-        position.total_qty !=
-            initial_position_.total_qty + order.cumulative_filled_qty ||
-        position.available_qty != initial_position_.available_qty ||
-        position.reserved_qty != 0) {
+        position.total_qty < 0 || position.available_qty < 0 ||
+        position.available_qty > position.total_qty ||
+        position.reserved_qty < 0 ||
+        position.reserved_qty > position.total_qty - position.available_qty)
       return ErrorCode::kCorrupt;
-    }
     return ErrorCode::kOk;
   }
 
   // Low-frequency account summaries use copied snapshots in micro-yuan/share
-  // units. Disabled trading keeps the lifecycle example usable without orders.
+  // units. The gateway publishes these snapshots with execution updates.
   ErrorCode ReportAccount(const StrategyContext& context,
                           const char* stage) const noexcept {
-    if (!account_available_) return ErrorCode::kOk;
     CashSnapshot cash;
     PositionSnapshot position;
     if (!context.trading().TryGetCash(cash) ||
@@ -322,15 +283,11 @@ class OrderLifecycleStrategy final : public Strategy {
 
   OrderLifecycleConfig config_;
   InstrumentDefinition instrument_;
-  CashSnapshot initial_cash_;
-  PositionSnapshot initial_position_;
   ClientOrderId order_id_;
   std::int64_t filled_qty_ = 0;
-  std::int64_t filled_cost_ = 0;
   std::uint64_t fills_ = 0;
   bool awaiting_fill_ = false;
   bool terminal_reported_ = false;
-  bool account_available_ = false;
 };
 
 // Failed allocation leaves output null; destroy also accepts an unstarted

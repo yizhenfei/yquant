@@ -4,7 +4,7 @@
 #include <limits>
 
 #include "strategyd/strategy_config_loader.h"
-#include "yquant/trading/trading_config.h"
+#include "yquant/trading/trading_client_config.h"
 
 namespace yquant::strategyd {
 
@@ -96,19 +96,17 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
   }
   if (CancelStartupIfRequested()) return result_;
 
-  if (command.trading_config != nullptr) {
-    shutdown_timeout_ns_ = command.trading_config->shutdown_timeout_ns;
-    trading_prepared_ = true;
-    const auto initialized =
-        trading_service_.Init(*command.trading_config, command.market_data);
-    if (!initialized.ok()) {
-      SetError(initialized, trading_service_.error_stage(),
-               trading_service_.error_detail());
-      Finalize();
-      return result_;
-    }
-    trading_started_ = true;
+  shutdown_timeout_ns_ = command.trading_config.shutdown_timeout_ns;
+  trading_prepared_ = true;
+  const auto initialized =
+      trading_service_.Init(command.trading_config, command.market_data);
+  if (!initialized.ok()) {
+    SetError(initialized, trading_service_.error_stage(),
+             trading_service_.error_detail());
+    Finalize();
+    return result_;
   }
+  trading_started_ = true;
   if (CancelStartupIfRequested()) return result_;
 
   const base::Status open_result = library_.Open(command.library_path);
@@ -504,13 +502,6 @@ base::Status StrategyRunner::Run() noexcept {
       if (!serviced.ok()) {
         SetError(serviced, "market_data_service", source_.error_detail());
         StopAfterError(true);
-      }
-    }
-    if (state_ == RunnerState::kStopping && trading_started_) {
-      const auto scheduled = trading_service_.ScheduleStopping(clock_.Now());
-      if (!scheduled.ok()) {
-        SetError(scheduled, "trading_drain", trading_service_.error_detail());
-        StopAfterError(false);
       }
     }
     if (trading_started_ && drain_viable_) {

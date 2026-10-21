@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "trading_gateway.h"
 #include "yquant/md/quote_codec.h"
 #include "yquant/md/shm_broadcast.h"
 
@@ -47,6 +48,11 @@ class ConsoleProcess {
 
   // Borrows arguments only while spawning. Failed starts leave no live child.
   int Start(const char* executable, const std::vector<std::string>& arguments) {
+    auto adapted = arguments;
+    if (std::string_view(executable) == YQUANT_TEST_STRATEGYD_PATH) {
+      const int error = gateway_.Prepare(adapted);
+      if (error) return error;
+    }
     stdout_ = std::tmpfile();
     stderr_ = std::tmpfile();
     if (stdout_ == nullptr || stderr_ == nullptr) return errno;
@@ -57,7 +63,7 @@ class ConsoleProcess {
       return errno;
     }
     std::vector<std::string> storage{executable};
-    storage.insert(storage.end(), arguments.begin(), arguments.end());
+    storage.insert(storage.end(), adapted.begin(), adapted.end());
     std::vector<char*> argv;
     for (auto& argument : storage) argv.push_back(argument.data());
     argv.push_back(nullptr);
@@ -141,6 +147,7 @@ class ConsoleProcess {
 
   FILE* stdout_ = nullptr;
   FILE* stderr_ = nullptr;
+  TradingGateway gateway_;
   pid_t pid_ = -1;
   int status_ = 0;
   bool reaped_ = false;
@@ -176,7 +183,8 @@ TEST_P(ConsoleUsageTest, ConfigurationFailureGoesToStderr) {
   std::vector<std::string> arguments{"--config", missing};
   if (GetParam().strategy) {
     arguments.insert(arguments.end(), {"--strategy", YQUANT_TEST_STRATEGY_PATH,
-                                       "--market-data-config", missing});
+                                       "--market-data-config", missing,
+                                       "--trading-config", missing});
   }
   ConsoleProcess child;
   ASSERT_EQ(child.Start(GetParam().executable, arguments), 0);
@@ -246,7 +254,9 @@ class ConsoleOutputTest : public ::testing::Test {
             "--config",
             YQUANT_TEST_STRATEGY_CONFIG_PATH,
             "--market-data-config",
-            File("market.json")};
+            File("market.json"),
+            "--trading-config",
+            YQUANT_TEST_BROKER_CONFIG_PATH};
   }
 
   // JSON requires a nonzero port; reserve a candidate using an ephemeral bind.
@@ -356,7 +366,8 @@ TEST_F(ConsoleOutputTest, StrategydSeparatesSummaryFromRuntimeFailure) {
   ASSERT_EQ(child.Start(YQUANT_TEST_STRATEGYD_PATH,
                         {"--strategy", YQUANT_TEST_QUOTE_STRATEGY_PATH,
                          "--config", YQUANT_TEST_QUOTE_STRATEGY_CONFIG_PATH,
-                         "--market-data-config", File("market.json")}),
+                         "--market-data-config", File("market.json"),
+                         "--trading-config", YQUANT_TEST_BROKER_CONFIG_PATH}),
             0);
   ASSERT_TRUE(child.WaitForRunning()) << child.stderr_text();
   model::QuoteTick quote;

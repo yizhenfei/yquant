@@ -10,9 +10,9 @@
 
 #include "yquant/md/instrument_scope.h"
 #include "yquant/trading/connection.h"
-#include "yquant/trading/local_trading_runtime.h"
 #include "yquant/trading/mock_trading_adapter.h"
 #include "yquant/trading/trading_adapter.h"
+#include "yquant/trading/trading_engine.h"
 
 namespace yquant::tradingd {
 namespace {
@@ -71,7 +71,7 @@ bool HasInstrument(const Client& client, model::InstrumentId id) noexcept {
 }
 
 bool ClientDrained(const Client& client,
-                   const trading::LocalTradingRuntime& trading) noexcept {
+                   const trading::TradingEngine& trading) noexcept {
   for (std::size_t i = 0; i < client.order_count; ++i) {
     if (client.orders[i].core_id.value == 0) continue;
     model::OrderSnapshot snapshot;
@@ -91,7 +91,7 @@ struct Server::Storage {
   trading::Listener listener;
   md::InstrumentScope instruments;
   trading::MockTradingAdapter adapter;
-  trading::LocalTradingRuntime trading;
+  trading::TradingEngine trading;
   std::array<Client, trading::kMaxClients> clients;
   std::array<OrderOwner, trading::kMaxTradingOrders> owners = {};
   trading::AccountView account;

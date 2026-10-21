@@ -130,7 +130,8 @@ cmake --build --preset debug --target download_test_data
 ./build/debug/bin/yquant-strategyd \
   --strategy ./build/debug/strategies/quote_observer_strategy.so \
   --config ./build/debug/strategies/replay_observer.json \
-  --market-data-config ./build/debug/strategies/replay_market_data.json
+  --market-data-config ./build/debug/strategies/replay_market_data.json \
+  --trading-config examples/tradingd/client_1.json
 ```
 
 示例观察 `SZSE/000557`，来源 1，价格四位小数。回放结束时 `marketd` 正常退出，策略仍按共享内存协议报告上游停止。若直接回放 CSV 到策略，将 CSV 输入的输出改为共享内存并设置启动等待和所需速度。

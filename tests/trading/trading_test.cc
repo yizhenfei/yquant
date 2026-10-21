@@ -6,9 +6,8 @@
 #include "gtest/gtest.h"
 #include "yquant/md/instrument_scope.h"
 #include "yquant/model/identifiers.h"
-#include "yquant/trading/disabled_trading_runtime.h"
-#include "yquant/trading/local_trading_runtime.h"
 #include "yquant/trading/trading_adapter.h"
+#include "yquant/trading/trading_engine.h"
 
 namespace yquant::trading {
 namespace {
@@ -208,7 +207,7 @@ class TradingTest : public ::testing::Test {
   md::MarketDataConfig market_config;
   md::InstrumentScope market_data;
   RecordingTradingAdapter adapter;
-  trading::LocalTradingRuntime trading{clock, market_data, adapter};
+  trading::TradingEngine trading{clock, market_data, adapter};
   model::InstrumentId instrument_id;
 };
 
@@ -365,9 +364,10 @@ TEST_F(TradingTest,
   EXPECT_FALSE(trading.accepting_orders());
   EXPECT_EQ(trading.SubmitOrder(Request(), output), ErrorCode::kInvalidState);
   trading.SetAcceptingRequests(false);
-  trading::DisabledTradingRuntime disabled;
+  RecordingTradingAdapter uninitialized_adapter;
+  trading::TradingEngine disabled(clock, market_data, uninitialized_adapter);
   disabled.SetAcceptingRequests(true);
-  EXPECT_EQ(disabled.SubmitOrder(Request(), output), ErrorCode::kUnsupported);
+  EXPECT_EQ(disabled.SubmitOrder(Request(), output), ErrorCode::kInvalidState);
   EXPECT_EQ(output.value, 99U);
   trading.SetAcceptingRequests(true);
   EXPECT_TRUE(trading.accepting_orders());
@@ -676,7 +676,8 @@ TEST_F(TradingTest, ExecutionCapacityFailurePreservesLastAcceptedFacts) {
   EXPECT_EQ(Position(), before_position);
 }
 TEST_F(TradingTest, AccountQueriesPreserveOutputsForDisabledAndUnknownIds) {
-  trading::DisabledTradingRuntime disabled;
+  RecordingTradingAdapter uninitialized_adapter;
+  trading::TradingEngine disabled(clock, market_data, uninitialized_adapter);
   model::CashSnapshot cash{1, 2, 3};
   EXPECT_FALSE(disabled.TryGetCash(cash));
   EXPECT_EQ(cash, (model::CashSnapshot{1, 2, 3}));
@@ -729,7 +730,7 @@ TEST_F(TradingTest, InvalidBootstrapNeverPublishesAnAccount) {
         break;
     }
     RecordingTradingAdapter bootstrap_adapter;
-    trading::LocalTradingRuntime runtime(clock, market_data, bootstrap_adapter);
+    trading::TradingEngine runtime(clock, market_data, bootstrap_adapter);
     trading::TradingConfig config;
     config.initial_account = invalid;
     EXPECT_EQ(runtime.Init(config, market_config).code,

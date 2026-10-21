@@ -98,16 +98,23 @@ cmake -P cmake/DownloadTestData.cmake
 
 `yquant-strategyd` 读取 JSON 配置并加载用户策略动态库，全部校验成功后调用 `OnStart(context)`。主线程驱动行情、交易请求及委托和成交回报。收到停止信号后，宿主停止行情和策略新请求，自动撤单并处理回报；排空后调用 `OnStop(context)`、销毁实例并释放动态库句柄。
 
-先按[行情进程](#行情进程)启动 `marketd`，再运行生命周期策略示例：
+先按[行情进程](#行情进程)启动 `marketd`，再在另一个终端启动交易网关：
+
+```sh
+./build/debug/bin/yquant-tradingd --config examples/tradingd/local.json
+```
+
+两个服务就绪后，运行生命周期策略示例：
 
 ```sh
 ./build/debug/bin/yquant-strategyd \
   --strategy ./build/debug/strategies/lifecycle_strategy.so \
   --config ./build/debug/strategies/lifecycle_strategy.json \
-  --market-data-config ./build/debug/strategies/market_data.json
+  --market-data-config ./build/debug/strategies/market_data.json \
+  --trading-config examples/tradingd/client_1.json
 ```
 
-`--strategy`、`--config` 和 `--market-data-config` 均为必填参数，顺序不限。启动成功后向 `stdout` 输出 `Running` 和策略 ID。三个进程及示例策略的控制台流遵循[标准输出与诊断约定](docs/design/engineering.md#标准输出与诊断)。使用 `Ctrl+C` 或向进程发送 `SIGTERM` 停止，使用 `--help` 查看参数。路径以启动工作目录为基准；动态库文件名后缀由 CMake 的本机 `MODULE` 配置决定。
+`--strategy`、`--config`、`--market-data-config` 和 `--trading-config` 均为必填参数，顺序不限。所有交易统一经 `tradingd` 执行；连接或握手失败时不加载策略。启动成功后向 `stdout` 输出 `Running` 和策略 ID。控制台流遵循[标准输出与诊断约定](docs/design/engineering.md#标准输出与诊断)。使用 `Ctrl+C` 或向进程发送 `SIGTERM` 停止，使用 `--help` 查看参数。路径以启动工作目录为基准；动态库文件名后缀由 CMake 的本机 `MODULE` 配置决定。
 
 生命周期示例的 `LifecycleConfig` 派生自 `StrategyConfig`，读取必填字符串 `parameters.startup_message`，将解码后 1 至 128 字节、无内嵌 NUL 的内容保存在自身定长存储中，拒绝未知参数。配套配置将消息设为 `lifecycle strategy started`，`OnStart` 读取该参数并输出 `lifecycle_strategy: startup_message=lifecycle strategy started`。
 
@@ -123,7 +130,8 @@ cmake -P cmake/DownloadTestData.cmake
 ./build/debug/bin/yquant-strategyd \
   --strategy ./build/debug/strategies/quote_observer_strategy.so \
   --config ./build/debug/strategies/quote_observer_strategy.json \
-  --market-data-config ./build/debug/strategies/market_data.json
+  --market-data-config ./build/debug/strategies/market_data.json \
+  --trading-config examples/tradingd/client_1.json
 ```
 
 `--market-data-config` 指定宿主行情接收配置，使用共享内存并绑定唯一来源。配置通过 `instrument_catalog` 引用[共享标的文件](examples/instruments.json)，`instruments` 只列接收范围内的标的身份。模拟报价的价量、步长和间隔配置在 `marketd` 生产端。观察策略首次行情输出 `quote_observer: first quote received`，停止时输出 `ticks`、`last_sequence` 和 `max_age_ns` 汇总。路径规则与字典格式见[行情驱动设计](docs/design/market-data.md#共享标的字典)。
@@ -135,20 +143,14 @@ cmake -P cmake/DownloadTestData.cmake
   --strategy ./build/debug/strategies/order_lifecycle_strategy.so \
   --config ./build/debug/strategies/order_lifecycle_strategy.json \
   --market-data-config ./build/debug/strategies/market_data.json \
-  --trading-config ./build/debug/strategies/mock_trading.json
+  --trading-config ./build/debug/tradingd/client_1.json
 ```
 
-`--trading-config` 为可选的宿主交易配置，使用时必须同时提供行情配置，以运行清单和共享字典建立本地标的范围。示例在首次有效卖一报价提交 200 股买单，默认 `fill` 模式按 100 股、100 股两笔成交，输出 `order_lifecycle: terminal state=filled cumulative=200 leaves=0`。成交后进程继续运行，停止时输出 `order_lifecycle: stopped fills=2 filled_qty=200 state=filled`。
+`--trading-config` 指定网关连接、客户端身份和超时，不接受柜台或初始账户配置。柜台和账户由 `tradingd` 的配置决定。示例在首次有效卖一报价提交 200 股买单，网关的默认 `fill` 模式按 100 股、100 股两笔成交，输出 `order_lifecycle: terminal state=filled cumulative=200 leaves=0`。成交后进程继续运行，停止时输出 `order_lifecycle: stopped fills=2 filled_qty=200 state=filled`。
 
-将交易配置的 `mode` 改为 `working`，等到 `order_lifecycle: working` 后发送停止信号，可验证宿主自动撤单和排空。交易接口、配置及收尾规则见[交易执行与账户账本](docs/design/trading.md)。交易服务同时提供持仓与资金查询，买单预占资金，卖单预占可卖持仓。
+将网关柜台配置的 `mode` 改为 `working`，等到 `order_lifecycle: working` 后发送停止信号，可验证宿主自动撤单和排空。交易接口、配置及收尾规则见[交易执行与账户账本](docs/design/trading.md)。交易服务同时提供持仓与资金查询，买单预占资金，卖单预占可卖持仓。
 
-多个策略共享一个账户时，先启动网关：
-
-```sh
-./build/debug/bin/yquant-tradingd --config ./build/debug/tradingd/local.json
-```
-
-再启动策略客户端：
+多个策略共享同一个网关时，为每个客户端配置不同的 `client_id`。沿用前面的网关，启动共享账户策略：
 
 ```sh
 ./build/debug/bin/yquant-strategyd \
@@ -178,7 +180,8 @@ cmake -P cmake/DownloadTestData.cmake
 ./build/debug/bin/yquant-strategyd \
   --strategy ./build/debug/strategies/quote_observer_strategy.so \
   --config ./build/debug/strategies/quote_observer_strategy.json \
-  --market-data-config ./build/debug/strategies/shm_market_data.json
+  --market-data-config ./build/debug/strategies/shm_market_data.json \
+  --trading-config examples/tradingd/client_1.json
 ```
 
 各策略进程通过私有游标读取同一份共享内存。槽位覆盖时报告缺口并停止策略，避免继续使用缺失事件后的状态。共享内存和网络中继均保留源标识、品种、报价序号与 UTC 事件时间，接收时间在策略进程本地赋值。

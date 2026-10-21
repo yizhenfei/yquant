@@ -1,7 +1,10 @@
 {
-  "listen": {"address": "127.0.0.1", "port": 19200},
-  "market_data_config": "examples/strategies/market_data.json",
-  "trading_config": "examples/strategies/mock_trading.json",
+  "listen": {
+    "address": "127.0.0.1",
+    "port": 19200
+  },
+  "market_data_config": "examples/tradingd/instrument_scope.json",
+  "trading_config": "examples/tradingd/mock_trading.json",
   "token": "yquant-local-demo",
   "max_clients": 16,
   "heartbeat_timeout_ms": 5000,

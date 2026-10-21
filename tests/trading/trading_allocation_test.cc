@@ -7,12 +7,11 @@
 #include <utility>
 
 #include "gtest/gtest.h"
-#include "strategyd/market_data.h"
-#include "strategyd/strategy_context.h"
+#include "yquant/md/instrument_scope.h"
 #include "yquant/model/identifiers.h"
-#include "yquant/trading/local_trading_runtime.h"
 #include "yquant/trading/mock_trading_adapter.h"
 #include "yquant/trading/trading_adapter.h"
+#include "yquant/trading/trading_engine.h"
 
 namespace {
 
@@ -135,7 +134,7 @@ void operator delete[](void* memory, std::align_val_t,
   DeallocateCppHeap(memory);
 }
 
-namespace yquant::strategyd {
+namespace yquant::trading {
 namespace {
 
 class TradingHeapClock final : public base::MonotonicClock {
@@ -146,33 +145,31 @@ class TradingHeapClock final : public base::MonotonicClock {
 
 // Runs accepted requests, idle checks, normalized reports and callback-side
 // queries without test reporting inside the allocation observation window.
-const char* ExerciseOrders(trading::LocalTradingRuntime& trading,
+const char* ExerciseOrders(trading::TradingEngine& trading,
                            trading::MockTradingAdapter& adapter,
-                           StrategyContextImpl& context,
                            TradingHeapClock& clock,
                            model::InstrumentId instrument, bool cancel,
                            bool sell, std::size_t& fill_count) noexcept {
   constexpr std::size_t kOrders = 128;
   constexpr std::int64_t kUnitCash = 10010000;
   constexpr std::int64_t kReservation = kUnitCash * 201;
-  const strategy::StrategyContext& read_only = context;
   model::CashSnapshot initial_cash;
   model::PositionSnapshot initial_position;
-  if (!read_only.trading().TryGetCash(initial_cash) ||
-      !read_only.trading().TryGetPosition(instrument, initial_position)) {
+  if (!trading.TryGetCash(initial_cash) ||
+      !trading.TryGetPosition(instrument, initial_position)) {
     return "configured account was not queryable";
   }
   std::int64_t filled_qty = 0;
   for (std::size_t count = 0; count < kOrders; ++count) {
     model::CashSnapshot before_cash;
     model::PositionSnapshot before_position;
-    if (!read_only.trading().TryGetCash(before_cash) ||
-        !read_only.trading().TryGetPosition(instrument, before_position)) {
+    if (!trading.TryGetCash(before_cash) ||
+        !trading.TryGetPosition(instrument, before_position)) {
       return "account query failed before request";
     }
     model::ClientOrderId id;
     trading.SetAcceptingRequests(true);
-    const auto submitted = context.trading().SubmitOrder(
+    const auto submitted = trading.SubmitOrder(
         {instrument, sell ? model::OrderSide::kSell : model::OrderSide::kBuy,
          1001, 201},
         id);
@@ -182,8 +179,8 @@ const char* ExerciseOrders(trading::LocalTradingRuntime& trading,
     }
     model::CashSnapshot reserved_cash;
     model::PositionSnapshot reserved_position;
-    if (!read_only.trading().TryGetCash(reserved_cash) ||
-        !read_only.trading().TryGetPosition(instrument, reserved_position)) {
+    if (!trading.TryGetCash(reserved_cash) ||
+        !trading.TryGetPosition(instrument, reserved_position)) {
       return "reserved account query failed";
     }
     if (sell) {
@@ -211,7 +208,7 @@ const char* ExerciseOrders(trading::LocalTradingRuntime& trading,
         return "mock did not schedule a future event";
       }
       model::OrderSnapshot before;
-      if (!context.trading().TryGetOrder(id, before)) {
+      if (!trading.TryGetOrder(id, before)) {
         return "pending order was not queryable";
       }
       trading::TradingEvent event;
@@ -236,25 +233,25 @@ const char* ExerciseOrders(trading::LocalTradingRuntime& trading,
       trading.SetAcceptingRequests(true);
       model::CashSnapshot committed_cash;
       model::PositionSnapshot committed_position;
-      if (!read_only.trading().TryGetCash(committed_cash) ||
-          !read_only.trading().TryGetPosition(instrument, committed_position)) {
+      if (!trading.TryGetCash(committed_cash) ||
+          !trading.TryGetPosition(instrument, committed_position)) {
         return "account queries failed in update callback";
       }
       model::OrderSnapshot snapshot;
-      if (!context.trading().TryGetOrder(id, snapshot) ||
+      if (!trading.TryGetOrder(id, snapshot) ||
           snapshot != dispatch.update.order) {
         return "callback query differs from committed event";
       }
       if (cancel && snapshot.state == model::OrderState::kWorking &&
           !snapshot.cancel_pending) {
-        if (context.trading().CancelOrder(id) != base::ErrorCode::kOk) {
+        if (trading.CancelOrder(id) != base::ErrorCode::kOk) {
           return "working order cancel was not accepted";
         }
       }
       trading.SetAcceptingRequests(false);
       if (dispatch.has_fill) {
         trading.SetAcceptingRequests(true);
-        if (!read_only.trading().TryGetOrder(id, snapshot) ||
+        if (!trading.TryGetOrder(id, snapshot) ||
             snapshot.cumulative_filled_qty !=
                 before.cumulative_filled_qty + dispatch.fill.quantity) {
           return "fill callback observed the wrong cumulative quantity";
@@ -270,8 +267,8 @@ const char* ExerciseOrders(trading::LocalTradingRuntime& trading,
       }
       model::CashSnapshot duplicate_cash;
       model::PositionSnapshot duplicate_position;
-      if (!read_only.trading().TryGetCash(duplicate_cash) ||
-          !read_only.trading().TryGetPosition(instrument, duplicate_position) ||
+      if (!trading.TryGetCash(duplicate_cash) ||
+          !trading.TryGetPosition(instrument, duplicate_position) ||
           duplicate_cash != committed_cash ||
           duplicate_position != committed_position) {
         return "duplicate report changed account balances";
@@ -279,7 +276,7 @@ const char* ExerciseOrders(trading::LocalTradingRuntime& trading,
       if (!trading.ProcessRequests(clock.Now()).ok()) {
         return "accepted cancel was not sent";
       }
-      if (!context.trading().TryGetOrder(id, snapshot)) {
+      if (!trading.TryGetOrder(id, snapshot)) {
         return "retained order query failed";
       }
       if (model::IsTerminalOrderState(snapshot.state) &&
@@ -298,8 +295,8 @@ const char* ExerciseOrders(trading::LocalTradingRuntime& trading,
     }
     model::CashSnapshot final_cash;
     model::PositionSnapshot final_position;
-    if (!read_only.trading().TryGetCash(final_cash) ||
-        !read_only.trading().TryGetPosition(instrument, final_position) ||
+    if (!trading.TryGetCash(final_cash) ||
+        !trading.TryGetPosition(instrument, final_position) ||
         final_cash.balance !=
             initial_cash.balance + (sell ? 1 : -1) * filled_qty * kUnitCash ||
         final_cash.reserved != 0 ||
@@ -335,18 +332,16 @@ void CheckTradingHeap(bool cancel, bool sell = false) {
   std::copy_n("600000", model::kSymbolLength, item.instrument.symbol);
   item.instrument.price_decimals = 2;
 
-  MarketDataImpl market_data(clock);
+  md::InstrumentScope market_data;
   ASSERT_TRUE(market_data.Configure(market_config).ok());
   trading::MockTradingAdapter adapter;
-  trading::LocalTradingRuntime trading(clock, market_data.instruments(),
-                                       adapter);
+  trading::TradingEngine trading(clock, market_data, adapter);
   trading::TradingAccountSnapshot account;
   account.cash_balance = 1000000000000000;
   if (sell) {
     account.position_count = 1;
     account.positions[0] = {item.instrument.id, 128 * 201, 128 * 201, 0};
   }
-  StrategyContextImpl context(clock, market_data, trading);
   trading::TradingConfig config;
   config.mode = cancel ? trading::MockTradingMode::kWorking
                        : trading::MockTradingMode::kFill;
@@ -355,8 +350,8 @@ void CheckTradingHeap(bool cancel, bool sell = false) {
   std::size_t fills = 0;
   const char* failure = nullptr;
   const auto activity = ObserveCppHeap([&]() noexcept {
-    failure = ExerciseOrders(trading, adapter, context, clock,
-                             item.instrument.id, cancel, sell, fills);
+    failure = ExerciseOrders(trading, adapter, clock, item.instrument.id,
+                             cancel, sell, fills);
   });
   EXPECT_EQ(failure, nullptr) << (failure == nullptr ? "" : failure);
   EXPECT_EQ(fills, cancel ? 0U : 256U);
@@ -395,7 +390,7 @@ TEST(TradingCppHeapTest, UnifiedRuntimePollingHasNoCppHeapActivity) {
   md::InstrumentScope instruments;
   ASSERT_TRUE(instruments.Configure(dictionary).ok());
   trading::MockTradingAdapter adapter;
-  trading::LocalTradingRuntime runtime(clock, instruments, adapter);
+  trading::TradingEngine runtime(clock, instruments, adapter);
   trading::TradingConfig config;
   config.initial_account.cash_balance = 1000000000000000;
   ASSERT_TRUE(runtime.Init(config, dictionary).ok());
@@ -433,4 +428,4 @@ TEST(TradingCppHeapTest, UnifiedRuntimePollingHasNoCppHeapActivity) {
 }
 
 }  // namespace
-}  // namespace yquant::strategyd
+}  // namespace yquant::trading

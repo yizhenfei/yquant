@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "market_data_feed.h"
+#include "trading_gateway.h"
 
 extern char** environ;
 
@@ -46,6 +47,8 @@ class Process {
     auto adapted_arguments = arguments;
     const int feed_error = feed_.Prepare(adapted_arguments);
     if (feed_error) return feed_error;
+    const int gateway_error = gateway_.Prepare(adapted_arguments);
+    if (gateway_error) return gateway_error;
     int output[2] = {-1, -1};
     int events[2] = {-1, -1};
     if (pipe(output) != 0 || pipe(events) != 0) {
@@ -161,6 +164,7 @@ class Process {
   }
 
   ::yquant::testing::MarketDataFeed feed_;
+  ::yquant::testing::TradingGateway gateway_;
   pid_t pid_ = -1;
   int output_fd_ = -1;
   int event_fd_ = -1;

@@ -1,13 +1,9 @@
 #ifndef YQUANT_STRATEGYD_STRATEGY_ASSEMBLY_H_
 #define YQUANT_STRATEGYD_STRATEGY_ASSEMBLY_H_
 
-#include <optional>
-
-#include "strategyd/remote_trading.h"
 #include "strategyd/shm_market_data_source.h"
 #include "strategyd/strategy_runner.h"
-#include "yquant/trading/disabled_trading_runtime.h"
-#include "yquant/trading/local_trading_runtime.h"
+#include "strategyd/trading_service_impl.h"
 
 namespace yquant::strategyd {
 
@@ -20,14 +16,13 @@ struct StrategyOptions {
   const char* trading_config_path = nullptr;
 };
 
-// Owns validated startup configuration and the selected concrete components.
+// Owns validated startup configuration, SHM receiver and tradingd client.
 // Load and all component operations are serialized on the main thread. Clock
-// and local adapter outlive this owner; the runner must be destroyed first.
+// outlives this owner; the runner must be destroyed first.
 class StrategyAssembly {
  public:
-  StrategyAssembly(const base::MonotonicClock& clock,
-                   trading::TradingAdapter& local_adapter) noexcept
-      : clock_(clock), local_adapter_(local_adapter) {}
+  explicit StrategyAssembly(const base::MonotonicClock& clock) noexcept
+      : trading_(clock, instruments_) {}
 
   // Single use. Checks cancellation between file reads. Failure/cancellation
   // acquires no active source/transport. Only after success and !cancelled()
@@ -38,10 +33,10 @@ class StrategyAssembly {
   bool cancelled() const noexcept { return cancelled_; }
   LoadAndStart start_command() noexcept {
     return {library_path_, strategy_config_, market_config_.config(),
-            trading_enabled_ ? &trading_config_.config() : nullptr};
+            trading_config_.config()};
   }
   MarketDataSource& source() noexcept { return source_; }
-  trading::TradingService& trading() noexcept { return *trading_; }
+  trading::TradingService& trading() noexcept { return trading_; }
   std::string_view strategy_id() const noexcept { return strategy_id_.view(); }
   const char* error_stage() const noexcept { return error_stage_; }
   const char* error_detail() const noexcept { return error_detail_; }
@@ -52,22 +47,16 @@ class StrategyAssembly {
                              const base::ConfigError& error) noexcept;
 
   static constexpr std::size_t kErrorDetailSize = 1024;
-  const base::MonotonicClock& clock_;
-  trading::TradingAdapter& local_adapter_;
   StrategyConfigLoader strategy_config_;
   md::MarketDataConfigLoader market_config_;
-  trading::TradingConfigLoader trading_config_;
+  trading::TradingClientConfigLoader trading_config_;
   md::InstrumentScope instruments_;
   ShmMarketDataSource source_;
-  trading::DisabledTradingRuntime disabled_trading_;
-  std::optional<trading::LocalTradingRuntime> local_trading_;
-  std::optional<RemoteTrading> remote_trading_;
-  trading::TradingService* trading_ = &disabled_trading_;
+  TradingServiceImpl trading_;
   strategy::StrategyId strategy_id_;
   const char* library_path_ = nullptr;
   bool loaded_ = false;
   bool cancelled_ = false;
-  bool trading_enabled_ = false;
   const char* error_stage_ = "";
   char error_detail_[kErrorDetailSize] = {};
 };

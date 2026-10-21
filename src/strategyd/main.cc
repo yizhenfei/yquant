@@ -5,7 +5,6 @@
 #include "strategyd/strategy_assembly.h"
 #include "yquant/base/status.h"
 #include "yquant/base/termination_signals.h"
-#include "yquant/trading/mock_trading_adapter.h"
 
 namespace {
 
@@ -21,7 +20,7 @@ void PrintUsage(FILE* output) noexcept {
   std::fputs(
       "Usage: yquant-strategyd --strategy LIBRARY --config JSON\n"
       "                       --market-data-config JSON\n"
-      "                       [--trading-config JSON]\n"
+      "                       --trading-config JSON\n"
       "       yquant-strategyd --help\n",
       output);
 }
@@ -78,7 +77,7 @@ int main(int argc, char* argv[]) {
   const char* config_path = nullptr;
   const char* market_data_path = nullptr;
   const char* trading_path = nullptr;
-  bool valid = argc == 7 || argc == 9;
+  bool valid = argc == 9;
   for (int index = 1; valid && index < argc; index += 2) {
     const char* value = argv[index + 1];
     if (value[0] == '\0' || value[0] == '-') {
@@ -100,7 +99,7 @@ int main(int argc, char* argv[]) {
     }
   }
   if (!valid || library_path == nullptr || config_path == nullptr ||
-      market_data_path == nullptr) {
+      market_data_path == nullptr || trading_path == nullptr) {
     PrintUsage(stderr);
     return 2;
   }
@@ -114,8 +113,7 @@ int main(int argc, char* argv[]) {
   }
 
   yquant::base::SteadyMonotonicClock clock;
-  yquant::trading::MockTradingAdapter local_adapter;
-  StrategyAssembly assembly(clock, local_adapter);
+  StrategyAssembly assembly(clock);
   const auto loaded =
       assembly.Load(StrategyOptions{library_path, config_path, market_data_path,
                                     trading_path},

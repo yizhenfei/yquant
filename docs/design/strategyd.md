@@ -10,9 +10,9 @@
 
 行情数据与订阅见[行情驱动设计](market-data.md)，交易接口、委托账本及双来源调度见[交易执行设计](trading.md)。
 
-当前命令来源为启动参数和退出信号：命令行指定动态库、策略配置和行情配置路径，可选提供交易配置，进程启动后将其转换为加载命令；`SIGINT`、`SIGTERM` 发布停止请求。策略进程仅使用主线程，同步处理请求、来源事件和策略回调，以前台常驻方式运行。
+当前命令来源为启动参数和退出信号：命令行指定动态库、策略、行情和网关客户端配置路径，进程启动后将其转换为加载命令；`SIGINT`、`SIGTERM` 发布停止请求。策略进程仅使用主线程，同步处理请求、来源事件和策略回调，以前台常驻方式运行。
 
-每次进程运行只加载一个策略实例，通过共享内存接收行情，支持模拟柜台，不提供重新加载、热替换或多实例管理。持仓与资金账本随交易服务维护，真实柜台接入另行扩展。
+每次进程运行只加载一个策略实例，通过共享内存接收行情，通过 `tradingd` 完成交易。策略进程不创建柜台或权威账本；柜台与账户由网关管理。当前不提供重新加载、热替换或多实例管理。
 
 ## 启动方式与命令
 
@@ -21,14 +21,15 @@
 ./build/debug/bin/yquant-strategyd \
   --strategy ./build/debug/strategies/lifecycle_strategy.so \
   --config ./build/debug/strategies/lifecycle_strategy.json \
-  --market-data-config ./build/debug/strategies/market_data.json
+  --market-data-config ./build/debug/strategies/market_data.json \
+  --trading-config examples/tradingd/client_1.json
 ```
 
 `--strategy <path>` 与 `--config <path>` 为必填参数，各出现一次，顺序不限。缺少路径、空路径、重复参数或未知参数均向 `stderr` 输出用法并退出；`--help` 单独使用时向 `stdout` 输出用法并成功退出。
 
 `--market-data-config <path>` 为必填参数，只允许出现一次，用于配置宿主行情源。行情配置的 `adapter` 只接受 `shm`；运行前须启动对应发布者。不登记业务订阅的策略同样持有有效行情源。格式与命令示例见[行情驱动设计](market-data.md#配置与启动方式)，行情发布端见[行情进程设计](marketd.md)。
 
-`--trading-config <path>` 为可选参数，选择本地模拟柜台或 TCP 网关，标的范围取自行情配置引用的共享字典。参数约束和交易配置见[宿主交易配置](trading.md#宿主配置)。
+`--trading-config <path>` 为必填参数，只描述 TCP 网关、客户端身份与超时，拒绝柜台和初始账户字段。标的范围取自行情配置引用的共享字典。参数约束见[网关客户端配置](trading.md#网关客户端配置)。
 
 以 `-` 开头的路径使用 `./` 前缀或绝对路径传入，避免与命令行选项混淆。
 
@@ -38,7 +39,7 @@
 
 | 命令 | 含义 | 当前来源 |
 | --- | --- | --- |
-| `LoadAndStart{library_path, config, market_data, trading_config}` | 使用装配层校验的配置准备组件，加载并配置策略，调用启动回调后激活行情；交易配置可空 | 装配层 |
+| `LoadAndStart{library_path, config, market_data, trading_config}` | 使用必需的已校验配置准备组件，连接网关，加载并配置策略，调用启动回调后激活行情 | 装配层 |
 | `Stop` | 运行期登记停止请求，由 `Run()` 推进排空与最终释放 | `SIGINT`、`SIGTERM`，以及运行期错误收尾 |
 
 命令行解析生成启动选项，装配层加载配置并选择组件，再由 runner 的命令入口启动策略。当前不建立外部命令队列或 IPC 服务；信号处理函数只记录停止请求，主线程完成回调与收尾。未来其他命令来源复用同一分派入口。
@@ -111,7 +112,7 @@ extern "C" YQuantGetStrategyPlugin() noexcept -> const StrategyPlugin*
 
 ### 组件装配
 
-`StrategyAssembly` 读取策略、行情和交易配置，建立只读标的范围，并选择具体组件。生产环境始终提供 `ShmMarketDataSource`；交易配置选择 `LocalTradingRuntime` 或 `RemoteTrading`，不启用交易时提供 `DisabledTradingRuntime`。本地运行时持有账户与委托账本，借用 `TradingAdapter`，统一完成初始账户、请求发送和回报落账；远端运行时管理 TCP 连接及网关账户视图。组件的创建和模式选择集中在装配层。
+`StrategyAssembly` 读取策略、行情和网关客户端配置，建立只读标的范围，持有 `ShmMarketDataSource` 和唯一的生产交易服务 `TradingServiceImpl`。后者通过 TCP 访问 `tradingd`，维护本策略委托缓存和网关账户视图。柜台适配器与权威账本均由网关持有。单元测试显式注入 `MockTradingService`，按脚本提交回报，不经过生产装配提供测试模式。
 
 ```cpp
 StrategyRunner(const base::MonotonicClock& clock,
@@ -124,7 +125,7 @@ StrategyRunner(const base::MonotonicClock& clock,
 
 ### 状态与资源
 
-`StrategyRunner` 的状态类型 `RunnerState` 包含 `Idle`、`Starting`、`Running`、`Stopping`、`Finished`。启动期间先校验配置，从[共享标的字典](market-data.md#共享标的字典)解析运行清单并准备行情字典与接入，启用交易时启动柜台并以初始账户快照建立交易账本，再加载并配置策略。字典读取或引用解析失败时不创建策略。`OnStart` 成功后激活行情源，共享内存源此时连接发布者并从 Live 开始；全部成功才进入 `Running` 并允许策略交易请求。接入初始化顺序与失败边界见[启动与事件调度](trading.md#启动与事件调度)。
+`StrategyRunner` 的状态类型 `RunnerState` 包含 `Idle`、`Starting`、`Running`、`Stopping`、`Finished`。启动期间先校验配置，从[共享标的字典](market-data.md#共享标的字典)解析运行清单并准备行情字典与接入，通过网关握手取得账户视图，再加载并配置策略。字典读取或引用解析失败时不创建策略。`OnStart` 成功后激活行情源，共享内存源此时连接发布者并从 Live 开始；全部成功才进入 `Running` 并允许策略交易请求。接入初始化顺序与失败边界见[启动与事件调度](trading.md#启动与事件调度)。
 
 `StrategyRunner` 分别保存动态库句柄、描述符、实例指针和组件启动标记，失败时只释放已经取得的资源。启动成功标记在 `OnStart` 返回成功后设置，使随后发生的行情源启动失败也执行一次 `OnStop`。策略 ID 另存定长宿主副本，销毁实例后仍可用于诊断。
 
@@ -146,7 +147,7 @@ flowchart TD
     CLI["解析命令行参数"]
     SIGNALS["屏蔽退出信号<br/>安装停止标志处理函数"]
     CONFIG["装配层读取并校验配置<br/>选择行情源与交易运行时"]
-    PREPARE["准备已配置的接入与服务<br/>启用交易时启动柜台并建账"]
+    PREPARE["准备行情源与网关客户端<br/>完成交易身份与账户同步"]
     LOAD["加载并校验策略动态库"]
     CREATE["由动态库创建策略实例"]
     INITIALIZE["初始化内嵌配置<br/>校验自定义参数"]
@@ -183,7 +184,7 @@ flowchart TD
 
 ### 主循环与信号
 
-`main()` 持有时钟、信号环境和 `StrategyAssembly`，完成配置装配后创建 `StrategyRunner`，通过 `Handle(LoadAndStart)` 启动策略，再调用 `Run()` 驱动主循环。启动取消和运行循环使用构造时注入的同一个环境。等待环境及信号实现采用公共[进程基础设施](engineering.md#进程基础设施)中的 `base::EventLoopEnvironment` 与 `base::TerminationSignals`。行情批次处理与单条报价分派是 `StrategyRunner` 的私有实现，外部不直接调用。
+`main()` 持有时钟、信号环境和 `StrategyAssembly`，完成行情与网关配置加载后创建 `StrategyRunner`，通过 `Handle(LoadAndStart)` 启动策略，再调用 `Run()` 驱动主循环。启动取消和运行循环使用构造时注入的同一个环境。等待环境及信号实现采用公共[进程基础设施](engineering.md#进程基础设施)中的 `base::EventLoopEnvironment` 与 `base::TerminationSignals`。行情批次处理与单条报价分派是 `StrategyRunner` 的私有实现，外部不直接调用。
 
 主线程在动态库加载或策略代码执行前，通过 `pthread_sigmask()` 屏蔽 `SIGINT`、`SIGTERM`，使用 `sigaction()` 安装处理函数。处理函数只将 `volatile sig_atomic_t` 停止标志置位，不调用策略、记录日志或释放资源。普通代码、SDK 调用和全部策略回调执行时保持这两个信号被屏蔽。
 
@@ -292,7 +293,7 @@ src/strategyd/main.cc                       参数与主线程调度
 src/strategyd/strategy_assembly.h/.cc       启动配置、具体组件选择与所有权
 src/strategyd/strategy_runner.h/.cc         命令分派、事件循环与生命周期管理
 src/strategyd/market_data.h/.cc             策略行情订阅、缓存与回调状态
-src/strategyd/remote_trading.h/.cc          策略侧远端交易服务与账户视图
+src/strategyd/trading_service_impl.h/.cc          策略侧远端交易服务与账户视图
 src/strategyd/strategy_context.h            上下文薄视图
 src/strategyd/strategy_library.h/.cc        动态库加载与释放
 src/strategyd/strategy_config_loader.h/.cc  策略公共字段与原始参数片段加载

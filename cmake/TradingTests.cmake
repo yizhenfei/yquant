@@ -3,6 +3,7 @@ add_executable(trading_test
   tests/trading/connection_test.cc
   tests/trading/trading_test.cc
   tests/trading/trading_config_test.cc
+  tests/trading/trading_client_config_test.cc
   tests/trading/mock_trading_adapter_test.cc)
 target_include_directories(trading_test PRIVATE "${PROJECT_SOURCE_DIR}/tests")
 target_link_libraries(trading_test PRIVATE

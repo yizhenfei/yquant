@@ -1,12 +1,12 @@
-#ifndef YQUANT_STRATEGYD_REMOTE_TRADING_H_
-#define YQUANT_STRATEGYD_REMOTE_TRADING_H_
+#ifndef YQUANT_STRATEGYD_TRADING_SERVICE_IMPL_H_
+#define YQUANT_STRATEGYD_TRADING_SERVICE_IMPL_H_
 
 #include <memory>
 
 #include "yquant/base/monotonic_clock.h"
 #include "yquant/md/instrument_scope.h"
 #include "yquant/trading/connection.h"
-#include "yquant/trading/trading_config.h"
+#include "yquant/trading/trading_client_config.h"
 #include "yquant/trading/trading_service.h"
 
 namespace yquant::strategyd {
@@ -14,17 +14,17 @@ namespace yquant::strategyd {
 // Main-thread TCP trading client. Orders are locally queued, while account
 // reservations and final risk acceptance belong to tradingd. A failed stream
 // terminates this session; uncertain commands are never resent automatically.
-class RemoteTrading final : public trading::TradingService {
+class TradingServiceImpl final : public trading::TradingService {
  public:
   // Borrows clock and instrument scope for the entire client lifetime.
-  RemoteTrading(const base::MonotonicClock& clock,
-                const md::InstrumentScope& instruments) noexcept;
-  ~RemoteTrading() noexcept override;
+  TradingServiceImpl(const base::MonotonicClock& clock,
+                     const md::InstrumentScope& instruments) noexcept;
+  ~TradingServiceImpl() noexcept override;
   // Allocates fixed storage and completes the bounded authenticated handshake
   // before exposing an account. Failure leaves the client disabled and owns
   // a diagnostic. Dictionary and config are borrowed only during this call.
   [[nodiscard]] base::Status Init(
-      const trading::TradingConfig& config,
+      const trading::TradingClientConfig& config,
       const md::MarketDataConfig& dictionary) noexcept override;
   [[nodiscard]] base::Status Stop() noexcept override {
     accept_requests_ = false;
@@ -55,8 +55,6 @@ class RemoteTrading final : public trading::TradingService {
       model::PositionSnapshot& out) const noexcept override;
   [[nodiscard]] base::Status ProcessRequests(
       std::uint64_t now, std::size_t limit = 64) noexcept override;
-  [[nodiscard]] base::Status ScheduleStopping(
-      std::uint64_t now, std::size_t max_scan = 64) noexcept override;
   std::optional<std::uint64_t> next_deadline() const noexcept override;
   bool has_local_updates() const noexcept;
   bool has_ready_event(std::uint64_t now) const noexcept override;
@@ -99,4 +97,4 @@ class RemoteTrading final : public trading::TradingService {
 };
 
 }  // namespace yquant::strategyd
-#endif  // YQUANT_STRATEGYD_REMOTE_TRADING_H_
+#endif  // YQUANT_STRATEGYD_TRADING_SERVICE_IMPL_H_

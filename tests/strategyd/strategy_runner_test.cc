@@ -24,8 +24,7 @@ static_assert(
 TEST(StrategyAssemblyTest, RequiresMarketConfiguration) {
   base::SteadyMonotonicClock clock;
   IdleTestEnvironment environment;
-  trading::MockTradingAdapter adapter;
-  StrategyAssembly assembly(clock, adapter);
+  StrategyAssembly assembly(clock);
   EXPECT_EQ(assembly
                 .Load({YQUANT_TEST_PLUGIN_GOOD_PATH, YQUANT_TEST_CONFIG_PATH},
                       environment)
@@ -34,24 +33,20 @@ TEST(StrategyAssemblyTest, RequiresMarketConfiguration) {
   EXPECT_STREQ(assembly.error_stage(), "market_data_config");
 }
 
-TEST(DisabledTradingRuntimeTest, PreservesQueryAndRequestOutputs) {
-  trading::DisabledTradingRuntime runtime;
-  model::ClientOrderId id{99};
-  model::CashSnapshot cash{11, 2, 9};
-  EXPECT_FALSE(runtime.TryGetCash(cash));
-  EXPECT_EQ(cash.balance, 11);
-  EXPECT_EQ(cash.reserved, 2);
-  EXPECT_EQ(cash.available, 9);
-  runtime.SetAcceptingRequests(false);
-  EXPECT_EQ(runtime.SubmitOrder({}, id), base::ErrorCode::kInvalidState);
-  runtime.SetAcceptingRequests(true);
-  EXPECT_EQ(runtime.SubmitOrder({}, id), base::ErrorCode::kUnsupported);
-  EXPECT_EQ(id.value, 99U);
-  runtime.BeginStopping();
-  runtime.SetAcceptingRequests(true);
-  EXPECT_EQ(runtime.CancelOrder(id), base::ErrorCode::kInvalidState);
-  EXPECT_FALSE(runtime.next_deadline().has_value());
-  EXPECT_TRUE(runtime.is_drained());
+TEST(StrategyAssemblyTest, RequiresGatewayAndRejectsBrokerConfiguration) {
+  base::SteadyMonotonicClock clock;
+  IdleTestEnvironment environment;
+  for (const char* path :
+       {static_cast<const char*>(nullptr), YQUANT_TEST_TRADING_CONFIG_PATH}) {
+    StrategyAssembly assembly(clock);
+    EXPECT_EQ(assembly
+                  .Load({YQUANT_TEST_PLUGIN_GOOD_PATH, YQUANT_TEST_CONFIG_PATH,
+                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH, path},
+                        environment)
+                  .code,
+              base::ErrorCode::kInvalidArgument);
+    EXPECT_STREQ(assembly.error_stage(), "trading_config");
+  }
 }
 
 class EventPipe {

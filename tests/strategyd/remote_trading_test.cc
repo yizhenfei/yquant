@@ -1,11 +1,10 @@
-#include "strategyd/remote_trading.h"
-
 #include <chrono>
 #include <cstring>
 #include <functional>
 #include <thread>
 
 #include "gtest/gtest.h"
+#include "strategyd/trading_service_impl.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -36,13 +35,12 @@ class RemoteTradingTest : public ::testing::Test {
     item.instrument.price_decimals = 2;
 
     ASSERT_TRUE(market.Configure(dictionary).ok());
-    config.adapter = trading::TradingAdapterKind::kTcp;
-    config.remote.client_id = 9;
-    std::memcpy(config.remote.token, "client-9", 9);
-    config.remote.connect_timeout_ns = 1000000000;
-    config.remote.endpoint.port = 0;
-    ASSERT_TRUE(listener.Open(config.remote.endpoint).ok());
-    config.remote.endpoint.port = listener.port();
+    config.client_id = 9;
+    std::memcpy(config.token, "client-9", 9);
+    config.connect_timeout_ns = 1000000000;
+    config.endpoint.port = 0;
+    ASSERT_TRUE(listener.Open(config.endpoint).ok());
+    config.endpoint.port = listener.port();
     account.revision = 1;
     account.cash = {1000000000, 0, 1000000000};
     std::thread handshake([this] {
@@ -177,8 +175,8 @@ class RemoteTradingTest : public ::testing::Test {
   RemoteClock clock;
   md::MarketDataConfig dictionary;
   md::InstrumentScope market;
-  RemoteTrading remote{clock, market};
-  trading::TradingConfig config;
+  TradingServiceImpl remote{clock, market};
+  trading::TradingClientConfig config;
   trading::Listener listener;
   trading::Connection peer;
   trading::AccountView account;
@@ -373,7 +371,7 @@ TEST_F(RemoteTradingTest, HeartbeatTimeoutEndsSessionAndIdleAdvancesDeadline) {
   EXPECT_FALSE(event);
   ASSERT_TRUE(remote.next_deadline());
   EXPECT_GT(*remote.next_deadline(), clock.now);
-  clock.now += config.remote.heartbeat_timeout_ns;
+  clock.now += config.heartbeat_timeout_ns;
   EXPECT_FALSE(remote.ProcessRequests(clock.now).ok());
   EXPECT_NE(std::strstr(remote.error_detail(), "heartbeat"), nullptr);
 }

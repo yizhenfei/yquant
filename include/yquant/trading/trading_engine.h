@@ -1,27 +1,28 @@
-#ifndef YQUANT_TRADING_LOCAL_TRADING_RUNTIME_H_
-#define YQUANT_TRADING_LOCAL_TRADING_RUNTIME_H_
+#ifndef YQUANT_TRADING_TRADING_ENGINE_H_
+#define YQUANT_TRADING_TRADING_ENGINE_H_
 
 #include "yquant/base/monotonic_clock.h"
 #include "yquant/md/instrument_scope.h"
 #include "yquant/trading/trading_adapter.h"
+#include "yquant/trading/trading_dispatch.h"
 #include "yquant/trading/trading_limits.h"
-#include "yquant/trading/trading_service.h"
 
 namespace yquant::trading {
 
-// Owns one local trading session: order/account state, reservations, queued
+// Gateway engine owning a broker session: authoritative order/account state,
+// reservations, queued
 // requests, report commits and stopping progress. All calls are serialized by
 // the host. Clock, immutable instrument scope and adapter outlive this object;
 // the scope matches Init's dictionary. Init allocates fixed storage once, and
 // request/event processing does not allocate. No operation invokes strategies.
-class LocalTradingRuntime final : public TradingService {
+class TradingEngine final {
  public:
-  LocalTradingRuntime(const base::MonotonicClock& clock,
-                      const md::InstrumentScope& instruments,
-                      TradingAdapter& adapter) noexcept;
-  ~LocalTradingRuntime() noexcept override;
-  LocalTradingRuntime(const LocalTradingRuntime&) = delete;
-  LocalTradingRuntime& operator=(const LocalTradingRuntime&) = delete;
+  TradingEngine(const base::MonotonicClock& clock,
+                const md::InstrumentScope& instruments,
+                TradingAdapter& adapter) noexcept;
+  ~TradingEngine() noexcept;
+  TradingEngine(const TradingEngine&) = delete;
+  TradingEngine& operator=(const TradingEngine&) = delete;
 
   // Starts the adapter and validates/copies its complete initial account.
   // An initial failure leaves requests disabled and is safe to Stop/Reset;
@@ -29,47 +30,45 @@ class LocalTradingRuntime final : public TradingService {
   // an initialized account. Inputs are call-only.
   [[nodiscard]] base::Status Init(
       const TradingConfig& config,
-      const md::MarketDataConfig& dictionary) noexcept override;
+      const md::MarketDataConfig& dictionary) noexcept;
   // Closes requests and releases adapter resources, retaining order/account
   // facts until Reset. Idempotent, including after partial initialization.
-  [[nodiscard]] base::Status Stop() noexcept override;
+  [[nodiscard]] base::Status Stop() noexcept;
   // Stops the adapter, frees storage and invalidates all queries.
-  void Reset() noexcept override;
-  void SetAcceptingRequests(bool accepting) noexcept override {
+  void Reset() noexcept;
+  void SetAcceptingRequests(bool accepting) noexcept {
     accept_requests_ = accepting && !stopping_;
   }
   // Permanently closes requests and starts a bounded cancellation scan once.
-  void BeginStopping() noexcept override;
+  void BeginStopping() noexcept;
 
-  bool accepting_orders() const noexcept override;
-  [[nodiscard]] base::ErrorCode SubmitOrder(
-      const model::OrderRequest& request,
-      model::ClientOrderId& out) noexcept override;
-  [[nodiscard]] base::ErrorCode CancelOrder(
-      model::ClientOrderId id) noexcept override;
+  bool accepting_orders() const noexcept;
+  [[nodiscard]] base::ErrorCode SubmitOrder(const model::OrderRequest& request,
+                                            model::ClientOrderId& out) noexcept;
+  [[nodiscard]] base::ErrorCode CancelOrder(model::ClientOrderId id) noexcept;
   bool TryGetOrder(model::ClientOrderId id,
-                   model::OrderSnapshot& out) const noexcept override;
-  bool TryGetCash(model::CashSnapshot& out) const noexcept override;
+                   model::OrderSnapshot& out) const noexcept;
+  bool TryGetCash(model::CashSnapshot& out) const noexcept;
   bool TryGetPosition(model::InstrumentId id,
-                      model::PositionSnapshot& out) const noexcept override;
+                      model::PositionSnapshot& out) const noexcept;
 
   // Requires requests closed. Marks each attempt before sending; uncertain
   // failures never requeue it. Stopping converts unsent orders to local
   // cancels.
-  [[nodiscard]] base::Status ProcessRequests(
-      std::uint64_t now, std::size_t limit = 64) noexcept override;
+  [[nodiscard]] base::Status ProcessRequests(std::uint64_t now,
+                                             std::size_t limit = 64) noexcept;
   // Scans a bounded number of slots for cancels, retaining progress on a full
   // queue. Rejected cancels wait at least 10ms before retrying.
   [[nodiscard]] base::Status ScheduleStopping(
-      std::uint64_t now, std::size_t max_scan = 64) noexcept override;
-  std::optional<std::uint64_t> next_deadline() const noexcept override;
-  bool has_ready_event(std::uint64_t now) const noexcept override;
-  bool is_drained() const noexcept override;
-  std::size_t order_count() const noexcept override;
-  const char* error_stage() const noexcept override { return error_stage_; }
-  const char* error_detail() const noexcept override { return error_detail_; }
+      std::uint64_t now, std::size_t max_scan = 64) noexcept;
+  std::optional<std::uint64_t> next_deadline() const noexcept;
+  bool has_ready_event(std::uint64_t now) const noexcept;
+  bool is_drained() const noexcept;
+  std::size_t order_count() const noexcept;
+  const char* error_stage() const noexcept { return error_stage_; }
+  const char* error_detail() const noexcept { return error_detail_; }
   [[nodiscard]] base::Status Poll(std::uint64_t now, TradingDispatch& out,
-                                  bool& event) noexcept override;
+                                  bool& event) noexcept;
 
   // Commits a supplied normalized report, preserving state and out on failure.
   // Serial access and the runtime's monotonic clock domain are required.
@@ -114,4 +113,4 @@ class LocalTradingRuntime final : public TradingService {
 };
 
 }  // namespace yquant::trading
-#endif  // YQUANT_TRADING_LOCAL_TRADING_RUNTIME_H_
+#endif  // YQUANT_TRADING_TRADING_ENGINE_H_

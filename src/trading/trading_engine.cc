@@ -1,4 +1,4 @@
-#include "yquant/trading/local_trading_runtime.h"
+#include "yquant/trading/trading_engine.h"
 
 #include <array>
 #include <cstdio>
@@ -113,7 +113,7 @@ bool ReleaseReservation(model::CashSnapshot& cash,
 }
 }  // namespace
 
-struct LocalTradingRuntime::Storage {
+struct TradingEngine::Storage {
   struct OrderRecord {
     model::OrderSnapshot snapshot;
     bool new_attempted = false;
@@ -158,13 +158,13 @@ struct LocalTradingRuntime::Storage {
   std::size_t position_count = 0;
 };
 
-LocalTradingRuntime::LocalTradingRuntime(const base::MonotonicClock& clock,
-                                         const md::InstrumentScope& instruments,
-                                         TradingAdapter& adapter) noexcept
+TradingEngine::TradingEngine(const base::MonotonicClock& clock,
+                             const md::InstrumentScope& instruments,
+                             TradingAdapter& adapter) noexcept
     : clock_(clock), instruments_(instruments), adapter_(adapter) {}
-LocalTradingRuntime::~LocalTradingRuntime() noexcept { Reset(); }
+TradingEngine::~TradingEngine() noexcept { Reset(); }
 
-base::Status LocalTradingRuntime::ConfigureAccount(
+base::Status TradingEngine::ConfigureAccount(
     const TradingAccountSnapshot& account) noexcept {
   if (account.cash_balance < 0 ||
       account.position_count > md::kMaxMarketDataInstruments) {
@@ -205,7 +205,7 @@ base::Status LocalTradingRuntime::ConfigureAccount(
   return {};
 }
 
-void LocalTradingRuntime::Reset() noexcept {
+void TradingEngine::Reset() noexcept {
   (void)Stop();
   delete storage_;
   storage_ = nullptr;
@@ -216,7 +216,7 @@ void LocalTradingRuntime::Reset() noexcept {
   error_detail_[0] = '\0';
 }
 
-void LocalTradingRuntime::BeginStopping() noexcept {
+void TradingEngine::BeginStopping() noexcept {
   accept_requests_ = false;
   if (!stopping_) {
     stopping_ = true;
@@ -228,24 +228,23 @@ void LocalTradingRuntime::BeginStopping() noexcept {
   }
 }
 
-bool LocalTradingRuntime::accepting_orders() const noexcept {
+bool TradingEngine::accepting_orders() const noexcept {
   return prepared_ && storage_ != nullptr && accept_requests_ && !stopping_;
 }
 
-ErrorCode LocalTradingRuntime::Fail(ErrorCode code,
-                                    const char* detail) noexcept {
+ErrorCode TradingEngine::Fail(ErrorCode code, const char* detail) noexcept {
   std::snprintf(error_detail_, sizeof(error_detail_), "%s", detail);
   return code;
 }
 
-std::optional<std::size_t> LocalTradingRuntime::FindIndex(
+std::optional<std::size_t> TradingEngine::FindIndex(
     model::ClientOrderId id) const noexcept {
   if (storage_ == nullptr || id.value == 0 || id.value > storage_->order_count)
     return {};
   return static_cast<std::size_t>(id.value - 1);
 }
 
-std::optional<std::size_t> LocalTradingRuntime::FindPosition(
+std::optional<std::size_t> TradingEngine::FindPosition(
     model::InstrumentId id) const noexcept {
   if (storage_ == nullptr) return {};
   for (std::size_t index = 0; index < storage_->position_count; ++index) {
@@ -254,8 +253,8 @@ std::optional<std::size_t> LocalTradingRuntime::FindPosition(
   return {};
 }
 
-ErrorCode LocalTradingRuntime::SubmitOrder(const model::OrderRequest& request,
-                                           model::ClientOrderId& out) noexcept {
+ErrorCode TradingEngine::SubmitOrder(const model::OrderRequest& request,
+                                     model::ClientOrderId& out) noexcept {
   if (!accepting_orders()) {
     return Fail(ErrorCode::kInvalidState, "trading requests are not enabled");
   }
@@ -330,7 +329,7 @@ ErrorCode LocalTradingRuntime::SubmitOrder(const model::OrderRequest& request,
   return ErrorCode::kOk;
 }
 
-ErrorCode LocalTradingRuntime::QueueCancel(std::size_t index) noexcept {
+ErrorCode TradingEngine::QueueCancel(std::size_t index) noexcept {
   auto& s = *storage_;
   if (s.request_count == kMaxTradingRequests ||
       s.last_cancel_id == std::numeric_limits<std::uint64_t>::max()) {
@@ -351,7 +350,7 @@ ErrorCode LocalTradingRuntime::QueueCancel(std::size_t index) noexcept {
   return ErrorCode::kOk;
 }
 
-ErrorCode LocalTradingRuntime::CancelOrder(model::ClientOrderId id) noexcept {
+ErrorCode TradingEngine::CancelOrder(model::ClientOrderId id) noexcept {
   if (!accepting_orders()) {
     return Fail(ErrorCode::kInvalidState, "trading requests are not enabled");
   }
@@ -366,21 +365,21 @@ ErrorCode LocalTradingRuntime::CancelOrder(model::ClientOrderId id) noexcept {
   return QueueCancel(*index);
 }
 
-bool LocalTradingRuntime::TryGetOrder(
-    model::ClientOrderId id, model::OrderSnapshot& out) const noexcept {
+bool TradingEngine::TryGetOrder(model::ClientOrderId id,
+                                model::OrderSnapshot& out) const noexcept {
   const auto index = FindIndex(id);
   if (!index) return false;
   out = storage_->orders[*index].snapshot;
   return true;
 }
 
-bool LocalTradingRuntime::TryGetCash(model::CashSnapshot& out) const noexcept {
+bool TradingEngine::TryGetCash(model::CashSnapshot& out) const noexcept {
   if (storage_ == nullptr) return false;
   out = storage_->cash;
   return true;
 }
 
-bool LocalTradingRuntime::TryGetPosition(
+bool TradingEngine::TryGetPosition(
     model::InstrumentId id, model::PositionSnapshot& out) const noexcept {
   if (storage_ == nullptr || !instruments_.HasInstrument(id)) return false;
   const auto index = FindPosition(id);
@@ -392,8 +391,8 @@ bool LocalTradingRuntime::TryGetPosition(
   return true;
 }
 
-base::Status LocalTradingRuntime::ProcessRequests(std::uint64_t now,
-                                                  std::size_t limit) noexcept {
+base::Status TradingEngine::ProcessRequests(std::uint64_t now,
+                                            std::size_t limit) noexcept {
   error_stage_ = "trading_send";
   if (!prepared_ || storage_ == nullptr || accept_requests_) {
     return {
@@ -441,8 +440,8 @@ base::Status LocalTradingRuntime::ProcessRequests(std::uint64_t now,
   return {};
 }
 
-base::Status LocalTradingRuntime::ScheduleStopping(
-    std::uint64_t now, std::size_t max_scan) noexcept {
+base::Status TradingEngine::ScheduleStopping(std::uint64_t now,
+                                             std::size_t max_scan) noexcept {
   error_stage_ = "trading_drain";
   if (!stopping_ || storage_ == nullptr) return {};
   auto& s = *storage_;
@@ -479,8 +478,7 @@ base::Status LocalTradingRuntime::ScheduleStopping(
   return {};
 }
 
-std::optional<std::uint64_t> LocalTradingRuntime::next_deadline()
-    const noexcept {
+std::optional<std::uint64_t> TradingEngine::next_deadline() const noexcept {
   if (storage_ == nullptr) return {};
   const auto& s = *storage_;
   if (s.request_count != 0 || s.local_count != 0 ||
@@ -494,25 +492,25 @@ std::optional<std::uint64_t> LocalTradingRuntime::next_deadline()
   return deadline;
 }
 
-bool LocalTradingRuntime::has_ready_event(std::uint64_t now) const noexcept {
+bool TradingEngine::has_ready_event(std::uint64_t now) const noexcept {
   const auto deadline = prepared_ ? adapter_.next_deadline() : std::nullopt;
   return has_local_updates() || IsDue(deadline, now);
 }
 
-bool LocalTradingRuntime::has_local_updates() const noexcept {
+bool TradingEngine::has_local_updates() const noexcept {
   return storage_ != nullptr && storage_->local_count != 0;
 }
-bool LocalTradingRuntime::is_drained() const noexcept {
+bool TradingEngine::is_drained() const noexcept {
   return storage_ == nullptr ||
          (storage_->active_count == 0 && storage_->pending_cancel_count == 0 &&
           storage_->request_count == 0 && storage_->local_count == 0 &&
           (!prepared_ || adapter_.is_drained()));
 }
-std::size_t LocalTradingRuntime::order_count() const noexcept {
+std::size_t TradingEngine::order_count() const noexcept {
   return storage_ != nullptr ? storage_->order_count : 0;
 }
 
-ErrorCode LocalTradingRuntime::ApplyLocalUpdate(TradingDispatch& out) noexcept {
+ErrorCode TradingEngine::ApplyLocalUpdate(TradingDispatch& out) noexcept {
   error_stage_ = "trading_local_update";
   if (storage_ == nullptr || storage_->local_count == 0) {
     return Fail(ErrorCode::kInvalidState, "no local order update available");
@@ -549,8 +547,8 @@ ErrorCode LocalTradingRuntime::ApplyLocalUpdate(TradingDispatch& out) noexcept {
   return ErrorCode::kOk;
 }
 
-ErrorCode LocalTradingRuntime::ApplyEvent(const TradingEvent& event,
-                                          TradingDispatch& out) noexcept {
+ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
+                                    TradingDispatch& out) noexcept {
   error_stage_ = "trading_event";
   const auto index = FindIndex(event.client_order_id);
   if (!index) return Fail(ErrorCode::kCorrupt, "report for an unknown order");
@@ -796,15 +794,15 @@ ErrorCode LocalTradingRuntime::ApplyEvent(const TradingEvent& event,
   out = dispatch;
   return ErrorCode::kOk;
 }
-base::Status LocalTradingRuntime::Fail(base::Status status, const char* stage,
-                                       const char* detail) noexcept {
+base::Status TradingEngine::Fail(base::Status status, const char* stage,
+                                 const char* detail) noexcept {
   error_stage_ = stage;
   std::snprintf(error_detail_, sizeof(error_detail_), "%s", detail);
   return status;
 }
 
-base::Status LocalTradingRuntime::Init(const TradingConfig& config,
-                                       const md::MarketDataConfig&) noexcept {
+base::Status TradingEngine::Init(const TradingConfig& config,
+                                 const md::MarketDataConfig&) noexcept {
   if (prepared_ || storage_ != nullptr || accept_requests_ || stopping_) {
     return Fail({base::ErrorCode::kInvalidState, {}}, "trading_prepare",
                 "local trading already initialized");
@@ -829,7 +827,7 @@ base::Status LocalTradingRuntime::Init(const TradingConfig& config,
   return ConfigureAccount(account);
 }
 
-base::Status LocalTradingRuntime::Stop() noexcept {
+base::Status TradingEngine::Stop() noexcept {
   accept_requests_ = false;
   if (!prepared_) return {};
   prepared_ = false;
@@ -839,8 +837,8 @@ base::Status LocalTradingRuntime::Stop() noexcept {
   return {};
 }
 
-base::Status LocalTradingRuntime::Poll(std::uint64_t now, TradingDispatch& out,
-                                       bool& event) noexcept {
+base::Status TradingEngine::Poll(std::uint64_t now, TradingDispatch& out,
+                                 bool& event) noexcept {
   error_stage_ = "trading_poll";
   if (!prepared_ || storage_ == nullptr || accept_requests_)
     return Fail({base::ErrorCode::kInvalidState, {}}, "trading_poll",

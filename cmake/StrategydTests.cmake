@@ -93,12 +93,13 @@ file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/test_data")
 configure_file("tests/fixtures/instruments.json"
   "${CMAKE_BINARY_DIR}/test_data/instruments.json" COPYONLY)
 foreach(config IN ITEMS lifecycle typed quote_observer market_data
-    trading_strategy mock_trading)
+    trading_strategy mock_trading trading_client)
   configure_file("tests/strategyd/configs/${config}.json"
     "${CMAKE_BINARY_DIR}/test_data/${config}.json" COPYONLY)
 endforeach()
 target_compile_definitions(yquant_strategyd_test PRIVATE
   YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json"
+  YQUANT_TEST_TRADINGD_PATH="$<TARGET_FILE:yquant_tradingd>"
   YQUANT_TEST_STRATEGYD_PATH="$<TARGET_FILE:yquant_strategyd>"
   YQUANT_TEST_SIGNAL_LAUNCHER_PATH="$<TARGET_FILE:strategyd_signal_launcher>"
   YQUANT_TEST_EXAMPLE_PATH="$<TARGET_FILE:lifecycle_strategy>"
@@ -115,10 +116,11 @@ target_compile_definitions(yquant_strategyd_test PRIVATE
 target_compile_definitions(yquant_strategyd_test PRIVATE
   YQUANT_TEST_ORDER_EXAMPLE_PATH="$<TARGET_FILE:order_lifecycle_strategy>"
   YQUANT_TEST_ORDER_EXAMPLE_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/order_lifecycle_strategy.json"
+  YQUANT_TEST_TRADING_CLIENT_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/trading_client.json"
   YQUANT_TEST_TRADING_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/mock_trading.json"
   YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/trading_strategy.json")
 add_dependencies(yquant_strategyd_test
-  yquant_strategyd lifecycle_strategy parameterized_strategy
+  yquant_strategyd yquant_tradingd lifecycle_strategy parameterized_strategy
   quote_observer_strategy order_lifecycle_strategy strategyd_signal_launcher)
 
 foreach(name IN ITEMS normal cancel update_fail fill_fail bulk partial_cancel

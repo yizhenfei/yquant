@@ -51,22 +51,9 @@ base::Status StrategyAssembly::Load(
   }
   status = check_stop();
   if (cancelled_) return status;
-  if (options.trading_config_path != nullptr) {
-    status = trading_config_.Load(options.trading_config_path);
-    if (!status.ok())
-      return ConfigFailure(status, "trading_config", trading_config_.error());
-    trading_enabled_ = true;
-    switch (trading_config_.config().adapter) {
-      case trading::TradingAdapterKind::kMock:
-        local_trading_.emplace(clock_, instruments_, local_adapter_);
-        trading_ = &*local_trading_;
-        break;
-      case trading::TradingAdapterKind::kTcp:
-        remote_trading_.emplace(clock_, instruments_);
-        trading_ = &*remote_trading_;
-        break;
-    }
-  }
+  status = trading_config_.Load(options.trading_config_path);
+  if (!status.ok())
+    return ConfigFailure(status, "trading_config", trading_config_.error());
   return check_stop();
 }
 

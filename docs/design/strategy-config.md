@@ -156,10 +156,11 @@ class MarketMakingStrategy final : public Strategy {
 
 ```sh
 yquant-strategyd --strategy ./market_making.so --config ./market_making.json \
-  --market-data-config ./market_data.json
+  --market-data-config ./market_data.json \
+  --trading-config examples/tradingd/client_1.json
 ```
 
-`--config <path>` 为必填参数，只出现一次。路径按启动工作目录解释，装配层在创建 runner 前读取并校验文件，再通过 `LoadAndStart` 传入已加载的配置。行情配置同样必填；交易配置可省略。组件选择与生命周期见[组件装配](strategyd.md#组件装配)。
+`--config <path>` 为必填参数，只出现一次。路径按启动工作目录解释，装配层在创建 runner 前读取并校验文件，再通过 `LoadAndStart` 传入已加载的配置。行情和网关客户端配置同样必填。组件选择与生命周期见[组件装配](strategyd.md#组件装配)。
 
 ```mermaid
 flowchart TD

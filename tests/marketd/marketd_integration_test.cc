@@ -22,6 +22,7 @@
 #include "marketd/recording.h"
 #include "scoped_working_directory.h"
 #include "test_support.h"
+#include "trading_gateway.h"
 #include "yquant/md/quote_codec.h"
 #include "yquant/md/shm_broadcast.h"
 
@@ -50,10 +51,15 @@ class ChildProcess {
   ChildProcess& operator=(const ChildProcess&) = delete;
 
   int Start(const char* executable, const std::vector<std::string>& arguments) {
+    auto adapted = arguments;
+    if (std::string_view(executable) == YQUANT_TEST_STRATEGYD_PATH) {
+      const int error = gateway_.Prepare(adapted);
+      if (error) return error;
+    }
     int output[2];
     if (pipe(output) != 0) return errno;
     std::vector<std::string> storage{executable};
-    storage.insert(storage.end(), arguments.begin(), arguments.end());
+    storage.insert(storage.end(), adapted.begin(), adapted.end());
     std::vector<char*> argv;
     for (auto& argument : storage) argv.push_back(argument.data());
     argv.push_back(nullptr);
@@ -143,6 +149,7 @@ class ChildProcess {
     }
   }
 
+  ::yquant::testing::TradingGateway gateway_;
   pid_t pid_ = -1;
   int output_fd_ = -1;
   int status_ = 0;
@@ -223,7 +230,8 @@ class MarketdIntegrationTest : public ::testing::Test {
         YQUANT_TEST_STRATEGYD_PATH,
         {"--strategy", YQUANT_TEST_QUOTE_EXAMPLE_PATH, "--config",
          directory_.File("strategy.json"), "--market-data-config",
-         directory_.File("strategy_host.json")});
+         directory_.File("strategy_host.json"), "--trading-config",
+         YQUANT_TEST_TRADING_CONFIG_PATH});
   }
   void Stop(ChildProcess& child) const {
     ASSERT_TRUE(child.Signal(SIGTERM)) << child.output();

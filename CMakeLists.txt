@@ -59,8 +59,9 @@ add_library(yquant_trading STATIC
   src/trading/protocol.cc
   src/trading/connection.cc
   src/trading/mock_trading_adapter.cc
-  src/trading/local_trading_runtime.cc
-  src/trading/trading_config.cc)
+  src/trading/trading_engine.cc
+  src/trading/trading_config.cc
+  src/trading/trading_client_config.cc)
 add_library(yquant::trading ALIAS yquant_trading)
 target_include_directories(yquant_trading PUBLIC
   "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
@@ -73,7 +74,7 @@ target_compile_options(yquant_trading PRIVATE -Wall -Wextra -Wpedantic)
 # Application object targets contain only their own private implementation.
 # They are reused solely by the matching executable and its unit tests.
 add_library(yquant_strategyd_objects OBJECT
-  src/strategyd/remote_trading.cc
+  src/strategyd/trading_service_impl.cc
   src/strategyd/shm_market_data_source.cc
   src/strategyd/strategy_config_loader.cc
   src/strategyd/market_data.cc
@@ -164,8 +165,8 @@ configure_file(examples/strategies/market_data.json
   "${CMAKE_BINARY_DIR}/strategies/market_data.json" COPYONLY)
 configure_file(examples/strategies/shm_market_data.json
   "${CMAKE_BINARY_DIR}/strategies/shm_market_data.json" COPYONLY)
-configure_file(examples/strategies/mock_trading.json
-  "${CMAKE_BINARY_DIR}/strategies/mock_trading.json" COPYONLY)
+configure_file(examples/tradingd/mock_trading.json
+  "${CMAKE_BINARY_DIR}/tradingd/mock_trading.json" COPYONLY)
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/marketd")
 foreach(config IN ITEMS mock_source local tcp_source tcp_relay record_local
                         replay_recording)
@@ -173,7 +174,7 @@ foreach(config IN ITEMS mock_source local tcp_source tcp_relay record_local
     "${CMAKE_BINARY_DIR}/marketd/${config}.json" COPYONLY)
 endforeach()
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/tradingd")
-foreach(config IN ITEMS local client_1 client_2)
+foreach(config IN ITEMS local client_1 client_2 instrument_scope)
   configure_file("examples/tradingd/${config}.json"
     "${CMAKE_BINARY_DIR}/tradingd/${config}.json" COPYONLY)
 endforeach()
@@ -250,9 +251,10 @@ if(BUILD_TESTING)
 
   add_executable(console_output_test tests/console_output_test.cc)
   target_link_libraries(console_output_test PRIVATE
-    yquant::md GTest::gtest_main Threads::Threads)
+    yquant::trading yquant::md GTest::gtest_main Threads::Threads)
   target_compile_options(console_output_test PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_definitions(console_output_test PRIVATE
+    YQUANT_TEST_BROKER_CONFIG_PATH="${PROJECT_SOURCE_DIR}/tests/strategyd/configs/mock_trading.json"
     YQUANT_TEST_STRATEGYD_PATH="$<TARGET_FILE:yquant_strategyd>"
     YQUANT_TEST_MARKETD_PATH="$<TARGET_FILE:yquant_marketd>"
     YQUANT_TEST_TRADINGD_PATH="$<TARGET_FILE:yquant_tradingd>"
@@ -382,7 +384,7 @@ if(BUILD_TESTING)
   # Keep replacement global allocation functions isolated from other tests.
   add_executable(market_data_allocation_test
     tests/strategyd/market_data_allocation_test.cc)
-  target_include_directories(market_data_allocation_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+  target_include_directories(market_data_allocation_test PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/tests")
   target_link_libraries(market_data_allocation_test PRIVATE
     yquant_strategyd_objects GTest::gtest_main yquant_compile_options)
   target_compile_options(market_data_allocation_test PRIVATE
@@ -394,10 +396,10 @@ if(BUILD_TESTING)
     PROPERTIES ${yquant_test_properties})
 
   add_executable(trading_allocation_test
-    tests/strategyd/trading_allocation_test.cc)
+    tests/trading/trading_allocation_test.cc)
   target_include_directories(trading_allocation_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
   target_link_libraries(trading_allocation_test PRIVATE
-    yquant_strategyd_objects GTest::gtest_main yquant_compile_options)
+    yquant::trading GTest::gtest_main yquant_compile_options)
   target_compile_options(trading_allocation_test PRIVATE
     -Wall -Wextra -Wpedantic)
   gtest_discover_tests(trading_allocation_test

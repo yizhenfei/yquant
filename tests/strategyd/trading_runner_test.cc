@@ -14,8 +14,6 @@
 #include "strategyd/market_data_source.h"
 #include "test_config_file.h"
 #include "yquant/base/event_loop_environment.h"
-#include "yquant/trading/mock_trading_adapter.h"
-#include "yquant/trading/trading_adapter.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -172,157 +170,26 @@ class TradingQuoteSource final : public MarketDataSource {
   bool active_ = false;
 };
 
-// Counts adapter-boundary facts while using the actual mock's scheduling and
-// fill rules. Faults alter only normalized input or a send result.
-class ObservedTradingAdapter final : public trading::TradingAdapter {
- public:
-  bool fail_prepare = false;
-  bool fail_start = false;
-  bool duplicate_first = false;
-  bool sequence_gap = false;
-  bool fail_send = false;
-  bool never_report = false;
-  bool fail_account_read = false;
-  bool invalid_account = false;
-  std::int64_t price_improvement = 0;
-  IdleClockStep idle;
-  int send_orders = 0;
-  int send_cancels = 0;
-  int accepted = 0;
-  int published = 0;
-  int stop_calls = 0;
-  int account_reads = 0;
-  std::int64_t total_filled = 0;
-  const TradingQuoteSource* observed_source = nullptr;
-  std::array<int, 16> source_polls_at_reports = {};
-
-  base::Status Prepare(const trading::TradingConfig& config) noexcept override {
-    if (fail_prepare) return {ErrorCode::kIoError, {}};
-    initial_account_ = config.initial_account;
-    return mock_.Prepare(config);
-  }
-  base::Status Start(std::uint64_t now) noexcept override {
-    if (fail_start) return {ErrorCode::kIoError, {}};
-    return mock_.Start(now);
-  }
-  base::Status ReadAccountSnapshot(
-      trading::TradingAccountSnapshot& out) noexcept override {
-    ++account_reads;
-    if (fail_account_read) return {ErrorCode::kIoError, {}};
-    out = initial_account_;
-    if (invalid_account) out.cash_balance = -1;
-    return {};
-  }
-  base::Status SendOrder(model::ClientOrderId id,
-                         const model::OrderRequest& request,
-                         std::uint64_t now) noexcept override {
-    ++send_orders;
-    if (fail_send) return {ErrorCode::kIoError, {}};
-    if (never_report) {
-      waiting_ = true;
-      return {};
-    }
-    return mock_.SendOrder(id, request, now);
-  }
-  base::Status SendCancel(model::ClientOrderId id,
-                          const model::BrokerOrderId& broker,
-                          model::CancelRequestId cancel_id,
-                          std::uint64_t now) noexcept override {
-    ++send_cancels;
-    return mock_.SendCancel(id, broker, cancel_id, now);
-  }
-  trading::TradingPollResult Poll(
-      std::uint64_t now, trading::TradingEvent& out) noexcept override {
-    if (idle.Poll(now)) return {};
-    if (pending_duplicate_) {
-      pending_duplicate_ = false;
-      out = duplicate_;
-      ++published;
-      return {trading::TradingPollState::kEvent, {}};
-    }
-    if (never_report) return {};
-    auto result = mock_.Poll(now, out);
-    if (result.state == trading::TradingPollState::kEvent) {
-      if (observed_source != nullptr &&
-          published < static_cast<int>(source_polls_at_reports.size())) {
-        source_polls_at_reports[static_cast<std::size_t>(published)] =
-            observed_source->poll_calls;
-      }
-      ++published;
-      if (out.kind == model::OrderUpdateKind::kAccepted) ++accepted;
-      if (out.kind == model::OrderUpdateKind::kFill) {
-        out.fill.price += out.fill.side == model::OrderSide::kBuy
-                              ? -price_improvement
-                              : price_improvement;
-        total_filled += out.fill.quantity;
-      }
-      if (published == 1) {
-        if (sequence_gap) ++out.report_sequence;
-        if (duplicate_first) {
-          duplicate_ = out;
-          pending_duplicate_ = true;
-        }
-      }
-    }
-    return result;
-  }
-  std::optional<std::uint64_t> next_deadline() const noexcept override {
-    if (idle.deadline) return idle.deadline;
-    if (pending_duplicate_) return 0;
-    if (never_report) return {};
-    return mock_.next_deadline();
-  }
-  bool is_drained() const noexcept override {
-    return !waiting_ && !pending_duplicate_ && mock_.is_drained();
-  }
-  base::Status Stop() noexcept override {
-    ++stop_calls;
-    idle.deadline.reset();
-    return mock_.Stop();
-  }
-  const char* error_detail() const noexcept override {
-    if (fail_account_read) return "injected account read failure";
-    return fail_send ? "injected uncertain send" : mock_.error_detail();
-  }
-
- private:
-  trading::MockTradingAdapter mock_;
-  trading::TradingAccountSnapshot initial_account_;
-  trading::TradingEvent duplicate_;
-  bool pending_duplicate_ = false;
-  bool waiting_ = false;
-};
-
-// Advances the shared monotonic clock only when Run asks to wait. A bounded
-// watchdog converts accidental spinning or an unplanned wait into test failure.
+// Drives only the host clock and stop condition; the service supplies reports.
 class TradingLoopEnvironment final : public base::EventLoopEnvironment {
  public:
   explicit TradingLoopEnvironment(TradingClock& clock) : clock_(clock) {}
+  testing::MockTradingService* service = nullptr;
   const TradingQuoteSource* source = nullptr;
-  const ObservedTradingAdapter* adapter = nullptr;
+  int stop_after_events = 3;
   bool stop_after_quote = false;
-  bool stop_after_accepted = false;
-  bool stop_after_send = false;
-  std::uint64_t check_advance_ns = 0;
-  int check_calls = 0;
-  int wait_calls = 0;
-  std::array<std::uint64_t, 128> waits = {};
-
+  int checks = 0;
+  std::vector<std::uint64_t> waits;
   base::Status CheckStop(bool& out) noexcept override {
-    if (++check_calls > 10000) return {ErrorCode::kInternalError, {}};
-    clock_.now += check_advance_ns;
-    out = (stop_after_quote && source != nullptr && source->poll_calls != 0) ||
-          (adapter != nullptr &&
-           ((stop_after_accepted && adapter->accepted != 0) ||
-            (stop_after_send && adapter->send_orders != 0) ||
-            (adapter->send_orders != 0 && adapter->is_drained())));
+    if (++checks > 10000) return {ErrorCode::kInternalError, {}};
+    out = (stop_after_quote && source && source->poll_calls != 0) ||
+          (service && stop_after_events > 0 &&
+           service->delivered >= stop_after_events);
     return {};
   }
   base::Status Wait(std::optional<std::uint64_t> timeout) noexcept override {
-    if (!timeout || wait_calls == static_cast<int>(waits.size())) {
-      return {ErrorCode::kInternalError, {}};
-    }
-    waits[static_cast<std::size_t>(wait_calls++)] = *timeout;
+    if (!timeout || waits.size() > 128) return {ErrorCode::kInternalError, {}};
+    waits.push_back(*timeout);
     clock_.now += *timeout;
     return {};
   }
@@ -331,704 +198,264 @@ class TradingLoopEnvironment final : public base::EventLoopEnvironment {
   TradingClock& clock_;
 };
 
-std::string TradingConfigJson(std::string_view mode,
-                              std::uint32_t timeout_ms = 100,
-                              std::int64_t initial_cash = 100000000000000,
-                              std::int64_t available_qty = 800) {
-  return std::string(R"({"adapter":"mock","mode":")") + std::string(mode) +
-         R"(","report_interval_ms":1,"shutdown_timeout_ms":)" +
-         std::to_string(timeout_ms) + R"(,"initial_cash":)" +
-         std::to_string(initial_cash) +
-         R"(,"initial_positions":[{"venue":"SSE","symbol":"600000",)"
-         R"("total_qty":1000,"available_qty":)" +
-         std::to_string(available_qty) + "}]}";
-}
-
-TEST(TradingRunnerTest, CleansUpPartialRuntimeInitializationBeforePluginLoad) {
-  TradingEventPipe events;
-  ASSERT_TRUE(events.valid());
-  for (const bool fail_prepare : {true, false}) {
-    TradingClock clock;
-    TradingQuoteSource source;
-    ObservedTradingAdapter adapter;
-    adapter.fail_prepare = fail_prepare;
-    adapter.fail_start = !fail_prepare;
-    TradingLoopEnvironment environment(clock);
-    RunnerTestHarness runner(clock, environment, source, adapter);
-    EXPECT_EQ(runner
-                  .Handle({YQUANT_TEST_TRADING_NORMAL_PATH,
-                           YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                           YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                           YQUANT_TEST_TRADING_CONFIG_PATH})
-                  .code,
-              ErrorCode::kIoError);
-    EXPECT_STREQ(runner.error_stage(),
-                 fail_prepare ? "trading_prepare" : "trading_start");
-    EXPECT_EQ(adapter.account_reads, 0);
-    EXPECT_EQ(adapter.stop_calls, 1);
-    EXPECT_EQ(source.stop_calls, 1);
-    EXPECT_TRUE(events.Read().empty());
+// Fully specified gateway-like snapshots; expected business values are owned
+// by the fixture, independent of the production account engine.
+testing::MockTradingService::Event Report(model::OrderUpdateKind kind,
+                                          std::uint64_t sequence,
+                                          std::int64_t cumulative,
+                                          std::int64_t leaves,
+                                          std::uint64_t deadline) {
+  testing::MockTradingService::Event event;
+  event.deadline = deadline;
+  auto& dispatch = event.dispatch;
+  dispatch.notify_order = true;
+  dispatch.update.kind = kind;
+  auto& order = dispatch.update.order;
+  order.client_order_id = {1};
+  EXPECT_EQ(model::MakeInstrumentId("SSE", "600000", order.instrument_id),
+            ErrorCode::kOk);
+  EXPECT_EQ(order.broker_order_id.Assign("mock-broker"), ErrorCode::kOk);
+  order.side = model::OrderSide::kBuy;
+  order.limit_price = 1001;
+  order.original_qty = 200;
+  order.cumulative_filled_qty = cumulative;
+  order.leaves_qty = leaves;
+  order.report_sequence = sequence;
+  order.receive_time_ns = deadline;
+  order.state =
+      leaves == 0 ? model::OrderState::kFilled : model::OrderState::kWorking;
+  if (kind == model::OrderUpdateKind::kFill) {
+    dispatch.has_fill = true;
+    auto& fill = dispatch.fill;
+    fill.client_order_id = order.client_order_id;
+    fill.broker_order_id = order.broker_order_id;
+    fill.instrument_id = order.instrument_id;
+    fill.side = order.side;
+    fill.price = 1001;
+    fill.quantity = 100;
+    fill.receive_time_ns = deadline;
+    EXPECT_EQ(fill.execution_id.Assign(sequence == 2 ? "fill-1" : "fill-2"),
+              ErrorCode::kOk);
   }
+  return event;
 }
 
-TEST(TradingRunnerTest,
-     Fills200AsTwo100ShareExecutionsAndQueriesBeforeCallbacks) {
+void ScriptFills(testing::MockTradingService& service) {
+  service.initial_account.cash = {100000000000000, 0, 100000000000000};
+  service.events = {Report(model::OrderUpdateKind::kAccepted, 1, 0, 200, 1000),
+                    Report(model::OrderUpdateKind::kFill, 2, 100, 100, 2000),
+                    Report(model::OrderUpdateKind::kFill, 3, 200, 0, 3000)};
+}
+StrategyOptions Options(const char* plugin = YQUANT_TEST_TRADING_NORMAL_PATH) {
+  return {plugin, YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
+          YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+          YQUANT_TEST_TRADING_CLIENT_CONFIG_PATH};
+}
+
+TEST(TradingRunnerTest, UsesInjectedServiceAndDispatchesCommittedReports) {
   TradingEventPipe events;
   ASSERT_TRUE(events.valid());
   TradingClock clock;
   TradingQuoteSource source;
-  ObservedTradingAdapter adapter;
+  testing::MockTradingService service;
+  ScriptFills(service);
   TradingLoopEnvironment loop(clock);
-  loop.source = &source;
-  loop.adapter = &adapter;
-  RunnerTestHarness runner(clock, loop, source, adapter);
-  ASSERT_TRUE(
-      runner
-          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                  YQUANT_TEST_TRADING_CONFIG_PATH})
-          .ok())
-      << runner.error_detail();
+  loop.service = &service;
+  RunnerTestHarness runner(clock, loop, source, service);
+  ASSERT_TRUE(runner.Handle(Options()).ok()) << runner.error_detail();
   ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
-  EXPECT_EQ(adapter.account_reads, 1);
   EXPECT_EQ(events.Read(), "CPSQNAVFHVFHfTD");
-  EXPECT_EQ(adapter.send_orders, 1);
-  EXPECT_EQ(adapter.send_cancels, 0);
-  EXPECT_EQ(adapter.total_filled, 200);
-  EXPECT_EQ(source.poll_calls, 1);
+  EXPECT_EQ(service.send_calls, 1);
+  EXPECT_EQ(service.delivered, 3);
+  EXPECT_EQ(service.stop_calls, 1);
   EXPECT_EQ(source.stop_calls, 1);
-  EXPECT_EQ(adapter.stop_calls, 1);
-  EXPECT_EQ(clock.now, 3000000U);
-  ASSERT_EQ(loop.wait_calls, 3);
-  for (int index = 0; index < loop.wait_calls; ++index) {
-    EXPECT_EQ(loop.waits[static_cast<std::size_t>(index)], 1000000U);
-  }
+  EXPECT_EQ(clock.now, 3000U);
 }
 
-TEST(TradingRunnerTest, QuantityOneHasOneNonzeroFill) {
-  testing::ConfigFile config(
-      R"({"strategy_id":"one","parameters":{"quantity":1}})");
-  ASSERT_TRUE(config.valid());
+TEST(TradingRunnerTest, ServiceInitializationFailurePreventsPluginCreation) {
   TradingEventPipe events;
   ASSERT_TRUE(events.valid());
   TradingClock clock;
   TradingQuoteSource source;
-  ObservedTradingAdapter adapter;
+  testing::MockTradingService service;
+  service.init_result = {ErrorCode::kIoError, {}};
   TradingLoopEnvironment loop(clock);
-  loop.adapter = &adapter;
-  RunnerTestHarness runner(clock, loop, source, adapter);
-  ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                          config.path(),
-                                          YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                          YQUANT_TEST_TRADING_CONFIG_PATH})
-                  .ok())
-      << runner.error_detail();
-  ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
-  EXPECT_EQ(events.Read(), "CPSQNAVFIfTD");
-  EXPECT_EQ(adapter.total_filled, 1);
-  EXPECT_EQ(adapter.published, 2);
+  RunnerTestHarness runner(clock, loop, source, service);
+  EXPECT_EQ(runner.Handle(Options()).code, ErrorCode::kIoError);
+  EXPECT_STREQ(runner.error_stage(), "trading_connect");
+  EXPECT_TRUE(events.Read().empty());
+  EXPECT_EQ(service.init_calls, 1);
+  EXPECT_EQ(service.stop_calls, 1);
+  EXPECT_EQ(source.stop_calls, 1);
 }
 
-struct TradingModeCase {
+struct CallbackFailure {
   const char* name;
-  const char* mode;
   const char* plugin;
-  bool stop_after_accepted;
+  const char* stage;
   const char* trace;
 };
-class TradingModeTest : public ::testing::TestWithParam<TradingModeCase> {};
-TEST_P(TradingModeTest, HandlesBusinessOutcomesAndDrainsBeforeStop) {
-  testing::ConfigFile config(TradingConfigJson(GetParam().mode));
-  ASSERT_TRUE(config.valid());
+class TradingServiceCallbackTest
+    : public ::testing::TestWithParam<CallbackFailure> {};
+TEST_P(TradingServiceCallbackTest, SuppressesCallbacksWhileServiceDrains) {
   TradingEventPipe events;
   ASSERT_TRUE(events.valid());
   TradingClock clock;
   TradingQuoteSource source;
-  ObservedTradingAdapter adapter;
+  testing::MockTradingService service;
+  ScriptFills(service);
   TradingLoopEnvironment loop(clock);
-  loop.adapter = &adapter;
-  loop.stop_after_accepted = GetParam().stop_after_accepted;
-  RunnerTestHarness runner(clock, loop, source, adapter);
-  ASSERT_TRUE(
-      runner
-          .Handle(StrategyOptions{
-              GetParam().plugin, YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-              YQUANT_TEST_MARKET_DATA_CONFIG_PATH, config.path()})
-          .ok())
-      << runner.error_detail();
-  ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
-  EXPECT_EQ(events.Read(), GetParam().trace);
-}
-INSTANTIATE_TEST_SUITE_P(
-    MockOutcomes, TradingModeTest,
-    ::testing::Values(
-        TradingModeCase{"Rejected", "reject", YQUANT_TEST_TRADING_NORMAL_PATH,
-                        false, "CPSQNRrTD"},
-        TradingModeCase{"HostCancelsWorking", "working",
-                        YQUANT_TEST_TRADING_NORMAL_PATH, true, "CPSQNAXcTD"},
-        TradingModeCase{"StrategyCancelsWorking", "working",
-                        YQUANT_TEST_TRADING_CANCEL_PATH, false, "CPSQNAKXcTD"},
-        TradingModeCase{"PartialFillBeforeCancel", "fill",
-                        YQUANT_TEST_TRADING_CANCEL_PATH, false,
-                        "CPSQNAKVFHXcTD"},
-        TradingModeCase{"FilledBeforeQueuedCancelResult", "fill",
-                        YQUANT_TEST_TRADING_PARTIAL_CANCEL_PATH, false,
-                        "CPSQNAVKFHVFHJfTD"}),
-    [](const ::testing::TestParamInfo<TradingModeCase>& info) {
-      return info.param.name;
-    });
-
-TEST(TradingRunnerTest, StopCancelsAll200UnsentOrdersWithoutSendingAny) {
-  TradingEventPipe events;
-  ASSERT_TRUE(events.valid());
-  TradingClock clock;
-  TradingQuoteSource source;
-  ObservedTradingAdapter adapter;
-  TradingLoopEnvironment loop(clock);
-  loop.source = &source;
-  loop.adapter = &adapter;
-  loop.stop_after_quote = true;
-  RunnerTestHarness runner(clock, loop, source, adapter);
-  ASSERT_TRUE(
-      runner
-          .Handle(StrategyOptions{YQUANT_TEST_TRADING_BULK_PATH,
-                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                  YQUANT_TEST_TRADING_CONFIG_PATH})
-          .ok())
-      << runner.error_detail();
-  ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
-  EXPECT_EQ(adapter.send_orders, 0);
-  const auto trace = events.Read();
-  EXPECT_EQ(trace, "CPSQ" + std::string(200, 'N') + std::string(200, 'B') +
-                       std::string(200, 'c') + "TD");
-}
-
-struct TradingCallbackFailure {
-  const char* name;
-  const char* plugin;
-  const char* prefix;
-  const char* stage;
-};
-class TradingCallbackFailureTest
-    : public ::testing::TestWithParam<TradingCallbackFailure> {};
-TEST_P(TradingCallbackFailureTest, SuppressesCallbacksButCompletesHostDrain) {
-  TradingEventPipe events;
-  ASSERT_TRUE(events.valid());
-  TradingClock clock;
-  TradingQuoteSource source;
-  ObservedTradingAdapter adapter;
-  TradingLoopEnvironment loop(clock);
-  loop.adapter = &adapter;
-  RunnerTestHarness runner(clock, loop, source, adapter);
-  ASSERT_TRUE(
-      runner
-          .Handle(StrategyOptions{GetParam().plugin,
-                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                  YQUANT_TEST_TRADING_CONFIG_PATH})
-          .ok())
-      << runner.error_detail();
+  loop.service = &service;
+  RunnerTestHarness runner(clock, loop, source, service);
+  ASSERT_TRUE(runner.Handle(Options(GetParam().plugin)).ok());
   EXPECT_EQ(runner.Run().code, ErrorCode::kInvalidArgument);
-  EXPECT_EQ(runner.state(), RunnerState::kFinished);
   EXPECT_STREQ(runner.error_stage(), GetParam().stage);
-  const auto trace = events.Read();
-  const auto prefix_size = std::char_traits<char>::length(GetParam().prefix);
-  EXPECT_EQ(trace.substr(0, prefix_size), GetParam().prefix);
-  ASSERT_EQ(trace.size(), prefix_size + 3);
-  EXPECT_TRUE(trace[prefix_size] == 'c' || trace[prefix_size] == 'f');
-  EXPECT_EQ(trace.substr(prefix_size + 1), "TD");
-  EXPECT_EQ(std::count(trace.begin(), trace.end(), 'T'), 1);
-  EXPECT_EQ(std::count(trace.begin(), trace.end(), 'D'), 1);
-  EXPECT_TRUE(adapter.is_drained());
+  EXPECT_EQ(events.Read(), GetParam().trace);
+  EXPECT_EQ(service.delivered, 3);
+  EXPECT_EQ(service.stop_calls, 1);
 }
 INSTANTIATE_TEST_SUITE_P(
-    CallbackErrors, TradingCallbackFailureTest,
-    ::testing::Values(
-        TradingCallbackFailure{"OrderUpdate",
-                               YQUANT_TEST_TRADING_UPDATE_FAIL_PATH, "CPSQNA",
-                               "order_update"},
-        TradingCallbackFailure{"Fill", YQUANT_TEST_TRADING_FILL_FAIL_PATH,
-                               "CPSQNAVFH", "fill"}),
-    [](const ::testing::TestParamInfo<TradingCallbackFailure>& info) {
-      return info.param.name;
-    });
+    CallbackFailures, TradingServiceCallbackTest,
+    ::testing::Values(CallbackFailure{"OrderUpdate",
+                                      YQUANT_TEST_TRADING_UPDATE_FAIL_PATH,
+                                      "order_update", "CPSQNAfTD"},
+                      CallbackFailure{"Fill",
+                                      YQUANT_TEST_TRADING_FILL_FAIL_PATH,
+                                      "fill", "CPSQNAVFHfTD"}),
+    [](const auto& info) { return info.param.name; });
 
-TEST(TradingRunnerTest, DuplicateReportDoesNotRepeatBusinessCallbacks) {
+TEST(TradingRunnerTest, UncertainServiceSendIsNotRetried) {
   TradingEventPipe events;
   ASSERT_TRUE(events.valid());
   TradingClock clock;
   TradingQuoteSource source;
-  ObservedTradingAdapter adapter;
-  adapter.duplicate_first = true;
+  testing::MockTradingService service;
+  service.send_result = {ErrorCode::kIoError, {}};
   TradingLoopEnvironment loop(clock);
-  loop.adapter = &adapter;
-  RunnerTestHarness runner(clock, loop, source, adapter);
-  ASSERT_TRUE(
-      runner
-          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                  YQUANT_TEST_TRADING_CONFIG_PATH})
-          .ok())
-      << runner.error_detail();
-  ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
-  EXPECT_EQ(adapter.published, 4);
-  EXPECT_EQ(events.Read(), "CPSQNAVFHVFHfTD");
-}
-
-TEST(TradingRunnerTest, SequenceGapStopsWithoutApplyingTheInvalidReport) {
-  TradingEventPipe events;
-  ASSERT_TRUE(events.valid());
-  TradingClock clock;
-  TradingQuoteSource source;
-  ObservedTradingAdapter adapter;
-  adapter.sequence_gap = true;
-  TradingLoopEnvironment loop(clock);
-  loop.adapter = &adapter;
-  RunnerTestHarness runner(clock, loop, source, adapter);
-  ASSERT_TRUE(
-      runner
-          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                  YQUANT_TEST_TRADING_CONFIG_PATH})
-          .ok())
-      << runner.error_detail();
-  EXPECT_FALSE(runner.Run().ok());
-  EXPECT_EQ(runner.state(), RunnerState::kFinished);
-  EXPECT_STREQ(runner.error_stage(), "trading_event");
-  EXPECT_EQ(events.Read(), "CPSQNpTD");
-  EXPECT_NE(std::string(runner.error_detail()).find("client_order_id=1"),
-            std::string::npos);
-  EXPECT_NE(std::string(runner.error_detail()).find("sequence=2"),
-            std::string::npos);
-}
-
-TEST(TradingRunnerTest, UncertainSendIsNotRetriedOrLocallyCanceled) {
-  TradingEventPipe events;
-  ASSERT_TRUE(events.valid());
-  TradingClock clock;
-  TradingQuoteSource source;
-  ObservedTradingAdapter adapter;
-  adapter.fail_send = true;
-  TradingLoopEnvironment loop(clock);
-  loop.adapter = &adapter;
-  RunnerTestHarness runner(clock, loop, source, adapter);
-  ASSERT_TRUE(
-      runner
-          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                  YQUANT_TEST_TRADING_CONFIG_PATH})
-          .ok())
-      << runner.error_detail();
+  RunnerTestHarness runner(clock, loop, source, service);
+  ASSERT_TRUE(runner.Handle(Options()).ok());
   EXPECT_EQ(runner.Run().code, ErrorCode::kIoError);
   EXPECT_STREQ(runner.error_stage(), "trading_send");
-  EXPECT_EQ(adapter.send_orders, 1);
+  EXPECT_EQ(service.send_calls, 1);
+  EXPECT_EQ(service.stop_calls, 1);
   EXPECT_EQ(events.Read(), "CPSQNpTD");
 }
 
-TEST(TradingRunnerTest, PendingAcceptanceTimesOutAtTheOriginalDrainDeadline) {
-  TradingEventPipe events;
-  ASSERT_TRUE(events.valid());
+TEST(TradingRunnerTest, PollFailurePreservesFirstDiagnosticAndFinalizes) {
   TradingClock clock;
   TradingQuoteSource source;
-  ObservedTradingAdapter adapter;
-  adapter.never_report = true;
+  testing::MockTradingService service;
+  ScriptFills(service);
+  service.poll_result = {ErrorCode::kCorrupt, {}};
+  service.stop_result = {ErrorCode::kIoError, {}};
   TradingLoopEnvironment loop(clock);
-  loop.adapter = &adapter;
-  loop.stop_after_send = true;
-  RunnerTestHarness runner(clock, loop, source, adapter);
-  ASSERT_TRUE(
-      runner
-          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                  YQUANT_TEST_TRADING_CONFIG_PATH})
-          .ok())
-      << runner.error_detail();
-  EXPECT_FALSE(runner.Run().ok());
-  EXPECT_STREQ(runner.error_stage(), "trading_drain_timeout");
-  EXPECT_EQ(clock.now, 100000000U);
-  EXPECT_EQ(adapter.send_orders, 1);
-  EXPECT_EQ(events.Read(), "CPSQNpTD");
-  EXPECT_NE(std::string(runner.error_detail()).find("deadline"),
-            std::string::npos);
-  EXPECT_LT(loop.check_calls, 100);
+  RunnerTestHarness runner(clock, loop, source, service);
+  ASSERT_TRUE(runner.Handle(Options()).ok());
+  EXPECT_EQ(runner.Run().code, ErrorCode::kCorrupt);
+  EXPECT_STREQ(runner.error_stage(), "trading_poll");
+  EXPECT_EQ(service.delivered, 0);
+  EXPECT_EQ(service.stop_calls, 1);
 }
 
-TEST(TradingRunnerTest, ReadyQuotesDoNotStarveTradingAndShareTheBatchBudget) {
+TEST(TradingRunnerTest, StopsBeforeSendingQueuedRequestsAndBoundsDispatch) {
   TradingEventPipe events;
   ASSERT_TRUE(events.valid());
   TradingClock clock;
   TradingQuoteSource source;
-  source.continuous = true;
-  ObservedTradingAdapter adapter;
-  adapter.observed_source = &source;
+  testing::MockTradingService service;
   TradingLoopEnvironment loop(clock);
-  loop.adapter = &adapter;
-  loop.check_advance_ns = 1000000;
-  RunnerTestHarness runner(clock, loop, source, adapter);
-  ASSERT_TRUE(
-      runner
-          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                  YQUANT_TEST_TRADING_CONFIG_PATH})
-          .ok())
-      << runner.error_detail();
-  ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
-  ASSERT_EQ(adapter.published, 3);
-  for (std::size_t index = 1; index < 3; ++index) {
-    EXPECT_LE(adapter.source_polls_at_reports[index] -
-                  adapter.source_polls_at_reports[index - 1],
-              64);
-  }
-  EXPECT_EQ(loop.wait_calls, 0);
-  const auto trace = events.Read();
-  EXPECT_EQ(std::count(trace.begin(), trace.end(), 'A'), 1);
-  EXPECT_EQ(std::count(trace.begin(), trace.end(), 'V'), 2);
-  EXPECT_EQ(std::count(trace.begin(), trace.end(), 'F'), 2);
-  EXPECT_EQ(std::count(trace.begin(), trace.end(), 'N'), 1);
-  EXPECT_EQ(std::count(trace.begin(), trace.end(), 'T'), 1);
-  EXPECT_EQ(source.poll_calls, std::count(trace.begin(), trace.end(), 'Q'));
-}
-
-class MarketIdleDeadlineTest : public ::testing::TestWithParam<bool> {};
-
-TEST_P(MarketIdleDeadlineTest, ValidatesIdleAgainstTheTimePassedToPoll) {
-  TradingEventPipe events;
-  ASSERT_TRUE(events.valid());
-  TradingClock clock;
-  TradingQuoteSource source;
-  source.idle.clock = &clock;
-  source.idle.retain_due_deadline = GetParam();
-  ObservedTradingAdapter adapter;
-  TradingLoopEnvironment loop(clock);
-  loop.adapter = &adapter;
-  RunnerTestHarness runner(clock, loop, source, adapter);
-  ASSERT_TRUE(
-      runner
-          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                  YQUANT_TEST_TRADING_CONFIG_PATH})
-          .ok())
-      << runner.error_detail();
-  const auto result = runner.Run();
-  EXPECT_EQ(source.idle.idle_returns, 1);
-  EXPECT_EQ(runner.state(), RunnerState::kFinished);
-  if (GetParam()) {
-    EXPECT_EQ(result.code, ErrorCode::kCorrupt);
-    EXPECT_STREQ(runner.error_stage(), "market_data_poll");
-    EXPECT_EQ(adapter.send_orders, 0);
-    EXPECT_EQ(events.Read(), "CPSTD");
-  } else {
-    ASSERT_TRUE(result.ok()) << runner.error_detail();
-    EXPECT_EQ(source.poll_calls, 1);
-    EXPECT_EQ(adapter.total_filled, 200);
-    EXPECT_EQ(clock.now, 3000001U);
-    EXPECT_EQ(events.Read(), "CPSQNAVFHVFHfTD");
-  }
-}
-
-INSTANTIATE_TEST_SUITE_P(MarketIdleClockRace, MarketIdleDeadlineTest,
-                         ::testing::Bool(),
-                         [](const ::testing::TestParamInfo<bool>& info) {
-                           return info.param ? "StillDueAtPollInput"
-                                             : "BecomesDueDuringPoll";
-                         });
-
-class TradingIdleDeadlineTest : public ::testing::TestWithParam<bool> {};
-
-TEST_P(TradingIdleDeadlineTest, ValidatesIdleAgainstTheTimePassedToPoll) {
-  TradingEventPipe events;
-  ASSERT_TRUE(events.valid());
-  TradingClock clock;
-  TradingQuoteSource source;
-  ObservedTradingAdapter adapter;
-  adapter.idle.clock = &clock;
-  adapter.idle.retain_due_deadline = GetParam();
-  TradingLoopEnvironment loop(clock);
-  loop.adapter = &adapter;
-  RunnerTestHarness runner(clock, loop, source, adapter);
-  ASSERT_TRUE(
-      runner
-          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                  YQUANT_TEST_TRADING_CONFIG_PATH})
-          .ok())
-      << runner.error_detail();
-  const auto result = runner.Run();
-  EXPECT_EQ(adapter.idle.idle_returns, 1);
-  EXPECT_EQ(runner.state(), RunnerState::kFinished);
-  if (GetParam()) {
-    EXPECT_EQ(result.code, ErrorCode::kCorrupt);
-    EXPECT_STREQ(runner.error_stage(), "trading_poll");
-    EXPECT_EQ(adapter.accepted, 0);
-    EXPECT_EQ(events.Read(), "CPSQNpTD");
-  } else {
-    ASSERT_TRUE(result.ok()) << runner.error_detail();
-    EXPECT_EQ(adapter.total_filled, 200);
-    EXPECT_EQ(clock.now, 3000001U);
-    EXPECT_EQ(events.Read(), "CPSQNAVFHVFHfTD");
-  }
-}
-
-INSTANTIATE_TEST_SUITE_P(TradingIdleClockRace, TradingIdleDeadlineTest,
-                         ::testing::Bool(),
-                         [](const ::testing::TestParamInfo<bool>& info) {
-                           return info.param ? "StillDueAtPollInput"
-                                             : "BecomesDueDuringPoll";
-                         });
-
-struct SellAccountCase {
-  const char* name;
-  const char* mode;
-  const char* plugin;
-  const char* trace;
-};
-class SellAccountTest : public ::testing::TestWithParam<SellAccountCase> {};
-
-TEST_P(SellAccountTest, UpdatesCashAndSellReservationsBeforeCallbacks) {
-  testing::ConfigFile strategy_config(
-      R"({"strategy_id":"sell-account","parameters":{"side":"sell"}})");
-  testing::ConfigFile trading_config(TradingConfigJson(GetParam().mode));
-  ASSERT_TRUE(strategy_config.valid());
-  ASSERT_TRUE(trading_config.valid());
-  TradingEventPipe events;
-  ASSERT_TRUE(events.valid());
-  TradingClock clock;
-  TradingQuoteSource source;
-  ObservedTradingAdapter adapter;
-  TradingLoopEnvironment loop(clock);
-  loop.adapter = &adapter;
-  RunnerTestHarness runner(clock, loop, source, adapter);
-  ASSERT_TRUE(
-      runner
-          .Handle(StrategyOptions{GetParam().plugin, strategy_config.path(),
-                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                  trading_config.path()})
-          .ok())
-      << runner.error_detail();
-  ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
-  EXPECT_EQ(events.Read(), GetParam().trace);
-  EXPECT_EQ(adapter.send_orders, 1);
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    SellAccounts, SellAccountTest,
-    ::testing::Values(
-        SellAccountCase{"Filled", "fill", YQUANT_TEST_TRADING_NORMAL_PATH,
-                        "CPSQNAVFHVFHfTD"},
-        SellAccountCase{"PartialThenCanceled", "fill",
-                        YQUANT_TEST_TRADING_CANCEL_PATH, "CPSQNAKVFHXcTD"},
-        SellAccountCase{"Rejected", "reject", YQUANT_TEST_TRADING_NORMAL_PATH,
-                        "CPSQNRrTD"}),
-    [](const ::testing::TestParamInfo<SellAccountCase>& info) {
-      return info.param.name;
-    });
-
-TEST(TradingRunnerTest, ImprovedExecutionPriceReleasesUnusedBuyReservation) {
-  testing::ConfigFile strategy_config(
-      R"({"strategy_id":"improved-price","parameters":{"price_improvement":1}})");
-  ASSERT_TRUE(strategy_config.valid());
-  TradingEventPipe events;
-  ASSERT_TRUE(events.valid());
-  TradingClock clock;
-  TradingQuoteSource source;
-  ObservedTradingAdapter adapter;
-  adapter.price_improvement = 1;
-  TradingLoopEnvironment loop(clock);
-  loop.adapter = &adapter;
-  RunnerTestHarness runner(clock, loop, source, adapter);
-  ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                          strategy_config.path(),
-                                          YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                          YQUANT_TEST_TRADING_CONFIG_PATH})
-                  .ok())
-      << runner.error_detail();
-  ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
-  EXPECT_EQ(events.Read(), "CPSQNAVFHVFHfTD");
-}
-
-class InsufficientAccountTest : public ::testing::TestWithParam<bool> {};
-
-TEST_P(InsufficientAccountTest,
-       LocalFailurePreservesOutputBookCashAndPosition) {
-  const bool sell = GetParam();
-  testing::ConfigFile strategy_config(
-      sell ? R"({"strategy_id":"no-shares","parameters":{"side":"sell"}})"
-           : R"({"strategy_id":"no-cash","parameters":{}})");
-  testing::ConfigFile trading_config(TradingConfigJson(
-      "fill", 100, sell ? 100000000000000 : 0, sell ? 1 : 800));
-  ASSERT_TRUE(strategy_config.valid());
-  ASSERT_TRUE(trading_config.valid());
-  TradingEventPipe events;
-  ASSERT_TRUE(events.valid());
-  TradingClock clock;
-  TradingQuoteSource source;
-  ObservedTradingAdapter adapter;
-  TradingLoopEnvironment loop(clock);
-  loop.adapter = &adapter;
+  loop.service = &service;
   loop.source = &source;
   loop.stop_after_quote = true;
-  RunnerTestHarness runner(clock, loop, source, adapter);
-  ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_TRADING_INSUFFICIENT_PATH,
-                                          strategy_config.path(),
-                                          YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                          trading_config.path()})
-                  .ok())
-      << runner.error_detail();
+  RunnerTestHarness runner(clock, loop, source, service);
+  ASSERT_TRUE(runner.Handle(Options(YQUANT_TEST_TRADING_BULK_PATH)).ok());
   ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
-  EXPECT_EQ(events.Read(), "CPSQLTD");
-  EXPECT_EQ(adapter.send_orders, 0);
-  EXPECT_EQ(adapter.send_cancels, 0);
+  const auto trace = events.Read();
+  EXPECT_EQ(std::count(trace.begin(), trace.end(), 'N'), 200);
+  EXPECT_EQ(std::count(trace.begin(), trace.end(), 'B'), 200);
+  EXPECT_EQ(service.send_calls, 0);
+  EXPECT_GE(loop.checks, 6);
 }
 
-INSTANTIATE_TEST_SUITE_P(LocalAccountRejections, InsufficientAccountTest,
-                         ::testing::Bool(),
-                         [](const ::testing::TestParamInfo<bool>& info) {
-                           return info.param ? "InsufficientShares"
-                                             : "InsufficientCash";
-                         });
-
-class AccountBootstrapFailureTest : public ::testing::TestWithParam<bool> {};
-
-TEST_P(AccountBootstrapFailureTest, RejectsBeforeFactoryAndOnStart) {
-  TradingEventPipe events;
-  ASSERT_TRUE(events.valid());
+TEST(TradingRunnerTest, DrainTimeoutUsesClientShutdownDeadline) {
   TradingClock clock;
   TradingQuoteSource source;
-  ObservedTradingAdapter adapter;
-  adapter.fail_account_read = GetParam();
-  adapter.invalid_account = !GetParam();
+  testing::MockTradingService service;
+  ScriptFills(service);
+  service.never_drained = true;
   TradingLoopEnvironment loop(clock);
-  RunnerTestHarness runner(clock, loop, source, adapter);
-  EXPECT_FALSE(
-      runner
-          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                  YQUANT_TEST_TRADING_CONFIG_PATH})
-          .ok());
-  EXPECT_STREQ(runner.error_stage(), "trading_account");
-  EXPECT_EQ(runner.state(), RunnerState::kFinished);
-  EXPECT_EQ(adapter.account_reads, 1);
-  EXPECT_EQ(adapter.stop_calls, 1);
-  EXPECT_EQ(adapter.send_orders, 0);
-  EXPECT_EQ(source.poll_calls, 0);
-  EXPECT_TRUE(events.Read().empty());
+  loop.service = &service;
+  RunnerTestHarness runner(clock, loop, source, service);
+  ASSERT_TRUE(runner.Handle(Options()).ok());
+  EXPECT_EQ(runner.Run().code, ErrorCode::kIoError);
+  EXPECT_STREQ(runner.error_stage(), "trading_drain_timeout");
+  EXPECT_EQ(clock.now, 1000003000U);
 }
 
-INSTANTIATE_TEST_SUITE_P(AccountBootstrapFailures, AccountBootstrapFailureTest,
-                         ::testing::Bool(),
-                         [](const ::testing::TestParamInfo<bool>& info) {
-                           return info.param ? "ReadFailure"
-                                             : "InvalidSnapshot";
-                         });
-
-TEST(TradingRunnerTest, PollDrivenEmptyReadsDoNotStarveReportsOrStopping) {
-  TradingEventPipe events;
-  ASSERT_TRUE(events.valid());
+TEST(TradingRunnerTest, ReadyMarketDoesNotStarveServiceReports) {
   TradingClock clock;
+  clock.now = 10000;
   TradingQuoteSource source;
-  source.poll_driven_idle = true;
-  ObservedTradingAdapter adapter;
+  source.continuous = true;
+  testing::MockTradingService service;
+  ScriptFills(service);
   TradingLoopEnvironment loop(clock);
-  loop.adapter = &adapter;
-  loop.check_advance_ns = 1000000;
-  RunnerTestHarness runner(clock, loop, source, adapter);
-  ASSERT_TRUE(
-      runner
-          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                  YQUANT_TEST_TRADING_CONFIG_PATH})
-          .ok())
-      << runner.error_detail();
+  loop.service = &service;
+  RunnerTestHarness runner(clock, loop, source, service);
+  ASSERT_TRUE(runner.Handle(Options()).ok());
   ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
-  EXPECT_EQ(runner.state(), RunnerState::kFinished);
-  EXPECT_EQ(source.poll_calls, 1);
-  EXPECT_GT(source.idle_polls, 0);
-  EXPECT_EQ(adapter.published, 3);
-  EXPECT_EQ(adapter.total_filled, 200);
-  EXPECT_EQ(loop.wait_calls, 0);
-  EXPECT_EQ(source.stop_calls, 1);
-  EXPECT_EQ(adapter.stop_calls, 1);
-  EXPECT_EQ(events.Read(), "CPSQNAVFHVFHfTD");
+  EXPECT_EQ(service.delivered, 3);
+  EXPECT_EQ(service.send_calls, 1);
+  EXPECT_LE(source.poll_calls, 128);
 }
 
-TEST(TradingRunnerTest, ColdServiceDeadlinePrecedesTheNextTradingReport) {
-  TradingEventPipe events;
-  ASSERT_TRUE(events.valid());
+TEST(TradingRunnerTest, MarketMaintenanceFailureStillDrainsService) {
   TradingClock clock;
   TradingQuoteSource source;
-  source.service_deadline = 500000;
-  ObservedTradingAdapter adapter;
-  TradingLoopEnvironment loop(clock);
-  loop.adapter = &adapter;
-  RunnerTestHarness runner(clock, loop, source, adapter);
-  ASSERT_TRUE(
-      runner
-          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                  YQUANT_TEST_TRADING_CONFIG_PATH})
-          .ok())
-      << runner.error_detail();
-  ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
-  ASSERT_GE(loop.wait_calls, 2);
-  EXPECT_EQ(loop.waits[0], 500000U);
-  EXPECT_EQ(loop.waits[1], 500000U);
-  EXPECT_EQ(source.due_services, 1);
-  EXPECT_EQ(source.serviced_at, 500000U);
-  EXPECT_EQ(adapter.total_filled, 200);
-  EXPECT_EQ(events.Read(), "CPSQNAVFHVFHfTD");
-}
-
-TEST(TradingRunnerTest, MarketServiceErrorStillDrainsTheWorkingOrder) {
-  testing::ConfigFile config(TradingConfigJson("working"));
-  ASSERT_TRUE(config.valid());
-  TradingEventPipe events;
-  ASSERT_TRUE(events.valid());
-  TradingClock clock;
-  TradingQuoteSource source;
-  source.service_deadline = 2000000;
+  source.service_deadline = 500;
   source.fail_service = true;
-  ObservedTradingAdapter adapter;
+  testing::MockTradingService service;
+  ScriptFills(service);
   TradingLoopEnvironment loop(clock);
-  loop.adapter = &adapter;
-  RunnerTestHarness runner(clock, loop, source, adapter);
-  ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{
-                      YQUANT_TEST_TRADING_NORMAL_PATH,
-                      YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                      YQUANT_TEST_MARKET_DATA_CONFIG_PATH, config.path()})
-                  .ok())
-      << runner.error_detail();
+  RunnerTestHarness runner(clock, loop, source, service);
+  ASSERT_TRUE(runner.Handle(Options(YQUANT_TEST_TRADING_FILL_FAIL_PATH)).ok());
   EXPECT_EQ(runner.Run().code, ErrorCode::kIoError);
   EXPECT_STREQ(runner.error_stage(), "market_data_service");
-  EXPECT_NE(std::string(runner.error_detail())
-                .find("injected market maintenance failure"),
-            std::string::npos);
-  EXPECT_EQ(source.serviced_at, 2000000U);
-  EXPECT_EQ(source.stop_calls, 1);
-  EXPECT_EQ(adapter.send_cancels, 1);
-  EXPECT_TRUE(adapter.is_drained());
-  const auto trace = events.Read();
-  ASSERT_GE(trace.size(), 9U);
-  EXPECT_EQ(trace.substr(0, 6), "CPSQNA");
-  EXPECT_EQ(trace.substr(trace.size() - 3), "cTD");
-  EXPECT_EQ(std::count(trace.begin(), trace.end(), 'T'), 1);
-  EXPECT_EQ(std::count(trace.begin(), trace.end(), 'D'), 1);
+  EXPECT_EQ(service.delivered, 3);
+  EXPECT_EQ(source.serviced_at, 500U);
+  EXPECT_EQ(service.stop_calls, 1);
 }
 
+TEST(TradingRunnerTest, ReportsServiceStopFailureAfterSuccessfulCallbacks) {
+  TradingClock clock;
+  TradingQuoteSource source;
+  testing::MockTradingService service;
+  ScriptFills(service);
+  service.stop_result = {ErrorCode::kIoError, {}};
+  TradingLoopEnvironment loop(clock);
+  loop.service = &service;
+  RunnerTestHarness runner(clock, loop, source, service);
+  ASSERT_TRUE(runner.Handle(Options()).ok());
+  EXPECT_EQ(runner.Run().code, ErrorCode::kIoError);
+  EXPECT_STREQ(runner.error_stage(), "trading_stop");
+}
+
+TEST(TradingRunnerTest, ServiceCapacityRejectionPreservesStrategyLifecycle) {
+  TradingEventPipe events;
+  ASSERT_TRUE(events.valid());
+  TradingClock clock;
+  TradingQuoteSource source;
+  testing::MockTradingService service;
+  service.submit_result = ErrorCode::kResourceExhausted;
+  TradingLoopEnvironment loop(clock);
+  loop.source = &source;
+  loop.stop_after_quote = true;
+  RunnerTestHarness runner(clock, loop, source, service);
+  ASSERT_TRUE(
+      runner.Handle(Options(YQUANT_TEST_TRADING_INSUFFICIENT_PATH)).ok());
+  ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
+  EXPECT_EQ(service.send_calls, 0);
+  EXPECT_EQ(events.Read(), "CPSQLTD");
+}
 }  // namespace
 }  // namespace yquant::strategyd
