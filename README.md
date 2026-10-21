@@ -33,11 +33,11 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 
 - `include/yquant/base/`：基础组件公开头文件。
 - `include/yquant/model/`：交易领域公共类型。
-- `include/yquant/md/`：共享内存行情订阅发布与标准报价帧。
+- `include/yquant/md/`：共享内存行情广播与标准报价帧。
 - `include/yquant/strategy/`：策略开发接口与动态库协议。
-- `src/base/`：基础组件及内部实现。
+- `src/base/`：基础组件及内部实现，包括内存广播队列和共享内存封装。
 - `src/strategyd/`：策略进程与动态库加载实现。
-- `src/md/`：共享内存映射、seqlock 协议和报价编解码。
+- `src/md/`：行情事件广播适配与报价编解码。
 - `src/marketd/`：行情进程、配置、输入与输出适配器。
 - `src/tradingd/`：共享账户交易网关、跨机协议与 TCP 连接。
 - `examples/tradingd/`：共享交易网关与策略客户端配置。
@@ -183,12 +183,13 @@ cmake --build --preset debug --target download_test_data
 
 - [日志选型与设计](docs/design/logging.md)：异步日志库对比、队列策略与验证标准。
 - [SPSC 队列设计](docs/design/spsc-queue.md)：低延迟内存消息队列设计。
+- [单写多读广播队列](docs/design/broadcast-queue.md)：外部内存、seqlock、独立游标和覆盖缺口。
 - [策略进程与动态策略加载设计](docs/design/strategyd.md)：生命周期接口、动态库协议与命令执行流程。
 - [策略配置设计](docs/design/strategy-config.md)：JSON 分层、强类型配置与启动校验。
 - [行情驱动与策略事件循环](docs/design/market-data.md)：一档报价、策略上下文、模拟行情源与事件分派。
 - [行情进程设计](docs/design/marketd.md)：可配置行情管线、本机广播和跨机中继。
 - [行情回放与录制](docs/design/market-data-replay.md)：真实 CSV 转换、回放时序和异步录制格式。
-- [共享内存行情订阅发布组件](docs/design/shared-memory-pubsub.md)：seqlock、独立游标、覆盖缺口和重启隔离。
+- [共享内存行情广播组件](docs/design/shared-memory-broadcast.md)：映射、流注册、心跳、重启隔离和行情适配。
 - [交易执行与账户账本](docs/design/trading.md)：限价委托、撤单与异步回报的执行闭环。
 - [共享交易网关](docs/design/tradingd.md)：多机策略共享账户、订单归属、TCP 协议和断线收尾。
 - [一档双边做市策略](docs/design/bbo-market-making.md)：策略伪代码、所需数据与回调语义。

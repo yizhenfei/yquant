@@ -34,20 +34,14 @@ target_link_libraries(yquant_strategy_api INTERFACE yquant_compile_options)
 add_library(yquant_md STATIC
   src/md/event_codec.cc
   src/md/quote_codec.cc
-  src/md/shm_pubsub.cc
-  src/md/shm_segment.cc)
+  src/md/shm_broadcast.cc)
 add_library(yquant::md ALIAS yquant_md)
 target_include_directories(yquant_md PUBLIC
   "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
   PRIVATE "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(yquant_md PUBLIC yquant_compile_options Threads::Threads)
+target_link_libraries(yquant_md PUBLIC
+  yquant::base yquant_compile_options Threads::Threads)
 target_compile_options(yquant_md PRIVATE -Wall -Wextra -Wpedantic)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  find_library(YQUANT_RT_LIBRARY rt)
-  if(YQUANT_RT_LIBRARY)
-    target_link_libraries(yquant_md PRIVATE ${YQUANT_RT_LIBRARY})
-  endif()
-endif()
 
 # Both daemons reuse host configuration, mock input and termination handling.
 add_library(yquant_host_support STATIC
@@ -182,6 +176,10 @@ foreach(config IN ITEMS replay_market_data replay_observer)
 endforeach()
 
 add_library(yquant_base STATIC
+  src/base/broadcast_queue.cc
+  src/base/shared_memory_mapping.cc
+  src/base/shm_stream_registry.cc
+  src/base/shm_broadcast.cc
   src/base/spsc_queue.cc
   src/base/logging.cc
   src/base/logger.cc)
@@ -192,6 +190,13 @@ target_include_directories(yquant_base PUBLIC
 target_link_libraries(yquant_base PUBLIC
   yquant_compile_options fmt::fmt Threads::Threads)
 target_compile_options(yquant_base PRIVATE -Wall -Wextra -Wpedantic)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_library(YQUANT_RT_LIBRARY rt)
+  if(YQUANT_RT_LIBRARY)
+    target_link_libraries(yquant_base PRIVATE ${YQUANT_RT_LIBRARY})
+  endif()
+endif()
 
 set(YQUANT_LOG_COMPILED_LEVEL "" CACHE STRING
   "Log compile threshold: empty (Debug DEBUG, otherwise INFO), TRACE, DEBUG, INFO, WARNING, ERROR, or CRITICAL")
@@ -211,6 +216,29 @@ endif()
 
 if(BUILD_TESTING)
   include(GoogleTest)
+
+  add_executable(broadcast_queue_test
+    tests/base/broadcast_queue_test.cc
+    tests/base/shm_broadcast_test.cc)
+  target_include_directories(broadcast_queue_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+  target_link_libraries(broadcast_queue_test PRIVATE
+    yquant::base GTest::gtest_main Threads::Threads)
+  target_compile_options(broadcast_queue_test PRIVATE -Wall -Wextra -Wpedantic)
+  gtest_discover_tests(broadcast_queue_test
+    DISCOVERY_MODE PRE_TEST
+    DISCOVERY_TIMEOUT 30
+    PROPERTIES ${yquant_test_properties})
+
+  add_executable(broadcast_queue_allocation_test
+    tests/base/broadcast_queue_allocation_test.cc)
+  target_link_libraries(broadcast_queue_allocation_test PRIVATE
+    yquant::base GTest::gtest_main)
+  target_compile_options(broadcast_queue_allocation_test PRIVATE
+    -Wall -Wextra -Wpedantic)
+  gtest_discover_tests(broadcast_queue_allocation_test
+    DISCOVERY_MODE PRE_TEST
+    DISCOVERY_TIMEOUT 30
+    PROPERTIES ${yquant_test_properties})
 
   add_executable(spsc_queue_test
     tests/base/spsc_queue_test.cc

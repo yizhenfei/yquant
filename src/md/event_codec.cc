@@ -4,8 +4,6 @@
 #include <cstring>
 #include <limits>
 
-#include "md/internal/shm_segment.h"
-
 namespace yquant::md::internal {
 namespace {
 

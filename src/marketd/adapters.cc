@@ -52,14 +52,14 @@ const char* MockSource::error_detail() const noexcept {
 
 base::Status ShmSource::Init(const md::Endpoint& endpoint) noexcept {
   if (active_) return {base::ErrorCode::kInvalidState, {}};
-  const auto status = subscriber_.Open(endpoint);
+  const auto status = reader_.Open(endpoint);
   if (!status.ok()) {
     std::snprintf(error_detail_, sizeof(error_detail_),
                   "cannot open shared-memory input");
     return status;
   }
-  if (subscriber_.max_payload_size() < md::kQuoteFrameSize) {
-    subscriber_.Close();
+  if (reader_.max_payload_size() < md::kQuoteFrameSize) {
+    reader_.Close();
     std::snprintf(error_detail_, sizeof(error_detail_),
                   "input payload limit is smaller than quote frame");
     return {base::ErrorCode::kInvalidArgument, {}};
@@ -85,14 +85,14 @@ PollResult ShmSource::Poll(std::uint64_t now, model::QuoteTick& out) noexcept {
   if (!active_)
     return Fail({base::ErrorCode::kInvalidState, {}}, "input is closed");
   if (now >= next_refresh_) {
-    const auto status = subscriber_.Refresh(refreshed_);
+    const auto status = reader_.Refresh(refreshed_);
     if (!status.ok()) return Fail(status, "input discovery refresh failed");
     next_refresh_ = NextControl(now);
     if (refreshed_.status == md::RefreshStatus::kStreamChanged)
       return Fail({base::ErrorCode::kInvalidState, {}},
                   "input stream generation changed");
   }
-  const auto result = subscriber_.TryNext(buffer_);
+  const auto result = reader_.TryNext(buffer_);
   switch (result.status) {
     case md::ReadStatus::kEvent: {
       model::QuoteTick decoded;
@@ -103,7 +103,6 @@ PollResult ShmSource::Poll(std::uint64_t now, model::QuoteTick& out) noexcept {
       return {PollState::kEvent, {}};
     }
     case md::ReadStatus::kEmpty:
-    case md::ReadStatus::kYield:
     case md::ReadStatus::kRetry:
       // A vanished/stalled writer can leave valid committed quotes. Drain
       // those first; never invent a successful recovery after the backlog.
@@ -145,7 +144,7 @@ PollResult ShmSource::Poll(std::uint64_t now, model::QuoteTick& out) noexcept {
 }
 
 void ShmSource::Close() noexcept {
-  subscriber_.Close();
+  reader_.Close();
   active_ = false;
 }
 

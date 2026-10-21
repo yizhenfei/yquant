@@ -1,5 +1,6 @@
 add_executable(yquant_md_test
-  tests/md/shm_pubsub_test.cc
+  tests/md/event_filter_test.cc
+  tests/md/shm_broadcast_test.cc
   tests/md/quote_codec_test.cc)
 target_include_directories(yquant_md_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(yquant_md_test PRIVATE

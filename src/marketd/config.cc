@@ -14,6 +14,7 @@
 
 #include "strategyd/json_config_document.h"
 #include "yquant/md/quote_codec.h"
+#include "yquant/md/shm_broadcast.h"
 
 namespace yquant::marketd {
 namespace {

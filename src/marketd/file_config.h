@@ -22,7 +22,7 @@ struct ReplayConfig {
   char path[kMaxDataPathBytes + 1] = {};
   ReplayFormat format = ReplayFormat::kRecording;
   double speed = 1.0;
-  // Delay from the first Poll, allowing local subscribers to attach first.
+  // Delay from the first Poll, allowing local readers to attach first.
   std::uint64_t start_delay_ns = 0;
   std::size_t max_records = 1000000;
   model::SourceId source_id{1};

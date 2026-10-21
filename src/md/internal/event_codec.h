@@ -5,9 +5,12 @@
 #include <span>
 
 #include "md/internal/result.h"
-#include "yquant/md/shm_pubsub.h"
+#include "yquant/md/event.h"
 
 namespace yquant::md::internal {
+
+inline constexpr std::size_t kWireHeaderSize = 64;
+inline constexpr std::uint64_t kEventSchemaVersion = 1;
 
 // Encodes to private fixed-word storage. Failure leaves words unchanged.
 // words must fit the configured payload maximum; shared access happens

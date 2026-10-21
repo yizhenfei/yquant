@@ -1,4 +1,4 @@
-#include "yquant/md/shm_pubsub.h"
+#include "yquant/md/shm_broadcast.h"
 
 #include <fcntl.h>
 #include <poll.h>
@@ -20,16 +20,19 @@
 #include <utility>
 #include <vector>
 
+#include "base/internal/broadcast_layout.h"
+#include "base/internal/shared_memory_mapping.h"
+#include "base/internal/shm_broadcast_layout.h"
+#include "base/internal/shm_stream_registry.h"
 #include "gtest/gtest.h"
 #include "md/internal/event_codec.h"
-#include "md/internal/shm_segment.h"
 
 namespace yquant::md {
 namespace {
 
 using namespace std::chrono_literals;
 
-class ShmPubsubTest : public ::testing::Test {
+class ShmBroadcastTest : public ::testing::Test {
  protected:
   void SetUp() override {
     std::array<char, 64> pattern{};
@@ -40,7 +43,7 @@ class ShmPubsubTest : public ::testing::Test {
   }
 
   void TearDown() override {
-    auto stale = internal::Discover(endpoint_);
+    auto stale = base::internal::Discover(endpoint_);
     if (stale) ::shm_unlink(stale->shm_name.c_str());
     std::error_code ignored;
     std::filesystem::remove_all(endpoint_.runtime_directory, ignored);
@@ -53,11 +56,10 @@ class ShmPubsubTest : public ::testing::Test {
     return publisher;
   }
 
-  ShmSubscriber Subscriber(StartPosition start = StartPosition::At(1),
-                           Subscription filter = {}) {
-    ShmSubscriber subscriber;
-    EXPECT_TRUE(subscriber.Open(endpoint_, filter, start).ok());
-    return subscriber;
+  ShmReader Reader(StartPosition start = StartPosition::At(1)) {
+    ShmReader reader;
+    EXPECT_TRUE(reader.Open(endpoint_, start).ok());
+    return reader;
   }
 
   Endpoint endpoint_;
@@ -93,12 +95,12 @@ void Publish(ShmPublisher& publisher, std::uint64_t value,
   EXPECT_EQ(sequence, value);
 }
 
-void ExpectEvent(ShmSubscriber& subscriber, EventBuffer& buffer,
+void ExpectEvent(ShmReader& reader, EventBuffer& buffer,
                  std::uint64_t sequence) {
-  const auto result = subscriber.TryNext(buffer);
+  const auto result = reader.TryNext(buffer);
   ASSERT_EQ(result.status, ReadStatus::kEvent);
   EXPECT_EQ(result.sequence, sequence);
-  EXPECT_EQ(result.generation, subscriber.generation());
+  EXPECT_EQ(result.generation, reader.generation());
   EXPECT_EQ(buffer.header.source_id, 13);
   EXPECT_EQ(buffer.header.source_sequence, sequence);
   EXPECT_EQ(buffer.header.source_timestamp_ns, sequence * 1000);
@@ -106,19 +108,6 @@ void ExpectEvent(ShmSubscriber& subscriber, EventBuffer& buffer,
   const auto expected = Payload(sequence, buffer.payload_size);
   EXPECT_TRUE(
       std::equal(expected.begin(), expected.end(), buffer.payload.begin()));
-}
-
-Subscription Filter(std::initializer_list<std::uint64_t> instruments,
-                    std::initializer_list<std::uint32_t> types = {},
-                    bool all_types = true) {
-  Subscription filter;
-  filter.all_instruments = false;
-  filter.instrument_count = instruments.size();
-  std::copy(instruments.begin(), instruments.end(), filter.instruments.begin());
-  filter.all_event_types = all_types;
-  filter.event_type_count = types.size();
-  std::copy(types.begin(), types.end(), filter.event_types.begin());
-  return filter;
 }
 
 class Pipe {
@@ -189,13 +178,13 @@ class Child {
   pid_t pid_ = -1;
 };
 
-TEST_F(ShmPubsubTest, MultipleReadersAndLiveStart) {
+TEST_F(ShmBroadcastTest, MultipleReadersAndLiveStart) {
   auto publisher = Publisher(16);
   Publish(publisher, 1, 42, 7, EventScope::kBusiness, 13);
   Publish(publisher, 2, 42, 7, EventScope::kBusiness, 0);
-  auto a = Subscriber();
-  auto b = Subscriber();
-  auto live = Subscriber(StartPosition::Live());
+  auto a = Reader();
+  auto b = Reader();
+  auto live = Reader(StartPosition::Live());
   EXPECT_EQ(live.next_sequence(), 3);
   EventBuffer buffer;
   EXPECT_EQ(live.TryNext(buffer).status, ReadStatus::kEmpty);
@@ -210,7 +199,7 @@ TEST_F(ShmPubsubTest, MultipleReadersAndLiveStart) {
   EXPECT_EQ(a.TryNext(buffer).status, ReadStatus::kEmpty);
 }
 
-TEST_F(ShmPubsubTest, LocalFilteringAndBoundedScanning) {
+TEST_F(ShmBroadcastTest, DeliversEveryEventInStreamOrder) {
   auto publisher = Publisher(16);
   Publish(publisher, 1, 99, 7);
   Publish(publisher, 2, 42, 8);
@@ -218,42 +207,16 @@ TEST_F(ShmPubsubTest, LocalFilteringAndBoundedScanning) {
   Publish(publisher, 4, 99, 99, EventScope::kInstrumentStatus);
   Publish(publisher, 5, 42, 99, EventScope::kInstrumentStatus);
   Publish(publisher, 6, 42, 7);
-  auto subscriber = Subscriber(StartPosition::At(1), Filter({42}, {7}, false));
+  auto reader = Reader();
   EventBuffer buffer;
-  auto result = subscriber.TryNext(buffer, {1, 8});
-  EXPECT_EQ(result.status, ReadStatus::kYield);
-  EXPECT_EQ(result.scanned, 1);
-  EXPECT_EQ(subscriber.next_sequence(), 2);
-  EXPECT_EQ(subscriber.TryNext(buffer, {1, 8}).status, ReadStatus::kYield);
-  ExpectEvent(subscriber, buffer, 3);
-  ExpectEvent(subscriber, buffer, 5);
-  ExpectEvent(subscriber, buffer, 6);
-  EXPECT_EQ(subscriber.TryNext(buffer).status, ReadStatus::kEmpty);
-  auto empty = Subscriber(StartPosition::At(1), Filter({}));
-  ExpectEvent(empty, buffer, 3);
-  EXPECT_EQ(empty.TryNext(buffer).status, ReadStatus::kEmpty);
+  for (std::uint64_t sequence = 1; sequence <= 6; ++sequence) {
+    ExpectEvent(reader, buffer, sequence);
+    EXPECT_EQ(reader.next_sequence(), sequence + 1);
+  }
+  EXPECT_EQ(reader.TryNext(buffer).status, ReadStatus::kEmpty);
 }
 
-TEST_F(ShmPubsubTest, SubscriptionEffectiveBoundary) {
-  auto publisher = Publisher();
-  Publish(publisher, 1, 2);
-  Publish(publisher, 2, 1);
-  Publish(publisher, 3, 2);
-  auto subscriber = Subscriber(StartPosition::At(1), Filter({1}));
-  EventBuffer buffer;
-  EXPECT_EQ(subscriber.TryNext(buffer, {1, 8}).status, ReadStatus::kYield);
-  std::uint64_t boundary = 0;
-  ASSERT_TRUE(subscriber.SetSubscription(Filter({2}), boundary).ok());
-  EXPECT_EQ(boundary, 2);
-  ExpectEvent(subscriber, buffer, 3);
-  EXPECT_EQ(subscriber.next_sequence(), 4);
-  auto invalid = Filter({2});
-  invalid.instrument_count = kMaxSubscriptionEntries + 1;
-  EXPECT_FALSE(subscriber.SetSubscription(invalid, boundary).ok());
-  EXPECT_EQ(boundary, 2);
-}
-
-TEST_F(ShmPubsubTest, PublicationErrorsAndUnchangedReadBuffer) {
+TEST_F(ShmBroadcastTest, PublicationErrorsAndUnchangedReadBuffer) {
   auto publisher = Publisher(8, 32);
   const auto bytes = Payload(1, 33);
   std::uint64_t sequence = 999;
@@ -264,125 +227,119 @@ TEST_F(ShmPubsubTest, PublicationErrorsAndUnchangedReadBuffer) {
   invalid.scope = static_cast<EventScope>(255);
   EXPECT_FALSE(publisher.Publish({invalid, {}}).ok());
   Publish(publisher, 1);
-  auto subscriber = Subscriber();
+  auto reader = Reader();
   EventBuffer buffer;
   buffer.payload_size = 7;
-  EXPECT_EQ(subscriber.TryNext(buffer, {0, 1}).error.code,
+  EXPECT_EQ(reader.TryNext(buffer, {0}).error.code,
             base::ErrorCode::kInvalidArgument);
   EXPECT_EQ(buffer.payload_size, 7);
-  EXPECT_EQ(subscriber.next_sequence(), 1);
-  ExpectEvent(subscriber, buffer, 1);
-  EXPECT_EQ(subscriber.TryNext(buffer).status, ReadStatus::kEmpty);
+  EXPECT_EQ(reader.next_sequence(), 1);
+  ExpectEvent(reader, buffer, 1);
+  EXPECT_EQ(reader.TryNext(buffer).status, ReadStatus::kEmpty);
   EXPECT_EQ(buffer.header.source_sequence, 1);
-  subscriber.Close();
-  EXPECT_EQ(subscriber.TryNext(buffer).status, ReadStatus::kClosed);
+  reader.Close();
+  EXPECT_EQ(reader.TryNext(buffer).status, ReadStatus::kClosed);
 }
 
-TEST_F(ShmPubsubTest, OverrunAndExplicitRecovery) {
+TEST_F(ShmBroadcastTest, OverrunAndExplicitRecovery) {
   auto publisher = Publisher(4);
-  auto subscriber = Subscriber();
+  auto reader = Reader();
   for (std::uint64_t sequence = 1; sequence <= 8; ++sequence) {
     Publish(publisher, sequence);
   }
   EventBuffer buffer;
-  const auto result = subscriber.TryNext(buffer);
+  const auto result = reader.TryNext(buffer);
   ASSERT_EQ(result.status, ReadStatus::kGap);
   ASSERT_TRUE(result.gap);
   const auto gap = *result.gap;
   EXPECT_EQ(gap.expected_sequence, 1);
   EXPECT_EQ(gap.resume_candidate, 2);
-  EXPECT_EQ(subscriber.next_sequence(), 1);
-  EXPECT_EQ(subscriber.TryNext(buffer).gap, gap);
+  EXPECT_EQ(reader.next_sequence(), 1);
+  EXPECT_EQ(reader.TryNext(buffer).gap, gap);
   std::uint64_t sequence = 99;
-  ASSERT_TRUE(subscriber.SetSubscription({}, sequence).ok());
-  EXPECT_EQ(sequence, 1);
-  EXPECT_EQ(subscriber.TryNext(buffer).gap, gap);
   auto forged = gap;
   ++forged.id;
-  EXPECT_FALSE(subscriber.Resume(forged, sequence).ok());
-  EXPECT_FALSE(subscriber.Resume(gap, sequence, ResumePosition::At(0)).ok());
-  auto other = Subscriber();
+  EXPECT_FALSE(reader.Resume(forged, sequence).ok());
+  EXPECT_FALSE(reader.Resume(gap, sequence, ResumePosition::At(0)).ok());
+  auto other = Reader();
   EXPECT_EQ(other.TryNext(buffer).status, ReadStatus::kGap);
   EXPECT_FALSE(other.Resume(gap, sequence).ok());
-  ASSERT_TRUE(subscriber.Resume(gap, sequence).ok());
+  ASSERT_TRUE(reader.Resume(gap, sequence).ok());
   EXPECT_EQ(sequence, 2);
-  auto again = subscriber.TryNext(buffer);
+  auto again = reader.TryNext(buffer);
   ASSERT_TRUE(again.gap);
-  ASSERT_TRUE(
-      subscriber.Resume(*again.gap, sequence, ResumePosition::At(5)).ok());
-  ExpectEvent(subscriber, buffer, 5);
-  EXPECT_FALSE(subscriber.Resume(gap, sequence).ok());
+  ASSERT_TRUE(reader.Resume(*again.gap, sequence, ResumePosition::At(5)).ok());
+  ExpectEvent(reader, buffer, 5);
+  EXPECT_FALSE(reader.Resume(gap, sequence).ok());
   for (std::uint64_t next = 9; next <= 13; ++next) Publish(publisher, next);
-  again = subscriber.TryNext(buffer);
+  again = reader.TryNext(buffer);
   ASSERT_TRUE(again.gap);
   EXPECT_NE(again.gap->id, gap.id);
   EXPECT_EQ(again.gap->expected_sequence, 6);
-  ASSERT_TRUE(
-      subscriber.Resume(*again.gap, sequence, ResumePosition::Live()).ok());
+  ASSERT_TRUE(reader.Resume(*again.gap, sequence, ResumePosition::Live()).ok());
   EXPECT_EQ(sequence, 14);
-  EXPECT_EQ(subscriber.TryNext(buffer).status, ReadStatus::kEmpty);
+  EXPECT_EQ(reader.TryNext(buffer).status, ReadStatus::kEmpty);
   Publish(publisher, 14);
-  ExpectEvent(subscriber, buffer, 14);
+  ExpectEvent(reader, buffer, 14);
 }
 
-TEST_F(ShmPubsubTest, StoppedGenerationDrains) {
+TEST_F(ShmBroadcastTest, StoppedGenerationDrains) {
   auto publisher = Publisher();
-  auto subscriber = Subscriber();
+  auto reader = Reader();
   Publish(publisher, 1);
   Publish(publisher, 2);
   publisher.Close();
   EventBuffer buffer;
-  ExpectEvent(subscriber, buffer, 1);
-  ExpectEvent(subscriber, buffer, 2);
-  EXPECT_EQ(subscriber.TryNext(buffer).status, ReadStatus::kEndOfGeneration);
+  ExpectEvent(reader, buffer, 1);
+  ExpectEvent(reader, buffer, 2);
+  EXPECT_EQ(reader.TryNext(buffer).status, ReadStatus::kEndOfGeneration);
   EXPECT_FALSE(publisher.Publish({Header(3), {}}).ok());
   EXPECT_FALSE(publisher.Tick().ok());
 }
 
-TEST_F(ShmPubsubTest, RefreshAndRestartBoundaries) {
+TEST_F(ShmBroadcastTest, RefreshAndRestartBoundaries) {
   auto publisher = Publisher(2);
   const auto generation = publisher.generation();
-  auto subscriber = Subscriber();
+  auto reader = Reader();
   for (std::uint64_t sequence = 1; sequence <= 3; ++sequence) {
     Publish(publisher, sequence);
   }
   EventBuffer buffer;
-  const auto result = subscriber.TryNext(buffer);
+  const auto result = reader.TryNext(buffer);
   ASSERT_TRUE(result.gap);
   const auto gap = *result.gap;
   std::this_thread::sleep_for(2ms);
   RefreshResult refresh;
-  ASSERT_TRUE(subscriber.Refresh(refresh, 1ns).ok());
+  ASSERT_TRUE(reader.Refresh(refresh, 1ns).ok());
   EXPECT_EQ(refresh.status, RefreshStatus::kCurrent);
   EXPECT_EQ(refresh.health, PublisherHealth::kStale);
   ASSERT_TRUE(publisher.Tick().ok());
-  ASSERT_TRUE(subscriber.Refresh(refresh).ok());
+  ASSERT_TRUE(reader.Refresh(refresh).ok());
   EXPECT_EQ(refresh.health, PublisherHealth::kReady);
   publisher.Close();
-  ASSERT_TRUE(subscriber.Refresh(refresh).ok());
+  ASSERT_TRUE(reader.Refresh(refresh).ok());
   EXPECT_EQ(refresh.status, RefreshStatus::kMissing);
   auto replacement = Publisher();
   EXPECT_NE(replacement.generation(), generation);
-  ASSERT_TRUE(subscriber.Refresh(refresh).ok());
+  ASSERT_TRUE(reader.Refresh(refresh).ok());
   EXPECT_EQ(refresh.status, RefreshStatus::kStreamChanged);
   EXPECT_EQ(refresh.discovered_generation, replacement.generation());
-  EXPECT_EQ(subscriber.TryNext(buffer).status, ReadStatus::kStreamChanged);
+  EXPECT_EQ(reader.TryNext(buffer).status, ReadStatus::kStreamChanged);
   std::uint64_t sequence = 0;
-  EXPECT_FALSE(subscriber.Resume(gap, sequence).ok());
-  auto reconnected = Subscriber();
+  EXPECT_FALSE(reader.Resume(gap, sequence).ok());
+  auto reconnected = Reader();
   EXPECT_FALSE(reconnected.Resume(gap, sequence).ok());
   Publish(replacement, 1);
   ExpectEvent(reconnected, buffer, 1);
-  ShmSubscriber old_generation;
+  ShmReader old_generation;
   EXPECT_FALSE(
-      old_generation.Open(endpoint_, {}, StartPosition::At(generation, 1))
-          .ok());
+      old_generation.Open(endpoint_, StartPosition::At(generation, 1)).ok());
   replacement.Close();
-  ASSERT_TRUE(subscriber.Refresh(refresh).ok());
+  ASSERT_TRUE(reader.Refresh(refresh).ok());
   EXPECT_EQ(refresh.status, RefreshStatus::kStreamChanged);
 }
 
-TEST_F(ShmPubsubTest, LockSurvivesInheritedClose) {
+TEST_F(ShmBroadcastTest, LockSurvivesInheritedClose) {
   auto publisher = Publisher();
   ShmPublisher duplicate;
   EXPECT_EQ(duplicate.Create({endpoint_, 8, 64}).code,
@@ -403,7 +360,7 @@ TEST_F(ShmPubsubTest, LockSurvivesInheritedClose) {
   Publish(duplicate, 1);
 }
 
-TEST_F(ShmPubsubTest, AbruptExitReleasesLock) {
+TEST_F(ShmBroadcastTest, AbruptExitReleasesLock) {
   Pipe ready;
   Child child([&] {
     auto publisher = Publisher();
@@ -413,19 +370,19 @@ TEST_F(ShmPubsubTest, AbruptExitReleasesLock) {
     FAIL() << "expected SIGKILL";
   });
   ready.Wait();
-  auto subscriber = Subscriber();
-  const auto generation = subscriber.generation();
+  auto reader = Reader();
+  const auto generation = reader.generation();
   child.Kill();
   const int child_status = child.Wait();
   EXPECT_TRUE(WIFSIGNALED(child_status));
   auto replacement = Publisher();
   EXPECT_NE(replacement.generation(), generation);
   RefreshResult refresh;
-  ASSERT_TRUE(subscriber.Refresh(refresh).ok());
+  ASSERT_TRUE(reader.Refresh(refresh).ok());
   EXPECT_EQ(refresh.status, RefreshStatus::kStreamChanged);
 }
 
-TEST_F(ShmPubsubTest, PendingInitializationRecovery) {
+TEST_F(ShmBroadcastTest, PendingInitializationRecovery) {
   Pipe ready;
   Child child([&] {
     auto publisher = Publisher();
@@ -435,8 +392,8 @@ TEST_F(ShmPubsubTest, PendingInitializationRecovery) {
     FAIL() << "expected initialization crash";
   });
   ready.Wait();
-  auto subscriber = Subscriber();
-  auto previous = internal::Discover(endpoint_);
+  auto reader = Reader();
+  auto previous = base::internal::Discover(endpoint_);
   ASSERT_TRUE(previous);
   std::error_code error;
   std::filesystem::rename(endpoint_.runtime_directory / "ticks.manifest",
@@ -454,106 +411,23 @@ TEST_F(ShmPubsubTest, PendingInitializationRecovery) {
   EXPECT_LT(stale_fd, 0);
   EXPECT_EQ(stale_errno, ENOENT);
   RefreshResult refresh;
-  ASSERT_TRUE(subscriber.Refresh(refresh).ok());
+  ASSERT_TRUE(reader.Refresh(refresh).ok());
   EXPECT_EQ(refresh.status, RefreshStatus::kStreamChanged);
 }
 
-TEST_F(ShmPubsubTest, AtomicsAliasAtDistinctAddresses) {
-  auto owner = internal::Segment::Create({endpoint_, 8, 64});
-  ASSERT_TRUE(owner);
-  auto alias = internal::Segment::Attach(endpoint_);
-  ASSERT_TRUE(alias);
-  EXPECT_NE(&(*owner)->header(), &(*alias)->header());
-  EXPECT_NE(&(*owner)->word(1, 0), &(*alias)->word(1, 0));
-  (*owner)->word(1, 0).store(0x123456789abcdef0ULL, std::memory_order_release);
-  EXPECT_EQ((*alias)->word(1, 0).load(std::memory_order_acquire),
-            0x123456789abcdef0ULL);
-  Child child([&] {
-    auto independent = internal::Segment::Attach(endpoint_);
-    ASSERT_TRUE(independent);
-    EXPECT_NE(&(*independent)->header(), &(*owner)->header());
-    EXPECT_NE(&(*independent)->header(), &(*alias)->header());
-    EXPECT_EQ((*independent)->word(1, 0).load(std::memory_order_acquire),
-              0x123456789abcdef0ULL);
-    (*independent)
-        ->word(1, 0)
-        .store(0xfedcba9876543210ULL, std::memory_order_release);
-  });
-  child.Success();
-  EXPECT_EQ((*owner)->word(1, 0).load(std::memory_order_acquire),
-            0xfedcba9876543210ULL);
-}
-
-TEST_F(ShmPubsubTest, StalledSlotAndPrecommitOverwrite) {
-  auto segment = internal::Segment::Create({endpoint_, 4, 32});
-  ASSERT_TRUE(segment);
-  auto subscriber = Subscriber();
-  EventBuffer buffer;
-  EXPECT_EQ(subscriber.TryNext(buffer).status, ReadStatus::kEmpty);
-  (*segment)->header().published_sequence.store(1, std::memory_order_release);
-  (*segment)->stamp(1).store(1, std::memory_order_release);
-  const auto stalled = subscriber.TryNext(buffer, {8, 3});
-  EXPECT_EQ(stalled.status, ReadStatus::kRetry);
-  EXPECT_EQ(stalled.attempts, 3);
-  EXPECT_EQ(subscriber.next_sequence(), 1);
-  (*segment)->header().published_sequence.store(4, std::memory_order_release);
-  (*segment)->stamp(5).store(9, std::memory_order_release);
-  const auto overwritten = subscriber.TryNext(buffer);
-  ASSERT_EQ(overwritten.status, ReadStatus::kGap);
-  ASSERT_TRUE(overwritten.gap);
-  EXPECT_EQ(overwritten.gap->expected_sequence, 1);
-  EXPECT_EQ(overwritten.gap->resume_candidate, 2);
-}
-
-TEST_F(ShmPubsubTest, RejectUntrustedLayout) {
-  auto segment = internal::Segment::Create({endpoint_, 8, 64});
-  ASSERT_TRUE(segment);
-  auto& bootstrap = (*segment)->header().bootstrap;
-  const auto original = bootstrap;
-  auto rejected = [&] {
-    ShmSubscriber subscriber;
-    EXPECT_EQ(subscriber.Open(endpoint_).code, base::ErrorCode::kCorrupt);
-  };
-  bootstrap.abi ^= 1;
-  rejected();
-  bootstrap = original;
-  bootstrap.slot_stride = ~std::uint64_t{0};
-  rejected();
-  bootstrap = original;
-  bootstrap.slots_offset = 1;
-  rejected();
-  bootstrap = original;
-  bootstrap.capacity = 3;
-  rejected();
-  bootstrap = original;
-  bootstrap.segment_size += 4096;
-  rejected();
-  bootstrap = original;
-  const auto manifest = internal::Discover(endpoint_);
-  ASSERT_TRUE(manifest);
-  ASSERT_EQ(::shm_unlink(manifest->shm_name.c_str()), 0);
-  const int fd =
-      ::shm_open(manifest->shm_name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
-  ASSERT_GE(fd, 0);
-  rejected();
-  EXPECT_EQ(::ftruncate(fd, 8), 0);
-  ::close(fd);
-  rejected();
-}
-
-TEST_F(ShmPubsubTest, CrossProcessOverwriteIntegrity) {
+TEST_F(ShmBroadcastTest, CrossProcessOverwriteIntegrity) {
   auto publisher = Publisher(16, 512);
   Pipe ready;
   Child child([&] {
     publisher.Close();
-    auto subscriber = Subscriber();
+    auto reader = Reader();
     EventBuffer buffer;
     ready.Signal();
     std::uint64_t previous = 0;
     std::size_t received = 0;
     const auto deadline = std::chrono::steady_clock::now() + 8s;
     while (std::chrono::steady_clock::now() < deadline) {
-      const auto result = subscriber.TryNext(buffer, {16, 32});
+      const auto result = reader.TryNext(buffer, {32});
       if (result.status == ReadStatus::kEvent) {
         ASSERT_GT(result.sequence, previous);
         EXPECT_EQ(buffer.header.source_sequence, result.sequence);
@@ -568,14 +442,13 @@ TEST_F(ShmPubsubTest, CrossProcessOverwriteIntegrity) {
       } else if (result.status == ReadStatus::kGap) {
         ASSERT_TRUE(result.gap);
         std::uint64_t sequence = 0;
-        ASSERT_TRUE(subscriber.Resume(*result.gap, sequence).ok());
+        ASSERT_TRUE(reader.Resume(*result.gap, sequence).ok());
       } else if (result.status == ReadStatus::kEndOfGeneration) {
         EXPECT_GT(received, 0);
         return;
       } else {
         ASSERT_TRUE(result.status == ReadStatus::kEmpty ||
-                    result.status == ReadStatus::kRetry ||
-                    result.status == ReadStatus::kYield);
+                    result.status == ReadStatus::kRetry);
       }
     }
     FAIL() << "stress reader timed out";
@@ -588,36 +461,45 @@ TEST_F(ShmPubsubTest, CrossProcessOverwriteIntegrity) {
   child.Success();
 }
 
-TEST_F(ShmPubsubTest, CorruptEventStopsDelivery) {
-  auto segment = internal::Segment::Create({endpoint_, 8, 16});
-  ASSERT_TRUE(segment);
+TEST_F(ShmBroadcastTest, CorruptEventStopsDelivery) {
+  base::ShmBroadcastWriter writer;
+  ASSERT_TRUE(writer.Create({endpoint_, {8, 80}}).ok());
   const auto bytes = Payload(1, 8);
   std::array<std::uint64_t, 10> encoded{};
-  ASSERT_EQ(encoded.size(), (*segment)->layout().word_count);
   ASSERT_TRUE(internal::EncodeEvent({Header(1), bytes}, encoded, 16));
   const auto valid = encoded;
   auto wire = std::as_writable_bytes(std::span(encoded));
   std::fill(wire.begin() + 40, wire.begin() + 44, std::byte{0xff});
-  for (std::size_t i = 0; i < encoded.size(); ++i) {
-    (*segment)->word(1, i).store(encoded[i], std::memory_order_relaxed);
-  }
-  (*segment)->stamp(1).store(2, std::memory_order_release);
-  (*segment)->header().published_sequence.store(1, std::memory_order_release);
-  auto subscriber = Subscriber();
+  ASSERT_TRUE(writer.TryWrite(std::as_bytes(std::span(encoded))).ok());
+  auto reader = Reader();
   EventBuffer output;
-  const auto malformed = subscriber.TryNext(output);
+  output.payload_size = 7;
+  const auto malformed = reader.TryNext(output);
   EXPECT_EQ(malformed.status, ReadStatus::kError);
   EXPECT_EQ(malformed.error.code, base::ErrorCode::kCorrupt);
-  EXPECT_EQ(subscriber.next_sequence(), 1);
+  EXPECT_EQ(reader.next_sequence(), 1);
+  EXPECT_EQ(output.payload_size, 7);
+  // Repair bytes under exclusive test access; the failed reader stays stopped.
+  auto manifest = base::internal::Discover(endpoint_);
+  ASSERT_TRUE(manifest);
+  base::internal::SharedMemoryMapping mapping;
+  ASSERT_TRUE(mapping.Open(manifest->shm_name).ok());
+  auto memory =
+      mapping.memory().subspan(sizeof(base::internal::ShmBroadcastControl));
+  auto* header =
+      reinterpret_cast<base::internal::BroadcastHeader*>(memory.data());
+  const auto& layout = header->layout;
   for (std::size_t i = 0; i < valid.size(); ++i) {
-    (*segment)->word(1, i).store(valid[i], std::memory_order_relaxed);
+    base::internal::BroadcastSlot(memory.data() + layout.slots_offset,
+                                  layout.slot_stride, layout.capacity, 1, i + 2)
+        .store(valid[i], std::memory_order_relaxed);
   }
-  EXPECT_EQ(subscriber.TryNext(output).error.code, base::ErrorCode::kCorrupt);
-  auto fresh = Subscriber();
+  EXPECT_EQ(reader.TryNext(output).error.code, base::ErrorCode::kCorrupt);
+  auto fresh = Reader();
   ExpectEvent(fresh, output, 1);
 }
 
-TEST_F(ShmPubsubTest, InvalidConfiguration) {
+TEST_F(ShmBroadcastTest, InvalidConfiguration) {
   ShmPublisher publisher;
   EXPECT_FALSE(publisher.Create({endpoint_, 0, 64}).ok());
   EXPECT_FALSE(publisher.Create({endpoint_, 3, 64}).ok());
@@ -628,15 +510,15 @@ TEST_F(ShmPubsubTest, InvalidConfiguration) {
   EXPECT_FALSE(
       publisher.Create({{endpoint_.runtime_directory, "../escape"}, 8, 64})
           .ok());
-  ShmSubscriber missing;
+  ShmReader missing;
   EXPECT_EQ(missing.Open(endpoint_).system_error.value(), ENOENT);
   ASSERT_TRUE(publisher.Create({endpoint_, 8, kMaxEventPayloadSize}).ok());
   EXPECT_FALSE(publisher.Create({endpoint_, 8, 64}).ok());
-  auto subscriber = Subscriber();
+  auto reader = Reader();
   const auto bytes = Payload(1, kMaxEventPayloadSize);
   ASSERT_TRUE(publisher.Publish({Header(1), bytes}).ok());
   EventBuffer buffer;
-  ExpectEvent(subscriber, buffer, 1);
+  ExpectEvent(reader, buffer, 1);
   EXPECT_EQ(buffer.payload_size, kMaxEventPayloadSize);
 }
 

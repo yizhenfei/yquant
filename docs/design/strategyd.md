@@ -291,7 +291,7 @@ tests/strategyd/missing_dependency.cc       缺失依赖场景的测试库
 | `yquant_strategy_api`，别名 `yquant::strategy_api` | `INTERFACE`，提供公开头文件与编译要求 |
 | `yquant_strategyd_runtime` | 内部静态库，供程序和运行时测试复用加载、账本、调度及生命周期逻辑 |
 | `yquant_host_support` | 两个守护进程共用的配置读取、模拟行情和退出信号支持 |
-| `yquant_md`，别名 `yquant::md` | 共享内存订阅发布与报价帧编解码 |
+| `yquant_md`，别名 `yquant::md` | 行情事件广播适配与报价帧编解码 |
 | `yquant_strategyd` | 可执行程序，`OUTPUT_NAME` 为 `yquant-strategyd` |
 | `lifecycle_strategy` | `MODULE`，用户策略示例，不链接进策略进程 |
 | `parameterized_strategy` | `MODULE`，展示派生强类型配置，通过私有依赖解析自定义参数 |
