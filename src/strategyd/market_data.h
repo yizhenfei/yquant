@@ -15,7 +15,15 @@
 namespace yquant::strategyd {
 
 // Host-owned callback phase controls when subscription registration is legal.
-enum class CallbackPhase { kNone, kStart, kTick, kOrderUpdate, kFill, kStop };
+enum class CallbackPhase {
+  kNone,
+  kStart,
+  kTick,
+  kOrderUpdate,
+  kFill,
+  kTimer,
+  kStop
+};
 
 // Main-thread dictionary, subscriptions, and last dispatched snapshots. Stable
 // InstrumentIds map to private dense slots; no map or buffer grows at runtime.
@@ -69,7 +77,8 @@ class MarketDataImpl final : public strategy::MarketData {
     return {subscriptions_.data(), subscription_count_};
   }
 
-  // Validates before publishing. Accepted quotes update the cache; old quotes
+  // Validates structure and instrument tick/quantity units before publishing.
+  // Accepted quotes update the cache; old quotes
   // succeed with accepted=false. Failure changes neither cache nor accepted.
   [[nodiscard]] base::ErrorCode ApplyQuote(const model::QuoteTick& tick,
                                            bool& accepted) noexcept;

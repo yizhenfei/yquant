@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <limits>
 #include <span>
+#include <utility>
 
 #include "gtest/gtest.h"
 
@@ -42,6 +43,31 @@ TEST(QuoteCodecTest, RoundTripRetainsSourceAndSignedValues) {
   EXPECT_EQ(frame[9], std::byte{0x56});
   EXPECT_EQ(frame[10], std::byte{0x34});
   EXPECT_EQ(frame[11], std::byte{0x12});
+}
+
+TEST(QuoteCodecTest, FuturesIdentitiesUseTheExistingWireLayout) {
+  for (const auto& [venue, symbol] :
+       {std::pair{"SHFE", "rb2501"}, std::pair{"DCE", "m2505"},
+        std::pair{"CZCE", "SR501"}, std::pair{"CFFEX", "IF2506"},
+        std::pair{"INE", "sc2512"}, std::pair{"GFEX", "si2601"}}) {
+    SCOPED_TRACE(venue);
+    auto quote = Quote();
+    ASSERT_EQ(model::MakeInstrumentId(venue, symbol, quote.instrument_id),
+              base::ErrorCode::kOk);
+    QuoteFrame frame;
+    ASSERT_TRUE(EncodeQuote(quote, frame).ok());
+    EXPECT_EQ(frame.size(), 80U);
+    model::QuoteTick decoded;
+    ASSERT_TRUE(DecodeQuote(frame, decoded).ok());
+    quote.receive_time_ns = 0;
+    EXPECT_EQ(decoded, quote);
+    // A marker alone has no product/month and must not pass the decoder.
+    for (std::size_t byte = 16; byte != 20; ++byte) frame[byte] = std::byte{0};
+    frame[19] = std::byte{0x80};
+    auto sentinel = Quote();
+    EXPECT_EQ(DecodeQuote(frame, sentinel).code, base::ErrorCode::kCorrupt);
+    EXPECT_EQ(sentinel, Quote());
+  }
 }
 
 TEST(QuoteCodecTest, ReceiveClockIsNeitherValidatedNorTransmitted) {

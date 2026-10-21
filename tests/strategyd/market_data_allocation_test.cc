@@ -2,6 +2,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <new>
 #include <span>
 #include <utility>
@@ -9,8 +10,11 @@
 #include "gtest/gtest.h"
 #include "strategyd/market_data.h"
 #include "strategyd/mock_market_data_source.h"
+#include "strategyd/replay_market_data_source.h"
 #include "strategyd/strategy_context.h"
+#include "strategyd/timer.h"
 #include "strategyd/trading.h"
+#include "test_config_file.h"
 
 namespace {
 
@@ -298,7 +302,8 @@ TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
   ManualClock clock;
   MarketDataImpl market_data(clock);
   TradingImpl trading(clock, market_data);
-  StrategyContextImpl context(clock, market_data, trading);
+  TimerImpl timer;
+  StrategyContextImpl context(clock, market_data, trading, timer);
   ASSERT_TRUE(market_data.Configure(config).ok());
   market_data.BeginCallback(CallbackPhase::kStart);
   for (std::size_t index = 0; index < config.instrument_count; ++index) {
@@ -327,6 +332,69 @@ TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
   EXPECT_EQ(counts.old_quotes, 127U * kMaxMarketDataInstruments);
   EXPECT_EQ(counts.rejected, counts.quotes);
   EXPECT_EQ(counts.query_misses, 2 * counts.quotes);
+  EXPECT_EQ(activity.allocation_calls, 0U);
+  EXPECT_EQ(activity.deallocation_calls, 0U);
+  EXPECT_TRUE(source.Stop().ok());
+}
+
+TEST(MarketDataCppHeapTest,
+     ReplayStartPollingAndCompletionHaveNoCppHeapActivity) {
+  testing::ConfigFile csv(
+      "elapsed_ns,event_time_ns,bid_price,bid_qty,ask_price,ask_qty,flags\n"
+      "0,0,1000,100,1001,200,7\n4,0,1000,100,1001,200,7\n"
+      "4,0,1000,100,1001,200,7\n10,0,1000,100,1001,200,7\n");
+  ASSERT_TRUE(csv.valid());
+  MarketDataConfig config;
+  config.adapter = MarketDataAdapter::kReplay;
+  config.source_id = {1};
+  config.instrument_count = 1;
+  config.replay_speed = 2;
+  config.replay_tail_ns = 5;
+  std::strcpy(config.replay_path, csv.path());
+  auto& definition = config.instruments[0].instrument;
+  definition.venue = model::Venue::kSse;
+  std::memcpy(definition.symbol, "600000", 6);
+  ASSERT_EQ(model::MakeInstrumentId("SSE", "600000", definition.id),
+            base::ErrorCode::kOk);
+  const auto id = definition.id;
+  ReplayMarketDataSource source;
+  ASSERT_TRUE(source.Prepare(config).ok()) << source.error_detail();
+  const char* failure = nullptr;
+  std::size_t quotes = 0;
+  const auto activity = ObserveCppHeap([&]() noexcept {
+    if (!source.Start(std::span(&id, 1), 100).ok() ||
+        source.next_deadline() != 100 || source.finished()) {
+      failure = "replay did not start with its first due frame";
+      return;
+    }
+    model::QuoteTick tick;
+    for (std::uint64_t now = 100; now <= 110; ++now) {
+      for (;;) {
+        const auto previous = tick;
+        const auto result = source.Poll(now, tick);
+        if (!result.status.ok()) {
+          failure = "replay polling failed";
+          return;
+        }
+        if (result.state == MarketDataPollState::kIdle) {
+          if (tick != previous) failure = "idle replay changed output";
+          break;
+        }
+        if (result.state != MarketDataPollState::kEvent ||
+            tick.sequence != ++quotes || tick.receive_time_ns != now) {
+          failure = "replay frame ordering or receipt timestamp changed";
+          return;
+        }
+      }
+      if (source.finished() != (now == 110)) {
+        failure = "replay completed before or after its tail deadline";
+        return;
+      }
+    }
+    if (source.next_deadline()) failure = "finished replay retained a deadline";
+  });
+  EXPECT_EQ(failure, nullptr) << (failure == nullptr ? "" : failure);
+  EXPECT_EQ(quotes, 4U);
   EXPECT_EQ(activity.allocation_calls, 0U);
   EXPECT_EQ(activity.deallocation_calls, 0U);
   EXPECT_TRUE(source.Stop().ok());

@@ -3,6 +3,7 @@
 
 #include "yquant/base/status.h"
 #include "yquant/model/account.h"
+#include "yquant/model/futures.h"
 #include "yquant/model/order.h"
 
 namespace yquant::strategy {
@@ -16,10 +17,13 @@ class Trading {
   // True only during running business callbacks with a configured adapter;
   // does not promise valid parameters or available capacity.
   virtual bool accepting_orders() const noexcept = 0;
-  // Atomically reserves buy cash or sellable shares, registers PendingNew and
-  // a queued request, then sets out. kOk does
+  // Atomically reserves buy cash/sellable shares for equity, or opening margin
+  // plus fees/closing inventory plus fees for futures, registers PendingNew
+  // and a queued request, then sets out. kOk does
   // not mean broker acceptance. Failure changes neither state, queue nor out.
-  // Returns kInvalidState outside running business callbacks, kUnsupported
+  // Futures open requires sufficient available funds; valid closing orders
+  // remain allowed with negative available funds. Returns kInvalidState outside
+  // running business callbacks, kUnsupported
   // without an adapter, kInvalidArgument for bad parameters or amount overflow,
   // or kResourceExhausted for insufficient available cash/shares or exhausted
   // order/request storage and IDs. Failure preserves reservations and balances.
@@ -35,14 +39,23 @@ class Trading {
   // Includes terminal orders until teardown. Unknown IDs preserve out.
   [[nodiscard]] virtual bool TryGetOrder(
       model::ClientOrderId id, model::OrderSnapshot& out) const noexcept = 0;
-  // Copies configured cash, including pending buy reservations. Disabled
-  // service returns false and preserves out.
+  // Copies configured equity-account cash, including buy reservations.
+  // Disabled/futures services return false and preserve out.
   [[nodiscard]] virtual bool TryGetCash(
       model::CashSnapshot& out) const noexcept = 0;
-  // Known instruments omitted from bootstrap return a zero position. Disabled
-  // service or unknown instrument returns false without modifying out.
+  // Cash-account positions omitted from bootstrap return a zero position.
+  // Disabled/futures service or unknown instrument preserves out and returns
+  // false.
   [[nodiscard]] virtual bool TryGetPosition(
       model::InstrumentId id, model::PositionSnapshot& out) const noexcept = 0;
+  // Futures-only owned account/position copies. Cash accounts return false;
+  // unknown instruments return false. Failure preserves out. A configured
+  // futures instrument without inventory returns an empty position.
+  [[nodiscard]] virtual bool TryGetFuturesAccount(
+      model::FuturesAccountSnapshot& out) const noexcept = 0;
+  [[nodiscard]] virtual bool TryGetFuturesPosition(
+      model::InstrumentId id,
+      model::FuturesPositionSnapshot& out) const noexcept = 0;
 };
 }  // namespace yquant::strategy
 #endif  // YQUANT_STRATEGY_TRADING_H_

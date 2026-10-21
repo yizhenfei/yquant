@@ -34,7 +34,8 @@ struct QuoteTick {
   // Nanoseconds in the same process-relative monotonic domain as Context::Now.
   // Preserved through dispatch so strategies can measure the data's age.
   std::uint64_t receive_time_ns = 0;
-  // Prices use InstrumentDefinition::price_decimals; quantities use shares.
+  // Prices use InstrumentDefinition::price_decimals; quantities use shares
+  // for equities and lots for futures.
   // A missing side has zero price and quantity; a present side has qty > 0.
   std::int64_t bid_price = 0;
   std::int64_t bid_qty = 0;

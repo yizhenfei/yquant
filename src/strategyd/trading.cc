@@ -5,6 +5,7 @@
 #include <limits>
 #include <new>
 
+#include "strategyd/futures_ledger.h"
 #include "strategyd/trading_adapter.h"
 
 namespace yquant::strategyd {
@@ -48,7 +49,8 @@ bool EmptyFill(const model::Fill& fill) noexcept {
          fill.execution_id.empty() && fill.instrument_id.value == 0 &&
          fill.side == model::OrderSide::kUnknown && fill.price == 0 &&
          fill.quantity == 0 && fill.event_time_ns == 0 &&
-         fill.receive_time_ns == 0 && !fill.has_event_time;
+         fill.receive_time_ns == 0 && !fill.has_event_time &&
+         fill.position_effect == model::PositionEffect::kNone;
 }
 
 bool ValidKind(OrderUpdateKind kind) noexcept {
@@ -107,6 +109,7 @@ struct TradingImpl::Storage {
     // their matched portion; only definitive terminal events release the rest.
     std::int64_t reserved_cash = 0;
     std::int64_t reserved_qty = 0;
+    FuturesReservation futures_reservation;
   };
   enum class RequestKind { kNew, kCancel };
   struct Request {
@@ -136,6 +139,8 @@ struct TradingImpl::Storage {
   model::CashSnapshot cash;
   std::array<model::PositionSnapshot, kMaxMarketDataInstruments> positions = {};
   std::size_t position_count = 0;
+  model::AccountType type = model::AccountType::kCash;
+  FuturesLedger futures;
 };
 
 TradingImpl::TradingImpl(const MonotonicClock& clock,
@@ -149,6 +154,30 @@ base::Status TradingImpl::Configure(
     return {Fail(ErrorCode::kInvalidState, "trading is already configured"),
             {}};
   }
+  if (account.type == model::AccountType::kFutures) {
+    auto* storage = new (std::nothrow) Storage;
+    if (storage == nullptr) {
+      return {Fail(ErrorCode::kResourceExhausted,
+                   "cannot allocate fixed trading storage"),
+              {}};
+    }
+    const auto configured = storage->futures.Configure(account, market_data_);
+    if (configured != ErrorCode::kOk) {
+      (void)Fail(configured, storage->futures.error_detail());
+      delete storage;
+      return {configured, {}};
+    }
+    storage->type = model::AccountType::kFutures;
+    storage_ = storage;
+    error_detail_[0] = '\0';
+    return {};
+  }
+  if (account.type != model::AccountType::kCash ||
+      account.futures_position_count != 0) {
+    return {Fail(ErrorCode::kInvalidArgument,
+                 "cash account cannot contain futures inventory"),
+            {}};
+  }
   if (account.cash_balance < 0 ||
       account.position_count > kMaxMarketDataInstruments) {
     return {Fail(ErrorCode::kInvalidArgument,
@@ -157,10 +186,14 @@ base::Status TradingImpl::Configure(
   }
   for (std::size_t index = 0; index < account.position_count; ++index) {
     const auto& position = account.positions[index];
-    if (!market_data_.HasInstrument(position.instrument_id) ||
+    model::InstrumentDefinition instrument;
+    if (!market_data_.TryGetInstrument(position.instrument_id, instrument) ||
+        instrument.type != model::InstrumentType::kEquity ||
         position.total_qty < 0 || position.available_qty < 0 ||
         position.available_qty > position.total_qty ||
-        position.reserved_qty != 0) {
+        position.reserved_qty != 0 || instrument.quantity_step <= 0 ||
+        position.total_qty % instrument.quantity_step != 0 ||
+        position.available_qty % instrument.quantity_step != 0) {
       return {Fail(ErrorCode::kInvalidArgument,
                    "invalid initial position or unknown instrument"),
               {}};
@@ -210,9 +243,9 @@ void TradingImpl::BeginStopping() noexcept {
 }
 
 bool TradingImpl::accepting_orders() const noexcept {
-  const bool business_callback = phase_ == CallbackPhase::kTick ||
-                                 phase_ == CallbackPhase::kOrderUpdate ||
-                                 phase_ == CallbackPhase::kFill;
+  const bool business_callback =
+      phase_ == CallbackPhase::kTick || phase_ == CallbackPhase::kOrderUpdate ||
+      phase_ == CallbackPhase::kFill || phase_ == CallbackPhase::kTimer;
   return storage_ != nullptr && running_ && !stopping_ && business_callback;
 }
 
@@ -242,7 +275,7 @@ ErrorCode TradingImpl::SubmitOrder(const model::OrderRequest& request,
   if (!running_ || stopping_ ||
       (phase_ != CallbackPhase::kTick &&
        phase_ != CallbackPhase::kOrderUpdate &&
-       phase_ != CallbackPhase::kFill)) {
+       phase_ != CallbackPhase::kFill && phase_ != CallbackPhase::kTimer)) {
     return Fail(ErrorCode::kInvalidState,
                 "orders require a running business callback");
   }
@@ -251,27 +284,51 @@ ErrorCode TradingImpl::SubmitOrder(const model::OrderRequest& request,
   model::InstrumentDefinition instrument;
   if (!market_data_.TryGetInstrument(request.instrument_id, instrument) ||
       !ValidSide(request.side) || request.limit_price <= 0 ||
-      request.quantity <= 0 || instrument.price_decimals > 6) {
+      request.quantity <= 0 || instrument.price_decimals > 6 ||
+      instrument.price_tick <= 0 || instrument.quantity_step <= 0 ||
+      request.limit_price % instrument.price_tick != 0 ||
+      request.quantity % instrument.quantity_step != 0) {
     return Fail(ErrorCode::kInvalidArgument, "invalid limit-order request");
   }
   auto& s = *storage_;
+  if (s.order_count == kMaxTradingOrders ||
+      s.request_count == kMaxTradingRequests) {
+    return Fail(ErrorCode::kResourceExhausted,
+                "order or request capacity exhausted");
+  }
+  const bool futures = s.type == model::AccountType::kFutures;
+  if ((futures && instrument.type != model::InstrumentType::kFutures) ||
+      (!futures && (instrument.type != model::InstrumentType::kEquity ||
+                    request.position_effect != model::PositionEffect::kNone))) {
+    return Fail(ErrorCode::kInvalidArgument,
+                "instrument or position effect disagrees with account type");
+  }
   constexpr std::array<std::int64_t, 7> kPriceScales = {
       1000000, 100000, 10000, 1000, 100, 10, 1};
   const auto scale = kPriceScales[instrument.price_decimals];
-  std::int64_t notional;
-  if (!CashAmount(request.limit_price, request.quantity, scale, notional)) {
+  std::int64_t notional = 0;
+  if (!futures &&
+      !CashAmount(request.limit_price, request.quantity, scale, notional)) {
     return Fail(ErrorCode::kInvalidArgument,
                 "limit-order cash amount overflows");
   }
   const auto existing_position = FindPosition(request.instrument_id);
-  if (!existing_position && s.position_count == kMaxMarketDataInstruments) {
+  if (!futures && !existing_position &&
+      s.position_count == kMaxMarketDataInstruments) {
     return Fail(ErrorCode::kResourceExhausted, "position capacity exhausted");
   }
   model::PositionSnapshot position;
   position.instrument_id = request.instrument_id;
   if (existing_position) position = s.positions[*existing_position];
   auto cash = s.cash;
-  if (request.side == model::OrderSide::kBuy) {
+  FuturesReservation futures_reservation;
+  if (futures) {
+    // All fallible order/request checks precede the atomic account claim.
+    // After it succeeds, the remaining order publication cannot fail.
+    const auto reserved = s.futures.Reserve(request, futures_reservation);
+    if (reserved != ErrorCode::kOk)
+      return Fail(reserved, s.futures.error_detail());
+  } else if (request.side == model::OrderSide::kBuy) {
     if (notional > cash.available) {
       return Fail(ErrorCode::kResourceExhausted, "insufficient available cash");
     }
@@ -286,11 +343,6 @@ ErrorCode TradingImpl::SubmitOrder(const model::OrderRequest& request,
     position.available_qty -= request.quantity;
     position.reserved_qty += request.quantity;
   }
-  if (s.order_count == kMaxTradingOrders ||
-      s.request_count == kMaxTradingRequests) {
-    return Fail(ErrorCode::kResourceExhausted,
-                "order or request capacity exhausted");
-  }
   const auto index = s.order_count;
   model::OrderSnapshot order;
   order.client_order_id.value = index + 1;
@@ -299,17 +351,22 @@ ErrorCode TradingImpl::SubmitOrder(const model::OrderRequest& request,
   order.limit_price = request.limit_price;
   order.original_qty = request.quantity;
   order.leaves_qty = request.quantity;
+  order.position_effect = request.position_effect;
   auto& record = s.orders[index];
   record.snapshot = order;
   record.position_index =
       existing_position ? *existing_position : s.position_count;
   record.price_scale = scale;
   record.reserved_cash = request.side == model::OrderSide::kBuy ? notional : 0;
-  record.reserved_qty =
-      request.side == model::OrderSide::kSell ? request.quantity : 0;
-  s.positions[record.position_index] = position;
-  if (!existing_position) ++s.position_count;
-  s.cash = cash;
+  record.reserved_qty = !futures && request.side == model::OrderSide::kSell
+                            ? request.quantity
+                            : 0;
+  record.futures_reservation = futures_reservation;
+  if (!futures) {
+    s.positions[record.position_index] = position;
+    if (!existing_position) ++s.position_count;
+    s.cash = cash;
+  }
   s.requests[(s.request_head + s.request_count) % kMaxTradingRequests] = {
       Storage::RequestKind::kNew, index, {}};
   ++s.request_count;
@@ -344,7 +401,7 @@ ErrorCode TradingImpl::CancelOrder(model::ClientOrderId id) noexcept {
   if (!running_ || stopping_ ||
       (phase_ != CallbackPhase::kTick &&
        phase_ != CallbackPhase::kOrderUpdate &&
-       phase_ != CallbackPhase::kFill)) {
+       phase_ != CallbackPhase::kFill && phase_ != CallbackPhase::kTimer)) {
     return Fail(ErrorCode::kInvalidState,
                 "cancellation requires a running business callback");
   }
@@ -370,14 +427,17 @@ bool TradingImpl::TryGetOrder(model::ClientOrderId id,
 }
 
 bool TradingImpl::TryGetCash(model::CashSnapshot& out) const noexcept {
-  if (storage_ == nullptr) return false;
+  if (storage_ == nullptr || storage_->type != model::AccountType::kCash)
+    return false;
   out = storage_->cash;
   return true;
 }
 
 bool TradingImpl::TryGetPosition(model::InstrumentId id,
                                  model::PositionSnapshot& out) const noexcept {
-  if (storage_ == nullptr || !market_data_.HasInstrument(id)) return false;
+  if (storage_ == nullptr || storage_->type != model::AccountType::kCash ||
+      !market_data_.HasInstrument(id))
+    return false;
   const auto index = FindPosition(id);
   if (index) {
     out = storage_->positions[*index];
@@ -385,6 +445,30 @@ bool TradingImpl::TryGetPosition(model::InstrumentId id,
     out = {id, 0, 0, 0};
   }
   return true;
+}
+
+bool TradingImpl::TryGetFuturesAccount(
+    model::FuturesAccountSnapshot& out) const noexcept {
+  return storage_ != nullptr &&
+         storage_->type == model::AccountType::kFutures &&
+         storage_->futures.TryGetAccount(out);
+}
+
+bool TradingImpl::TryGetFuturesPosition(
+    model::InstrumentId id,
+    model::FuturesPositionSnapshot& out) const noexcept {
+  return storage_ != nullptr &&
+         storage_->type == model::AccountType::kFutures &&
+         storage_->futures.TryGetPosition(id, out);
+}
+
+ErrorCode TradingImpl::ApplyQuote(const model::QuoteTick& tick) noexcept {
+  if (storage_ == nullptr || storage_->type == model::AccountType::kCash)
+    return ErrorCode::kOk;
+  const auto applied = storage_->futures.ApplyQuote(tick);
+  return applied == ErrorCode::kOk
+             ? applied
+             : Fail(applied, storage_->futures.error_detail());
 }
 
 base::Status TradingImpl::ProcessRequests(TradingAdapter& adapter,
@@ -419,8 +503,8 @@ base::Status TradingImpl::ProcessRequests(TradingAdapter& adapter,
       record.new_attempted = true;
       const auto& order = record.snapshot;
       const model::OrderRequest submitted{order.instrument_id, order.side,
-                                          order.limit_price,
-                                          order.original_qty};
+                                          order.limit_price, order.original_qty,
+                                          order.position_effect};
       result = adapter.SendOrder(order.client_order_id, submitted, now);
     } else {
       record.cancel_attempted = true;
@@ -511,14 +595,22 @@ ErrorCode TradingImpl::ApplyLocalUpdate(TradingDispatch& out) noexcept {
   dispatch.update.order.state = OrderState::kCanceled;
   dispatch.update.order.leaves_qty = 0;
   dispatch.update.reason.Set(0, "canceled before sending during shutdown");
-  auto cash = s.cash;
-  auto position = s.positions[record.position_index];
-  if (!ReleaseReservation(cash, position, record.reserved_cash,
-                          record.reserved_qty)) {
-    return Fail(ErrorCode::kCorrupt, "invalid local cancellation reservation");
+  if (s.type == model::AccountType::kFutures) {
+    const auto released =
+        s.futures.Release(record.snapshot, record.futures_reservation);
+    if (released != ErrorCode::kOk)
+      return Fail(released, s.futures.error_detail());
+  } else {
+    auto cash = s.cash;
+    auto position = s.positions[record.position_index];
+    if (!ReleaseReservation(cash, position, record.reserved_cash,
+                            record.reserved_qty)) {
+      return Fail(ErrorCode::kCorrupt,
+                  "invalid local cancellation reservation");
+    }
+    s.cash = cash;
+    s.positions[record.position_index] = position;
   }
-  s.cash = cash;
-  s.positions[record.position_index] = position;
   record.reserved_cash = 0;
   record.reserved_qty = 0;
   record.snapshot = dispatch.update.order;
@@ -553,10 +645,16 @@ ErrorCode TradingImpl::ApplyEvent(const TradingEvent& event,
   }
   if (is_fill) {
     const auto& fill = event.fill;
+    model::InstrumentDefinition instrument;
     if (fill.client_order_id != old.client_order_id ||
         fill.broker_order_id != event.broker_order_id ||
         fill.execution_id.empty() || fill.instrument_id != old.instrument_id ||
-        fill.side != old.side || fill.price <= 0 || fill.quantity <= 0 ||
+        fill.side != old.side || fill.position_effect != old.position_effect ||
+        fill.price <= 0 || fill.quantity <= 0 ||
+        !market_data_.TryGetInstrument(fill.instrument_id, instrument) ||
+        instrument.price_tick <= 0 || instrument.quantity_step <= 0 ||
+        fill.price % instrument.price_tick != 0 ||
+        fill.quantity % instrument.quantity_step != 0 ||
         fill.receive_time_ns != event.receive_time_ns ||
         (!fill.has_event_time && fill.event_time_ns != 0) ||
         (old.side == model::OrderSide::kBuy && fill.price > old.limit_price) ||
@@ -689,7 +787,19 @@ ErrorCode TradingImpl::ApplyEvent(const TradingEvent& event,
   auto position = s.positions[record.position_index];
   auto reserved_cash = record.reserved_cash;
   auto reserved_qty = record.reserved_qty;
-  if (dispatch.has_fill) {
+  if (s.type == model::AccountType::kFutures) {
+    auto reservation = record.futures_reservation;
+    ErrorCode applied = ErrorCode::kOk;
+    if (dispatch.has_fill) {
+      applied = s.futures.ApplyFill(old, dispatch.fill, reservation);
+    } else if (event.kind == OrderUpdateKind::kRejected ||
+               event.kind == OrderUpdateKind::kCanceled) {
+      applied = s.futures.Release(old, reservation);
+    }
+    if (applied != ErrorCode::kOk)
+      return Fail(applied, s.futures.error_detail());
+    record.futures_reservation = reservation;
+  } else if (dispatch.has_fill) {
     const auto& fill = dispatch.fill;
     std::int64_t actual_cash;
     if (!CashAmount(fill.price, fill.quantity, record.price_scale,
@@ -755,8 +865,10 @@ ErrorCode TradingImpl::ApplyEvent(const TradingEvent& event,
     --s.active_count;
   if (old.cancel_pending && !next.cancel_pending) --s.pending_cancel_count;
   record.snapshot = next;
-  s.cash = cash;
-  s.positions[record.position_index] = position;
+  if (s.type == model::AccountType::kCash) {
+    s.cash = cash;
+    s.positions[record.position_index] = position;
+  }
   record.reserved_cash = reserved_cash;
   record.reserved_qty = reserved_qty;
   record.retry_not_before_ns = retry;

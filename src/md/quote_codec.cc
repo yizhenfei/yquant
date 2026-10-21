@@ -40,10 +40,9 @@ bool ValidSide(std::uint8_t flags, model::QuoteFlag side, std::int64_t price,
 }  // namespace
 
 base::Status ValidateQuote(const model::QuoteTick& quote) noexcept {
-  const auto venue = quote.instrument_id.value >> 32;
-  const auto symbol = quote.instrument_id.value & 0xffffffffULL;
-  if (quote.source_id.value == 0 || venue < 1 || venue > 3 || symbol > 999999 ||
-      quote.sequence == 0 || (quote.flags & ~model::kKnownQuoteFlags) != 0 ||
+  if (quote.source_id.value == 0 ||
+      !model::IsValidInstrumentId(quote.instrument_id) || quote.sequence == 0 ||
+      (quote.flags & ~model::kKnownQuoteFlags) != 0 ||
       (!model::HasQuoteFlag(quote.flags, model::QuoteFlag::kEventTimeValid) &&
        quote.event_time_ns != 0) ||
       !ValidSide(quote.flags, model::QuoteFlag::kBidValid, quote.bid_price,

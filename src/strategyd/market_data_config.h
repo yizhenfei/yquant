@@ -14,11 +14,12 @@ namespace yquant::strategyd {
 inline constexpr std::size_t kMaxMarketDataInstruments = 64;
 inline constexpr std::size_t kMaxRuntimeDirectoryLength = 4095;
 inline constexpr std::size_t kMaxStreamNameLength = 64;
+inline constexpr std::size_t kMaxReplayPathLength = 4095;
 
-enum class MarketDataAdapter { kMock, kShm };
+enum class MarketDataAdapter { kMock, kShm, kReplay };
 
 // Owns one instrument definition and optional mock quote seed. Quote values
-// remain zero when the adapter reads SHM instead of generating mock data.
+// remain zero when the adapter reads SHM/replay instead of generating data.
 struct MockInstrumentConfig {
   model::InstrumentDefinition instrument;
   std::int64_t bid_price = 0;
@@ -39,6 +40,12 @@ struct MarketDataConfig {
   char runtime_directory[kMaxRuntimeDirectoryLength + 1] = {};
   char stream[kMaxStreamNameLength + 1] = {};
   std::uint64_t poll_interval_ns = 0;
+  // The loader resolves relative paths against the configuration directory.
+  // Typed configurations supply an absolute, NUL-terminated path. Speed scales
+  // elapsed CSV timestamps; the tail is an unscaled final observation window.
+  char replay_path[kMaxReplayPathLength + 1] = {};
+  std::uint32_t replay_speed = 1;
+  std::uint64_t replay_tail_ns = 1000000000;
   std::size_t instrument_count = 0;
   std::array<MockInstrumentConfig, kMaxMarketDataInstruments> instruments;
 };
@@ -48,7 +55,7 @@ struct MarketDataConfig {
 [[nodiscard]] base::Status ValidateMarketDataConfig(
     const MarketDataConfig& config, strategy::ConfigError& error) noexcept;
 
-// Loads strict mock/SHM source JSON. No parser, source views or heap
+// Loads strict mock/SHM/replay source JSON. No parser, source views or heap
 // allocations survive Load(). Methods are serialized by the owning host thread.
 class MarketDataConfigLoader {
  public:

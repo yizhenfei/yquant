@@ -8,11 +8,11 @@
 
 `StrategyConfig` 与 JSON 参数的结构、接口和启动校验见[策略配置设计](strategy-config.md)。
 
-行情数据与订阅见[行情驱动设计](market-data.md)，交易接口、委托账本及双来源调度见[交易执行设计](trading.md)。
+行情数据与订阅见[行情驱动设计](market-data.md)，交易接口、委托账本及事件调度见[交易执行设计](trading.md)。
 
 当前命令来源为启动参数和退出信号：命令行指定动态库与策略配置文件路径，可选提供宿主行情与交易配置，进程启动后将其转换为加载命令；`SIGINT`、`SIGTERM` 发布停止请求。策略进程仅使用主线程，同步处理请求、来源事件和策略回调，以前台常驻方式运行。
 
-每次进程运行只加载一个策略实例，支持模拟或共享内存行情与模拟柜台，不提供重新加载、热替换或多实例管理。持仓与资金账本随交易服务维护，真实柜台接入另行扩展。
+每次进程运行只加载一个策略实例，支持模拟、共享内存或历史回放行情与模拟柜台，不提供重新加载、热替换或多实例管理。持仓与资金账本随交易服务维护，真实柜台接入另行扩展。
 
 ## 启动方式与命令
 
@@ -25,7 +25,7 @@
 
 `--strategy <path>` 与 `--config <path>` 为必填参数，各出现一次，顺序不限。缺少路径、空路径、重复参数或未知参数均输出用法并退出；`--help` 单独使用时输出用法并成功退出。
 
-`--market-data-config <path>` 为可选参数，最多出现一次，仅供宿主配置行情源。省略时标的字典为空，不接受行情订阅；不订阅行情的策略仍可正常启动和停止。行情配置按 `adapter` 选择 `mock` 或 `shm`；格式与命令示例见[行情驱动设计](market-data.md#配置与启动方式)，行情发布端见[行情进程设计](marketd.md)。
+`--market-data-config <path>` 为可选参数，最多出现一次，仅供宿主配置行情源。省略时标的字典为空，不接受行情订阅；不订阅行情的策略仍可正常启动和停止。行情配置按 `adapter` 选择 `mock`、`shm` 或 `replay`；格式与命令示例见[行情驱动设计](market-data.md#配置与启动方式)，行情发布端见[行情进程设计](marketd.md)。
 
 `--trading-config <path>` 为可选参数，配置模拟柜台时必须同时提供行情配置作为标的字典来源。参数约束和交易配置见[宿主交易配置](trading.md#宿主配置)。
 
@@ -38,7 +38,7 @@
 | 命令 | 含义 | 当前来源 |
 | --- | --- | --- |
 | `LoadAndStart{library_path, config_path, market_data_config_path, trading_config_path}` | 读取配置，建立交易账户，加载并配置策略，调用启动回调后激活行情；两种接入配置路径可空 | 命令行参数 |
-| `Stop` | 运行期登记停止请求，由 `Run()` 推进排空与最终释放 | `SIGINT`、`SIGTERM`，以及运行期错误收尾 |
+| `Stop` | 运行期登记停止请求，由 `Run()` 推进排空与最终释放 | `SIGINT`、`SIGTERM`，运行期错误收尾及回放结束 |
 
 命令行解析只生成初始命令，加载操作由运行时的命令处理入口执行。当前不建立外部命令队列或 IPC 服务；信号处理函数只记录停止请求，主线程完成回调与收尾。未来其他命令来源复用同一分派入口。
 
@@ -55,6 +55,9 @@ virtual base::ErrorCode OnStop(StrategyContext& context) noexcept = 0;
 // 默认返回 kOk；不处理行情的策略可不重写。
 virtual base::ErrorCode OnTick(
     StrategyContext& context, const model::QuoteTick& tick) noexcept;
+// 默认返回 kOk。
+virtual base::ErrorCode OnTimer(
+    StrategyContext& context, const TimerEvent& event) noexcept;
 virtual ~Strategy() noexcept = default;
 ```
 
@@ -62,17 +65,17 @@ virtual ~Strategy() noexcept = default;
 
 `config()` 返回策略内嵌的配置对象，宿主完成公共字段和自定义参数校验后才调用 `OnStart`。配置初始化失败时直接销毁实例，不调用启动或停止回调。
 
-`OnStart` 准备策略运行资源，通过 `context.market_data().FindInstrument(venue, symbol, definition)` 查询标的，通过 `context.market_data().SubscribeQuotes(source_id, instrument_id)` 登记启动订阅。回调成功返回后订阅集合冻结，宿主再激活行情源；全部成功后进入运行态。回调必须及时返回，当前没有策略轮询或定时回调。行情接口的输入输出与错误约定见[行情接口](market-data.md#行情接口)。
+`OnStart` 准备策略运行资源，通过 `context.market_data().FindInstrument(venue, symbol, definition)` 查询标的，通过 `context.market_data().SubscribeQuotes(source_id, instrument_id)` 登记启动订阅。回调成功返回后订阅集合冻结，宿主再激活行情源；全部成功后进入运行态。回调必须及时返回。独立时间唤醒通过 `context.timer()` 登记，契约见[策略定时事件](strategy-timer.md)。行情接口的输入输出与错误约定见[行情接口](market-data.md#行情接口)。
 
 行情与标识公共类型位于 `yquant::model`。订阅、最新快照和序号校验均以来源与标的的组合为键，来源标识及查询签名见[行情驱动设计](market-data.md)。
 
 `OnStart` 失败时，策略回滚本次启动操作，实例保持可安全销毁。宿主直接销毁该实例，不调用 `OnStop`。
 
-宿主在 `OnTick` 前更新最新行情缓存，在交易回调前更新委托、持仓与资金账本。`OnOrderUpdate` 和 `OnFill` 默认返回成功，签名与落账顺序见[交易服务与回调](trading.md#服务与回调)。业务回调失败后关闭后续业务回调，宿主仍处理能够完成的交易收尾，规则见[错误与超时](trading.md#错误与超时)。
+宿主在 `OnTick` 前更新最新行情缓存与期货估值，模拟交易所同时观察该报价，在交易回调前更新委托、持仓与资金账本。`OnOrderUpdate` 和 `OnFill` 默认返回成功，签名与落账顺序见[交易服务与回调](trading.md#服务与回调)。业务回调失败后关闭后续业务回调，宿主仍处理能够完成的交易收尾，规则见[错误与超时](trading.md#错误与超时)。
 
 `OnStop` 只配对成功的 `OnStart`，由宿主调用一次；`OnStart` 成功后的行情源激活失败也必须配对。正常运行结束时，`Run()` 先停止行情与策略新请求，完成委托排空后再调用 `OnStop`；无法继续排空或超时时保留未确认状态并失败收尾。该回调可查询最后行情、最终已知委托及账户状态，交易请求入口关闭。回调返回前必须结束实例拥有的全部活动，随后宿主销毁实例并释放动态库句柄。停止阶段的回调与排空规则见[正常停止](trading.md#正常停止)。
 
-上下文及其返回的 `MarketData`、`Trading` 引用仅在当前主线程回调期间有效，策略不得保存其引用或地址供后续调用。`OnTick` 的行情引用同样只在当前回调内有效；需要保留的数据复制到策略自身存储。
+上下文及其返回的 `MarketData`、`Trading`、`Timer` 引用仅在当前主线程回调期间有效，策略不得保存其引用或地址供后续调用。`OnTick` 的行情引用同样只在当前回调内有效；需要保留的数据复制到策略自身存储。
 
 构造器只建立可安全销毁的对象及配置状态；可失败的运行资源准备放在 `OnStart`。析构器支持尚未启动、配置失败、启动失败及已经停止的实例，释放对象仍持有的资源；`destroy()` 完成策略及内嵌配置的析构与存储释放。动态库全局构造、析构不承担策略的启动或停止职责。
 
@@ -121,7 +124,7 @@ extern "C" YQuantGetStrategyPlugin() noexcept -> const StrategyPlugin*
 | 空闲态处理 `LoadAndStart` 并成功启动 | `Idle → Starting → Running` |
 | 启动任一阶段失败 | `Starting → 失败收尾 → Finished`，保留失败结果 |
 | 启动阶段处理停止请求 | `Starting → Stopping → Finished`，仅在 `OnStart` 已成功时调用 `OnStop`；无其他错误时成功退出 |
-| 运行态处理 `Stop` | 保持 `Running`，只登记停止请求，不调用策略 |
+| 运行态处理 `Stop` | 保持 `Running`，登记停止并清除定时器，不调用策略 |
 | `Run()` 处理停止请求 | `Running → Stopping → Finished`，推进委托排空后最终释放；无法排空时失败收尾 |
 | 空闲态处理 `Stop` | `Idle → Finished` |
 | 结束态重复处理 `Stop` | 保持 `Finished`，不重复回调或释放 |
@@ -173,13 +176,13 @@ flowchart TD
 
 主线程在动态库加载或策略代码执行前，通过 `pthread_sigmask()` 屏蔽 `SIGINT`、`SIGTERM`，使用 `sigaction()` 安装处理函数。处理函数只将 `volatile sig_atomic_t` 停止标志置位，不调用策略、记录日志或释放资源。普通代码、SDK 调用和全部策略回调执行时保持这两个信号被屏蔽。
 
-接入的 `Poll()` 非阻塞，每次至多返回一条事件；宿主校验并更新对应行情或交易账本后调用策略。请求与来源事件按[事件调度规则](trading.md#启动与事件调度)公平推进，共享有界事件额度。无立即工作时，以最早期限通过 FD 集合全空的 `pselect(0, ...)` 等待；没有期限时传入空超时指针。
+接入的 `Poll()` 非阻塞，每次至多返回一条事件；宿主校验并更新对应行情或交易账本后调用策略。行情、交易和策略定时事件按[事件调度规则](trading.md#启动与事件调度)公平推进，共享有界事件额度。无立即工作时，以最早期限通过 FD 集合全空的 `pselect(0, ...)` 等待；没有期限时传入空超时指针。
 
 已激活行情源的 `Service(now)` 只在 `Running` 轮次边界执行，其维护期限参与整体最早期限；共享内存源无业务订阅时仍检查发布者。维护契约及忙轮询让出规则见[行情源接口](market-data.md#接口契约)。进入 `Stopping` 后停止行情读取和维护，交易侧继续排空；行情读取或维护失败同样先关闭新请求，再推进仍可完成的交易收尾。
 
 `pselect` 期间临时解除退出信号屏蔽，返回后恢复屏蔽并立即检查停止。事件批次与启动同步阶段的边界通过 `pthread_sigmask()` 临时设置 `wait_mask`，立即恢复 `blocked_mask`，再读取停止标志；检查窗口不调用策略或 SDK。信号和时间期限的等待采用同一主线程协议。[pselect](https://man7.org/linux/man-pages/man2/select.2.html)、[信号掩码](https://man7.org/linux/man-pages/man3/pthread_sigmask.3p.html)
 
-运行态的 `Handle(Stop)` 只登记请求，不执行回调或资源释放。调用方在 `Run()` 完成收尾后再销毁 `StrategyRunner`；析构不另建排空事件循环。
+运行态的 `Handle(Stop)` 登记请求并立即清除策略定时器，不执行策略回调或交易资源释放。调用方在 `Run()` 完成收尾后再销毁 `StrategyRunner`；析构不另建排空事件循环。
 
 ```text
 Main(args):
@@ -318,6 +321,8 @@ tests/strategyd/missing_dependency.cc       缺失依赖场景的测试库
 
 `OrderLifecycleStrategy` 从行情回调提交一次限价单，通过委托和成交回调检查账本，在停止阶段查询最终状态。配置、预期轨迹与收尾验收见[示例与预期轨迹](trading.md#示例与预期轨迹)。
 
+`BboMarketMakingStrategy` 使用初始现金和可卖底仓进行双边报价，定时检查行情过期并执行失败退避，规则与场景验收见[有底仓双边策略](bbo-market-making.md)。
+
 验收使用真实动态库和真实 `yquant-strategyd` 子进程。测试模块通过继承的管道或临时文件记录调用轨迹；测试控制信息只用于测试模块，不加入生产策略接口。
 
 | 场景 | 验收条件 |
@@ -325,7 +330,7 @@ tests/strategyd/missing_dependency.cc       缺失依赖场景的测试库
 | 示例策略冒烟 | 真实加载示例库，观察宿主的 `Running` 状态；生命周期示例输出与配置一致的 `startup_message`；发送停止信号后正常退出，退出码为 `0` |
 | 无行情源或无订阅 | 空字典查询及订阅返回错误；不登记订阅的生命周期示例仍正常运行、停止 |
 | 回调与错误收尾 | 行情及交易回调在主线程串行执行；启动、业务回调或接入失败仍按约定配对 `OnStop`，保留首个错误 |
-| 等待与停止检查 | 等待返回、事件批次及启动阶段边界检查信号；运行期 `Stop` 只登记请求，`Run()` 完成排空与最终释放 |
+| 等待与停止检查 | 等待返回、事件批次及启动阶段边界检查信号；运行期 `Stop` 登记停止并清除定时器，`Run()` 完成排空与最终释放 |
 | 生命周期策略参数 | 消息解码后为 128 字节时完整输出，缺项、空字符串、129 字节、内嵌 NUL、错误类型和未知参数均在启动前拒绝 |
 | 生命周期轨迹 | 测试动态库记录 `Create → OnStart`，停止信号后为 `OnStop → Destroy`；各阶段均为一次，资源测试确认随后释放动态库句柄 |
 | 两种停止信号 | 分别验证 `SIGINT`、`SIGTERM`，正常退出码为 `0` |

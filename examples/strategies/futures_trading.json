@@ -1,0 +1,7 @@
+{
+  "adapter": "simulated_futures",
+  "report_interval_ms": 1,
+  "shutdown_timeout_ms": 5000,
+  "initial_cash": 100000000000,
+  "initial_futures_positions": []
+}

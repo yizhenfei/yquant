@@ -47,6 +47,18 @@ TEST_F(ConfigTest, LoadsRelativeMockAndPublisherDefaultsWithoutOutputs) {
   EXPECT_FALSE(std::filesystem::exists(directory_.File("quotes.lock")));
 }
 
+TEST_F(ConfigTest, MockInputRejectsTypedReplayConfiguration) {
+  ASSERT_TRUE(
+      Load(R"({"adapter":"mock","config":"mock.json"})", "[" + Shm() + "]")
+          .ok());
+  auto config = loader_.config();
+  config.source.mock.adapter = strategyd::MarketDataAdapter::kReplay;
+  strategy::ConfigError error;
+  EXPECT_EQ(ValidateConfig(config, error).code,
+            base::ErrorCode::kInvalidArgument);
+  EXPECT_STREQ(error.field_path, "source.config.adapter");
+}
+
 TEST_F(ConfigTest, LoadsTcpInputAndMixedOutputsIndependentOfKeyOrder) {
   ASSERT_TRUE(
       Load(

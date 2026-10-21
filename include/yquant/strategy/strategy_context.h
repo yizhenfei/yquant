@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "yquant/strategy/market_data.h"
+#include "yquant/strategy/timer.h"
 #include "yquant/strategy/trading.h"
 
 namespace yquant::strategy {
@@ -27,6 +28,10 @@ class StrategyContext {
   // remains queryable, with requests rejected explicitly.
   virtual Trading& trading() noexcept = 0;
   virtual const Trading& trading() const noexcept = 0;
+  // Same borrowing rules; one replaceable one-shot timer belongs to the
+  // strategy instance. The const overload only inspects the armed deadline.
+  virtual Timer& timer() noexcept = 0;
+  virtual const Timer& timer() const noexcept = 0;
 };
 
 }  // namespace yquant::strategy

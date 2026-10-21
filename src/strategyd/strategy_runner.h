@@ -10,9 +10,12 @@
 #include "strategyd/market_data.h"
 #include "strategyd/mock_market_data_source.h"
 #include "strategyd/mock_trading_adapter.h"
+#include "strategyd/replay_market_data_source.h"
 #include "strategyd/shm_market_data_source.h"
+#include "strategyd/simulated_futures_exchange.h"
 #include "strategyd/strategy_context.h"
 #include "strategyd/strategy_library.h"
+#include "strategyd/timer.h"
 #include "strategyd/trading.h"
 #include "yquant/base/status.h"
 #include "yquant/strategy/strategy.h"
@@ -36,9 +39,10 @@ struct Stop {};
 class StrategyRunner {
  public:
   // Optional dependencies are borrowed until destruction. Defaults use the
-  // host's steady clock and a mock/SHM source selected by configuration.
-  // An injected source overrides that selection. Environment is optional for
-  // startup cancellation, but Run() requires an explicit environment.
+  // host's steady clock and a configured source selected by configuration.
+  // Injected source/adapter instances override configuration selection.
+  // Environment is optional for startup cancellation, but Run() requires an
+  // explicit environment.
   explicit StrategyRunner(const MonotonicClock* clock = nullptr,
                           MarketDataSource* source = nullptr,
                           EventLoopEnvironment* environment = nullptr,
@@ -55,10 +59,11 @@ class StrategyRunner {
   // Idle/finished stops are immediate and idempotent. No callback reentry.
   [[nodiscard]] base::Status Handle(Stop command) noexcept;
 
-  // Drives requests and both event sources on the owning thread. Requires
-  // Running, outside callbacks. Stops close new requests and drain outstanding
-  // orders before finalization. Failures retain the first diagnostic; invalid
-  // state leaves resources unchanged. All dependencies outlive this call.
+  // Drives requests, both event sources and the timer on the owning thread.
+  // Requires Running, outside callbacks. Stops close new requests and drain
+  // outstanding orders before finalization. Failures retain the first
+  // diagnostic; invalid state leaves resources unchanged. All dependencies
+  // outlive this call.
   [[nodiscard]] base::Status Run(EventLoopEnvironment& environment) noexcept;
   // Earliest source event, cold maintenance, local work, or drain deadline.
   std::optional<std::uint64_t> next_deadline() const noexcept;
@@ -89,6 +94,9 @@ class StrategyRunner {
   // Dispatches a committed trading event without reading another source between
   // its two callbacks. Failure disables subsequent business callbacks.
   bool DispatchTrading(const TradingDispatch& dispatch) noexcept;
+  // Consumes a due one-shot before callback entry. Failure starts the same
+  // error-draining path as other business callbacks, discarding any rearm.
+  bool DispatchTimer() noexcept;
   enum class QuotePollResult { kEvent, kIdle, kError };
   // Polls one market record. An idle result yields this source's remaining
   // batch budget, including a poll-driven source whose deadline stays due.
@@ -96,10 +104,10 @@ class StrategyRunner {
   // Polls one local/broker event; false starts error stopping. Broker Idle must
   // retain a future or absent deadline.
   bool PollTrading() noexcept;
-  // Processes at most 64 polls/local events with persistent source rotation.
-  // After market Idle, only trading may use this batch's remaining budget.
+  // Processes at most 64 polls/local events/timers with persistent rotation
+  // among all three sources. Market Idle yields only the market's remainder.
   void ProcessBatch() noexcept;
-  // Establishes non-nested callback phases on both host services.
+  // Establishes non-nested callback phases on all host services.
   void BeginCallback(CallbackPhase phase) noexcept;
   void EndCallback() noexcept;
   // Receives stop requests; a failed environment makes further draining unsafe.
@@ -141,12 +149,15 @@ class StrategyRunner {
   // Own the service before constructing the context that borrows it.
   MarketDataImpl market_data_;
   TradingImpl trading_;
+  TimerImpl timer_;
   StrategyContextImpl context_;
   MockMarketDataSource mock_source_;
   ShmMarketDataSource shm_source_;
+  ReplayMarketDataSource replay_source_;
   MarketDataSource* source_;
   MockTradingAdapter default_trading_adapter_;
-  TradingAdapter& trading_adapter_;
+  SimulatedFuturesExchange futures_exchange_;
+  TradingAdapter* trading_adapter_;
   EventLoopEnvironment* startup_environment_;
   StrategyLibrary library_;
   strategy::StrategyId strategy_id_;
@@ -161,7 +172,9 @@ class StrategyRunner {
   bool stop_requested_ = false;
   bool callbacks_enabled_ = true;
   bool drain_viable_ = true;
-  bool prefer_market_ = true;
+  // 0=market, 1=trading, 2=timer. Retained across batches so a continually
+  // rearmed immediate timer cannot starve another ready source.
+  std::uint8_t next_event_source_ = 0;
   bool prefer_local_ = true;
   std::uint64_t shutdown_timeout_ns_ = 5000000000ULL;
   std::optional<std::uint64_t> shutdown_deadline_;

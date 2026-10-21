@@ -15,10 +15,9 @@ StrategyRunner::StrategyRunner(const MonotonicClock* clock,
     : clock_(clock != nullptr ? *clock : default_clock_),
       market_data_(clock_),
       trading_(clock_, market_data_),
-      context_(clock_, market_data_, trading_),
+      context_(clock_, market_data_, trading_, timer_),
       source_(source),
-      trading_adapter_(trading_adapter != nullptr ? *trading_adapter
-                                                  : default_trading_adapter_),
+      trading_adapter_(trading_adapter),
       startup_environment_(environment) {}
 
 StrategyRunner::~StrategyRunner() noexcept {
@@ -112,9 +111,17 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
       return result_;
     }
     if (source_ == nullptr) {
-      source_ = market_loader.config().adapter == MarketDataAdapter::kShm
-                    ? static_cast<MarketDataSource*>(&shm_source_)
-                    : static_cast<MarketDataSource*>(&mock_source_);
+      switch (market_loader.config().adapter) {
+        case MarketDataAdapter::kMock:
+          source_ = &mock_source_;
+          break;
+        case MarketDataAdapter::kShm:
+          source_ = &shm_source_;
+          break;
+        case MarketDataAdapter::kReplay:
+          source_ = &replay_source_;
+          break;
+      }
     }
     // Prepare may acquire resources before reporting failure; Stop is safe
     // even when preparation did not finish.
@@ -152,17 +159,24 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
       Finalize();
       return result_;
     }
+    if (trading_adapter_ == nullptr) {
+      trading_adapter_ =
+          trading_loader.config().adapter ==
+                  TradingAdapterType::kSimulatedFutures
+              ? static_cast<TradingAdapter*>(&futures_exchange_)
+              : static_cast<TradingAdapter*>(&default_trading_adapter_);
+    }
     shutdown_timeout_ns_ = trading_loader.config().shutdown_timeout_ns;
     trading_prepared_ = true;
-    const auto prepared = trading_adapter_.Prepare(trading_loader.config());
+    const auto prepared = trading_adapter_->Prepare(trading_loader.config());
     if (!prepared.ok()) {
-      SetError(prepared, "trading_prepare", trading_adapter_.error_detail());
+      SetError(prepared, "trading_prepare", trading_adapter_->error_detail());
       Finalize();
       return result_;
     }
-    const auto started = trading_adapter_.Start(clock_.Now());
+    const auto started = trading_adapter_->Start(clock_.Now());
     if (!started.ok()) {
-      SetError(started, "trading_start", trading_adapter_.error_detail());
+      SetError(started, "trading_start", trading_adapter_->error_detail());
       Finalize();
       return result_;
     }
@@ -171,9 +185,9 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
       return result_;
     }
     TradingAccountSnapshot account;
-    const auto snapshot = trading_adapter_.ReadAccountSnapshot(account);
+    const auto snapshot = trading_adapter_->ReadAccountSnapshot(account);
     if (!snapshot.ok()) {
-      SetError(snapshot, "trading_account", trading_adapter_.error_detail());
+      SetError(snapshot, "trading_account", trading_adapter_->error_detail());
       Finalize();
       return result_;
     }
@@ -276,6 +290,7 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
   }
   state_ = RunnerState::kRunning;
   trading_.SetRunning(true);
+  timer_.SetRunning(true);
   return result_;
 }
 
@@ -291,6 +306,7 @@ base::Status StrategyRunner::Handle(Stop) noexcept {
     Finalize();
   } else if (state_ == RunnerState::kRunning) {
     stop_requested_ = true;
+    timer_.BeginStopping();
   }
   return result_;
 }
@@ -358,9 +374,12 @@ std::optional<std::uint64_t> StrategyRunner::next_deadline() const noexcept {
     IncludeDeadline(deadline, source_->next_deadline());
     IncludeDeadline(deadline, source_->next_service_deadline());
   }
+  if (state_ == RunnerState::kRunning) {
+    IncludeDeadline(deadline, timer_.deadline());
+  }
   if (trading_started_) {
     IncludeDeadline(deadline, trading_.next_deadline());
-    IncludeDeadline(deadline, trading_adapter_.next_deadline());
+    IncludeDeadline(deadline, trading_adapter_->next_deadline());
   }
   IncludeDeadline(deadline, shutdown_deadline_);
   return deadline;
@@ -370,9 +389,11 @@ void StrategyRunner::BeginCallback(CallbackPhase phase) noexcept {
   callback_active_ = true;
   market_data_.BeginCallback(phase);
   trading_.BeginCallback(phase);
+  timer_.BeginCallback(phase);
 }
 
 void StrategyRunner::EndCallback() noexcept {
+  timer_.EndCallback();
   trading_.EndCallback();
   market_data_.EndCallback();
   callback_active_ = false;
@@ -395,6 +416,7 @@ void StrategyRunner::EnterStopping() noexcept {
   }
   state_ = RunnerState::kStopping;
   stop_requested_ = false;
+  timer_.BeginStopping();
   trading_.BeginStopping();
   const auto now = clock_.Now();
   if (shutdown_timeout_ns_ > std::numeric_limits<std::uint64_t>::max() - now) {
@@ -425,7 +447,7 @@ void StrategyRunner::StopAfterError(bool can_drain) noexcept {
 
 bool StrategyRunner::IsDrained() const noexcept {
   return trading_.is_drained() &&
-         (!trading_started_ || trading_adapter_.is_drained());
+         (!trading_started_ || trading_adapter_->is_drained());
 }
 
 bool StrategyRunner::FinishStoppingIfReady() noexcept {
@@ -476,6 +498,24 @@ bool StrategyRunner::DispatchQuote(const model::QuoteTick& tick) noexcept {
       ++ignored_quote_count_;
     }
     return true;
+  }
+  // Publish valuation and exchange book before the strategy observes this
+  // quote. Matching reports remain asynchronous and go through ApplyEvent.
+  if (trading_started_) {
+    const auto valued = trading_.ApplyQuote(tick);
+    if (valued != base::ErrorCode::kOk) {
+      SetQuoteError({valued, {}}, "futures_valuation", trading_.error_detail(),
+                    tick);
+      StopAfterError(true);
+      return false;
+    }
+    const auto matched = trading_adapter_->OnQuote(tick, clock_.Now());
+    if (!matched.ok()) {
+      SetQuoteError(matched, "trading_quote", trading_adapter_->error_detail(),
+                    tick);
+      StopAfterError(false);
+      return false;
+    }
   }
   BeginCallback(CallbackPhase::kTick);
   const auto result = instance_->OnTick(context_, tick);
@@ -540,6 +580,10 @@ StrategyRunner::QuotePollResult StrategyRunner::PollQuote() noexcept {
       StopAfterError(true);
       return QuotePollResult::kError;
     }
+    if (source_->finished()) {
+      EnterStopping();
+      return QuotePollResult::kIdle;
+    }
     // SHM already bounded its scan internally. Retry only in the next Run
     // iteration, so a transport yield does not multiply its scan budget here.
     return QuotePollResult::kIdle;
@@ -554,10 +598,26 @@ StrategyRunner::QuotePollResult StrategyRunner::PollQuote() noexcept {
                              : QuotePollResult::kError;
 }
 
+bool StrategyRunner::DispatchTimer() noexcept {
+  strategy::TimerEvent event;
+  if (!timer_.TryTakeDue(clock_.Now(), event)) {
+    return true;
+  }
+  BeginCallback(CallbackPhase::kTimer);
+  const auto code = instance_->OnTimer(context_, event);
+  EndCallback();
+  if (code != base::ErrorCode::kOk) {
+    SetError({code, {}}, "timer", "strategy OnTimer returned an error");
+    StopAfterError(true);
+    return false;
+  }
+  return true;
+}
+
 bool StrategyRunner::PollTrading() noexcept {
   const auto now = clock_.Now();
   const bool local = trading_.has_local_updates();
-  const bool remote = IsDue(trading_adapter_.next_deadline(), now);
+  const bool remote = IsDue(trading_adapter_->next_deadline(), now);
   TradingDispatch dispatch;
   if (local && (!remote || prefer_local_)) {
     prefer_local_ = false;
@@ -570,17 +630,17 @@ bool StrategyRunner::PollTrading() noexcept {
   } else {
     prefer_local_ = true;
     TradingEvent event;
-    const auto polled = trading_adapter_.Poll(now, event);
+    const auto polled = trading_adapter_->Poll(now, event);
     if (!polled.status.ok() || polled.state == TradingPollState::kError) {
       const auto status = polled.status.ok()
                               ? base::Status{base::ErrorCode::kCorrupt, {}}
                               : polled.status;
-      SetError(status, "trading_poll", trading_adapter_.error_detail());
+      SetError(status, "trading_poll", trading_adapter_->error_detail());
       StopAfterError(false);
       return false;
     }
     if (polled.state == TradingPollState::kIdle) {
-      if (IsDue(trading_adapter_.next_deadline(), now)) {
+      if (IsDue(trading_adapter_->next_deadline(), now)) {
         SetError({base::ErrorCode::kCorrupt, {}}, "trading_poll",
                  "idle trading adapter retained an already-due deadline");
         StopAfterError(false);
@@ -610,26 +670,37 @@ void StrategyRunner::ProcessBatch() noexcept {
   bool market_idle = false;
   for (std::size_t count = 0; count < kMaxStrategyBatchSize; ++count) {
     const auto now = clock_.Now();
-    const bool market = !market_idle && state_ == RunnerState::kRunning &&
-                        source_started_ && IsDue(source_->next_deadline(), now);
-    const bool trading =
+    const bool ready[] = {
+        !market_idle && state_ == RunnerState::kRunning && source_started_ &&
+            IsDue(source_->next_deadline(), now),
         trading_started_ && (trading_.has_local_updates() ||
-                             IsDue(trading_adapter_.next_deadline(), now));
-    if (!market && !trading) {
+                             IsDue(trading_adapter_->next_deadline(), now)),
+        state_ == RunnerState::kRunning && callbacks_enabled_ &&
+            IsDue(timer_.deadline(), now)};
+    std::size_t selected = 3;
+    for (std::size_t offset = 0; offset < 3; ++offset) {
+      const auto candidate = (next_event_source_ + offset) % 3;
+      if (ready[candidate]) {
+        selected = candidate;
+        break;
+      }
+    }
+    if (selected == 3) {
       return;
     }
-    if (market && (!trading || prefer_market_)) {
-      prefer_market_ = false;
+    next_event_source_ = static_cast<std::uint8_t>((selected + 1) % 3);
+    if (selected == 0) {
       const auto polled = PollQuote();
       if (polled == QuotePollResult::kError) {
         return;
       }
       market_idle = polled == QuotePollResult::kIdle;
-    } else {
-      prefer_market_ = true;
+    } else if (selected == 1) {
       if (!PollTrading()) {
         return;
       }
+    } else if (!DispatchTimer()) {
+      return;
     }
   }
 }
@@ -653,6 +724,10 @@ base::Status StrategyRunner::Run(EventLoopEnvironment& environment) noexcept {
         StopAfterError(true);
       }
     }
+    if (state_ == RunnerState::kRunning && source_started_ &&
+        source_->finished()) {
+      EnterStopping();
+    }
     if (state_ == RunnerState::kStopping && trading_started_) {
       const auto scheduled = trading_.ScheduleStopping(clock_.Now());
       if (!scheduled.ok()) {
@@ -662,7 +737,7 @@ base::Status StrategyRunner::Run(EventLoopEnvironment& environment) noexcept {
     }
     if (trading_started_ && drain_viable_) {
       const auto sent =
-          trading_.ProcessRequests(trading_adapter_, clock_.Now());
+          trading_.ProcessRequests(*trading_adapter_, clock_.Now());
       if (!sent.ok()) {
         SetError(sent, "trading_send", trading_.error_detail());
         StopAfterError(false);
@@ -714,23 +789,40 @@ void StrategyRunner::ReportUnconfirmed() const noexcept {
                      static_cast<long long>(cash.reserved),
                      static_cast<long long>(cash.available));
       }
+      model::FuturesAccountSnapshot futures;
+      if (trading_.TryGetFuturesAccount(futures)) {
+        std::fprintf(
+            stderr,
+            "yquant-strategyd: futures_balance=%lld equity=%lld available=%lld "
+            "margin=%lld reserved=%lld realized_pnl=%lld unrealized_pnl=%lld "
+            "commission=%lld unit=micro_yuan\n",
+            static_cast<long long>(futures.balance),
+            static_cast<long long>(futures.equity),
+            static_cast<long long>(futures.available),
+            static_cast<long long>(futures.margin),
+            static_cast<long long>(futures.reserved),
+            static_cast<long long>(futures.realized_pnl),
+            static_cast<long long>(futures.unrealized_pnl),
+            static_cast<long long>(futures.commission));
+      }
       reported_cash = true;
     }
-    std::fprintf(
-        stderr,
-        "yquant-strategyd: unconfirmed_order=%llu state=%u "
-        "instrument_id=%llu side=%u price=%lld quantity=%lld "
-        "filled=%lld leaves=%lld cancel_pending=%u cancel_request=%llu\n",
-        static_cast<unsigned long long>(order.client_order_id.value),
-        static_cast<unsigned>(order.state),
-        static_cast<unsigned long long>(order.instrument_id.value),
-        static_cast<unsigned>(order.side),
-        static_cast<long long>(order.limit_price),
-        static_cast<long long>(order.original_qty),
-        static_cast<long long>(order.cumulative_filled_qty),
-        static_cast<long long>(order.leaves_qty),
-        static_cast<unsigned>(order.cancel_pending),
-        static_cast<unsigned long long>(order.cancel_request_id.value));
+    std::fprintf(stderr,
+                 "yquant-strategyd: unconfirmed_order=%llu state=%u "
+                 "instrument_id=%llu side=%u price=%lld quantity=%lld "
+                 "filled=%lld leaves=%lld cancel_pending=%u "
+                 "cancel_request=%llu effect=%u\n",
+                 static_cast<unsigned long long>(order.client_order_id.value),
+                 static_cast<unsigned>(order.state),
+                 static_cast<unsigned long long>(order.instrument_id.value),
+                 static_cast<unsigned>(order.side),
+                 static_cast<long long>(order.limit_price),
+                 static_cast<long long>(order.original_qty),
+                 static_cast<long long>(order.cumulative_filled_qty),
+                 static_cast<long long>(order.leaves_qty),
+                 static_cast<unsigned>(order.cancel_pending),
+                 static_cast<unsigned long long>(order.cancel_request_id.value),
+                 static_cast<unsigned>(order.position_effect));
     model::PositionSnapshot position;
     if (trading_.TryGetPosition(order.instrument_id, position)) {
       std::fprintf(stderr,
@@ -741,6 +833,23 @@ void StrategyRunner::ReportUnconfirmed() const noexcept {
                    static_cast<long long>(position.available_qty),
                    static_cast<long long>(position.reserved_qty));
     }
+    model::FuturesPositionSnapshot futures;
+    if (trading_.TryGetFuturesPosition(order.instrument_id, futures)) {
+      std::fprintf(stderr,
+                   "yquant-strategyd: instrument_id=%llu long_today=%lld/%lld "
+                   "long_yesterday=%lld/%lld "
+                   "short_today=%lld/%lld short_yesterday=%lld/%lld "
+                   "unit=quantity/frozen_lots\n",
+                   static_cast<unsigned long long>(order.instrument_id.value),
+                   static_cast<long long>(futures.long_today.quantity),
+                   static_cast<long long>(futures.long_today.frozen_qty),
+                   static_cast<long long>(futures.long_yesterday.quantity),
+                   static_cast<long long>(futures.long_yesterday.frozen_qty),
+                   static_cast<long long>(futures.short_today.quantity),
+                   static_cast<long long>(futures.short_today.frozen_qty),
+                   static_cast<long long>(futures.short_yesterday.quantity),
+                   static_cast<long long>(futures.short_yesterday.frozen_qty));
+    }
   }
 }
 
@@ -750,6 +859,7 @@ void StrategyRunner::Finalize() noexcept {
   }
   state_ = RunnerState::kStopping;
   trading_.SetRunning(false);
+  timer_.BeginStopping();
   source_started_ = false;
   if (source_prepared_) {
     source_prepared_ = false;
@@ -775,10 +885,11 @@ void StrategyRunner::Finalize() noexcept {
   trading_started_ = false;
   if (trading_prepared_) {
     trading_prepared_ = false;
-    const auto stopped = trading_adapter_.Stop();
-    SetError(stopped, "trading_stop", trading_adapter_.error_detail());
+    const auto stopped = trading_adapter_->Stop();
+    SetError(stopped, "trading_stop", trading_adapter_->error_detail());
   }
   trading_.Reset();
+  timer_.Reset();
   market_data_.Reset();
   state_ = RunnerState::kFinished;
 }
