@@ -7,8 +7,8 @@
 #include <string_view>
 
 #include "gtest/gtest.h"
-#include "strategyd/json_config_document.h"
 #include "test_config_file.h"
+#include "yquant/base/json_config_document.h"
 #include "yquant/model/identifiers.h"
 
 namespace yquant::strategyd {
@@ -145,7 +145,7 @@ TEST(TradingConfigTest,
      AppliesSharedFileLimitAndResetsPreviousValuesOnFailure) {
   TradingConfigLoader loader;
   std::string large = Replace("\"fill\"", "\"working\"");
-  large.resize(kMaxConfigFileBytes, ' ');
+  large.resize(base::kMaxConfigFileBytes, ' ');
   ConfigFile full(large);
   ASSERT_TRUE(full.valid());
   ASSERT_TRUE(loader.Load(full.path()).ok()) << loader.error().message;
@@ -163,7 +163,7 @@ TEST(TradingConfigTest,
 }
 
 TEST(TradingConfigTest, TypedValidationRejectsUnknownModesAndBadDurations) {
-  strategy::ConfigError error;
+  base::ConfigError error;
   TradingConfig config;
   EXPECT_TRUE(ValidateTradingConfig(config, error).ok());
   config.mode = static_cast<MockTradingMode>(99);
@@ -318,7 +318,7 @@ TEST(TradingConfigTest, PositionCapacityAndVenueScopedIdentityAreValidated) {
 
 TEST(TradingConfigTest, TypedAccountValidationChecksReservationsAndBounds) {
   TradingConfig config;
-  strategy::ConfigError error;
+  base::ConfigError error;
   config.initial_account.cash_balance = -1;
   EXPECT_FALSE(ValidateTradingConfig(config, error).ok());
   EXPECT_STREQ(error.field_path, "initial_cash");
@@ -442,7 +442,7 @@ TEST(TradingConfigTest,
   config.adapter = TradingAdapterKind::kTcp;
   config.remote.client_id = 1;
   std::memcpy(config.remote.token, "token", 6);
-  strategy::ConfigError error;
+  base::ConfigError error;
   EXPECT_TRUE(ValidateTradingConfig(config, error).ok());
   config.remote.connect_timeout_ns = UINT64_MAX;
   EXPECT_FALSE(ValidateTradingConfig(config, error).ok());

@@ -43,7 +43,7 @@ base::Status MarketDataImpl::Configure(
   if (phase_ != CallbackPhase::kNone || instrument_count_ != 0) {
     return {base::ErrorCode::kInvalidState, {}};
   }
-  strategy::ConfigError error;
+  base::ConfigError error;
   const auto result = ValidateMarketDataConfig(config, error);
   if (!result.ok()) {
     return result;

@@ -1,4 +1,4 @@
-#include "strategyd/json_config_document.h"
+#include "yquant/base/json_config_document.h"
 
 #include <simdjson.h>
 
@@ -10,26 +10,14 @@
 #include <system_error>
 #include <utility>
 
-namespace yquant::strategyd {
+#include "base/internal/json_config_parser.h"
+
+namespace yquant::base {
 namespace {
 
 using JsonType = simdjson::ondemand::json_type;
 
-// Copies parser diagnostics and maps allocation failure to an explicit status.
-base::Status JsonError(simdjson::error_code code, std::string_view path,
-                       strategy::ConfigError& error) noexcept {
-  error.Set(path, simdjson::error_message(code));
-  return {code == simdjson::MEMALLOC ? base::ErrorCode::kResourceExhausted
-                                     : base::ErrorCode::kInvalidArgument,
-          {}};
-}
-
-// Replaces the diagnostic without retaining views into JSON/parser storage.
-base::Status Invalid(std::string_view path, std::string_view reason,
-                     strategy::ConfigError& error) noexcept {
-  error.Set(path, reason);
-  return {base::ErrorCode::kInvalidArgument, {}};
-}
+using internal::JsonError;
 
 bool IsJsonSpace(char value) noexcept {
   return value == ' ' || value == '\t' || value == '\r' || value == '\n';
@@ -43,7 +31,7 @@ std::string_view TrimEnd(std::string_view value) noexcept {
 }
 
 struct ConfigPath {
-  char text[sizeof(strategy::ConfigError::field_path)] = {};
+  char text[sizeof(ConfigError::field_path)] = {};
   std::size_t size = 0;
   bool truncated = false;
 
@@ -95,7 +83,7 @@ ConfigPath IndexPath(std::string_view parent, std::size_t index) noexcept {
 }
 
 // Validate number syntax without imposing an integer width or floating-point
-// range. The strategy parses the unchanged token into its own chosen type.
+// range. The schema parser converts the unchanged token to its chosen type.
 bool IsJsonNumber(std::string_view value) noexcept {
   value = TrimEnd(value);
   std::size_t offset = 0;
@@ -157,15 +145,14 @@ struct KeyEntry {
 class JsonValidator {
  public:
   // Borrows an error object that outlives the complete traversal.
-  explicit JsonValidator(strategy::ConfigError& error) noexcept
-      : error_(error) {}
+  explicit JsonValidator(ConfigError& error) noexcept : error_(error) {}
   ~JsonValidator() noexcept { std::free(keys_); }
 
   JsonValidator(const JsonValidator&) = delete;
   JsonValidator& operator=(const JsonValidator&) = delete;
 
   // Allocates once using a source-size bound. Failure remains safe to destroy.
-  base::Status Allocate(std::size_t input_size) noexcept {
+  Status Allocate(std::size_t input_size) noexcept {
     // Every member consumes at least four distinct source bytes: two quotes,
     // a colon, and at least one value byte. Keep the table below half full.
     const std::size_t member_bound = input_size / 4;
@@ -178,13 +165,13 @@ class JsonValidator {
         static_cast<KeyEntry*>(std::calloc(key_capacity_, sizeof(KeyEntry)));
     if (keys_ == nullptr) {
       error_.Set("$", "cannot allocate duplicate-key validation storage");
-      return {base::ErrorCode::kResourceExhausted, {}};
+      return {ErrorCode::kResourceExhausted, {}};
     }
     return {};
   }
 
   // Fully visits the root object before any schema-specific parsing begins.
-  base::Status ValidateRoot(simdjson::ondemand::object object) noexcept {
+  Status ValidateRoot(simdjson::ondemand::object object) noexcept {
     return ValidateObject(object, {}, 1);
   }
 
@@ -192,9 +179,8 @@ class JsonValidator {
   // Decodes every key and rejects duplicates within each object. Input views
   // remain in the parser's storage; this validator never retains them beyond
   // the complete traversal. Failed diagnostics are copied into error_.
-  base::Status ValidateObject(simdjson::ondemand::object object,
-                              std::string_view path,
-                              std::size_t depth) noexcept {
+  Status ValidateObject(simdjson::ondemand::object object,
+                        std::string_view path, std::size_t depth) noexcept {
     simdjson::error_code json_error;
     const std::size_t object_id = next_object_id_++;
     for (auto field_result : object) {
@@ -211,11 +197,11 @@ class JsonValidator {
       const ConfigPath child_path = FieldPath(path, key);
       if (!InsertKey(object_id, key)) {
         const auto result =
-            Invalid(child_path.view(), "duplicate object key", error_);
+            InvalidConfig(child_path.view(), "duplicate object key", error_);
         error_.truncated |= child_path.truncated;
         return result;
       }
-      const base::Status result =
+      const Status result =
           ValidateValue(field.value(), child_path.view(), depth + 1);
       if (!result.ok()) {
         error_.truncated |= child_path.truncated;
@@ -250,9 +236,8 @@ class JsonValidator {
 
   // Fully decodes strings/containers. Numbers are lexically checked without
   // range conversion and consumed when the enclosing iterator advances.
-  base::Status ValidateValue(simdjson::ondemand::value value,
-                             std::string_view path,
-                             std::size_t depth) noexcept {
+  Status ValidateValue(simdjson::ondemand::value value, std::string_view path,
+                       std::size_t depth) noexcept {
     JsonType type;
     simdjson::error_code json_error = value.type().get(type);
     if (json_error) {
@@ -260,7 +245,7 @@ class JsonValidator {
     }
     if ((type == JsonType::object || type == JsonType::array) &&
         depth > kMaxConfigDepth) {
-      return Invalid(path, "maximum JSON nesting depth is 64", error_);
+      return InvalidConfig(path, "maximum JSON nesting depth is 64", error_);
     }
     switch (type) {
       case JsonType::object: {
@@ -285,7 +270,7 @@ class JsonValidator {
             return JsonError(json_error, path, error_);
           }
           const ConfigPath child_path = IndexPath(path, index++);
-          const base::Status result =
+          const Status result =
               ValidateValue(child, child_path.view(), depth + 1);
           if (!result.ok()) {
             error_.truncated |= child_path.truncated;
@@ -311,17 +296,17 @@ class JsonValidator {
       }
       case JsonType::number:
         if (!IsJsonNumber(value.raw_json_token())) {
-          return Invalid(path, "invalid JSON number", error_);
+          return InvalidConfig(path, "invalid JSON number", error_);
         }
         // The enclosing iterator consumes this validated scalar on increment.
         return {};
       case JsonType::unknown:
-        return Invalid(path, "invalid JSON value", error_);
+        return InvalidConfig(path, "invalid JSON value", error_);
     }
-    return json_error ? JsonError(json_error, path, error_) : base::Status{};
+    return json_error ? JsonError(json_error, path, error_) : Status{};
   }
 
-  strategy::ConfigError& error_;
+  ConfigError& error_;
   KeyEntry* keys_ = nullptr;
   std::size_t key_capacity_ = 0;
   std::size_t next_object_id_ = 1;
@@ -329,25 +314,17 @@ class JsonValidator {
 
 // Validates the entire root object, including values that schemas may later
 // reject. Numeric tokens retain JSON's unrestricted lexical number range.
-base::Status Validate(char* source, std::size_t size, std::size_t capacity,
-                      strategy::ConfigError& error) noexcept {
+Status Validate(const JsonConfigDocument& source, ConfigError& error) noexcept {
   simdjson::ondemand::parser parser;
-  simdjson::error_code json_error = parser.allocate(size, kMaxConfigDepth + 4);
-  if (json_error) {
-    return JsonError(json_error, "$", error);
-  }
   simdjson::ondemand::document document;
-  json_error = parser.iterate(source, size, capacity).get(document);
-  if (json_error) {
-    return JsonError(json_error, "$", error);
-  }
   simdjson::ondemand::object root;
-  json_error = document.get_object().get(root);
-  if (json_error) {
-    return JsonError(json_error, "$", error);
+  const Status parse_result =
+      internal::ParseConfigObject(source, parser, document, root, error);
+  if (!parse_result.ok()) {
+    return parse_result;
   }
   JsonValidator validator(error);
-  base::Status result = validator.Allocate(size);
+  Status result = validator.Allocate(source.source().size());
   if (result.ok()) {
     result = validator.ValidateRoot(root);
   }
@@ -355,7 +332,7 @@ base::Status Validate(char* source, std::size_t size, std::size_t capacity,
     return result;
   }
   if (!document.at_end()) {
-    return Invalid("$", "unexpected content after root object", error);
+    return InvalidConfig("$", "unexpected content after root object", error);
   }
   return {};
 }
@@ -371,18 +348,19 @@ void JsonConfigDocument::Reset() noexcept {
   capacity_ = 0;
 }
 
-base::Status JsonConfigDocument::Load(const char* path) noexcept {
+Status JsonConfigDocument::Load(const char* path) noexcept {
   Reset();
   error_.Clear();
   if (path == nullptr || path[0] == '\0') {
-    return Invalid("$", "configuration file path must not be empty", error_);
+    return InvalidConfig("$", "configuration file path must not be empty",
+                         error_);
   }
   std::FILE* file = std::fopen(path, "rb");
   if (file == nullptr) {
     const int saved_errno = errno;
     error_.Set("$", "cannot open configuration file");
-    return {saved_errno == ENOMEM ? base::ErrorCode::kResourceExhausted
-                                  : base::ErrorCode::kIoError,
+    return {saved_errno == ENOMEM ? ErrorCode::kResourceExhausted
+                                  : ErrorCode::kIoError,
             {saved_errno, std::generic_category()}};
   }
   // One extra byte detects oversized input; padding is required by simdjson.
@@ -392,7 +370,7 @@ base::Status JsonConfigDocument::Load(const char* path) noexcept {
   if (source_ == nullptr) {
     (void)std::fclose(file);
     error_.Set("$", "cannot allocate configuration file buffer");
-    return {base::ErrorCode::kResourceExhausted, {}};
+    return {ErrorCode::kResourceExhausted, {}};
   }
   const std::size_t size =
       std::fread(source_, 1, kMaxConfigFileBytes + 1, file);
@@ -403,21 +381,22 @@ base::Status JsonConfigDocument::Load(const char* path) noexcept {
   if (read_error || close_result != 0) {
     Reset();
     error_.Set("$", "cannot read configuration file");
-    return {base::ErrorCode::kIoError,
+    return {ErrorCode::kIoError,
             {read_error ? read_errno : close_errno, std::generic_category()}};
   }
   if (size > kMaxConfigFileBytes) {
     Reset();
-    return Invalid("$", "configuration file exceeds the 1 MiB limit", error_);
+    return InvalidConfig("$", "configuration file exceeds the 1 MiB limit",
+                         error_);
   }
   std::memset(source_ + size, 0, simdjson::SIMDJSON_PADDING);
   size_ = size;
   capacity_ = kSourceCapacity;
-  const base::Status result = Validate(source_, size_, capacity_, error_);
+  const Status result = Validate(*this, error_);
   if (!result.ok()) {
     Reset();
   }
   return result;
 }
 
-}  // namespace yquant::strategyd
+}  // namespace yquant::base

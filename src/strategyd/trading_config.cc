@@ -9,30 +9,19 @@
 #include <string_view>
 #include <utility>
 
-#include "strategyd/json_config_document.h"
+#include "base/internal/json_config_parser.h"
+#include "yquant/base/json_config_document.h"
 
 namespace yquant::strategyd {
 namespace {
 
-// Owns the schema failure text without retaining input views.
-base::Status Invalid(std::string_view field, std::string_view message,
-                     strategy::ConfigError& error) noexcept {
-  error.Set(field, message);
-  return {base::ErrorCode::kInvalidArgument, {}};
-}
-
-// Converts checked parser errors to project status and copied diagnostics.
-base::Status JsonError(simdjson::error_code code, std::string_view field,
-                       strategy::ConfigError& error) noexcept {
-  error.Set(field, simdjson::error_message(code));
-  return {code == simdjson::MEMALLOC ? base::ErrorCode::kResourceExhausted
-                                     : base::ErrorCode::kInvalidArgument,
-          {}};
-}
+using base::InvalidConfig;
+using base::internal::JsonError;
+using base::internal::ParseConfigObject;
 
 // Builds a bounded path without retaining key text from the parser.
 struct PositionFieldPath {
-  char text[256] = {};
+  char text[sizeof(base::ConfigError::field_path)] = {};
   bool truncated = false;
 
   PositionFieldPath(std::size_t index, std::string_view key) noexcept {
@@ -49,7 +38,7 @@ struct PositionFieldPath {
 // never describes local reservations; the host validates dictionary membership.
 base::Status ParsePosition(simdjson::ondemand::value value, std::size_t index,
                            model::PositionSnapshot& out,
-                           strategy::ConfigError& error) noexcept {
+                           base::ConfigError& error) noexcept {
   const PositionFieldPath object_path(index, {});
   simdjson::ondemand::object object;
   auto json_error = value.get_object().get(object);
@@ -71,7 +60,8 @@ base::Status ParsePosition(simdjson::ondemand::value value, std::size_t index,
     std::size_t position = 0;
     while (position < kFields.size() && key != kFields[position]) ++position;
     if (position == kFields.size()) {
-      const auto status = Invalid(path.text, "unknown position field", error);
+      const auto status =
+          InvalidConfig(path.text, "unknown position field", error);
       error.truncated |= path.truncated;
       return status;
     }
@@ -96,8 +86,8 @@ base::Status ParsePosition(simdjson::ondemand::value value, std::size_t index,
   }
   for (std::size_t field = 0; field < kFields.size(); ++field) {
     if ((seen & (1U << field)) == 0) {
-      return Invalid(PositionFieldPath(index, kFields[field]).text,
-                     "required field is missing", error);
+      return InvalidConfig(PositionFieldPath(index, kFields[field]).text,
+                           "required field is missing", error);
     }
   }
   const auto id_status =
@@ -106,9 +96,9 @@ base::Status ParsePosition(simdjson::ondemand::value value, std::size_t index,
     const auto key = venue != "SSE" && venue != "SZSE" && venue != "BSE"
                          ? "venue"
                          : "symbol";
-    return Invalid(PositionFieldPath(index, key).text,
-                   "requires a supported venue and six ASCII symbol digits",
-                   error);
+    return InvalidConfig(
+        PositionFieldPath(index, key).text,
+        "requires a supported venue and six ASCII symbol digits", error);
   }
   out = parsed;
   return {};
@@ -118,14 +108,14 @@ base::Status ParsePosition(simdjson::ondemand::value value, std::size_t index,
 // semantic validation before publishing the resulting configuration.
 base::Status ParsePositions(simdjson::ondemand::value value,
                             TradingAccountSnapshot& account,
-                            strategy::ConfigError& error) noexcept {
+                            base::ConfigError& error) noexcept {
   simdjson::ondemand::array positions;
   auto json_error = value.get_array().get(positions);
   if (json_error) return JsonError(json_error, "initial_positions", error);
   for (auto item_result : positions) {
     if (account.position_count == account.positions.size()) {
-      return Invalid("initial_positions", "at most 64 positions are allowed",
-                     error);
+      return InvalidConfig("initial_positions",
+                           "at most 64 positions are allowed", error);
     }
     simdjson::ondemand::value item;
     json_error = std::move(item_result).get(item);
@@ -141,18 +131,14 @@ base::Status ParsePositions(simdjson::ondemand::value value,
 
 // Parses exactly one strict object after generic syntax/UTF-8/duplicate-key
 // validation. Writes only temporary typed values; no parser views escape.
-base::Status Parse(const JsonConfigDocument& source, TradingConfig& config,
-                   strategy::ConfigError& error) noexcept {
+base::Status Parse(const base::JsonConfigDocument& source,
+                   TradingConfig& config, base::ConfigError& error) noexcept {
   simdjson::ondemand::parser parser;
-  auto json_error =
-      parser.allocate(source.source().size(), kMaxConfigDepth + 4);
-  if (json_error) return JsonError(json_error, "$", error);
   simdjson::ondemand::document document;
-  json_error = parser.iterate(source.source(), source.capacity()).get(document);
-  if (json_error) return JsonError(json_error, "$", error);
   simdjson::ondemand::object root;
-  json_error = document.get_object().get(root);
-  if (json_error) return JsonError(json_error, "$", error);
+  const auto parsed = ParseConfigObject(source, parser, document, root, error);
+  if (!parsed.ok()) return parsed;
+  simdjson::error_code json_error;
   constexpr std::array<std::string_view, 12> kFields = {"adapter",
                                                         "mode",
                                                         "report_interval_ms",
@@ -175,7 +161,8 @@ base::Status Parse(const JsonConfigDocument& source, TradingConfig& config,
     if (json_error) return JsonError(json_error, "$", error);
     std::size_t position = 0;
     while (position < kFields.size() && key != kFields[position]) ++position;
-    if (position == kFields.size()) return Invalid(key, "unknown field", error);
+    if (position == kFields.size())
+      return InvalidConfig(key, "unknown field", error);
     seen |= 1U << position;
     if (position == 0 || position == 1 || position == 6 || position == 9) {
       std::string_view value;
@@ -187,7 +174,7 @@ base::Status Parse(const JsonConfigDocument& source, TradingConfig& config,
         else if (value == "tcp")
           config.adapter = TradingAdapterKind::kTcp;
         else
-          return Invalid(key, "must be mock or tcp", error);
+          return InvalidConfig(key, "must be mock or tcp", error);
       } else if (position == 1) {
         if (value == "fill")
           config.mode = MockTradingMode::kFill;
@@ -196,7 +183,7 @@ base::Status Parse(const JsonConfigDocument& source, TradingConfig& config,
         else if (value == "reject")
           config.mode = MockTradingMode::kReject;
         else
-          return Invalid(key, "must be fill, working or reject", error);
+          return InvalidConfig(key, "must be fill, working or reject", error);
       } else {
         char* output = position == 6 ? config.remote.endpoint.address
                                      : config.remote.token;
@@ -205,8 +192,8 @@ base::Status Parse(const JsonConfigDocument& source, TradingConfig& config,
                                   : sizeof(config.remote.token);
         if (value.empty() || value.size() >= capacity ||
             value.find('\0') != std::string_view::npos)
-          return Invalid(key, "string is empty or exceeds field capacity",
-                         error);
+          return InvalidConfig(key, "string is empty or exceeds field capacity",
+                               error);
         std::memcpy(output, value.data(), value.size());
         output[value.size()] = '\0';
       }
@@ -217,7 +204,7 @@ base::Status Parse(const JsonConfigDocument& source, TradingConfig& config,
       if (json_error) return JsonError(json_error, key, error);
       if (milliseconds < kMinimumTradingDurationMs ||
           milliseconds > kMaximumTradingDurationMs)
-        return Invalid(key, "must be an integer from 1 to 60000", error);
+        return InvalidConfig(key, "must be an integer from 1 to 60000", error);
       const auto duration = milliseconds * kTradingNanosecondsPerMillisecond;
       if (position == 2)
         config.report_interval_ns = duration;
@@ -241,7 +228,7 @@ base::Status Parse(const JsonConfigDocument& source, TradingConfig& config,
       if (json_error) return JsonError(json_error, key, error);
       if (position == 7) {
         if (value == 0 || value > UINT16_MAX)
-          return Invalid(key, "must be from 1 to 65535", error);
+          return InvalidConfig(key, "must be from 1 to 65535", error);
         config.remote.endpoint.port = static_cast<std::uint16_t>(value);
       } else {
         config.remote.client_id = value;
@@ -259,10 +246,11 @@ base::Status Parse(const JsonConfigDocument& source, TradingConfig& config,
   for (std::size_t position = 0; position < kFields.size(); ++position) {
     const auto bit = 1U << position;
     if ((seen & bit) != 0 && (allowed & bit) == 0)
-      return Invalid(kFields[position], "field is not allowed for this adapter",
-                     error);
+      return InvalidConfig(kFields[position],
+                           "field is not allowed for this adapter", error);
     if ((required & bit) != 0 && (seen & bit) == 0)
-      return Invalid(kFields[position], "required field is missing", error);
+      return InvalidConfig(kFields[position], "required field is missing",
+                           error);
   }
   return {};
 }
@@ -270,7 +258,7 @@ base::Status Parse(const JsonConfigDocument& source, TradingConfig& config,
 }  // namespace
 
 base::Status ValidateTradingConfig(const TradingConfig& config,
-                                   strategy::ConfigError& error) noexcept {
+                                   base::ConfigError& error) noexcept {
   error.Clear();
   constexpr std::uint64_t kMinimum =
       kMinimumTradingDurationMs * kTradingNanosecondsPerMillisecond;
@@ -278,8 +266,8 @@ base::Status ValidateTradingConfig(const TradingConfig& config,
       kMaximumTradingDurationMs * kTradingNanosecondsPerMillisecond;
   if (config.shutdown_timeout_ns < kMinimum ||
       config.shutdown_timeout_ns > kMaximum)
-    return Invalid("shutdown_timeout_ms",
-                   "must be from 1 to 60000 milliseconds", error);
+    return InvalidConfig("shutdown_timeout_ms",
+                         "must be from 1 to 60000 milliseconds", error);
   if (config.adapter == TradingAdapterKind::kTcp) {
     const auto& remote = config.remote;
     in_addr address;
@@ -287,53 +275,54 @@ base::Status ValidateTradingConfig(const TradingConfig& config,
                     sizeof(remote.endpoint.address)) == nullptr ||
         ::inet_pton(AF_INET, remote.endpoint.address, &address) != 1 ||
         address.s_addr == INADDR_ANY)
-      return Invalid("address", "requires a nonzero numeric IPv4 address",
-                     error);
+      return InvalidConfig("address", "requires a nonzero numeric IPv4 address",
+                           error);
     if (remote.endpoint.port == 0)
-      return Invalid("port", "must be from 1 to 65535", error);
+      return InvalidConfig("port", "must be from 1 to 65535", error);
     if (remote.client_id == 0)
-      return Invalid("client_id", "must be nonzero", error);
+      return InvalidConfig("client_id", "must be nonzero", error);
     const auto* end = static_cast<const char*>(
         std::memchr(remote.token, '\0', sizeof(remote.token)));
     if (end == nullptr || end == remote.token)
-      return Invalid("token", "requires 1 to 64 printable ASCII bytes", error);
+      return InvalidConfig("token", "requires 1 to 64 printable ASCII bytes",
+                           error);
     for (const char* item = remote.token; item != end; ++item) {
       if (*item < '!' || *item > '~')
-        return Invalid("token", "requires 1 to 64 printable ASCII bytes",
-                       error);
+        return InvalidConfig("token", "requires 1 to 64 printable ASCII bytes",
+                             error);
     }
     if (remote.connect_timeout_ns < kMinimum ||
         remote.connect_timeout_ns > kMaximum)
-      return Invalid("connect_timeout_ms",
-                     "must be from 1 to 60000 milliseconds", error);
+      return InvalidConfig("connect_timeout_ms",
+                           "must be from 1 to 60000 milliseconds", error);
     if (remote.heartbeat_timeout_ns < kMinimum ||
         remote.heartbeat_timeout_ns > kMaximum)
-      return Invalid("heartbeat_timeout_ms",
-                     "must be from 1 to 60000 milliseconds", error);
+      return InvalidConfig("heartbeat_timeout_ms",
+                           "must be from 1 to 60000 milliseconds", error);
     if (config.initial_account.cash_balance != 0 ||
         config.initial_account.position_count != 0)
-      return Invalid("initial_cash", "remote account is owned by tradingd",
-                     error);
+      return InvalidConfig("initial_cash",
+                           "remote account is owned by tradingd", error);
     return {};
   }
   if (config.adapter != TradingAdapterKind::kMock)
-    return Invalid("adapter", "must be mock or tcp", error);
+    return InvalidConfig("adapter", "must be mock or tcp", error);
   if (config.mode != MockTradingMode::kFill &&
       config.mode != MockTradingMode::kWorking &&
       config.mode != MockTradingMode::kReject)
-    return Invalid("mode", "must be fill, working or reject", error);
+    return InvalidConfig("mode", "must be fill, working or reject", error);
   if (config.report_interval_ns < kMinimum ||
       config.report_interval_ns > kMaximum)
-    return Invalid("report_interval_ms", "must be from 1 to 60000 milliseconds",
-                   error);
+    return InvalidConfig("report_interval_ms",
+                         "must be from 1 to 60000 milliseconds", error);
   const auto& account = config.initial_account;
   if (account.cash_balance < 0) {
-    return Invalid("initial_cash",
-                   "must be a nonnegative int64 microyuan value", error);
+    return InvalidConfig("initial_cash",
+                         "must be a nonnegative int64 microyuan value", error);
   }
   if (account.position_count > account.positions.size()) {
-    return Invalid("initial_positions", "at most 64 positions are allowed",
-                   error);
+    return InvalidConfig("initial_positions",
+                         "at most 64 positions are allowed", error);
   }
   for (std::size_t index = 0; index < account.position_count; ++index) {
     const auto& position = account.positions[index];
@@ -342,27 +331,27 @@ base::Status ValidateTradingConfig(const TradingConfig& config,
     const auto venue = position.instrument_id.value >> 32;
     const auto symbol = position.instrument_id.value & UINT32_MAX;
     if (venue < 1 || venue > 3 || symbol > 999999) {
-      return Invalid(PositionFieldPath(index, "symbol").text,
-                     "invalid stable instrument identity", error);
+      return InvalidConfig(PositionFieldPath(index, "symbol").text,
+                           "invalid stable instrument identity", error);
     }
     if (position.total_qty < 0) {
-      return Invalid(PositionFieldPath(index, "total_qty").text,
-                     "must be nonnegative", error);
+      return InvalidConfig(PositionFieldPath(index, "total_qty").text,
+                           "must be nonnegative", error);
     }
     if (position.available_qty < 0 ||
         position.available_qty > position.total_qty) {
-      return Invalid(PositionFieldPath(index, "available_qty").text,
-                     "must be nonnegative and no greater than total_qty",
-                     error);
+      return InvalidConfig(PositionFieldPath(index, "available_qty").text,
+                           "must be nonnegative and no greater than total_qty",
+                           error);
     }
     if (position.reserved_qty != 0) {
-      return Invalid(PositionFieldPath(index, "reserved_qty").text,
-                     "initial reservations must be zero", error);
+      return InvalidConfig(PositionFieldPath(index, "reserved_qty").text,
+                           "initial reservations must be zero", error);
     }
     for (std::size_t previous = 0; previous < index; ++previous) {
       if (account.positions[previous].instrument_id == position.instrument_id) {
-        return Invalid(PositionFieldPath(index, "symbol").text,
-                       "duplicate initial position", error);
+        return InvalidConfig(PositionFieldPath(index, "symbol").text,
+                             "duplicate initial position", error);
       }
     }
   }
@@ -372,7 +361,7 @@ base::Status ValidateTradingConfig(const TradingConfig& config,
 base::Status TradingConfigLoader::Load(const char* path) noexcept {
   config_ = {};
   error_.Clear();
-  JsonConfigDocument source;
+  base::JsonConfigDocument source;
   auto status = source.Load(path);
   if (!status.ok()) {
     error_ = source.error();

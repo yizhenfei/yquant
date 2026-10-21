@@ -33,7 +33,7 @@ using yquant::model::OrderUpdate;
 using yquant::model::OrderUpdateKind;
 using yquant::model::PositionSnapshot;
 using yquant::model::QuoteTick;
-using yquant::strategy::ConfigError;
+using yquant::base::ConfigError;
 using yquant::strategy::Strategy;
 using yquant::strategy::StrategyConfig;
 using yquant::strategy::StrategyContext;

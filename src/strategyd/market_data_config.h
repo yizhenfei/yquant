@@ -5,9 +5,9 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "yquant/base/config_error.h"
 #include "yquant/base/status.h"
 #include "yquant/model/instrument.h"
-#include "yquant/strategy/strategy_config.h"
 
 namespace yquant::strategyd {
 
@@ -46,23 +46,23 @@ struct MarketDataConfig {
 // Validates typed configuration too, so sources do not rely on JSON-only
 // checks. On failure error owns a field path/reason; config is never modified.
 [[nodiscard]] base::Status ValidateMarketDataConfig(
-    const MarketDataConfig& config, strategy::ConfigError& error) noexcept;
+    const MarketDataConfig& config, base::ConfigError& error) noexcept;
 
 // Loads strict mock/SHM source JSON and resolves its selected instruments from
-// the referenced catalog. Relative catalog paths use this config's directory.
-// No parser, source views or temporary catalog storage survive Load(). Methods
-// are serialized by the owning host thread.
+// the referenced catalog. Relative catalog paths use the process working
+// directory. No parser, source views or temporary catalog storage survive
+// Load(). Methods are serialized by the owning host thread.
 class MarketDataConfigLoader {
  public:
   // Replaces the previous configuration. Failure leaves config() empty and
   // error() owns diagnostics until the next call. Borrows path during the call.
   [[nodiscard]] base::Status Load(const char* path) noexcept;
   const MarketDataConfig& config() const noexcept { return config_; }
-  const strategy::ConfigError& error() const noexcept { return error_; }
+  const base::ConfigError& error() const noexcept { return error_; }
 
  private:
   MarketDataConfig config_;
-  strategy::ConfigError error_;
+  base::ConfigError error_;
 };
 
 }  // namespace yquant::strategyd

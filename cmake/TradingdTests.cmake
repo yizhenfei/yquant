@@ -16,6 +16,7 @@ target_compile_definitions(yquant_tradingd_test PRIVATE
 add_dependencies(yquant_tradingd_test
   yquant_tradingd yquant_strategyd yquant_marketd shared_account_strategy)
 gtest_discover_tests(yquant_tradingd_test
+  WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
   DISCOVERY_MODE PRE_TEST
   DISCOVERY_TIMEOUT 30
   PROPERTIES ${yquant_test_properties})
@@ -28,6 +29,7 @@ target_compile_options(yquant_tradingd_allocation_test PRIVATE
 target_compile_definitions(yquant_tradingd_allocation_test PRIVATE
   YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json")
 gtest_discover_tests(yquant_tradingd_allocation_test
+  WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
   DISCOVERY_MODE PRE_TEST
   DISCOVERY_TIMEOUT 30
   PROPERTIES ${yquant_test_properties})

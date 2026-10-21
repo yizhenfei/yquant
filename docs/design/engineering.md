@@ -67,7 +67,17 @@ CMakePresets.json
 
 公开组件使用命名空间 `yquant::base`，内部辅助代码使用 `yquant::base::internal` 或实现文件内的匿名命名空间。公开头文件可独立编译，只包含公开依赖。
 
-日志、SPSC 队列及通用状态类型统一由 `yquant_base` 静态库提供，并提供 CMake 别名 `yquant::base`。依赖方向为上层业务到基础库；队列不依赖日志或 fmt。平台实现由 CMake 选择对应源文件。
+日志、队列、路径解析和 JSON 配置文档等基础组件统一由 `yquant_base` 静态库提供，并提供 CMake 别名 `yquant::base`。依赖方向为上层业务到基础库；队列不依赖日志或 fmt。平台实现由 CMake 选择对应源文件。
+
+## JSON 配置文档
+
+`base::JsonConfigDocument` 负责配置文件读取、完整输入校验和源码所有权管理，供 `strategyd`、`marketd`、`tradingd` 及共享标的字典复用。公开接口位于 `include/yquant/base/json_config_document.h`，实现位于 `src/base/json_config_document.cc`；公开头文件不暴露 simdjson 类型。
+
+配置文件使用 UTF-8 编码和标准 JSON 语法，根节点必须为对象。文件最大为 1 MiB，容器嵌套最多 64 层，根对象计为第一层。加载时完整检查所有字符串、标量及容器，并在所有对象中按解码后的键名拒绝重复键，例如 `a` 与 `\u0061` 视为同一键。数值在这一层只校验 JSON 语法，取值范围由各配置加载器检查。
+
+文档持有带解析所需 padding 的原始源码，完整校验的解析器和重复键临时存储在 `Load()` 返回前释放。源码视图持续有效到下次 `Load()`、`Reset()` 或文档析构；加载失败后源码为空。各加载器复用基础库的根对象解析和解析错误转换，负责自身的字段、类型、必填项和组合约束，不向文档类加入业务 schema。
+
+`base::ConfigError` 位于 `include/yquant/base/config_error.h`，用固定容量存储字段路径、原因和截断标志，复制诊断文本，不借用源码或动态库字符串。文档与 schema 解析共用该类型；JSON 解析器的分配失败保留为 `kResourceExhausted`，其他解析错误返回 `kInvalidArgument`，文件错误保留系统错误。需要长期保留的配置值由加载器或配置对象持有，运行期不保留文档借用。
 
 ## 构建与依赖
 
@@ -75,7 +85,9 @@ CMakePresets.json
 
 编译选项按 target 配置：C++20、公开 include 路径和日志编译级别向调用方传播；项目警告选项设为私有，不强加给依赖。日志公开模板使用 fmt，因此 `fmt::fmt` 为公开依赖。异常开关和 fmt 配置同时应用于依赖自身及相关调用方，避免不同编译单元采用不同配置。
 
-第三方依赖由 `cmake/` 中的 `FetchContent` 声明集中管理，固定完整 Git commit 或归档 URL 与 SHA256。fmt 为生产依赖，GoogleTest 仅由测试程序使用。依赖不跟随浮动分支，不自动切换到未固定版本的系统安装。[FetchContent](https://cmake.org/cmake/help/latest/module/FetchContent.html)
+第三方依赖由 `cmake/` 中的 `FetchContent` 声明集中管理，固定完整 Git commit 或归档 URL 与 SHA256。fmt 和 simdjson 为生产依赖，GoogleTest 仅由测试程序使用。依赖不跟随浮动分支，不自动切换到未固定版本的系统安装。[FetchContent](https://cmake.org/cmake/help/latest/module/FetchContent.html)
+
+JSON 解析使用 simdjson `5.0.4`，关闭异常接口及线程支持。`yquant_base`、业务 schema 加载器和示例策略按需私有链接其静态实现，依赖不进入公开配置文档接口。版本与归档哈希由 `cmake/Dependencies.cmake` 固定。
 
 构建提供以下 presets：
 

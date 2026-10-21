@@ -1,12 +1,9 @@
 #include "strategyd/instrument_catalog.h"
 
-#include <array>
 #include <cstdint>
 #include <cstdio>
-#include <filesystem>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <type_traits>
 
 #include "gtest/gtest.h"
@@ -178,81 +175,6 @@ TEST(InstrumentCatalogTest, FailedReloadHidesAllDefinitionsAndCanLoadAgain) {
   EXPECT_EQ(catalog.size(), 0U);
   EXPECT_FALSE(catalog.Find(id, out));
   EXPECT_EQ(out, unchanged);
-}
-
-TEST(InstrumentCatalogPathTest, ResolvesReferencesBesideTheHostConfiguration) {
-  std::array<char, kMaxInstrumentCatalogPathLength + 1> path = {};
-  strategy::ConfigError error;
-  error.Set("stale", "old error");
-  ASSERT_TRUE(ResolveInstrumentCatalogPath("/tmp/yquant/host.json",
-                                           "catalog.json", path, error)
-                  .ok());
-  EXPECT_STREQ(path.data(), "/tmp/yquant/catalog.json");
-  EXPECT_EQ(error.message[0], '\0');
-
-  ASSERT_TRUE(ResolveInstrumentCatalogPath("/tmp/yquant/host.json",
-                                           "/tmp/common/catalog.json", path,
-                                           error)
-                  .ok());
-  EXPECT_STREQ(path.data(), "/tmp/common/catalog.json");
-
-  std::error_code filesystem_error;
-  const auto current = std::filesystem::current_path(filesystem_error);
-  ASSERT_FALSE(filesystem_error);
-  ASSERT_TRUE(ResolveInstrumentCatalogPath("configs/host.json", "catalog.json",
-                                           path, error)
-                  .ok());
-  EXPECT_EQ(std::string_view(path.data()),
-            (current / "configs/catalog.json").native());
-}
-
-TEST(InstrumentCatalogPathTest, PreservesOutputForInvalidOrOverlongPaths) {
-  std::array<char, kMaxInstrumentCatalogPathLength + 1> path;
-  path.fill('x');
-  const auto unchanged = path;
-  strategy::ConfigError error;
-  constexpr char kNulReference[] = "catalog\0.json";
-  const std::string overlong(4096, 'x');
-  const std::string long_directory = "/" + std::string(4090, 'x') + "/c";
-  const struct {
-    const char* config;
-    std::string_view reference;
-  } cases[] = {
-      {nullptr, "catalog.json"},
-      {"", "catalog.json"},
-      {"/tmp/host.json", ""},
-      {"/tmp/host.json", {kNulReference, sizeof(kNulReference) - 1}},
-      {"/tmp/host.json", overlong},
-      {overlong.c_str(), "catalog.json"},
-      {long_directory.c_str(), "catalog.json"},
-  };
-  for (const auto& item : cases) {
-    EXPECT_EQ(
-        ResolveInstrumentCatalogPath(item.config, item.reference, path, error)
-            .code,
-        ErrorCode::kInvalidArgument);
-    EXPECT_EQ(path, unchanged);
-    EXPECT_STREQ(error.field_path, "instrument_catalog");
-  }
-  std::array<char, 4> short_path = {'k', 'e', 'e', 'p'};
-  const auto short_unchanged = short_path;
-  EXPECT_EQ(ResolveInstrumentCatalogPath("/tmp/host.json", "catalog.json",
-                                         short_path, error)
-                .code,
-            ErrorCode::kInvalidArgument);
-  EXPECT_EQ(short_path, short_unchanged);
-}
-
-TEST(InstrumentCatalogPathTest, AcceptsThe4095ByteBoundary) {
-  std::string reference(4095, 'x');
-  reference[0] = '/';
-  std::array<char, kMaxInstrumentCatalogPathLength + 1> path = {};
-  strategy::ConfigError error;
-  ASSERT_TRUE(
-      ResolveInstrumentCatalogPath("/tmp/host.json", reference, path, error)
-          .ok());
-  EXPECT_EQ(std::string_view(path.data()), reference);
-  EXPECT_EQ(path.back(), '\0');
 }
 
 }  // namespace

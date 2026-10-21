@@ -27,7 +27,7 @@ base::Status MarketdRunner::Init(const MarketdConfig& config,
   if (source_)
     return Fail({base::ErrorCode::kInvalidState, {}}, "initialize",
                 "pipeline is already initialized");
-  strategy::ConfigError error;
+  base::ConfigError error;
   auto status = ValidateConfig(config, error);
   if (!status.ok()) {
     char detail[768];

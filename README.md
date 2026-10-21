@@ -74,6 +74,12 @@ cmake -P cmake/DownloadTestData.cmake
 
 日志接口位于 `yquant/base/logging.h`。Debug 默认编译保留 DEBUG 及以上级别，其他构建保留 INFO 及以上；可在配置时使用 `-DYQUANT_LOG_COMPILED_LEVEL=TRACE` 等选项调整。
 
+### 路径解析
+
+所有接受相对路径的命令行参数和配置字段，都以进程的当前工作目录为基准；绝对路径直接使用。嵌套配置中的引用沿用同一工作目录，不随配置文件所在目录改变。程序在初始化时解析引用，运行期间不改变工作目录。共享内存的 `runtime_directory` 仍要求显式填写绝对路径。
+
+文中的命令均在仓库根目录执行。示例配置使用 `examples/...` 引用配套文件；录制示例中的 `capture.yqr`、`live_capture.yqr` 写入工作目录。从其他目录启动时，需要调整配置中的相对路径或使用绝对路径。
+
 ### VS Code
 
 使用 VS Code 打开仓库根目录，安装推荐的 C/C++ 和 CMake Tools 扩展。工作区通过 CMake Tools 提供 IntelliSense 编译参数，同时指定 `build/debug/compile_commands.json`，以 C++20 和项目头文件目录作为后备配置。
@@ -100,7 +106,7 @@ cmake -P cmake/DownloadTestData.cmake
 
 用户策略继承 `yquant::strategy::Strategy`，导出 `YQuantGetStrategyPlugin()`，通过描述符提供创建和销毁函数。回调通过 `context.market_data()` 访问行情，通过 `context.trading()` 提交、撤销和查询委托，通过 `context.Now()` 查询单调时间。接口及所有权约定见[策略进程与动态策略加载设计](docs/design/strategyd.md)。
 
-配置文件包含 `strategy_id` 和 `parameters`。框架校验公共字段，策略内嵌的 `StrategyConfig` 派生对象解析自定义参数；无自定义参数时使用基类并填写空对象。配置 ID 为 1 至 64 字节的 UTF-8 字符串，文件上限为 1 MiB，JSON 容器嵌套最多 64 层。
+配置文件包含 `strategy_id` 和 `parameters`。框架校验公共字段，策略内嵌的 `StrategyConfig` 派生对象解析自定义参数；无自定义参数时使用基类并填写空对象。配置 ID 为 1 至 64 字节的 UTF-8 字符串。各进程配置与共享标的字典统一遵循[通用 JSON 输入规则](docs/design/engineering.md#json-配置文档)。
 
 强类型参数示例见 [parameterized_strategy.cc](examples/strategies/parameterized_strategy.cc) 和[配套配置](examples/strategies/parameterized_strategy.json)。构建后将上述命令的动态库与配置文件名都换成 `parameterized_strategy` 即可运行；配置约定见[策略配置设计](docs/design/strategy-config.md)。
 
@@ -181,7 +187,7 @@ cmake --build --preset debug --target download_test_data
 ./build/debug/bin/yquant-marketd --config ./build/debug/marketd/replay_csv.json
 ```
 
-示例最快回放全部 367,171 条 DolphinDB 历史快照，将一档报价录制到 `build/debug/marketd/capture.yqr`。已有同名文件时失败，重新运行需更换文件名或移动已有文件。`replay_recording.json` 可将录制文件发到共享内存；原速、倍速、启动等待与策略接入见[行情回放与录制](docs/design/market-data-replay.md)。
+示例最快回放全部 367,171 条 DolphinDB 历史快照，将一档报价录制到工作目录的 `capture.yqr`。已有同名文件时失败，重新运行需更换文件名或移动已有文件。`replay_recording.json` 可将录制文件发到共享内存；原速、倍速、启动等待与策略接入见[行情回放与录制](docs/design/market-data-replay.md)。
 
 ## 工程方案
 

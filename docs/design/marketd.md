@@ -58,13 +58,13 @@ yquant-marketd --config /path/to/marketd.json --max-events 100
 
 `--check-config` 读取并校验配置，不创建发布者或发现入口。`--max-events` 在成功向所有输出提交指定数量的报价后停止；TCP 提交表示进入连接发送路径，不包含接收端处理确认。
 
-配置拒绝未知字段、重复键、错误类型、超长路径和不支持的组合。所有配置完成校验后才初始化输出；初始化失败会清理本次已获得的资源。
+配置通过 `base::JsonConfigDocument` 遵循[通用 JSON 输入规则](engineering.md#json-配置文档)，加载器拒绝未知字段、错误类型、超长路径和不支持的组合，诊断使用 `base::ConfigError`。所有配置完成校验后才初始化输出；初始化失败会清理本次已获得的资源。
 
 ### 模拟输入与本机广播
 
 ```json
 {
-  "source": {"adapter": "mock", "config": "mock_source.json"},
+  "source": {"adapter": "mock", "config": "examples/marketd/mock_source.json"},
   "publishers": [
     {"adapter": "shm", "runtime_directory": "/tmp/yquant-md",
      "stream": "quotes", "capacity": 16384, "max_payload_size": 80}
@@ -72,7 +72,7 @@ yquant-marketd --config /path/to/marketd.json --max-events 100
 }
 ```
 
-`source.config` 相对主配置文件所在目录解析。模拟行情配置引用[共享标的字典](market-data.md#共享标的字典)，并保存来源、间隔、运行标的及其模拟报价，格式与 `strategyd` 模拟源一致；示例见 [mock_source.json](../../examples/marketd/mock_source.json)。其中 `instrument_catalog` 相对模拟源配置文件所在目录解析，而非相对 `marketd` 主配置。标的精度由字典提供。
+`source.config` 与模拟源配置中的 `instrument_catalog` 均按进程工作目录解析，遵循[路径解析约定](../../README.md#路径解析)。模拟行情配置引用[共享标的字典](market-data.md#共享标的字典)，保存来源、间隔、运行标的及其模拟报价，标的精度由字典提供；格式与 `strategyd` 模拟源一致，示例见 [mock_source.json](../../examples/marketd/mock_source.json)。
 
 共享内存输出的容量为 2 的幂，默认 1024；载荷上限默认 256 字节，本报价帧要求至少 80 字节，组件上限为 4096 字节。运行目录必须使用当前用户拥有的绝对路径，组和其他用户不可写入。
 
@@ -97,7 +97,7 @@ yquant-marketd --config /path/to/marketd.json --max-events 100
 
 ```json
 {
-  "source": {"adapter": "mock", "config": "mock_source.json"},
+  "source": {"adapter": "mock", "config": "examples/marketd/mock_source.json"},
   "publishers": [
     {"adapter": "tcp", "address": "0.0.0.0", "port": 19100,
      "max_clients": 16}
@@ -121,7 +121,7 @@ yquant-marketd --config /path/to/marketd.json --max-events 100
 
 ### 历史回放与录制
 
-`replay` 输入支持 `dolphindb_csv` 与 `recording` 两种格式，`record` 输出可以与共享内存或 TCP 输出并用。路径相对主配置文件所在目录解析。配置拒绝输入与录制输出指向同一文件，以及重复录制输出。
+`replay` 输入支持 `dolphindb_csv` 与 `recording` 两种格式，`record` 输出可以与共享内存或 TCP 输出并用。相对路径基于进程工作目录解析。配置拒绝输入与录制输出指向同一文件，以及重复录制输出。
 
 `--check-config` 检查字段与路径，不读取行情文件或创建录制文件。实际启动先完整读取并校验历史输入，再初始化输出；发现损坏行或超出条数上限时不会开始发布。
 

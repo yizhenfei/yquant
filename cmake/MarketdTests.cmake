@@ -7,6 +7,7 @@ target_link_libraries(yquant_md_test PRIVATE
   yquant::md GTest::gtest_main Threads::Threads)
 target_compile_options(yquant_md_test PRIVATE -Wall -Wextra -Wpedantic)
 gtest_discover_tests(yquant_md_test
+  WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
   DISCOVERY_MODE PRE_TEST
   DISCOVERY_TIMEOUT 30
   PROPERTIES ${yquant_test_properties})
@@ -36,6 +37,7 @@ target_compile_definitions(yquant_marketd_test PRIVATE
 add_dependencies(yquant_marketd_test
   yquant_marketd yquant_strategyd quote_observer_strategy order_lifecycle_strategy)
 gtest_discover_tests(yquant_marketd_test
+  WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
   DISCOVERY_MODE PRE_TEST
   DISCOVERY_TIMEOUT 30
   PROPERTIES ${yquant_test_properties})
@@ -48,6 +50,7 @@ target_compile_options(marketd_allocation_test PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(marketd_allocation_test PRIVATE
   YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json")
 gtest_discover_tests(marketd_allocation_test
+  WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
   DISCOVERY_MODE PRE_TEST
   DISCOVERY_TIMEOUT 30
   PROPERTIES ${yquant_test_properties})

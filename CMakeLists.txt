@@ -46,14 +46,13 @@ target_compile_options(yquant_md PRIVATE -Wall -Wextra -Wpedantic)
 # Both daemons reuse host configuration, mock input and termination handling.
 add_library(yquant_host_support STATIC
   src/strategyd/instrument_catalog.cc
-  src/strategyd/json_config_document.cc
   src/strategyd/market_data_config.cc
   src/strategyd/mock_market_data_source.cc
   src/strategyd/termination_signals.cc)
 target_include_directories(yquant_host_support PUBLIC
   "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(yquant_host_support PUBLIC yquant::strategy_api
-  PRIVATE simdjson::simdjson Threads::Threads)
+  PRIVATE yquant::base simdjson::simdjson Threads::Threads)
 target_compile_options(yquant_host_support PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(yquant_trading_wire STATIC
@@ -176,6 +175,8 @@ foreach(config IN ITEMS replay_market_data replay_observer)
 endforeach()
 
 add_library(yquant_base STATIC
+  src/base/json_config_document.cc
+  src/base/path.cc
   src/base/broadcast_queue.cc
   src/base/shared_memory_mapping.cc
   src/base/shm_stream_registry.cc
@@ -188,7 +189,8 @@ target_include_directories(yquant_base PUBLIC
   "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
   PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(yquant_base PUBLIC
-  yquant_compile_options fmt::fmt Threads::Threads)
+  yquant_compile_options fmt::fmt Threads::Threads
+  PRIVATE simdjson::simdjson)
 target_compile_options(yquant_base PRIVATE -Wall -Wextra -Wpedantic)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -217,6 +219,30 @@ endif()
 if(BUILD_TESTING)
   include(GoogleTest)
 
+  add_executable(json_config_test
+    tests/base/config_error_test.cc
+    tests/base/json_config_document_test.cc)
+  target_include_directories(json_config_test PRIVATE
+    "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/tests")
+  target_link_libraries(json_config_test PRIVATE
+    yquant::base GTest::gtest_main simdjson::simdjson)
+  target_compile_options(json_config_test PRIVATE -Wall -Wextra -Wpedantic)
+  gtest_discover_tests(json_config_test
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    DISCOVERY_MODE PRE_TEST
+    DISCOVERY_TIMEOUT 30
+    PROPERTIES ${yquant_test_properties})
+
+  add_executable(path_test tests/base/path_test.cc)
+  target_include_directories(path_test PRIVATE "${PROJECT_SOURCE_DIR}/tests")
+  target_link_libraries(path_test PRIVATE yquant::base GTest::gtest_main)
+  target_compile_options(path_test PRIVATE -Wall -Wextra -Wpedantic)
+  gtest_discover_tests(path_test
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    DISCOVERY_MODE PRE_TEST
+    DISCOVERY_TIMEOUT 30
+    PROPERTIES ${yquant_test_properties})
+
   add_executable(broadcast_queue_test
     tests/base/broadcast_queue_test.cc
     tests/base/shm_broadcast_test.cc)
@@ -225,6 +251,7 @@ if(BUILD_TESTING)
     yquant::base GTest::gtest_main Threads::Threads)
   target_compile_options(broadcast_queue_test PRIVATE -Wall -Wextra -Wpedantic)
   gtest_discover_tests(broadcast_queue_test
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     DISCOVERY_MODE PRE_TEST
     DISCOVERY_TIMEOUT 30
     PROPERTIES ${yquant_test_properties})
@@ -236,6 +263,7 @@ if(BUILD_TESTING)
   target_compile_options(broadcast_queue_allocation_test PRIVATE
     -Wall -Wextra -Wpedantic)
   gtest_discover_tests(broadcast_queue_allocation_test
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     DISCOVERY_MODE PRE_TEST
     DISCOVERY_TIMEOUT 30
     PROPERTIES ${yquant_test_properties})
@@ -251,6 +279,7 @@ if(BUILD_TESTING)
     yquant::base GTest::gtest_main Threads::Threads)
   target_compile_options(spsc_queue_test PRIVATE -Wall -Wextra -Wpedantic)
   gtest_discover_tests(spsc_queue_test
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     DISCOVERY_MODE PRE_TEST
     DISCOVERY_TIMEOUT 30
     PROPERTIES ${yquant_test_properties})
@@ -263,6 +292,7 @@ if(BUILD_TESTING)
   target_compile_options(spsc_queue_allocation_test PRIVATE
     -Wall -Wextra -Wpedantic)
   gtest_discover_tests(spsc_queue_allocation_test
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     DISCOVERY_MODE PRE_TEST
     DISCOVERY_TIMEOUT 30
     PROPERTIES ${yquant_test_properties})
@@ -272,6 +302,7 @@ if(BUILD_TESTING)
   target_link_libraries(logging_test PRIVATE yquant::base GTest::gtest_main)
   target_compile_options(logging_test PRIVATE -Wall -Wextra -Wpedantic)
   gtest_discover_tests(logging_test
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     DISCOVERY_MODE PRE_TEST
     DISCOVERY_TIMEOUT 30
     PROPERTIES ${yquant_test_properties})
@@ -282,6 +313,7 @@ if(BUILD_TESTING)
   target_compile_options(logging_allocation_test PRIVATE
     -Wall -Wextra -Wpedantic)
   gtest_discover_tests(logging_allocation_test
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     DISCOVERY_MODE PRE_TEST
     DISCOVERY_TIMEOUT 30
     PROPERTIES ${yquant_test_properties})
@@ -290,6 +322,10 @@ if(BUILD_TESTING)
   include(cmake/StrategydTests.cmake)
   include(cmake/MarketdTests.cmake)
   include(cmake/TradingdTests.cmake)
+  foreach(target IN ITEMS yquant_strategyd_test yquant_marketd_test
+                          yquant_tradingd_test)
+    target_include_directories(${target} PRIVATE "${PROJECT_SOURCE_DIR}/tests")
+  endforeach()
 
   # Keep replacement global allocation functions isolated from other tests.
   add_executable(market_data_allocation_test
@@ -299,6 +335,7 @@ if(BUILD_TESTING)
   target_compile_options(market_data_allocation_test PRIVATE
     -Wall -Wextra -Wpedantic)
   gtest_discover_tests(market_data_allocation_test
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     DISCOVERY_MODE PRE_TEST
     DISCOVERY_TIMEOUT 30
     PROPERTIES ${yquant_test_properties})
@@ -310,6 +347,7 @@ if(BUILD_TESTING)
   target_compile_options(trading_allocation_test PRIVATE
     -Wall -Wextra -Wpedantic)
   gtest_discover_tests(trading_allocation_test
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     DISCOVERY_MODE PRE_TEST
     DISCOVERY_TIMEOUT 30
     PROPERTIES ${yquant_test_properties})

@@ -199,7 +199,7 @@ base::Status MockTradingAdapter::Prepare(const TradingConfig& config) noexcept {
     return Error(base::ErrorCode::kInvalidState,
                  "counter can only be prepared once");
   }
-  strategy::ConfigError error;
+  base::ConfigError error;
   const auto status = ValidateTradingConfig(config, error);
   if (!status.ok()) {
     std::snprintf(error_detail_, sizeof(error_detail_), "%s: %s",

@@ -43,9 +43,8 @@ void StrategyRunner::SetError(base::Status status, const char* stage,
   std::snprintf(error_detail_, sizeof(error_detail_), "%s", detail);
 }
 
-void StrategyRunner::SetConfigError(
-    base::Status status, const char* stage,
-    const strategy::ConfigError& error) noexcept {
+void StrategyRunner::SetConfigError(base::Status status, const char* stage,
+                                    const base::ConfigError& error) noexcept {
   char detail[kErrorDetailSize];
   std::snprintf(detail, sizeof(detail), "%s: %s%s", error.field_path,
                 error.message, error.truncated ? " [truncated]" : "");
@@ -235,7 +234,7 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
     return result_;
   }
 
-  strategy::ConfigError config_error;
+  base::ConfigError config_error;
   strategy::StrategyConfig& config = instance_->config();
   const base::ErrorCode initialize_result =
       config.Initialize(config_loader.strategy_id(),

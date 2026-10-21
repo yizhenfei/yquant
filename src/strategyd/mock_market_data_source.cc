@@ -25,7 +25,7 @@ base::Status MockMarketDataSource::Prepare(
     return Error(base::ErrorCode::kInvalidState,
                  "source can only be prepared once before activation");
   }
-  strategy::ConfigError error;
+  base::ConfigError error;
   const auto result = ValidateMarketDataConfig(config, error);
   if (!result.ok()) {
     std::snprintf(error_detail_, sizeof(error_detail_), "%s: %s",

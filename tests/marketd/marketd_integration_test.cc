@@ -20,6 +20,7 @@
 #include "gtest/gtest.h"
 #include "marketd/csv_replay.h"
 #include "marketd/recording.h"
+#include "scoped_working_directory.h"
 #include "test_support.h"
 #include "yquant/md/quote_codec.h"
 #include "yquant/md/shm_broadcast.h"
@@ -185,6 +186,7 @@ class MarketdIntegrationTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ASSERT_TRUE(directory_.valid());
+    ASSERT_TRUE(working_directory_.valid());
     ASSERT_TRUE(directory_.Write("mock.json", testing::kMockJson));
     ASSERT_TRUE(directory_.Write("local.json", LocalJson()));
     ASSERT_TRUE(directory_.Write(
@@ -230,6 +232,8 @@ class MarketdIntegrationTest : public ::testing::Test {
   }
 
   testing::RuntimeDirectory directory_;
+  ::yquant::testing::ScopedWorkingDirectory working_directory_{
+      directory_.path()};
 };
 
 TEST_F(MarketdIntegrationTest, TwoStrategiesAndRawReadersObserveBroadcast) {

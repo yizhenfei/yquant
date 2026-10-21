@@ -4,6 +4,7 @@
 #include "strategyd/market_data_config.h"
 #include "strategyd/trading_config.h"
 #include "tradingd/protocol.h"
+#include "yquant/base/config_error.h"
 
 namespace yquant::tradingd {
 
@@ -31,20 +32,20 @@ struct ServerConfig {
 
 // Validates typed values without acquiring sockets. Port zero is accepted for
 // ephemeral test listeners; the JSON loader requires a nonzero port.
-[[nodiscard]] base::Status ValidateConfig(
-    const ServerConfig& config, strategy::ConfigError& error) noexcept;
+[[nodiscard]] base::Status ValidateConfig(const ServerConfig& config,
+                                          base::ConfigError& error) noexcept;
 
 class ConfigLoader {
  public:
-  // Strict JSON; referenced configuration paths resolve relative to path.
+  // Strict JSON; relative paths use the process working directory.
   // Failure resets config() and retains an owned diagnostic until next Load.
   [[nodiscard]] base::Status Load(const char* path) noexcept;
   const ServerConfig& config() const noexcept { return config_; }
-  const strategy::ConfigError& error() const noexcept { return error_; }
+  const base::ConfigError& error() const noexcept { return error_; }
 
  private:
   ServerConfig config_;
-  strategy::ConfigError error_;
+  base::ConfigError error_;
 };
 
 }  // namespace yquant::tradingd

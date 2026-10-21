@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <string_view>
 
-#include "strategyd/json_config_document.h"
+#include "yquant/base/json_config_document.h"
 #include "yquant/base/status.h"
 #include "yquant/strategy/strategy_config.h"
 
@@ -35,15 +35,15 @@ class StrategyConfigLoader {
   [[nodiscard]] std::string_view parameters_json() const noexcept {
     return parameters_json_;
   }
-  [[nodiscard]] const strategy::ConfigError& error() const noexcept {
+  [[nodiscard]] const base::ConfigError& error() const noexcept {
     return error_;
   }
 
  private:
-  JsonConfigDocument document_;
+  base::JsonConfigDocument document_;
   strategy::StrategyId strategy_id_;
   std::string_view parameters_json_;
-  strategy::ConfigError error_;
+  base::ConfigError error_;
 };
 
 }  // namespace yquant::strategyd

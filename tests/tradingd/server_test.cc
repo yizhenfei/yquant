@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "scoped_working_directory.h"
 #include "strategyd/market_data_config.h"
 #include "tradingd/connection.h"
 
@@ -393,7 +394,7 @@ TEST_F(ServerTest, MissingHeartbeatDisconnectsAndCancelsWorkingOrders) {
 TEST(TradingdConfigTest,
      TypedConfigurationRejectsInvalidLimitsAndRemoteBroker) {
   auto config = Config();
-  strategy::ConfigError error;
+  base::ConfigError error;
   EXPECT_TRUE(ValidateConfig(config, error).ok());
   config.max_clients = 17;
   EXPECT_FALSE(ValidateConfig(config, error).ok());
@@ -418,12 +419,12 @@ TEST(TradingdConfigTest, UnknownBootstrapInstrumentIsRejected) {
             base::ErrorCode::kOk);
   position.total_qty = 100;
   position.available_qty = 100;
-  strategy::ConfigError error;
+  base::ConfigError error;
   EXPECT_FALSE(ValidateConfig(config, error).ok());
   EXPECT_STREQ(error.field_path, "trading_config.initial_positions");
 }
 
-// Isolates referenced files so relative paths do not depend on the test cwd.
+// Isolates referenced files; each configuration test selects its own cwd.
 class ConfigFiles {
  public:
   ConfigFiles() { valid_ = mkdtemp(directory_) != nullptr; }
@@ -461,6 +462,9 @@ TEST(TradingdConfigTest, LoadsStrictConfigurationAndRelativeReferences) {
   ConfigFiles files;
   ASSERT_TRUE(files.valid());
   ASSERT_TRUE(files.CopyCatalog());
+  ::yquant::testing::ScopedWorkingDirectory working_directory(
+      files.Path("").c_str());
+  ASSERT_TRUE(working_directory.valid());
   ASSERT_TRUE(files.Write("market.json", R"({"source_id":1,"adapter":"mock",
     "instrument_catalog":"instruments.json",
     "interval_ms":1,"instruments":[{"venue":"SSE","symbol":"600000",
@@ -473,9 +477,9 @@ TEST(TradingdConfigTest, LoadsStrictConfigurationAndRelativeReferences) {
     "market_data_config":"market.json","trading_config":"trading.json",
     "token":"test-token","max_clients":3,"heartbeat_timeout_ms":1500,
     "shutdown_timeout_ms":2000})";
-  ASSERT_TRUE(files.Write("server.json", kValid));
+  ASSERT_TRUE(files.Write("gateway/server.json", kValid));
   ConfigLoader loader;
-  ASSERT_TRUE(loader.Load(files.Path("server.json").c_str()).ok())
+  ASSERT_TRUE(loader.Load(files.Path("gateway/server.json").c_str()).ok())
       << loader.error().field_path << ": " << loader.error().message;
   EXPECT_EQ(loader.config().max_clients, 3U);
   EXPECT_EQ(loader.config().heartbeat_timeout_ns, 1500000000);
@@ -485,37 +489,42 @@ TEST(TradingdConfigTest, LoadsStrictConfigurationAndRelativeReferences) {
   EXPECT_EQ(
       loader.config().market_data.instruments[0].instrument.price_decimals, 2);
 
-  ASSERT_TRUE(files.Write("server.json", R"({"listen":{"address":"127.0.0.1",
+  ASSERT_TRUE(
+      files.Write("gateway/server.json", R"({"listen":{"address":"127.0.0.1",
     "port":19200},"market_data_config":"market.json",
     "trading_config":"trading.json","token":"test-token","unexpected":1})"));
-  EXPECT_FALSE(loader.Load(files.Path("server.json").c_str()).ok());
+  EXPECT_FALSE(loader.Load(files.Path("gateway/server.json").c_str()).ok());
   EXPECT_STREQ(loader.error().field_path, "unexpected");
   EXPECT_EQ(loader.config().market_data.instrument_count, 0U);
 
-  ASSERT_TRUE(files.Write("server.json", R"({"listen":{"address":"127.0.0.1",
+  ASSERT_TRUE(
+      files.Write("gateway/server.json", R"({"listen":{"address":"127.0.0.1",
     "port":19200},"market_data_config":"market.json",
     "trading_config":"trading.json","token":"a","token":"b"})"));
-  EXPECT_FALSE(loader.Load(files.Path("server.json").c_str()).ok());
+  EXPECT_FALSE(loader.Load(files.Path("gateway/server.json").c_str()).ok());
 }
 
 TEST(TradingdConfigTest, NestedMarketConfigAndClientShareCatalogDefinitions) {
   ConfigFiles files;
   ASSERT_TRUE(files.valid());
   ASSERT_TRUE(files.CopyCatalog());
+  ::yquant::testing::ScopedWorkingDirectory working_directory(
+      files.Path("").c_str());
+  ASSERT_TRUE(working_directory.valid());
   ASSERT_TRUE(files.Write("sources/market.json",
                           R"({"source_id":1,"adapter":"mock",
-    "instrument_catalog":"../instruments.json","interval_ms":1,
+    "instrument_catalog":"instruments.json","interval_ms":1,
     "instruments":[{"venue":"SZSE","symbol":"000557","bid_price":43000,
     "bid_qty":100,"ask_price":43001,"ask_qty":100,"price_step":1}]})"));
   ASSERT_TRUE(files.Write("broker/trading.json",
                           R"({"adapter":"mock","mode":"working",
     "report_interval_ms":1,"shutdown_timeout_ms":5000,"initial_cash":1234,
     "initial_positions":[]})"));
-  ASSERT_TRUE(files.Write("server.json",
+  ASSERT_TRUE(files.Write("gateway/server.json",
                           R"({"listen":{"address":"127.0.0.1","port":19200},
     "market_data_config":"sources/market.json",
     "trading_config":"broker/trading.json","token":"test-token"})"));
-  ASSERT_TRUE(files.Write("client_market.json",
+  ASSERT_TRUE(files.Write("clients/market.json",
                           R"({"source_id":1,"adapter":"shm",
     "instrument_catalog":"instruments.json","runtime_directory":")" +
                               files.Path("stream") +
@@ -523,10 +532,10 @@ TEST(TradingdConfigTest, NestedMarketConfigAndClientShareCatalogDefinitions) {
     "instruments":[{"venue":"SZSE","symbol":"000557"}]})"));
 
   ConfigLoader gateway;
-  ASSERT_TRUE(gateway.Load(files.Path("server.json").c_str()).ok())
+  ASSERT_TRUE(gateway.Load(files.Path("gateway/server.json").c_str()).ok())
       << gateway.error().field_path << ": " << gateway.error().message;
   strategyd::MarketDataConfigLoader client;
-  ASSERT_TRUE(client.Load(files.Path("client_market.json").c_str()).ok())
+  ASSERT_TRUE(client.Load(files.Path("clients/market.json").c_str()).ok())
       << client.error().field_path << ": " << client.error().message;
   ASSERT_EQ(gateway.config().market_data.instrument_count, 1U);
   ASSERT_EQ(client.config().instrument_count, 1U);

@@ -121,7 +121,7 @@ class StrategyRunner {
                 const char* detail) noexcept;
   // Copies field diagnostics before a loader or plugin buffer is released.
   void SetConfigError(base::Status status, const char* stage,
-                      const strategy::ConfigError& error) noexcept;
+                      const base::ConfigError& error) noexcept;
   // Copies the quote's stable identity into the current operation diagnostic.
   void SetQuoteError(base::Status status, const char* stage, const char* detail,
                      const model::QuoteTick& tick) noexcept;

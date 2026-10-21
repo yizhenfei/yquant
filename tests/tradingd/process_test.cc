@@ -10,6 +10,7 @@
 #include "../marketd/test_support.h"
 #include "gtest/gtest.h"
 #include "process_support.h"
+#include "scoped_working_directory.h"
 #include "tradingd/connection.h"
 
 namespace yquant::tradingd {
@@ -36,6 +37,7 @@ class TradingdProcessTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ASSERT_TRUE(directory_.valid());
+    ASSERT_TRUE(working_directory_.valid());
     port_ = AvailablePort();
     ASSERT_NE(port_, 0);
     ASSERT_TRUE(directory_.Write(
@@ -120,6 +122,8 @@ class TradingdProcessTest : public ::testing::Test {
     return false;
   }
   RuntimeDirectory directory_;
+  ::yquant::testing::ScopedWorkingDirectory working_directory_{
+      directory_.path()};
   std::uint16_t port_ = 0;
 };
 

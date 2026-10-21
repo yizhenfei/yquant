@@ -113,7 +113,7 @@ base::Status Server::Fail(base::ErrorCode code, const char* detail) noexcept {
 base::Status Server::Init(const ServerConfig& config) noexcept {
   Close();
   error_detail_[0] = '\0';
-  strategy::ConfigError error;
+  base::ConfigError error;
   auto status = ValidateConfig(config, error);
   if (!status.ok()) {
     std::snprintf(error_detail_, sizeof(error_detail_), "%s: %s",

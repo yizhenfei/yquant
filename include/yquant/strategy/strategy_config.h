@@ -9,6 +9,7 @@
 #include <cstring>
 #include <string_view>
 
+#include "yquant/base/config_error.h"
 #include "yquant/base/status.h"
 
 namespace yquant::strategy {
@@ -94,38 +95,9 @@ class StrategyId {
   std::size_t size_ = 0;
 };
 
-// Owns diagnostic text so the host can report a failure after plugin teardown.
-struct ConfigError {
-  // For parameter loaders, relative to parameters; empty means the object.
-  char field_path[256] = {};
-  char message[512] = {};
-  // Indicates omitted diagnostic text, including an already truncated path.
-  bool truncated = false;
-
-  void Clear() noexcept {
-    field_path[0] = '\0';
-    message[0] = '\0';
-    truncated = false;
-  }
-
-  // Replaces both strings with NUL-terminated copies, retaining no input views.
-  // Resets truncated to whether either input was shortened to fit its buffer.
-  void Set(std::string_view path, std::string_view reason) noexcept {
-    const auto path_size =
-        path.size() < sizeof(field_path) ? path.size() : sizeof(field_path) - 1;
-    const auto message_size =
-        reason.size() < sizeof(message) ? reason.size() : sizeof(message) - 1;
-    if (path_size != 0) {
-      std::memmove(field_path, path.data(), path_size);
-    }
-    field_path[path_size] = '\0';
-    if (message_size != 0) {
-      std::memmove(message, reason.data(), message_size);
-    }
-    message[message_size] = '\0';
-    truncated = path_size != path.size() || message_size != reason.size();
-  }
-};
+// Strategy parameter diagnostics use paths relative to parameters. Keep the
+// SDK spelling while sharing the owned diagnostic representation with hosts.
+using ConfigError = base::ConfigError;
 
 // Holds common fields and initializes a strategy's typed parameters.
 // The strategy exposes this embedded object through config(); the host

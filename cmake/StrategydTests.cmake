@@ -145,6 +145,7 @@ endforeach()
 
 gtest_discover_tests(yquant_strategyd_test
   NO_PRETTY_VALUES
+  WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
   DISCOVERY_MODE PRE_TEST
   DISCOVERY_TIMEOUT 30
   PROPERTIES ${yquant_test_properties})

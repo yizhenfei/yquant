@@ -124,7 +124,7 @@ base::Status RemoteTrading::Init(const TradingConfig& config,
     return {
         Fail(ErrorCode::kInvalidState, "remote trading already initialized"),
         {}};
-  strategy::ConfigError error;
+  base::ConfigError error;
   auto status = ValidateTradingConfig(config, error);
   if (!status.ok() || config.adapter != TradingAdapterKind::kTcp ||
       dictionary.instrument_count == 0 ||

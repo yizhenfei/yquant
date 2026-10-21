@@ -1,5 +1,5 @@
 {
-  "instrument_catalog": "instruments.json",
+  "instrument_catalog": "tests/fixtures/instruments.json",
   "source_id": 1,
   "adapter": "mock",
   "interval_ms": 1,

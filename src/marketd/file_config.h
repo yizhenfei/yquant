@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "strategyd/instrument_catalog.h"
 #include "yquant/model/identifiers.h"
 
 namespace yquant::marketd {
@@ -27,7 +26,7 @@ struct ReplayConfig {
   std::size_t max_records = 1000000;
   model::SourceId source_id{1};
   // Absolute catalog path, loaded only while converting the CSV input.
-  char instrument_catalog[strategyd::kMaxInstrumentCatalogPathLength + 1] = {};
+  char instrument_catalog[kMaxDataPathBytes + 1] = {};
 };
 
 // The output is created exclusively, never appended to or overwritten.

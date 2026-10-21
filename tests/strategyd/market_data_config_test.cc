@@ -11,7 +11,8 @@
 #include <system_error>
 
 #include "gtest/gtest.h"
-#include "strategyd/json_config_document.h"
+#include "scoped_working_directory.h"
+#include "yquant/base/json_config_document.h"
 #include "test_config_file.h"
 #include "yquant/model/identifiers.h"
 
@@ -75,28 +76,7 @@ class CatalogConfigDirectory {
   bool valid_ = false;
 };
 
-// Restores the caller's directory even when a fatal assertion returns early.
-class ScopedWorkingDirectory {
- public:
-  explicit ScopedWorkingDirectory(const char* path)
-      : original_(open(".", O_RDONLY)) {
-    valid_ = original_ >= 0 && chdir(path) == 0;
-  }
-  ~ScopedWorkingDirectory() {
-    if (original_ >= 0) {
-      if (valid_) fchdir(original_);
-      close(original_);
-    }
-  }
-  ScopedWorkingDirectory(const ScopedWorkingDirectory&) = delete;
-  ScopedWorkingDirectory& operator=(const ScopedWorkingDirectory&) = delete;
-
-  bool valid() const { return valid_; }
-
- private:
-  int original_ = -1;
-  bool valid_ = false;
-};
+using ::yquant::testing::ScopedWorkingDirectory;
 
 TEST(MarketDataConfigTest, LoadsExactTypedValuesAndDecodedStrings) {
   ConfigFile file(Replace(Json(), "\"SSE\"", R"("\u0053SE")"));
@@ -149,6 +129,21 @@ TEST(MarketDataConfigTest, RequiresAnExplicitNonemptyCatalogPath) {
   ASSERT_TRUE(missing.valid());
   EXPECT_FALSE(loader.Load(missing.path()).ok());
   EXPECT_STREQ(loader.error().field_path, "instrument_catalog");
+}
+
+TEST(MarketDataConfigTest, RejectsCatalogPathThatOverflowsAfterResolution) {
+  // The JSON reference fits its buffer; prepending cwd exceeds the limit.
+  ConfigFile valid(Json());
+  ConfigFile relative(Json(kInstrument, std::string(4095, 'x')));
+  ASSERT_TRUE(valid.valid());
+  ASSERT_TRUE(relative.valid());
+  MarketDataConfigLoader loader;
+  ASSERT_TRUE(loader.Load(valid.path()).ok());
+  EXPECT_EQ(loader.Load(relative.path()).code,
+            base::ErrorCode::kInvalidArgument);
+  EXPECT_STREQ(loader.error().field_path, "instrument_catalog");
+  EXPECT_NE(loader.error().message[0], '\0');
+  EXPECT_EQ(loader.config().instrument_count, 0U);
 }
 
 TEST(MarketDataConfigTest, FailedCatalogLoadClearsAnEarlierResolvedConfig) {
@@ -286,7 +281,7 @@ TEST(MarketDataConfigTest,
      ValidatesAllJsonBeforeSchemaAndReleasesTemporaryData) {
   MarketDataConfigLoader loader;
   std::string json = Json();
-  json.resize(kMaxConfigFileBytes, ' ');
+  json.resize(base::kMaxConfigFileBytes, ' ');
   ConfigFile full(json);
   ASSERT_TRUE(full.valid());
   ASSERT_TRUE(loader.Load(full.path()).ok()) << loader.error().message;
@@ -316,7 +311,8 @@ std::string ShmJson(
          std::string(catalog) + "\"}";
 }
 
-TEST(MarketDataConfigTest, ResolvesNestedHostPathsAgainstTheirSharedCatalog) {
+TEST(MarketDataConfigTest,
+     ResolvesNestedHostReferencesAgainstWorkingDirectory) {
   CatalogConfigDirectory directory;
   ASSERT_TRUE(directory.valid());
   ASSERT_TRUE(directory.Write(
@@ -325,7 +321,7 @@ TEST(MarketDataConfigTest, ResolvesNestedHostPathsAgainstTheirSharedCatalog) {
       R"({"venue":"SZSE","symbol":"000001","price_decimals":3}]})"));
   ASSERT_TRUE(
       directory.Write("hosts/nested/mock.json",
-                      Json(kInstrument, "../../catalog/instruments.json")));
+                      Json(kInstrument, "../catalog/instruments.json")));
   ASSERT_TRUE(directory.Write("hosts/shm.json",
                               ShmJson("../catalog/instruments.json")));
   ASSERT_TRUE(directory.Write("unrelated/marker", ""));

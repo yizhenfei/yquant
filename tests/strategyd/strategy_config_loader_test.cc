@@ -189,7 +189,7 @@ TEST(StrategyConfigLoaderTest, EqualKeysInDifferentObjectsAreAllowed) {
 
 TEST(StrategyConfigLoaderTest, LimitsFileSizeAndAllowsTheExactLimit) {
   std::string json = R"({"strategy_id":"x","parameters":{}})";
-  json.resize(kMaxConfigFileBytes, ' ');
+  json.resize(base::kMaxConfigFileBytes, ' ');
   ConfigFile largest(json);
   ASSERT_TRUE(largest.valid());
   StrategyConfigLoader loader;
@@ -201,7 +201,8 @@ TEST(StrategyConfigLoaderTest, LimitsFileSizeAndAllowsTheExactLimit) {
 }
 
 TEST(StrategyConfigLoaderTest, AcceptsDepth64AndRejectsDepth65) {
-  for (const std::size_t depth : {kMaxConfigDepth, kMaxConfigDepth + 1}) {
+  for (const std::size_t depth :
+       {base::kMaxConfigDepth, base::kMaxConfigDepth + 1}) {
     SCOPED_TRACE(depth);
     std::string json = R"({"strategy_id":"x","parameters":{"nested":)";
     // Root and parameters account for two container levels.
@@ -213,7 +214,7 @@ TEST(StrategyConfigLoaderTest, AcceptsDepth64AndRejectsDepth65) {
     ConfigFile file(json);
     ASSERT_TRUE(file.valid());
     StrategyConfigLoader loader;
-    EXPECT_EQ(loader.Load(file.path()).ok(), depth == kMaxConfigDepth)
+    EXPECT_EQ(loader.Load(file.path()).ok(), depth == base::kMaxConfigDepth)
         << loader.error().message;
   }
 }

@@ -75,13 +75,13 @@ flowchart LR
 
 ## 配置与运行
 
-网关配置示例见 [local.json](../../examples/tradingd/local.json)：
+网关配置通过 `base::JsonConfigDocument` 遵循[通用 JSON 输入规则](engineering.md#json-配置文档)，网关加载器校验监听地址、客户端限制及引用配置的组合约束，诊断使用 `base::ConfigError`。示例见 [local.json](../../examples/tradingd/local.json)：
 
 ```json
 {
   "listen": {"address": "127.0.0.1", "port": 19200},
-  "market_data_config": "../strategies/mock_market_data.json",
-  "trading_config": "../strategies/mock_trading.json",
+  "market_data_config": "examples/strategies/mock_market_data.json",
+  "trading_config": "examples/strategies/mock_trading.json",
   "token": "yquant-local-demo",
   "max_clients": 16,
   "heartbeat_timeout_ms": 5000,
@@ -89,7 +89,7 @@ flowchart LR
 }
 ```
 
-两个引用配置路径相对网关配置文件解析，柜台配置只能选择 `adapter: "mock"`；行情配置引用共享标的字典并声明网关运行范围，不启动行情源。`instrument_catalog` 相对该行情配置文件所在目录解析。`max_clients` 为 1 至 16，超时范围为 1000 至 60000 ms。JSON 监听端口为 1 至 65535，类型化组件接口支持端口零供测试。
+两个引用配置路径遵循[路径解析约定](../../README.md#路径解析)，基于进程工作目录解析，柜台配置只能选择 `adapter: "mock"`；行情配置引用共享标的字典并声明网关运行范围，不启动行情源。行情配置中的 `instrument_catalog` 同样基于进程工作目录解析。`max_clients` 为 1 至 16，超时范围为 1000 至 60000 ms。JSON 监听端口为 1 至 65535，类型化组件接口支持端口零供测试。
 
 客户端配置见 [client_1.json](../../examples/tradingd/client_1.json) 与 [client_2.json](../../examples/tradingd/client_2.json)：
 

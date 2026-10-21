@@ -5,8 +5,8 @@
 
 #include "strategyd/trading_account.h"
 #include "tradingd/protocol.h"
+#include "yquant/base/config_error.h"
 #include "yquant/base/status.h"
-#include "yquant/strategy/strategy_config.h"
 
 namespace yquant::strategyd {
 
@@ -44,7 +44,7 @@ struct TradingConfig {
 // cash/quantities are nonnegative, positions are distinct, and reserved is
 // zero.
 [[nodiscard]] base::Status ValidateTradingConfig(
-    const TradingConfig& config, strategy::ConfigError& error) noexcept;
+    const TradingConfig& config, base::ConfigError& error) noexcept;
 
 // Main-thread strict JSON loader. Retains only typed values and diagnostics.
 class TradingConfigLoader {
@@ -53,11 +53,11 @@ class TradingConfigLoader {
   // diagnostic until the next Load. path is borrowed only during this call.
   [[nodiscard]] base::Status Load(const char* path) noexcept;
   const TradingConfig& config() const noexcept { return config_; }
-  const strategy::ConfigError& error() const noexcept { return error_; }
+  const base::ConfigError& error() const noexcept { return error_; }
 
  private:
   TradingConfig config_;
-  strategy::ConfigError error_;
+  base::ConfigError error_;
 };
 
 }  // namespace yquant::strategyd

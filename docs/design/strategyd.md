@@ -102,7 +102,7 @@ extern "C" YQuantGetStrategyPlugin() noexcept -> const StrategyPlugin*
 
 描述符和工厂函数指针由动态库持有，只在动态库句柄有效期间使用。宿主在 `destroy()` 返回后清空实例引用，再释放动态库句柄；释放后不再访问描述符、工厂函数或实例的虚函数。
 
-入口使用 C linkage 固定符号名，生命周期接口仍依赖 C++ ABI。当前 `kStrategyPluginAbiVersion` 为 `8`，宿主与所有策略按该版本 SDK 同步重新编译，不维护旧 ABI 的兼容实现。公共接口的签名或布局变化时更新该版本，加载器只接受与自身版本一致的策略动态库。
+入口使用 C linkage 固定符号名，生命周期接口仍依赖 C++ ABI。当前 `kStrategyPluginAbiVersion` 为 `9`，宿主与所有策略按该版本 SDK 同步重新编译，不维护旧 ABI 的兼容实现。公共接口的签名或布局变化时更新该版本，加载器只接受与自身版本一致的策略动态库。
 
 宿主与策略使用相同目标平台和架构、兼容的编译器与标准库构建；验收使用同一工程和同一构建 preset。
 
@@ -276,7 +276,7 @@ src/strategyd/market_data.h/.cc             行情服务实现与状态
 src/strategyd/strategy_context.h            上下文薄视图
 src/strategyd/strategy_library.h/.cc        动态库加载与释放
 src/strategyd/strategy_config_loader.h/.cc  策略公共字段与原始参数片段加载
-src/strategyd/json_config_document.h/.cc    通用 JSON 文档读取与完整校验
+include/yquant/base/json_config_document.h / src/base/json_config_document.cc    通用 JSON 文档读取与完整校验
 src/strategyd/termination_signals.h/.cc     信号屏蔽、检查与期限等待
 examples/strategies/lifecycle_strategy.cc   最小用户策略动态库
 examples/strategies/parameterized_strategy.cc 强类型参数策略示例

@@ -4,33 +4,25 @@
 
 #include <utility>
 
+#include "base/internal/json_config_parser.h"
+
 namespace yquant::strategyd {
 namespace {
 
-// Copies parser failures before its temporary storage is destroyed.
-base::Status JsonError(simdjson::error_code code, std::string_view path,
-                       strategy::ConfigError& error) noexcept {
-  error.Set(path, simdjson::error_message(code));
-  return {code == simdjson::MEMALLOC ? base::ErrorCode::kResourceExhausted
-                                     : base::ErrorCode::kInvalidArgument,
-          {}};
-}
+using base::internal::JsonError;
+using base::internal::ParseConfigObject;
 
 // Parses common fields from already fully validated source. parameters borrows
 // the source unchanged; the caller owns it until configuration initialization.
-base::Status Parse(const JsonConfigDocument& source, strategy::StrategyId& id,
-                   std::string_view& parameters,
-                   strategy::ConfigError& error) noexcept {
+base::Status Parse(const base::JsonConfigDocument& source,
+                   strategy::StrategyId& id, std::string_view& parameters,
+                   base::ConfigError& error) noexcept {
   simdjson::ondemand::parser parser;
-  auto json_error =
-      parser.allocate(source.source().size(), kMaxConfigDepth + 4);
-  if (json_error) return JsonError(json_error, "$", error);
   simdjson::ondemand::document document;
-  json_error = parser.iterate(source.source(), source.capacity()).get(document);
-  if (json_error) return JsonError(json_error, "$", error);
   simdjson::ondemand::object root;
-  json_error = document.get_object().get(root);
-  if (json_error) return JsonError(json_error, "$", error);
+  const auto parsed = ParseConfigObject(source, parser, document, root, error);
+  if (!parsed.ok()) return parsed;
+  simdjson::error_code json_error;
   bool has_id = false;
   bool has_parameters = false;
   for (auto field_result : root) {

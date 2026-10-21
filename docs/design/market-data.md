@@ -274,7 +274,7 @@ Stop() -> Status
 
 `source_id` 为 `1..UINT32_MAX` 的整数，`adapter` 必填且接受 `mock` 或 `shm`，`instrument_catalog` 必填且引用共享字典。`instruments` 为 `1..64` 项的运行清单，以 `venue`、`symbol` 引用字典中的标的，组合必须唯一且已存在；禁止在清单内填写 `price_decimals` 覆盖定义。不同适配器的专用字段不能混用。
 
-行情 JSON 复用 `JsonConfigDocument` 的[通用输入校验](strategy-config.md#配置格式)，行情加载器检查本节字段与取值。行情配置解析完成后释放源码与解析器，源只保留强类型配置。
+行情 JSON 复用 `base::JsonConfigDocument` 的[通用输入校验](engineering.md#json-配置文档)，行情加载器检查本节字段与取值。行情配置解析完成后释放源码与解析器，源只保留强类型配置。
 
 ### 共享标的字典
 
@@ -289,9 +289,9 @@ Stop() -> Status
 }
 ```
 
-字典包含 `1..16384` 个定义，与单进程最多 64 个运行标的分别校验。文件同时遵循[通用 JSON 输入校验](strategy-config.md#配置格式)，包括 1 MiB 大小、UTF-8 与嵌套深度限制。每个定义的字段均必填，拒绝未知字段、重复键及重复的场所和代码组合；支持的身份编码及价格精度范围见[标的与计量单位](#标的与计量单位)。
+字典包含 `1..16384` 个定义，与单进程最多 64 个运行标的分别校验。文件遵循[通用 JSON 输入规则](engineering.md#json-配置文档)。每个定义的字段均必填，拒绝未知字段及重复的场所和代码组合；支持的身份编码及价格精度范围见[标的与计量单位](#标的与计量单位)。
 
-`instrument_catalog` 接受绝对路径，或相对于引用它的配置文件所在目录的路径，不依赖进程工作目录；路径非空、不包含 NUL，解析后最多 4095 字节，不含终止符。目录和文件错误通过配置加载错误返回。
+`instrument_catalog` 接受绝对路径或相对进程工作目录的路径，遵循[路径解析约定](../../README.md#路径解析)；路径非空、不包含 NUL，解析后最多 4095 字节，不含终止符。目录和文件错误通过配置加载错误返回。
 
 `InstrumentCatalog` 在初始化阶段以有界连续存储加载完整字典，排序去重后按稳定 ID 查找；行情加载器将运行清单引用的定义复制到自持配置中。完整字典及其 JSON 解析存储随后释放，回调期间不加载文件、不解析名称或扩容。策略可查询和交易的标的范围仍由宿主运行清单限定，实际行情回调还需策略成功订阅。
 
@@ -314,7 +314,7 @@ Stop() -> Status
 {
   "source_id": 1,
   "adapter": "mock",
-  "instrument_catalog": "../instruments.json",
+  "instrument_catalog": "examples/instruments.json",
   "interval_ms": 100,
   "instruments": [
     {
@@ -340,7 +340,7 @@ Stop() -> Status
 {
   "source_id": 1,
   "adapter": "shm",
-  "instrument_catalog": "../instruments.json",
+  "instrument_catalog": "examples/instruments.json",
   "runtime_directory": "/tmp/yquant-marketd",
   "stream": "quotes",
   "poll_interval_us": 0,
@@ -393,7 +393,7 @@ Stop() -> Status
 | `src/strategyd/shm_market_data_source.h/.cc` | 共享内存广播接收、事件过滤、报价解码、本地时间赋值及健康维护 |
 | `include/yquant/md/quote_codec.h` | 不携带进程相对时间的统一报价帧编解码 |
 | `src/strategyd/market_data_config.h/.cc` | 宿主行情配置的解析与校验 |
-| `src/strategyd/json_config_document.h/.cc` | 宿主配置共用的 JSON 文件读取、完整语法及重复键校验 |
+| `include/yquant/base/json_config_document.h`、`src/base/json_config_document.cc` | 各进程及标的字典共用的 JSON 文档与源码存储 |
 | `src/strategyd/strategy_config_loader.h/.cc` | 策略公共字段及原始参数片段加载 |
 | `src/strategyd/market_data.h/.cc` | Runner 内嵌的行情服务实现，持有字典、订阅、缓存与回调阶段 |
 | `src/strategyd/strategy_context.h` | 借用时钟和宿主服务的上下文薄视图 |
@@ -419,7 +419,7 @@ Stop() -> Status
 | 快照一致性 | 无行情源、无效或未知标的、未订阅及首条行情前查询均失败且输出不变；每次先更新缓存再回调，按当前标的查询得到本次回调的完整快照 |
 | 顺序与存在标志 | 旧、重复序号不分派，完整快照允许序号跳跃；单边缺失、锁盘和不可交易事件按原语义传给策略 |
 | 来源绑定与序号范围 | 订阅和查询使用宿主绑定的唯一来源，运行中不能切源；错误来源事件在序号比较前拒绝，不能改变已保存的快照及序号 |
-| 共享标的字典 | 多个配置从同一文件解析完整定义；相对路径不依赖工作目录；字典容量与运行范围独立，未知引用、重复定义及内联覆盖在策略创建前拒绝 |
+| 共享标的字典 | 多个配置从同一文件解析完整定义；相对路径基于工作目录，与配置文件位置无关；字典容量与运行范围独立，未知引用、重复定义及内联覆盖在策略创建前拒绝 |
 | 配置边界 | 64 个标的正常加载，65 个、重复标的、非法来源 ID、未知键、非法单位精度及数值溢出均在加载动态库前拒绝 |
 | 信号等待竞态 | 在检查停止与进入等待之间发送信号仍能退出；无行情时可停止，持续有行情时也不会使信号饥饿 |
 | 行情源故障 | 注入 `Start()`、`Poll()` 或 `Service()` 错误，停止行情并按交易收尾规则处理委托，最终配对停止回调且非零退出；`Idle` 和错误保持输出对象不变 |
