@@ -1,4 +1,4 @@
-#include "yquant/trading/trading.h"
+#include "yquant/trading/local_trading_runtime.h"
 
 #include <array>
 #include <cstdio>
@@ -12,6 +12,25 @@ namespace {
 using base::ErrorCode;
 using model::OrderState;
 using model::OrderUpdateKind;
+// Two hex characters per byte of a 64-byte opaque ID, plus the terminator.
+constexpr std::size_t kTradingIdHexSize = 129;
+
+bool IsDue(std::optional<std::uint64_t> deadline, std::uint64_t now) noexcept {
+  return deadline && *deadline <= now;
+}
+
+// Preserve opaque broker/execution identities in failure diagnostics.
+void CopyIdHex(std::string_view value,
+               char (&out)[kTradingIdHexSize]) noexcept {
+  constexpr char kHex[] = "0123456789abcdef";
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    const auto byte = static_cast<unsigned char>(value[index]);
+    out[2 * index] = kHex[byte >> 4];
+    out[2 * index + 1] = kHex[byte & 15];
+  }
+  out[2 * value.size()] = '\0';
+}
+
 constexpr std::uint64_t kCancelRetryNs = 10000000;
 constexpr std::size_t kFillLookupCapacity = 2 * kMaxTradingFills;
 constexpr std::size_t kBrokerLookupCapacity = 2 * kMaxTradingOrders;
@@ -94,7 +113,7 @@ bool ReleaseReservation(model::CashSnapshot& cash,
 }
 }  // namespace
 
-struct TradingImpl::Storage {
+struct LocalTradingRuntime::Storage {
   struct OrderRecord {
     model::OrderSnapshot snapshot;
     bool new_attempted = false;
@@ -139,18 +158,14 @@ struct TradingImpl::Storage {
   std::size_t position_count = 0;
 };
 
-TradingImpl::TradingImpl(const base::MonotonicClock& clock,
-                         const md::InstrumentScope& instruments) noexcept
-    : clock_(clock), instruments_(instruments) {}
-TradingImpl::~TradingImpl() noexcept { Reset(); }
+LocalTradingRuntime::LocalTradingRuntime(const base::MonotonicClock& clock,
+                                         const md::InstrumentScope& instruments,
+                                         TradingAdapter& adapter) noexcept
+    : clock_(clock), instruments_(instruments), adapter_(adapter) {}
+LocalTradingRuntime::~LocalTradingRuntime() noexcept { Reset(); }
 
-base::Status TradingImpl::Configure(
+base::Status LocalTradingRuntime::ConfigureAccount(
     const TradingAccountSnapshot& account) noexcept {
-  if (storage_ != nullptr || phase_ != strategy::CallbackPhase::kNone ||
-      stopping_) {
-    return {Fail(ErrorCode::kInvalidState, "trading is already configured"),
-            {}};
-  }
   if (account.cash_balance < 0 ||
       account.position_count > md::kMaxMarketDataInstruments) {
     return {Fail(ErrorCode::kInvalidArgument,
@@ -190,17 +205,19 @@ base::Status TradingImpl::Configure(
   return {};
 }
 
-void TradingImpl::Reset() noexcept {
+void LocalTradingRuntime::Reset() noexcept {
+  (void)Stop();
   delete storage_;
   storage_ = nullptr;
-  running_ = false;
+  accept_requests_ = false;
   stopping_ = false;
-  phase_ = strategy::CallbackPhase::kNone;
+  prefer_local_ = true;
+  error_stage_ = "";
   error_detail_[0] = '\0';
 }
 
-void TradingImpl::BeginStopping() noexcept {
-  running_ = false;
+void LocalTradingRuntime::BeginStopping() noexcept {
+  accept_requests_ = false;
   if (!stopping_) {
     stopping_ = true;
     if (storage_ != nullptr) {
@@ -211,27 +228,24 @@ void TradingImpl::BeginStopping() noexcept {
   }
 }
 
-bool TradingImpl::accepting_orders() const noexcept {
-  const bool business_callback =
-      phase_ == strategy::CallbackPhase::kTick ||
-      phase_ == strategy::CallbackPhase::kOrderUpdate ||
-      phase_ == strategy::CallbackPhase::kFill;
-  return storage_ != nullptr && running_ && !stopping_ && business_callback;
+bool LocalTradingRuntime::accepting_orders() const noexcept {
+  return prepared_ && storage_ != nullptr && accept_requests_ && !stopping_;
 }
 
-ErrorCode TradingImpl::Fail(ErrorCode code, const char* detail) noexcept {
+ErrorCode LocalTradingRuntime::Fail(ErrorCode code,
+                                    const char* detail) noexcept {
   std::snprintf(error_detail_, sizeof(error_detail_), "%s", detail);
   return code;
 }
 
-std::optional<std::size_t> TradingImpl::FindIndex(
+std::optional<std::size_t> LocalTradingRuntime::FindIndex(
     model::ClientOrderId id) const noexcept {
   if (storage_ == nullptr || id.value == 0 || id.value > storage_->order_count)
     return {};
   return static_cast<std::size_t>(id.value - 1);
 }
 
-std::optional<std::size_t> TradingImpl::FindPosition(
+std::optional<std::size_t> LocalTradingRuntime::FindPosition(
     model::InstrumentId id) const noexcept {
   if (storage_ == nullptr) return {};
   for (std::size_t index = 0; index < storage_->position_count; ++index) {
@@ -240,17 +254,11 @@ std::optional<std::size_t> TradingImpl::FindPosition(
   return {};
 }
 
-ErrorCode TradingImpl::SubmitOrder(const model::OrderRequest& request,
-                                   model::ClientOrderId& out) noexcept {
-  if (!running_ || stopping_ ||
-      (phase_ != strategy::CallbackPhase::kTick &&
-       phase_ != strategy::CallbackPhase::kOrderUpdate &&
-       phase_ != strategy::CallbackPhase::kFill)) {
-    return Fail(ErrorCode::kInvalidState,
-                "orders require a running business callback");
+ErrorCode LocalTradingRuntime::SubmitOrder(const model::OrderRequest& request,
+                                           model::ClientOrderId& out) noexcept {
+  if (!accepting_orders()) {
+    return Fail(ErrorCode::kInvalidState, "trading requests are not enabled");
   }
-  if (storage_ == nullptr)
-    return Fail(ErrorCode::kUnsupported, "no trading adapter configured");
   model::InstrumentDefinition instrument;
   if (!instruments_.TryGetInstrument(request.instrument_id, instrument) ||
       !ValidSide(request.side) || request.limit_price <= 0 ||
@@ -322,7 +330,7 @@ ErrorCode TradingImpl::SubmitOrder(const model::OrderRequest& request,
   return ErrorCode::kOk;
 }
 
-ErrorCode TradingImpl::QueueCancel(std::size_t index) noexcept {
+ErrorCode LocalTradingRuntime::QueueCancel(std::size_t index) noexcept {
   auto& s = *storage_;
   if (s.request_count == kMaxTradingRequests ||
       s.last_cancel_id == std::numeric_limits<std::uint64_t>::max()) {
@@ -343,16 +351,10 @@ ErrorCode TradingImpl::QueueCancel(std::size_t index) noexcept {
   return ErrorCode::kOk;
 }
 
-ErrorCode TradingImpl::CancelOrder(model::ClientOrderId id) noexcept {
-  if (!running_ || stopping_ ||
-      (phase_ != strategy::CallbackPhase::kTick &&
-       phase_ != strategy::CallbackPhase::kOrderUpdate &&
-       phase_ != strategy::CallbackPhase::kFill)) {
-    return Fail(ErrorCode::kInvalidState,
-                "cancellation requires a running business callback");
+ErrorCode LocalTradingRuntime::CancelOrder(model::ClientOrderId id) noexcept {
+  if (!accepting_orders()) {
+    return Fail(ErrorCode::kInvalidState, "trading requests are not enabled");
   }
-  if (storage_ == nullptr)
-    return Fail(ErrorCode::kUnsupported, "no trading adapter configured");
   const auto index = FindIndex(id);
   if (!index)
     return Fail(ErrorCode::kInvalidArgument, "unknown client order ID");
@@ -364,22 +366,22 @@ ErrorCode TradingImpl::CancelOrder(model::ClientOrderId id) noexcept {
   return QueueCancel(*index);
 }
 
-bool TradingImpl::TryGetOrder(model::ClientOrderId id,
-                              model::OrderSnapshot& out) const noexcept {
+bool LocalTradingRuntime::TryGetOrder(
+    model::ClientOrderId id, model::OrderSnapshot& out) const noexcept {
   const auto index = FindIndex(id);
   if (!index) return false;
   out = storage_->orders[*index].snapshot;
   return true;
 }
 
-bool TradingImpl::TryGetCash(model::CashSnapshot& out) const noexcept {
+bool LocalTradingRuntime::TryGetCash(model::CashSnapshot& out) const noexcept {
   if (storage_ == nullptr) return false;
   out = storage_->cash;
   return true;
 }
 
-bool TradingImpl::TryGetPosition(model::InstrumentId id,
-                                 model::PositionSnapshot& out) const noexcept {
+bool LocalTradingRuntime::TryGetPosition(
+    model::InstrumentId id, model::PositionSnapshot& out) const noexcept {
   if (storage_ == nullptr || !instruments_.HasInstrument(id)) return false;
   const auto index = FindPosition(id);
   if (index) {
@@ -390,15 +392,15 @@ bool TradingImpl::TryGetPosition(model::InstrumentId id,
   return true;
 }
 
-base::Status TradingImpl::ProcessRequests(TradingAdapter& adapter,
-                                          std::uint64_t now,
-                                          std::size_t limit) noexcept {
-  if (phase_ != strategy::CallbackPhase::kNone) {
+base::Status LocalTradingRuntime::ProcessRequests(std::uint64_t now,
+                                                  std::size_t limit) noexcept {
+  error_stage_ = "trading_send";
+  if (!prepared_ || storage_ == nullptr || accept_requests_) {
     return {
-        Fail(ErrorCode::kInvalidState, "cannot send from a strategy callback"),
+        Fail(ErrorCode::kInvalidState,
+             "sending requires an initialized runtime with requests closed"),
         {}};
   }
-  if (storage_ == nullptr) return {};
   auto& s = *storage_;
   for (std::size_t count = 0; count < limit && s.request_count != 0; ++count) {
     const auto request = s.requests[s.request_head];
@@ -424,23 +426,24 @@ base::Status TradingImpl::ProcessRequests(TradingAdapter& adapter,
       const model::OrderRequest submitted{order.instrument_id, order.side,
                                           order.limit_price,
                                           order.original_qty};
-      result = adapter.SendOrder(order.client_order_id, submitted, now);
+      result = adapter_.SendOrder(order.client_order_id, submitted, now);
     } else {
       record.cancel_attempted = true;
-      result = adapter.SendCancel(record.snapshot.client_order_id,
-                                  record.snapshot.broker_order_id,
-                                  request.cancel_id, now);
+      result = adapter_.SendCancel(record.snapshot.client_order_id,
+                                   record.snapshot.broker_order_id,
+                                   request.cancel_id, now);
     }
     if (!result.ok()) {
-      (void)Fail(result.code, adapter.error_detail());
+      (void)Fail(result.code, adapter_.error_detail());
       return result;
     }
   }
   return {};
 }
 
-base::Status TradingImpl::ScheduleStopping(std::uint64_t now,
-                                           std::size_t max_scan) noexcept {
+base::Status LocalTradingRuntime::ScheduleStopping(
+    std::uint64_t now, std::size_t max_scan) noexcept {
+  error_stage_ = "trading_drain";
   if (!stopping_ || storage_ == nullptr) return {};
   auto& s = *storage_;
   if (!s.scan_pending) {
@@ -476,28 +479,41 @@ base::Status TradingImpl::ScheduleStopping(std::uint64_t now,
   return {};
 }
 
-std::optional<std::uint64_t> TradingImpl::next_deadline() const noexcept {
+std::optional<std::uint64_t> LocalTradingRuntime::next_deadline()
+    const noexcept {
   if (storage_ == nullptr) return {};
   const auto& s = *storage_;
   if (s.request_count != 0 || s.local_count != 0 ||
       (stopping_ && s.scan_pending))
     return 0;
-  return stopping_ ? s.next_retry : std::nullopt;
+  auto deadline = stopping_ ? s.next_retry : std::nullopt;
+  const auto adapter_deadline =
+      prepared_ ? adapter_.next_deadline() : std::nullopt;
+  if (adapter_deadline && (!deadline || *adapter_deadline < *deadline))
+    deadline = adapter_deadline;
+  return deadline;
 }
 
-bool TradingImpl::has_local_updates() const noexcept {
+bool LocalTradingRuntime::has_ready_event(std::uint64_t now) const noexcept {
+  const auto deadline = prepared_ ? adapter_.next_deadline() : std::nullopt;
+  return has_local_updates() || IsDue(deadline, now);
+}
+
+bool LocalTradingRuntime::has_local_updates() const noexcept {
   return storage_ != nullptr && storage_->local_count != 0;
 }
-bool TradingImpl::is_drained() const noexcept {
+bool LocalTradingRuntime::is_drained() const noexcept {
   return storage_ == nullptr ||
          (storage_->active_count == 0 && storage_->pending_cancel_count == 0 &&
-          storage_->request_count == 0 && storage_->local_count == 0);
+          storage_->request_count == 0 && storage_->local_count == 0 &&
+          (!prepared_ || adapter_.is_drained()));
 }
-std::size_t TradingImpl::order_count() const noexcept {
+std::size_t LocalTradingRuntime::order_count() const noexcept {
   return storage_ != nullptr ? storage_->order_count : 0;
 }
 
-ErrorCode TradingImpl::ApplyLocalUpdate(TradingDispatch& out) noexcept {
+ErrorCode LocalTradingRuntime::ApplyLocalUpdate(TradingDispatch& out) noexcept {
+  error_stage_ = "trading_local_update";
   if (storage_ == nullptr || storage_->local_count == 0) {
     return Fail(ErrorCode::kInvalidState, "no local order update available");
   }
@@ -533,8 +549,9 @@ ErrorCode TradingImpl::ApplyLocalUpdate(TradingDispatch& out) noexcept {
   return ErrorCode::kOk;
 }
 
-ErrorCode TradingImpl::ApplyEvent(const TradingEvent& event,
-                                  TradingDispatch& out) noexcept {
+ErrorCode LocalTradingRuntime::ApplyEvent(const TradingEvent& event,
+                                          TradingDispatch& out) noexcept {
+  error_stage_ = "trading_event";
   const auto index = FindIndex(event.client_order_id);
   if (!index) return Fail(ErrorCode::kCorrupt, "report for an unknown order");
   auto& s = *storage_;
@@ -779,4 +796,112 @@ ErrorCode TradingImpl::ApplyEvent(const TradingEvent& event,
   out = dispatch;
   return ErrorCode::kOk;
 }
+base::Status LocalTradingRuntime::Fail(base::Status status, const char* stage,
+                                       const char* detail) noexcept {
+  error_stage_ = stage;
+  std::snprintf(error_detail_, sizeof(error_detail_), "%s", detail);
+  return status;
+}
+
+base::Status LocalTradingRuntime::Init(const TradingConfig& config,
+                                       const md::MarketDataConfig&) noexcept {
+  if (prepared_ || storage_ != nullptr || accept_requests_ || stopping_) {
+    return Fail({base::ErrorCode::kInvalidState, {}}, "trading_prepare",
+                "local trading already initialized");
+  }
+  if (config.adapter != TradingAdapterKind::kMock) {
+    return Fail({base::ErrorCode::kInvalidArgument, {}}, "trading_prepare",
+                "local runtime requires a local trading configuration");
+  }
+  // Even failed Prepare may own resources; Stop must run exactly once.
+  prepared_ = true;
+  const auto prepared = adapter_.Prepare(config);
+  if (!prepared.ok())
+    return Fail(prepared, "trading_prepare", adapter_.error_detail());
+  const auto started = adapter_.Start(clock_.Now());
+  if (!started.ok())
+    return Fail(started, "trading_start", adapter_.error_detail());
+  TradingAccountSnapshot account;
+  const auto snapshot = adapter_.ReadAccountSnapshot(account);
+  if (!snapshot.ok())
+    return Fail(snapshot, "trading_account", adapter_.error_detail());
+  error_stage_ = "trading_account";
+  return ConfigureAccount(account);
+}
+
+base::Status LocalTradingRuntime::Stop() noexcept {
+  accept_requests_ = false;
+  if (!prepared_) return {};
+  prepared_ = false;
+  const auto stopped = adapter_.Stop();
+  if (!stopped.ok())
+    return Fail(stopped, "trading_stop", adapter_.error_detail());
+  return {};
+}
+
+base::Status LocalTradingRuntime::Poll(std::uint64_t now, TradingDispatch& out,
+                                       bool& event) noexcept {
+  error_stage_ = "trading_poll";
+  if (!prepared_ || storage_ == nullptr || accept_requests_)
+    return Fail({base::ErrorCode::kInvalidState, {}}, "trading_poll",
+                "polling requires an initialized runtime with requests closed");
+  TradingDispatch dispatch;
+  if (has_local_updates() &&
+      (!IsDue(adapter_.next_deadline(), now) || prefer_local_)) {
+    prefer_local_ = false;
+    const auto applied = ApplyLocalUpdate(dispatch);
+    if (applied != base::ErrorCode::kOk) return {applied, {}};
+  } else {
+    prefer_local_ = true;
+    TradingEvent input;
+    const auto polled = adapter_.Poll(now, input);
+    if (!polled.status.ok() || polled.state == TradingPollState::kError) {
+      return Fail(polled.status.ok()
+                      ? base::Status{base::ErrorCode::kCorrupt, {}}
+                      : polled.status,
+                  "trading_poll", adapter_.error_detail());
+    }
+    if (polled.state == TradingPollState::kIdle) {
+      if (IsDue(adapter_.next_deadline(), now))
+        return Fail({base::ErrorCode::kCorrupt, {}}, "trading_poll",
+                    "idle trading adapter retained an already-due deadline");
+      event = false;
+      return {};
+    }
+    if (polled.state != TradingPollState::kEvent)
+      return Fail({base::ErrorCode::kCorrupt, {}}, "trading_poll",
+                  "adapter returned an unknown polling state");
+    const auto applied = ApplyEvent(input, dispatch);
+    if (applied != base::ErrorCode::kOk) {
+      char broker[kTradingIdHexSize];
+      char execution[kTradingIdHexSize];
+      CopyIdHex(input.broker_order_id.view(), broker);
+      CopyIdHex(input.fill.execution_id.view(), execution);
+      error_stage_ = "trading_event";
+      char detail[kErrorDetailSize];
+      std::snprintf(
+          detail, sizeof(detail),
+          "client_order_id=%llu sequence=%llu kind=%u cumulative=%lld "
+          "fill_price=%lld fill_qty=%lld cancel_request=%llu "
+          "broker_id_hex=%s execution_id_hex=%s: %s",
+          static_cast<unsigned long long>(input.client_order_id.value),
+          static_cast<unsigned long long>(input.report_sequence),
+          static_cast<unsigned>(input.kind),
+          static_cast<long long>(input.cumulative_filled_qty),
+          static_cast<long long>(input.fill.price),
+          static_cast<long long>(input.fill.quantity),
+          static_cast<unsigned long long>(input.cancel_request_id.value),
+          broker, execution, error_detail_);
+      (void)Fail({applied, {}}, "trading_event", detail);
+      // Report even when the runner retains an earlier callback failure.
+      std::fprintf(stderr, "yquant-trading: unapplied_trading_event %s\n",
+                   error_detail_);
+      return {applied, {}};
+    }
+  }
+  out = dispatch;
+  event = true;
+  return {};
+}
+
 }  // namespace yquant::trading

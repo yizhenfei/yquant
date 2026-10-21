@@ -98,15 +98,16 @@ cmake -P cmake/DownloadTestData.cmake
 
 `yquant-strategyd` 读取 JSON 配置并加载用户策略动态库，全部校验成功后调用 `OnStart(context)`。主线程驱动行情、交易请求及委托和成交回报。收到停止信号后，宿主停止行情和策略新请求，自动撤单并处理回报；排空后调用 `OnStop(context)`、销毁实例并释放动态库句柄。
 
-构建后运行生命周期策略示例：
+先按[行情进程](#行情进程)启动 `marketd`，再运行生命周期策略示例：
 
 ```sh
 ./build/debug/bin/yquant-strategyd \
   --strategy ./build/debug/strategies/lifecycle_strategy.so \
-  --config ./build/debug/strategies/lifecycle_strategy.json
+  --config ./build/debug/strategies/lifecycle_strategy.json \
+  --market-data-config ./build/debug/strategies/market_data.json
 ```
 
-`--strategy` 和 `--config` 均为必填参数，顺序不限。启动成功后向 `stdout` 输出 `Running` 和策略 ID。三个进程及示例策略的控制台流遵循[标准输出与诊断约定](docs/design/engineering.md#标准输出与诊断)。使用 `Ctrl+C` 或向进程发送 `SIGTERM` 停止，使用 `--help` 查看参数。路径以启动工作目录为基准；动态库文件名后缀由 CMake 的本机 `MODULE` 配置决定。
+`--strategy`、`--config` 和 `--market-data-config` 均为必填参数，顺序不限。启动成功后向 `stdout` 输出 `Running` 和策略 ID。三个进程及示例策略的控制台流遵循[标准输出与诊断约定](docs/design/engineering.md#标准输出与诊断)。使用 `Ctrl+C` 或向进程发送 `SIGTERM` 停止，使用 `--help` 查看参数。路径以启动工作目录为基准；动态库文件名后缀由 CMake 的本机 `MODULE` 配置决定。
 
 生命周期示例的 `LifecycleConfig` 派生自 `StrategyConfig`，读取必填字符串 `parameters.startup_message`，将解码后 1 至 128 字节、无内嵌 NUL 的内容保存在自身定长存储中，拒绝未知参数。配套配置将消息设为 `lifecycle strategy started`，`OnStart` 读取该参数并输出 `lifecycle_strategy: startup_message=lifecycle strategy started`。
 
@@ -125,7 +126,7 @@ cmake -P cmake/DownloadTestData.cmake
   --market-data-config ./build/debug/strategies/market_data.json
 ```
 
-`--market-data-config` 为可选的宿主行情接收配置，使用共享内存并绑定唯一来源。配置通过 `instrument_catalog` 引用[共享标的文件](examples/instruments.json)，`instruments` 只列接收范围内的标的身份。模拟报价的价量、步长和间隔配置在 `marketd` 生产端。观察策略首次行情输出 `quote_observer: first quote received`，停止时输出 `ticks`、`last_sequence` 和 `max_age_ns` 汇总。省略行情配置时，不订阅行情的示例仍可运行。路径规则与字典格式见[行情驱动设计](docs/design/market-data.md#共享标的字典)。
+`--market-data-config` 指定宿主行情接收配置，使用共享内存并绑定唯一来源。配置通过 `instrument_catalog` 引用[共享标的文件](examples/instruments.json)，`instruments` 只列接收范围内的标的身份。模拟报价的价量、步长和间隔配置在 `marketd` 生产端。观察策略首次行情输出 `quote_observer: first quote received`，停止时输出 `ticks`、`last_sequence` 和 `max_age_ns` 汇总。路径规则与字典格式见[行情驱动设计](docs/design/market-data.md#共享标的字典)。
 
 保持 `marketd` 运行，再启动单笔限价委托示例：
 

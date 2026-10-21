@@ -10,8 +10,8 @@
 #include "strategyd/market_data.h"
 #include "strategyd/strategy_context.h"
 #include "yquant/model/identifiers.h"
+#include "yquant/trading/local_trading_runtime.h"
 #include "yquant/trading/mock_trading_adapter.h"
-#include "yquant/trading/trading.h"
 #include "yquant/trading/trading_adapter.h"
 
 namespace {
@@ -146,7 +146,7 @@ class TradingHeapClock final : public base::MonotonicClock {
 
 // Runs accepted requests, idle checks, normalized reports and callback-side
 // queries without test reporting inside the allocation observation window.
-const char* ExerciseOrders(trading::TradingImpl& trading,
+const char* ExerciseOrders(trading::LocalTradingRuntime& trading,
                            trading::MockTradingAdapter& adapter,
                            StrategyContextImpl& context,
                            TradingHeapClock& clock,
@@ -171,12 +171,12 @@ const char* ExerciseOrders(trading::TradingImpl& trading,
       return "account query failed before request";
     }
     model::ClientOrderId id;
-    trading.BeginCallback(strategy::CallbackPhase::kTick);
+    trading.SetAcceptingRequests(true);
     const auto submitted = context.trading().SubmitOrder(
         {instrument, sell ? model::OrderSide::kSell : model::OrderSide::kBuy,
          1001, 201},
         id);
-    trading.EndCallback();
+    trading.SetAcceptingRequests(false);
     if (submitted != base::ErrorCode::kOk || !id.value) {
       return "request was not accepted locally";
     }
@@ -201,7 +201,7 @@ const char* ExerciseOrders(trading::TradingImpl& trading,
                    before_cash.available - kReservation) {
       return "buy reservation was not visible immediately";
     }
-    if (!trading.ProcessRequests(adapter, clock.Now()).ok()) {
+    if (!trading.ProcessRequests(clock.Now()).ok()) {
       return "accepted request was not sent";
     }
     bool finished = false;
@@ -233,7 +233,7 @@ const char* ExerciseOrders(trading::TradingImpl& trading,
           !dispatch.notify_order) {
         return "valid broker event was not committed";
       }
-      trading.BeginCallback(strategy::CallbackPhase::kOrderUpdate);
+      trading.SetAcceptingRequests(true);
       model::CashSnapshot committed_cash;
       model::PositionSnapshot committed_position;
       if (!read_only.trading().TryGetCash(committed_cash) ||
@@ -251,15 +251,15 @@ const char* ExerciseOrders(trading::TradingImpl& trading,
           return "working order cancel was not accepted";
         }
       }
-      trading.EndCallback();
+      trading.SetAcceptingRequests(false);
       if (dispatch.has_fill) {
-        trading.BeginCallback(strategy::CallbackPhase::kFill);
+        trading.SetAcceptingRequests(true);
         if (!read_only.trading().TryGetOrder(id, snapshot) ||
             snapshot.cumulative_filled_qty !=
                 before.cumulative_filled_qty + dispatch.fill.quantity) {
           return "fill callback observed the wrong cumulative quantity";
         }
-        trading.EndCallback();
+        trading.SetAcceptingRequests(false);
         ++fill_count;
         filled_qty += dispatch.fill.quantity;
       }
@@ -276,7 +276,7 @@ const char* ExerciseOrders(trading::TradingImpl& trading,
           duplicate_position != committed_position) {
         return "duplicate report changed account balances";
       }
-      if (!trading.ProcessRequests(adapter, clock.Now()).ok()) {
+      if (!trading.ProcessRequests(clock.Now()).ok()) {
         return "accepted cancel was not sent";
       }
       if (!context.trading().TryGetOrder(id, snapshot)) {
@@ -337,23 +337,21 @@ void CheckTradingHeap(bool cancel, bool sell = false) {
 
   MarketDataImpl market_data(clock);
   ASSERT_TRUE(market_data.Configure(market_config).ok());
-  trading::TradingImpl trading(clock, market_data.instruments());
+  trading::MockTradingAdapter adapter;
+  trading::LocalTradingRuntime trading(clock, market_data.instruments(),
+                                       adapter);
   trading::TradingAccountSnapshot account;
   account.cash_balance = 1000000000000000;
   if (sell) {
     account.position_count = 1;
     account.positions[0] = {item.instrument.id, 128 * 201, 128 * 201, 0};
   }
-  ASSERT_TRUE(trading.Configure(account).ok());
   StrategyContextImpl context(clock, market_data, trading);
   trading::TradingConfig config;
   config.mode = cancel ? trading::MockTradingMode::kWorking
                        : trading::MockTradingMode::kFill;
   config.initial_account = account;
-  trading::MockTradingAdapter adapter;
-  ASSERT_TRUE(adapter.Prepare(config).ok());
-  ASSERT_TRUE(adapter.Start(clock.Now()).ok());
-  trading.SetRunning(true);
+  ASSERT_TRUE(trading.Init(config, market_config).ok());
   std::size_t fills = 0;
   const char* failure = nullptr;
   const auto activity = ObserveCppHeap([&]() noexcept {
@@ -364,7 +362,7 @@ void CheckTradingHeap(bool cancel, bool sell = false) {
   EXPECT_EQ(fills, cancel ? 0U : 256U);
   EXPECT_EQ(activity.allocation_calls, 0U);
   EXPECT_EQ(activity.deallocation_calls, 0U);
-  EXPECT_TRUE(adapter.Stop().ok());
+  EXPECT_TRUE(trading.Stop().ok());
 }
 
 TEST(TradingCppHeapTest, FirstRequestAndRepeatedFillsHaveNoCppHeapActivity) {
@@ -381,6 +379,57 @@ TEST(TradingCppHeapTest, SellReservationsFillsAndQueriesHaveNoCppHeapActivity) {
 
 TEST(TradingCppHeapTest, SellCancelReleasesHaveNoCppHeapActivity) {
   CheckTradingHeap(true, true);
+}
+
+TEST(TradingCppHeapTest, UnifiedRuntimePollingHasNoCppHeapActivity) {
+  TradingHeapClock clock;
+  md::MarketDataConfig dictionary;
+  dictionary.source_id = {1};
+  dictionary.instrument_count = 1;
+  auto& definition = dictionary.instruments[0].instrument;
+  ASSERT_EQ(model::MakeInstrumentId("SSE", "600000", definition.id),
+            base::ErrorCode::kOk);
+  definition.venue = model::Venue::kSse;
+  std::copy_n("600000", model::kSymbolLength, definition.symbol);
+  definition.price_decimals = 2;
+  md::InstrumentScope instruments;
+  ASSERT_TRUE(instruments.Configure(dictionary).ok());
+  trading::MockTradingAdapter adapter;
+  trading::LocalTradingRuntime runtime(clock, instruments, adapter);
+  trading::TradingConfig config;
+  config.initial_account.cash_balance = 1000000000000000;
+  ASSERT_TRUE(runtime.Init(config, dictionary).ok());
+  bool succeeded = true;
+  std::size_t fills = 0;
+  const auto activity = ObserveCppHeap([&]() noexcept {
+    for (std::size_t count = 0; count < 128 && succeeded; ++count) {
+      runtime.SetAcceptingRequests(true);
+      model::ClientOrderId id;
+      succeeded =
+          runtime.SubmitOrder({definition.id, model::OrderSide::kBuy, 1001, 1},
+                              id) == base::ErrorCode::kOk;
+      runtime.SetAcceptingRequests(false);
+      succeeded = succeeded && runtime.ProcessRequests(clock.Now()).ok();
+      for (std::size_t polls = 0;
+           polls < 3 && succeeded && !runtime.is_drained(); ++polls) {
+        const auto deadline = runtime.next_deadline();
+        if (!deadline) {
+          succeeded = false;
+          break;
+        }
+        clock.now = std::max(clock.now, *deadline);
+        trading::TradingDispatch dispatch;
+        bool event = false;
+        succeeded = runtime.Poll(clock.Now(), dispatch, event).ok() && event;
+        if (dispatch.has_fill) ++fills;
+      }
+      succeeded = succeeded && runtime.is_drained();
+    }
+  });
+  EXPECT_TRUE(succeeded) << runtime.error_detail();
+  EXPECT_EQ(fills, 128U);
+  EXPECT_EQ(activity.allocation_calls, 0U);
+  EXPECT_EQ(activity.deallocation_calls, 0U);
 }
 
 }  // namespace

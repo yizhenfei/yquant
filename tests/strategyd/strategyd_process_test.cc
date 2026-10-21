@@ -327,9 +327,11 @@ TEST(StrategydProcessTest, HelpExitsSuccessfullyWithoutLoading) {
 
 TEST(StrategydProcessTest, LoadsTheExampleStrategy) {
   ChildProcess child;
-  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_EXAMPLE_PATH, "--config",
-                         YQUANT_TEST_EXAMPLE_CONFIG_PATH}),
-            0);
+  ASSERT_EQ(
+      child.Start({"--strategy", YQUANT_TEST_EXAMPLE_PATH, "--config",
+                   YQUANT_TEST_EXAMPLE_CONFIG_PATH, "--market-data-config",
+                   YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
+      0);
   ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
   EXPECT_NE(child.output().find("lifecycle_strategy: startup_message="
                                 "lifecycle strategy started\n"),
@@ -346,7 +348,8 @@ TEST(StrategydProcessTest, LifecycleExampleUsesDecodedCustomStartupMessage) {
   ASSERT_TRUE(config.valid());
   ChildProcess child;
   ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_EXAMPLE_PATH, "--config",
-                         config.path()}),
+                         config.path(), "--market-data-config",
+                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
             0);
   ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
   EXPECT_NE(child.output().find("lifecycle_strategy: startup_message="
@@ -368,7 +371,8 @@ TEST(StrategydProcessTest, LifecycleExampleAccepts128ByteStartupMessage) {
   ASSERT_TRUE(config.valid());
   ChildProcess child;
   ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_EXAMPLE_PATH, "--config",
-                         config.path()}),
+                         config.path(), "--market-data-config",
+                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
             0);
   ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
   EXPECT_NE(child.output().find(
@@ -404,7 +408,8 @@ TEST(StrategydProcessTest, LifecycleExampleRejectsInvalidStartupParameters) {
     ASSERT_TRUE(config.valid());
     ChildProcess child;
     ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_EXAMPLE_PATH, "--config",
-                           config.path()}),
+                           config.path(), "--market-data-config",
+                           YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
               0);
     ASSERT_TRUE(child.Wait()) << child.output();
     EXPECT_EQ(child.exit_code(), 1) << child.output();
@@ -419,10 +424,11 @@ TEST(StrategydProcessTest, LifecycleExampleRejectsInvalidStartupParameters) {
 
 TEST(StrategydProcessTest, LoadsTheParameterizedExampleStrategy) {
   ChildProcess child;
-  ASSERT_EQ(
-      child.Start({"--strategy", YQUANT_TEST_PARAMETERIZED_EXAMPLE_PATH,
-                   "--config", YQUANT_TEST_PARAMETERIZED_EXAMPLE_CONFIG_PATH}),
-      0);
+  ASSERT_EQ(child.Start(
+                {"--strategy", YQUANT_TEST_PARAMETERIZED_EXAMPLE_PATH,
+                 "--config", YQUANT_TEST_PARAMETERIZED_EXAMPLE_CONFIG_PATH,
+                 "--market-data-config", YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
+            0);
   ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
   EXPECT_NE(child.output().find("strategy_id=parameterized-example"),
             std::string::npos);
@@ -441,7 +447,8 @@ TEST(StrategydProcessTest, LoadsRelativeToTheWorkingDirectory) {
   ASSERT_TRUE(relative_path.is_relative());
   ChildProcess child;
   ASSERT_EQ(child.Start({"--strategy", relative_path.string(), "--config",
-                         YQUANT_TEST_CONFIG_PATH}),
+                         YQUANT_TEST_CONFIG_PATH, "--market-data-config",
+                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
             0);
   ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
   ASSERT_TRUE(child.Signal(SIGTERM));
@@ -461,7 +468,8 @@ TEST(StrategydProcessTest, LoadsAPathWithSpacesAndNoExtension) {
       << error.message();
   ChildProcess child;
   ASSERT_EQ(child.Start({"--strategy", path.string(), "--config",
-                         YQUANT_TEST_CONFIG_PATH}),
+                         YQUANT_TEST_CONFIG_PATH, "--market-data-config",
+                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
             0);
   ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
   ASSERT_TRUE(child.Signal(SIGTERM));
@@ -480,7 +488,8 @@ TEST(StrategydProcessTest, MissingDependencyFailsBeforeCreatingTheStrategy) {
       << error.message();
   ChildProcess child;
   ASSERT_EQ(child.Start({"--strategy", path.string(), "--config",
-                         YQUANT_TEST_CONFIG_PATH}),
+                         YQUANT_TEST_CONFIG_PATH, "--market-data-config",
+                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
             0);
   ASSERT_TRUE(child.Wait()) << child.output();
   EXPECT_EQ(child.exit_code(), 1) << child.output();
@@ -505,6 +514,8 @@ TEST(StrategydProcessTest, InvalidArgumentsExitWithUsageError) {
       {"--config"},
       {"--config", ""},
       {"--config", YQUANT_TEST_CONFIG_PATH},
+      {"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--config",
+       YQUANT_TEST_CONFIG_PATH},
       {"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--config"},
       {"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--config", ""},
       {"--unknown"},
@@ -538,7 +549,8 @@ class StopSignalTest : public ::testing::TestWithParam<int> {};
 TEST_P(StopSignalTest, StopsAndDestroysARealDynamicStrategy) {
   ChildProcess child;
   ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--config",
-                         YQUANT_TEST_CONFIG_PATH}),
+                         YQUANT_TEST_CONFIG_PATH, "--market-data-config",
+                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
             0);
   ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
   ASSERT_TRUE(child.Signal(GetParam()));
@@ -553,7 +565,8 @@ INSTANTIATE_TEST_SUITE_P(PosixSignals, StopSignalTest,
 TEST(StrategydProcessTest, StopSignalDuringStartIsHandledAfterStartReturns) {
   ChildProcess child;
   ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--config",
-                         YQUANT_TEST_CONFIG_PATH},
+                         YQUANT_TEST_CONFIG_PATH, "--market-data-config",
+                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH},
                         true),
             0);
   ASSERT_TRUE(child.WaitForEvent('S')) << child.output();
@@ -579,7 +592,8 @@ TEST(StrategydProcessTest, LoadAndStartFailuresExitWithRuntimeError) {
     SCOPED_TRACE(test_case.path);
     ChildProcess child;
     ASSERT_EQ(child.Start({"--strategy", test_case.path, "--config",
-                           YQUANT_TEST_CONFIG_PATH}),
+                           YQUANT_TEST_CONFIG_PATH, "--market-data-config",
+                           YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
               0);
     ASSERT_TRUE(child.Wait()) << child.output();
     EXPECT_EQ(child.exit_code(), 1) << child.output();
@@ -590,9 +604,11 @@ TEST(StrategydProcessTest, LoadAndStartFailuresExitWithRuntimeError) {
 
 TEST(StrategydProcessTest, StopFailureStillDestroysAndReturnsRuntimeError) {
   ChildProcess child;
-  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_STOP_FAIL_PATH,
-                         "--config", YQUANT_TEST_CONFIG_PATH}),
-            0);
+  ASSERT_EQ(
+      child.Start({"--strategy", YQUANT_TEST_PLUGIN_STOP_FAIL_PATH, "--config",
+                   YQUANT_TEST_CONFIG_PATH, "--market-data-config",
+                   YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
+      0);
   ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
   ASSERT_TRUE(child.Signal(SIGTERM));
   ASSERT_TRUE(child.Wait()) << child.output();
@@ -609,7 +625,8 @@ TEST(StrategydProcessTest, AcceptsConfigBeforeStrategyAndRelativeConfigPath) {
   ASSERT_FALSE(error) << error.message();
   ChildProcess child;
   ASSERT_EQ(child.Start({"--config", config.string(), "--strategy",
-                         YQUANT_TEST_PLUGIN_GOOD_PATH}),
+                         YQUANT_TEST_PLUGIN_GOOD_PATH, "--market-data-config",
+                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
             0);
   ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
   ASSERT_TRUE(child.Signal(SIGTERM));
@@ -628,7 +645,8 @@ TEST(StrategydProcessTest, AcceptsConfigPathsWithSpaces) {
       << error.message();
   ChildProcess child;
   ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--config",
-                         path.string()}),
+                         path.string(), "--market-data-config",
+                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
             0);
   ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
   ASSERT_TRUE(child.Signal(SIGTERM));
@@ -643,7 +661,8 @@ TEST(StrategydProcessTest, ConfigValidationPrecedesLibraryLoading) {
   ASSERT_TRUE(config.valid());
   ChildProcess child;
   ASSERT_EQ(child.Start({"--strategy", "/yquant-no-such-strategy.so",
-                         "--config", config.path()}),
+                         "--config", config.path(), "--market-data-config",
+                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
             0);
   ASSERT_TRUE(child.Wait()) << child.output();
   EXPECT_EQ(child.exit_code(), 1) << child.output();
@@ -656,7 +675,8 @@ TEST(StrategydProcessTest, ConfigValidationPrecedesLibraryLoading) {
 TEST(StrategydProcessTest, ReportsMissingConfigWithoutCreatingTheStrategy) {
   ChildProcess child;
   ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--config",
-                         "/yquant-no-such-config.json"}),
+                         "/yquant-no-such-config.json", "--market-data-config",
+                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
             0);
   ASSERT_TRUE(child.Wait()) << child.output();
   EXPECT_EQ(child.exit_code(), 1) << child.output();
@@ -668,9 +688,11 @@ TEST(StrategydProcessTest, ReportsMissingConfigWithoutCreatingTheStrategy) {
 
 TEST(StrategydProcessTest, InitializesTypedConfigFromARealJsonFile) {
   ChildProcess child;
-  ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_TYPED_PATH,
-                         "--config", YQUANT_TEST_TYPED_CONFIG_PATH}),
-            0);
+  ASSERT_EQ(
+      child.Start({"--strategy", YQUANT_TEST_PLUGIN_TYPED_PATH, "--config",
+                   YQUANT_TEST_TYPED_CONFIG_PATH, "--market-data-config",
+                   YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
+      0);
   ASSERT_TRUE(child.WaitForOutput("Running")) << child.output();
   ASSERT_TRUE(child.Signal(SIGTERM));
   ASSERT_TRUE(child.Wait()) << child.output();
@@ -684,7 +706,8 @@ TEST(StrategydProcessTest, ParameterErrorsRemainReadableAfterPluginCleanup) {
   ASSERT_TRUE(config.valid());
   ChildProcess child;
   ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_TYPED_PATH,
-                         "--config", config.path()}),
+                         "--config", config.path(), "--market-data-config",
+                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH}),
             0);
   ASSERT_TRUE(child.Wait()) << child.output();
   EXPECT_EQ(child.exit_code(), 1) << child.output();

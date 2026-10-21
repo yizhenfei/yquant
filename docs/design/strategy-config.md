@@ -152,13 +152,14 @@ class MarketMakingStrategy final : public Strategy {
 
 ### 命令与处理顺序
 
-启动命令同时提供动态库路径和配置文件路径：
+启动命令同时提供动态库、策略配置和行情配置路径：
 
 ```sh
-yquant-strategyd --strategy ./market_making.so --config ./market_making.json
+yquant-strategyd --strategy ./market_making.so --config ./market_making.json \
+  --market-data-config ./market_data.json
 ```
 
-`--config <path>` 为必填参数，只出现一次。路径按启动工作目录解释，文件读取与内容校验在运行时处理 `LoadAndStart` 时执行。命令同时携带动态库路径及可选的宿主接入配置路径；省略接入配置时，仍可运行仅使用生命周期的策略。
+`--config <path>` 为必填参数，只出现一次。路径按启动工作目录解释，装配层在创建 runner 前读取并校验文件，再通过 `LoadAndStart` 传入已加载的配置。行情配置同样必填；交易配置可省略。组件选择与生命周期见[组件装配](strategyd.md#组件装配)。
 
 ```mermaid
 flowchart TD

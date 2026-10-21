@@ -6,7 +6,6 @@
 #include <thread>
 
 #include "gtest/gtest.h"
-#include "yquant/trading/mock_trading_adapter.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -79,16 +78,15 @@ class RemoteTradingTest : public ::testing::Test {
     const auto initialized = remote.Init(config, dictionary);
     handshake.join();
     ASSERT_TRUE(initialized.ok()) << remote.error_detail();
-    remote.SetRunning(true);
   }
 
   model::ClientOrderId Submit(std::int64_t quantity = 10) {
     model::ClientOrderId id;
-    remote.BeginCallback(strategy::CallbackPhase::kTick);
+    remote.SetAcceptingRequests(true);
     EXPECT_EQ(remote.SubmitOrder(
                   {instrument, model::OrderSide::kBuy, 1001, quantity}, id),
               ErrorCode::kOk);
-    remote.EndCallback();
+    remote.SetAcceptingRequests(false);
     return id;
   }
 
@@ -172,7 +170,7 @@ class RemoteTradingTest : public ::testing::Test {
   }
 
   void Transmit() {
-    ASSERT_TRUE(remote.ProcessRequests(adapter, clock.now).ok())
+    ASSERT_TRUE(remote.ProcessRequests(clock.now).ok())
         << remote.error_detail();
   }
 
@@ -180,7 +178,6 @@ class RemoteTradingTest : public ::testing::Test {
   md::MarketDataConfig dictionary;
   md::InstrumentScope market;
   RemoteTrading remote{clock, market};
-  trading::MockTradingAdapter adapter;
   trading::TradingConfig config;
   trading::Listener listener;
   trading::Connection peer;
@@ -319,9 +316,9 @@ TEST_F(RemoteTradingTest, LostConnectionPreservesAttemptedOrderFacts) {
   ASSERT_TRUE(remote.TryGetOrder(id, order));
   EXPECT_EQ(order.state, model::OrderState::kPendingNew);
   EXPECT_FALSE(remote.is_drained());
-  remote.BeginCallback(strategy::CallbackPhase::kTick);
+  remote.SetAcceptingRequests(true);
   EXPECT_FALSE(remote.accepting_orders());
-  remote.EndCallback();
+  remote.SetAcceptingRequests(false);
 }
 
 TEST_F(RemoteTradingTest, GatewayCanCancelRunningClientBeforeClosingStream) {
@@ -350,6 +347,25 @@ TEST_F(RemoteTradingTest, GatewayCanCancelRunningClientBeforeClosingStream) {
   EXPECT_EQ(retained.state, model::OrderState::kCanceled);
 }
 
+TEST_F(RemoteTradingTest,
+       RequestPermissionBlocksTransportAndStoppingStaysClosed) {
+  const auto id = Submit();
+  remote.SetAcceptingRequests(true);
+  EXPECT_EQ(remote.ProcessRequests(clock.now).code, ErrorCode::kInvalidState);
+  trading::TradingDispatch dispatch;
+  dispatch.update.order.client_order_id = {99};
+  bool event = true;
+  EXPECT_EQ(remote.Poll(clock.now, dispatch, event).code,
+            ErrorCode::kInvalidState);
+  EXPECT_EQ(dispatch.update.order.client_order_id.value, 99U);
+  EXPECT_TRUE(event);
+  remote.SetAcceptingRequests(false);
+  remote.BeginStopping();
+  remote.SetAcceptingRequests(true);
+  EXPECT_FALSE(remote.accepting_orders());
+  EXPECT_EQ(remote.CancelOrder(id), ErrorCode::kInvalidState);
+}
+
 TEST_F(RemoteTradingTest, HeartbeatTimeoutEndsSessionAndIdleAdvancesDeadline) {
   trading::TradingDispatch dispatch;
   bool event = true;
@@ -358,7 +374,7 @@ TEST_F(RemoteTradingTest, HeartbeatTimeoutEndsSessionAndIdleAdvancesDeadline) {
   ASSERT_TRUE(remote.next_deadline());
   EXPECT_GT(*remote.next_deadline(), clock.now);
   clock.now += config.remote.heartbeat_timeout_ns;
-  EXPECT_FALSE(remote.ProcessRequests(adapter, clock.now).ok());
+  EXPECT_FALSE(remote.ProcessRequests(clock.now).ok());
   EXPECT_NE(std::strstr(remote.error_detail(), "heartbeat"), nullptr);
 }
 

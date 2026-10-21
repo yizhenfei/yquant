@@ -1,5 +1,3 @@
-#include "yquant/trading/trading.h"
-
 #include <cstring>
 #include <limits>
 #include <string>
@@ -8,6 +6,8 @@
 #include "gtest/gtest.h"
 #include "yquant/md/instrument_scope.h"
 #include "yquant/model/identifiers.h"
+#include "yquant/trading/disabled_trading_runtime.h"
+#include "yquant/trading/local_trading_runtime.h"
 #include "yquant/trading/trading_adapter.h"
 
 namespace yquant::trading {
@@ -25,13 +25,14 @@ class LedgerClock final : public base::MonotonicClock {
 // Records sends without generating callbacks; tests explicitly drive reports.
 class RecordingTradingAdapter final : public trading::TradingAdapter {
  public:
-  base::Status Prepare(const trading::TradingConfig&) noexcept override {
+  base::Status Prepare(const trading::TradingConfig& config) noexcept override {
+    account = config.initial_account;
     return {};
   }
   base::Status Start(std::uint64_t) noexcept override { return {}; }
   base::Status ReadAccountSnapshot(
       trading::TradingAccountSnapshot& out) noexcept override {
-    out = {};
+    out = account;
     return {};
   }
   base::Status SendOrder(model::ClientOrderId id,
@@ -52,14 +53,19 @@ class RecordingTradingAdapter final : public trading::TradingAdapter {
     last_cancel_id = cancel;
     return {fail_send ? ErrorCode::kIoError : ErrorCode::kOk, {}};
   }
-  trading::TradingPollResult Poll(std::uint64_t,
-                                  trading::TradingEvent&) noexcept override {
+  trading::TradingPollResult Poll(
+      std::uint64_t, trading::TradingEvent& out) noexcept override {
+    if (pending_event) {
+      out = *pending_event;
+      pending_event.reset();
+      return {trading::TradingPollState::kEvent, {}};
+    }
     return {};
   }
   std::optional<std::uint64_t> next_deadline() const noexcept override {
-    return {};
+    return pending_event ? std::optional<std::uint64_t>{0} : std::nullopt;
   }
-  bool is_drained() const noexcept override { return true; }
+  bool is_drained() const noexcept override { return !pending_event; }
   base::Status Stop() noexcept override { return {}; }
   const char* error_detail() const noexcept override {
     return "injected send failure";
@@ -71,6 +77,8 @@ class RecordingTradingAdapter final : public trading::TradingAdapter {
   std::size_t order_sends = 0;
   std::size_t cancel_sends = 0;
   bool fail_send = false;
+  trading::TradingAccountSnapshot account;
+  std::optional<trading::TradingEvent> pending_event;
 };
 
 class TradingTest : public ::testing::Test {
@@ -91,8 +99,14 @@ class TradingTest : public ::testing::Test {
     ASSERT_TRUE(market_data.Configure(config).ok());
     trading::TradingAccountSnapshot account;
     account.cash_balance = std::numeric_limits<std::int64_t>::max();
-    ASSERT_TRUE(trading.Configure(account).ok());
-    trading.SetRunning(true);
+    ASSERT_TRUE(InitializeAccount(account).ok());
+  }
+
+  base::Status InitializeAccount(
+      const trading::TradingAccountSnapshot& account) {
+    trading::TradingConfig config;
+    config.initial_account = account;
+    return trading.Init(config, market_config);
   }
 
   model::OrderRequest Request(std::int64_t quantity = 200) const {
@@ -100,9 +114,9 @@ class TradingTest : public ::testing::Test {
   }
   model::ClientOrderId Submit(std::int64_t quantity = 200) {
     model::ClientOrderId id;
-    trading.BeginCallback(strategy::CallbackPhase::kTick);
+    trading.SetAcceptingRequests(true);
     EXPECT_EQ(trading.SubmitOrder(Request(quantity), id), ErrorCode::kOk);
-    trading.EndCallback();
+    trading.SetAcceptingRequests(false);
     return id;
   }
   model::OrderSnapshot Snapshot(model::ClientOrderId id) const {
@@ -110,7 +124,7 @@ class TradingTest : public ::testing::Test {
     EXPECT_TRUE(trading.TryGetOrder(id, result));
     return result;
   }
-  void Send() { ASSERT_TRUE(trading.ProcessRequests(adapter, clock.now).ok()); }
+  void Send() { ASSERT_TRUE(trading.ProcessRequests(clock.now).ok()); }
   void Bootstrap(std::int64_t cash, std::int64_t total = 0,
                  std::int64_t available = 0, bool include_position = false) {
     trading.Reset();
@@ -120,8 +134,7 @@ class TradingTest : public ::testing::Test {
       account.position_count = 1;
       account.positions[0] = {instrument_id, total, available, 0};
     }
-    ASSERT_TRUE(trading.Configure(account).ok());
-    trading.SetRunning(true);
+    ASSERT_TRUE(InitializeAccount(account).ok());
   }
   void Precision(std::uint8_t decimals) {
     trading.Reset();
@@ -141,9 +154,9 @@ class TradingTest : public ::testing::Test {
   }
   model::ClientOrderId SubmitRequest(const model::OrderRequest& request) {
     model::ClientOrderId id;
-    trading.BeginCallback(strategy::CallbackPhase::kTick);
+    trading.SetAcceptingRequests(true);
     EXPECT_EQ(trading.SubmitOrder(request, id), ErrorCode::kOk);
-    trading.EndCallback();
+    trading.SetAcceptingRequests(false);
     return id;
   }
   trading::TradingEvent Event(model::ClientOrderId id, std::uint64_t sequence,
@@ -186,18 +199,112 @@ class TradingTest : public ::testing::Test {
     EXPECT_FALSE(dispatch.has_fill);
   }
   void Cancel(model::ClientOrderId id) {
-    trading.BeginCallback(strategy::CallbackPhase::kOrderUpdate);
+    trading.SetAcceptingRequests(true);
     EXPECT_EQ(trading.CancelOrder(id), ErrorCode::kOk);
-    trading.EndCallback();
+    trading.SetAcceptingRequests(false);
   }
 
   LedgerClock clock;
   md::MarketDataConfig market_config;
   md::InstrumentScope market_data;
-  trading::TradingImpl trading{clock, market_data};
   RecordingTradingAdapter adapter;
+  trading::LocalTradingRuntime trading{clock, market_data, adapter};
   model::InstrumentId instrument_id;
 };
+
+TEST_F(TradingTest, HostControlsRequestsAndStoppingCannotBeReopened) {
+  model::ClientOrderId id{99};
+  EXPECT_FALSE(trading.accepting_orders());
+  EXPECT_EQ(trading.SubmitOrder(Request(), id), ErrorCode::kInvalidState);
+  EXPECT_EQ(id.value, 99U);
+  trading.SetAcceptingRequests(true);
+  ASSERT_TRUE(trading.accepting_orders());
+  ASSERT_EQ(trading.SubmitOrder(Request(), id), ErrorCode::kOk);
+  const auto before = Snapshot(id);
+  EXPECT_EQ(trading.ProcessRequests(clock.now).code, ErrorCode::kInvalidState);
+  EXPECT_EQ(adapter.order_sends, 0U);
+  trading::TradingDispatch dispatch;
+  dispatch.update.order.client_order_id = {99};
+  bool event = true;
+  EXPECT_EQ(trading.Poll(clock.now, dispatch, event).code,
+            ErrorCode::kInvalidState);
+  EXPECT_EQ(dispatch.update.order.client_order_id.value, 99U);
+  EXPECT_TRUE(event);
+  EXPECT_EQ(Snapshot(id), before);
+  trading.SetAcceptingRequests(false);
+  ASSERT_TRUE(trading.ProcessRequests(clock.now).ok());
+  EXPECT_EQ(adapter.order_sends, 1U);
+  trading.BeginStopping();
+  trading.SetAcceptingRequests(true);
+  EXPECT_FALSE(trading.accepting_orders());
+  model::ClientOrderId unchanged{99};
+  EXPECT_EQ(trading.SubmitOrder(Request(), unchanged),
+            ErrorCode::kInvalidState);
+  EXPECT_EQ(unchanged.value, 99U);
+  EXPECT_EQ(trading.CancelOrder(id), ErrorCode::kInvalidState);
+  EXPECT_EQ(trading.order_count(), 1U);
+}
+
+TEST_F(TradingTest, PollCommitsBeforeReturningAndIdlePreservesDispatch) {
+  const auto id = Submit();
+  Send();
+  adapter.pending_event = Event(id, 1, OrderUpdateKind::kAccepted);
+  EXPECT_TRUE(trading.has_ready_event(clock.now));
+  trading::TradingDispatch dispatch;
+  bool event = false;
+  ASSERT_TRUE(trading.Poll(clock.now, dispatch, event).ok());
+  EXPECT_TRUE(event);
+  EXPECT_TRUE(dispatch.notify_order);
+  EXPECT_EQ(dispatch.update.order, Snapshot(id));
+  EXPECT_EQ(Snapshot(id).state, OrderState::kWorking);
+  const auto committed = dispatch.update.order;
+  ASSERT_TRUE(trading.Poll(clock.now, dispatch, event).ok());
+  EXPECT_FALSE(event);
+  EXPECT_EQ(dispatch.update.order, committed);
+  EXPECT_FALSE(trading.has_ready_event(clock.now));
+  EXPECT_FALSE(trading.next_deadline().has_value());
+}
+
+TEST_F(TradingTest, PollFailureRetainsReportIdentityReasonAndOutputs) {
+  const auto id = Submit();
+  Send();
+  const auto before = Snapshot(id);
+  adapter.pending_event = Event(id, 2, OrderUpdateKind::kAccepted);
+  trading::TradingDispatch dispatch;
+  dispatch.update.order.client_order_id = {99};
+  bool event = true;
+  EXPECT_EQ(trading.Poll(clock.now, dispatch, event).code, ErrorCode::kCorrupt);
+  EXPECT_STREQ(trading.error_stage(), "trading_event");
+  const std::string detail = trading.error_detail();
+  EXPECT_NE(detail.find("client_order_id=1"), std::string::npos);
+  EXPECT_NE(detail.find("sequence=2"), std::string::npos);
+  EXPECT_NE(detail.find("report sequence or broker identity mismatch"),
+            std::string::npos);
+  EXPECT_EQ(dispatch.update.order.client_order_id.value, 99U);
+  EXPECT_TRUE(event);
+  EXPECT_EQ(Snapshot(id), before);
+}
+
+TEST_F(TradingTest, StopRetainsAccountFactsAndResetRequiresNewInitialization) {
+  const auto id = Submit();
+  const auto cash = Cash();
+  const auto order = Snapshot(id);
+  ASSERT_TRUE(trading.Stop().ok());
+  trading.SetAcceptingRequests(true);
+  EXPECT_FALSE(trading.accepting_orders());
+  trading.SetAcceptingRequests(false);
+  EXPECT_EQ(trading.ProcessRequests(clock.now).code, ErrorCode::kInvalidState);
+  EXPECT_EQ(adapter.order_sends, 0U);
+  EXPECT_EQ(Cash(), cash);
+  EXPECT_EQ(Snapshot(id), order);
+  trading.Reset();
+  model::CashSnapshot out{7, 0, 7};
+  EXPECT_FALSE(trading.TryGetCash(out));
+  EXPECT_EQ(out.balance, 7);
+  Bootstrap(1000000000);
+  EXPECT_FALSE(trading.accepting_orders());
+  EXPECT_EQ(trading.order_count(), 0U);
+}
 
 TEST(TradingModelTest, OpaqueIdentityIsOwnedAndSupportsFullCapacity) {
   model::BrokerOrderId broker;
@@ -251,18 +358,18 @@ TEST_F(TradingTest,
   EXPECT_EQ(Snapshot(id), dispatch.update.order);
 }
 
-TEST_F(TradingTest, PhaseDisabledAndInvalidRequestsPreserveOutputs) {
+TEST_F(TradingTest,
+       RequestPermissionDisabledAndInvalidRequestsPreserveOutputs) {
   model::ClientOrderId output{99};
-  trading.BeginCallback(strategy::CallbackPhase::kStart);
+  trading.SetAcceptingRequests(false);
   EXPECT_FALSE(trading.accepting_orders());
   EXPECT_EQ(trading.SubmitOrder(Request(), output), ErrorCode::kInvalidState);
-  trading.EndCallback();
-  trading::TradingImpl disabled(clock, market_data);
-  disabled.SetRunning(true);
-  disabled.BeginCallback(strategy::CallbackPhase::kTick);
+  trading.SetAcceptingRequests(false);
+  trading::DisabledTradingRuntime disabled;
+  disabled.SetAcceptingRequests(true);
   EXPECT_EQ(disabled.SubmitOrder(Request(), output), ErrorCode::kUnsupported);
   EXPECT_EQ(output.value, 99U);
-  trading.BeginCallback(strategy::CallbackPhase::kFill);
+  trading.SetAcceptingRequests(true);
   EXPECT_TRUE(trading.accepting_orders());
   auto request = Request();
   request.quantity = 0;
@@ -275,7 +382,7 @@ TEST_F(TradingTest, PhaseDisabledAndInvalidRequestsPreserveOutputs) {
   EXPECT_EQ(trading.SubmitOrder(request, output), ErrorCode::kInvalidArgument);
   EXPECT_EQ(output.value, 99U);
   EXPECT_EQ(trading.order_count(), 0U);
-  trading.EndCallback();
+  trading.SetAcceptingRequests(false);
   auto unchanged = Snapshot(Submit());
   const auto saved = unchanged;
   EXPECT_FALSE(trading.TryGetOrder({999}, unchanged));
@@ -480,7 +587,7 @@ TEST_F(TradingTest, StopNeverSendsNewOrdersBeyondTheScanBudget) {
   std::size_t updates = 0;
   while (!trading.is_drained()) {
     ASSERT_TRUE(trading.ScheduleStopping(clock.now).ok());
-    ASSERT_TRUE(trading.ProcessRequests(adapter, clock.now).ok());
+    ASSERT_TRUE(trading.ProcessRequests(clock.now).ok());
     std::size_t batch = 0;
     while (trading.has_local_updates() && batch++ < 64) {
       ASSERT_EQ(trading.ApplyLocalUpdate(dispatch), ErrorCode::kOk);
@@ -499,14 +606,13 @@ TEST_F(TradingTest, StopNeverSendsNewOrdersBeyondTheScanBudget) {
 TEST_F(TradingTest, SendFailureIsNotAutomaticallyRetriedOrLocallyCanceled) {
   const auto id = Submit();
   adapter.fail_send = true;
-  EXPECT_EQ(trading.ProcessRequests(adapter, clock.now).code,
-            ErrorCode::kIoError);
+  EXPECT_EQ(trading.ProcessRequests(clock.now).code, ErrorCode::kIoError);
   EXPECT_EQ(adapter.order_sends, 1U);
-  EXPECT_TRUE(trading.ProcessRequests(adapter, clock.now).ok());
+  EXPECT_TRUE(trading.ProcessRequests(clock.now).ok());
   EXPECT_EQ(adapter.order_sends, 1U);
   trading.BeginStopping();
   EXPECT_TRUE(trading.ScheduleStopping(clock.now).ok());
-  EXPECT_TRUE(trading.ProcessRequests(adapter, clock.now).ok());
+  EXPECT_TRUE(trading.ProcessRequests(clock.now).ok());
   EXPECT_FALSE(trading.has_local_updates());
   EXPECT_EQ(Snapshot(id).state, OrderState::kPendingNew);
   EXPECT_FALSE(trading.is_drained());
@@ -515,7 +621,7 @@ TEST_F(TradingTest, SendFailureIsNotAutomaticallyRetriedOrLocallyCanceled) {
 TEST_F(TradingTest,
        FixedRequestAndOrderLimitsRejectWithoutPartialRegistration) {
   for (std::size_t i = 0; i < trading::kMaxTradingRequests; ++i) (void)Submit();
-  trading.BeginCallback(strategy::CallbackPhase::kTick);
+  trading.SetAcceptingRequests(true);
   model::ClientOrderId out{99999};
   const auto request_cash = Cash();
   const auto request_position = Position();
@@ -523,17 +629,16 @@ TEST_F(TradingTest,
   EXPECT_EQ(out.value, 99999U);
   EXPECT_EQ(Cash(), request_cash);
   EXPECT_EQ(Position(), request_position);
-  trading.EndCallback();
+  trading.SetAcceptingRequests(false);
   EXPECT_EQ(trading.order_count(), trading::kMaxTradingRequests);
   ASSERT_TRUE(
-      trading.ProcessRequests(adapter, clock.now, trading::kMaxTradingRequests)
-          .ok());
+      trading.ProcessRequests(clock.now, trading::kMaxTradingRequests).ok());
   for (std::size_t count = trading::kMaxTradingRequests;
        count < trading::kMaxTradingOrders; ++count) {
     (void)Submit();
     Send();
   }
-  trading.BeginCallback(strategy::CallbackPhase::kTick);
+  trading.SetAcceptingRequests(true);
   const auto order_cash = Cash();
   const auto order_position = Position();
   EXPECT_EQ(trading.SubmitOrder(Request(), out), ErrorCode::kResourceExhausted);
@@ -541,7 +646,7 @@ TEST_F(TradingTest,
   EXPECT_EQ(trading.order_count(), trading::kMaxTradingOrders);
   EXPECT_EQ(Cash(), order_cash);
   EXPECT_EQ(Position(), order_position);
-  trading.EndCallback();
+  trading.SetAcceptingRequests(false);
 }
 
 TEST_F(TradingTest, ExecutionCapacityFailurePreservesLastAcceptedFacts) {
@@ -571,7 +676,7 @@ TEST_F(TradingTest, ExecutionCapacityFailurePreservesLastAcceptedFacts) {
   EXPECT_EQ(Position(), before_position);
 }
 TEST_F(TradingTest, AccountQueriesPreserveOutputsForDisabledAndUnknownIds) {
-  trading::TradingImpl disabled(clock, market_data);
+  trading::DisabledTradingRuntime disabled;
   model::CashSnapshot cash{1, 2, 3};
   EXPECT_FALSE(disabled.TryGetCash(cash));
   EXPECT_EQ(cash, (model::CashSnapshot{1, 2, 3}));
@@ -623,18 +728,24 @@ TEST_F(TradingTest, InvalidBootstrapNeverPublishesAnAccount) {
         invalid.position_count = 2;
         break;
     }
-    trading::TradingImpl ledger(clock, market_data);
-    EXPECT_EQ(ledger.Configure(invalid).code, ErrorCode::kInvalidArgument);
+    RecordingTradingAdapter bootstrap_adapter;
+    trading::LocalTradingRuntime runtime(clock, market_data, bootstrap_adapter);
+    trading::TradingConfig config;
+    config.initial_account = invalid;
+    EXPECT_EQ(runtime.Init(config, market_config).code,
+              ErrorCode::kInvalidArgument);
     model::CashSnapshot out{7, 0, 7};
-    EXPECT_FALSE(ledger.TryGetCash(out));
+    EXPECT_FALSE(runtime.TryGetCash(out));
     EXPECT_EQ(out.balance, 7);
-    EXPECT_EQ(ledger.order_count(), 0U);
-    ASSERT_TRUE(ledger.Configure(good).ok());
-    EXPECT_TRUE(ledger.TryGetCash(out));
+    EXPECT_EQ(runtime.order_count(), 0U);
+    runtime.Reset();
+    config.initial_account = good;
+    ASSERT_TRUE(runtime.Init(config, market_config).ok());
+    EXPECT_TRUE(runtime.TryGetCash(out));
     EXPECT_EQ(out, (model::CashSnapshot{100, 0, 100}));
   }
   const auto before = Cash();
-  EXPECT_EQ(trading.Configure(good).code, ErrorCode::kInvalidState);
+  EXPECT_EQ(InitializeAccount(good).code, ErrorCode::kInvalidState);
   EXPECT_EQ(Cash(), before);
 }
 
@@ -650,10 +761,10 @@ TEST_F(TradingTest,
   const auto before = Cash();
   const auto position = Position();
   model::ClientOrderId out{77};
-  trading.BeginCallback(strategy::CallbackPhase::kTick);
+  trading.SetAcceptingRequests(true);
   EXPECT_EQ(trading.SubmitOrder(Request(1), out),
             ErrorCode::kResourceExhausted);
-  trading.EndCallback();
+  trading.SetAcceptingRequests(false);
   EXPECT_NE(std::string_view(trading.error_detail()).find("cash"),
             std::string_view::npos);
   EXPECT_EQ(out.value, 77U);
@@ -674,9 +785,9 @@ TEST_F(TradingTest, SharedSellReservationsExcludeUnavailableBootstrapShares) {
   EXPECT_EQ(before, (model::PositionSnapshot{instrument_id, 300, 0, 200}));
   request.quantity = 1;
   model::ClientOrderId out{88};
-  trading.BeginCallback(strategy::CallbackPhase::kTick);
+  trading.SetAcceptingRequests(true);
   EXPECT_EQ(trading.SubmitOrder(request, out), ErrorCode::kResourceExhausted);
-  trading.EndCallback();
+  trading.SetAcceptingRequests(false);
   EXPECT_EQ(out.value, 88U);
   EXPECT_EQ(Position(), before);
   EXPECT_EQ(Cash(), (model::CashSnapshot{0, 0, 0}));
@@ -700,11 +811,11 @@ TEST_F(TradingTest, TwoInstrumentsShareCashButKeepHoldingsIndependent) {
   request.instrument_id = other.instrument.id;
   const auto second = SubmitRequest(request);
   EXPECT_EQ(Cash(), (model::CashSnapshot{3 * kUnitCash, 3 * kUnitCash, 0}));
-  trading.BeginCallback(strategy::CallbackPhase::kTick);
+  trading.SetAcceptingRequests(true);
   model::ClientOrderId unchanged{99};
   EXPECT_EQ(trading.SubmitOrder(request, unchanged),
             ErrorCode::kResourceExhausted);
-  trading.EndCallback();
+  trading.SetAcceptingRequests(false);
   EXPECT_EQ(unchanged.value, 99U);
   Accept(second);
   auto fill = Execution(second, 2, "other-instrument", 1, 1);
@@ -749,10 +860,10 @@ TEST_F(TradingTest,
   auto sell = Request(1);
   sell.side = model::OrderSide::kSell;
   model::ClientOrderId unchanged{99};
-  trading.BeginCallback(strategy::CallbackPhase::kFill);
+  trading.SetAcceptingRequests(true);
   EXPECT_EQ(trading.SubmitOrder(sell, unchanged),
             ErrorCode::kResourceExhausted);
-  trading.EndCallback();
+  trading.SetAcceptingRequests(false);
   Cancel(id);
   EXPECT_EQ(Cash(), once_cash);
   Send();
@@ -825,7 +936,7 @@ TEST_F(TradingTest,
   (void)Submit(1);
   (void)SubmitRequest(sell_request);
   trading.BeginStopping();
-  ASSERT_TRUE(trading.ProcessRequests(adapter, clock.now).ok());
+  ASSERT_TRUE(trading.ProcessRequests(clock.now).ok());
   EXPECT_EQ(Cash().reserved, 10010000);
   EXPECT_EQ(Position().reserved_qty, 100);
   while (trading.has_local_updates()) {
@@ -838,23 +949,23 @@ TEST_F(TradingTest,
 TEST_F(TradingTest, ZeroAccountCannotBuyOrSellAndSendFailureKeepsReservations) {
   Bootstrap(0);
   model::ClientOrderId out{5};
-  trading.BeginCallback(strategy::CallbackPhase::kTick);
+  trading.SetAcceptingRequests(true);
   EXPECT_EQ(trading.SubmitOrder(Request(1), out),
             ErrorCode::kResourceExhausted);
   auto sell = Request(1);
   sell.side = model::OrderSide::kSell;
   EXPECT_EQ(trading.SubmitOrder(sell, out), ErrorCode::kResourceExhausted);
-  trading.EndCallback();
+  trading.SetAcceptingRequests(false);
   EXPECT_EQ(out.value, 5U);
   EXPECT_EQ(trading.order_count(), 0U);
   Bootstrap(100000000);
   const auto id = Submit(1);
   const auto before = Cash();
   adapter.fail_send = true;
-  EXPECT_FALSE(trading.ProcessRequests(adapter, clock.now).ok());
+  EXPECT_FALSE(trading.ProcessRequests(clock.now).ok());
   trading.BeginStopping();
   EXPECT_TRUE(trading.ScheduleStopping(clock.now).ok());
-  EXPECT_TRUE(trading.ProcessRequests(adapter, clock.now).ok());
+  EXPECT_TRUE(trading.ProcessRequests(clock.now).ok());
   EXPECT_EQ(Cash(), before);
   EXPECT_EQ(Snapshot(id).state, OrderState::kPendingNew);
 }
@@ -888,9 +999,9 @@ TEST_F(TradingTest, SubmitNotionalOverflowPreservesEveryOutput) {
     request.limit_price = std::numeric_limits<std::int64_t>::max();
     const auto before = Cash();
     model::ClientOrderId out{8};
-    trading.BeginCallback(strategy::CallbackPhase::kTick);
+    trading.SetAcceptingRequests(true);
     EXPECT_EQ(trading.SubmitOrder(request, out), ErrorCode::kInvalidArgument);
-    trading.EndCallback();
+    trading.SetAcceptingRequests(false);
     EXPECT_EQ(out.value, 8U);
     EXPECT_EQ(trading.order_count(), 0U);
     EXPECT_EQ(Cash(), before);

@@ -2,23 +2,25 @@
 #include <cstring>
 #include <string_view>
 
-#include "strategyd/strategy_runner.h"
+#include "strategyd/strategy_assembly.h"
 #include "yquant/base/status.h"
 #include "yquant/base/termination_signals.h"
+#include "yquant/trading/mock_trading_adapter.h"
 
 namespace {
 
 using yquant::base::ErrorCode;
 using yquant::base::Status;
 using yquant::base::TerminationSignals;
-using yquant::strategyd::LoadAndStart;
 using yquant::strategyd::RunnerState;
+using yquant::strategyd::StrategyAssembly;
+using yquant::strategyd::StrategyOptions;
 using yquant::strategyd::StrategyRunner;
 
 void PrintUsage(FILE* output) noexcept {
   std::fputs(
       "Usage: yquant-strategyd --strategy LIBRARY --config JSON\n"
-      "                       [--market-data-config JSON]\n"
+      "                       --market-data-config JSON\n"
       "                       [--trading-config JSON]\n"
       "       yquant-strategyd --help\n",
       output);
@@ -76,7 +78,7 @@ int main(int argc, char* argv[]) {
   const char* config_path = nullptr;
   const char* market_data_path = nullptr;
   const char* trading_path = nullptr;
-  bool valid = argc == 5 || argc == 7 || argc == 9;
+  bool valid = argc == 7 || argc == 9;
   for (int index = 1; valid && index < argc; index += 2) {
     const char* value = argv[index + 1];
     if (value[0] == '\0' || value[0] == '-') {
@@ -98,7 +100,7 @@ int main(int argc, char* argv[]) {
     }
   }
   if (!valid || library_path == nullptr || config_path == nullptr ||
-      (trading_path != nullptr && market_data_path == nullptr)) {
+      market_data_path == nullptr) {
     PrintUsage(stderr);
     return 2;
   }
@@ -111,9 +113,23 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  StrategyRunner runner(nullptr, nullptr, &termination_signals);
-  const Status start_status = runner.Handle(
-      LoadAndStart{library_path, config_path, market_data_path, trading_path});
+  yquant::base::SteadyMonotonicClock clock;
+  yquant::trading::MockTradingAdapter local_adapter;
+  StrategyAssembly assembly(clock, local_adapter);
+  const auto loaded =
+      assembly.Load(StrategyOptions{library_path, config_path, market_data_path,
+                                    trading_path},
+                    termination_signals);
+  if (!loaded.ok()) {
+    PrintFailure(assembly.error_stage(), loaded.code, assembly.error_detail(),
+                 loaded.system_error.value(), library_path, config_path,
+                 assembly.strategy_id(), market_data_path, trading_path);
+    return 1;
+  }
+  if (assembly.cancelled()) return 0;
+  StrategyRunner runner(clock, termination_signals, assembly.source(),
+                        assembly.trading());
+  const Status start_status = runner.Handle(assembly.start_command());
   if (!start_status.ok()) {
     PrintRunnerFailure(runner, start_status, library_path, config_path,
                        market_data_path, trading_path);
@@ -129,7 +145,7 @@ int main(int argc, char* argv[]) {
       library_path, static_cast<int>(strategy_id.size()), strategy_id.data());
   std::fflush(stdout);
 
-  const Status run_status = runner.Run(termination_signals);
+  const Status run_status = runner.Run();
   if (runner.ignored_quote_count() != 0) {
     std::fprintf(stdout, "yquant-strategyd: ignored_quotes=%llu\n",
                  static_cast<unsigned long long>(runner.ignored_quote_count()));

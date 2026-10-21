@@ -10,8 +10,8 @@
 #include <string>
 
 #include "gtest/gtest.h"
+#include "runner_test_harness.h"
 #include "strategyd/market_data_source.h"
-#include "strategyd/strategy_runner.h"
 #include "test_config_file.h"
 #include "yquant/base/event_loop_environment.h"
 #include "yquant/trading/mock_trading_adapter.h"
@@ -176,6 +176,8 @@ class TradingQuoteSource final : public MarketDataSource {
 // fill rules. Faults alter only normalized input or a send result.
 class ObservedTradingAdapter final : public trading::TradingAdapter {
  public:
+  bool fail_prepare = false;
+  bool fail_start = false;
   bool duplicate_first = false;
   bool sequence_gap = false;
   bool fail_send = false;
@@ -195,10 +197,12 @@ class ObservedTradingAdapter final : public trading::TradingAdapter {
   std::array<int, 16> source_polls_at_reports = {};
 
   base::Status Prepare(const trading::TradingConfig& config) noexcept override {
+    if (fail_prepare) return {ErrorCode::kIoError, {}};
     initial_account_ = config.initial_account;
     return mock_.Prepare(config);
   }
   base::Status Start(std::uint64_t now) noexcept override {
+    if (fail_start) return {ErrorCode::kIoError, {}};
     return mock_.Start(now);
   }
   base::Status ReadAccountSnapshot(
@@ -340,6 +344,33 @@ std::string TradingConfigJson(std::string_view mode,
          std::to_string(available_qty) + "}]}";
 }
 
+TEST(TradingRunnerTest, CleansUpPartialRuntimeInitializationBeforePluginLoad) {
+  TradingEventPipe events;
+  ASSERT_TRUE(events.valid());
+  for (const bool fail_prepare : {true, false}) {
+    TradingClock clock;
+    TradingQuoteSource source;
+    ObservedTradingAdapter adapter;
+    adapter.fail_prepare = fail_prepare;
+    adapter.fail_start = !fail_prepare;
+    TradingLoopEnvironment environment(clock);
+    RunnerTestHarness runner(clock, environment, source, adapter);
+    EXPECT_EQ(runner
+                  .Handle({YQUANT_TEST_TRADING_NORMAL_PATH,
+                           YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
+                           YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                           YQUANT_TEST_TRADING_CONFIG_PATH})
+                  .code,
+              ErrorCode::kIoError);
+    EXPECT_STREQ(runner.error_stage(),
+                 fail_prepare ? "trading_prepare" : "trading_start");
+    EXPECT_EQ(adapter.account_reads, 0);
+    EXPECT_EQ(adapter.stop_calls, 1);
+    EXPECT_EQ(source.stop_calls, 1);
+    EXPECT_TRUE(events.Read().empty());
+  }
+}
+
 TEST(TradingRunnerTest,
      Fills200AsTwo100ShareExecutionsAndQueriesBeforeCallbacks) {
   TradingEventPipe events;
@@ -350,15 +381,16 @@ TEST(TradingRunnerTest,
   TradingLoopEnvironment loop(clock);
   loop.source = &source;
   loop.adapter = &adapter;
-  StrategyRunner runner(&clock, &source, nullptr, &adapter);
-  ASSERT_TRUE(runner
-                  .Handle(LoadAndStart{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                       YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                       YQUANT_TEST_TRADING_CONFIG_PATH})
-                  .ok())
+  RunnerTestHarness runner(clock, loop, source, adapter);
+  ASSERT_TRUE(
+      runner
+          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
+                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
+                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                                  YQUANT_TEST_TRADING_CONFIG_PATH})
+          .ok())
       << runner.error_detail();
-  ASSERT_TRUE(runner.Run(loop).ok()) << runner.error_detail();
+  ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   EXPECT_EQ(adapter.account_reads, 1);
   EXPECT_EQ(events.Read(), "CPSQNAVFHVFHfTD");
   EXPECT_EQ(adapter.send_orders, 1);
@@ -385,15 +417,15 @@ TEST(TradingRunnerTest, QuantityOneHasOneNonzeroFill) {
   ObservedTradingAdapter adapter;
   TradingLoopEnvironment loop(clock);
   loop.adapter = &adapter;
-  StrategyRunner runner(&clock, &source, nullptr, &adapter);
-  ASSERT_TRUE(
-      runner
-          .Handle(LoadAndStart{YQUANT_TEST_TRADING_NORMAL_PATH, config.path(),
-                               YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                               YQUANT_TEST_TRADING_CONFIG_PATH})
-          .ok())
+  RunnerTestHarness runner(clock, loop, source, adapter);
+  ASSERT_TRUE(runner
+                  .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
+                                          config.path(),
+                                          YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                                          YQUANT_TEST_TRADING_CONFIG_PATH})
+                  .ok())
       << runner.error_detail();
-  ASSERT_TRUE(runner.Run(loop).ok()) << runner.error_detail();
+  ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   EXPECT_EQ(events.Read(), "CPSQNAVFIfTD");
   EXPECT_EQ(adapter.total_filled, 1);
   EXPECT_EQ(adapter.published, 2);
@@ -418,15 +450,15 @@ TEST_P(TradingModeTest, HandlesBusinessOutcomesAndDrainsBeforeStop) {
   TradingLoopEnvironment loop(clock);
   loop.adapter = &adapter;
   loop.stop_after_accepted = GetParam().stop_after_accepted;
-  StrategyRunner runner(&clock, &source, nullptr, &adapter);
-  ASSERT_TRUE(runner
-                  .Handle(LoadAndStart{GetParam().plugin,
-                                       YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                       config.path()})
-                  .ok())
+  RunnerTestHarness runner(clock, loop, source, adapter);
+  ASSERT_TRUE(
+      runner
+          .Handle(StrategyOptions{
+              GetParam().plugin, YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
+              YQUANT_TEST_MARKET_DATA_CONFIG_PATH, config.path()})
+          .ok())
       << runner.error_detail();
-  ASSERT_TRUE(runner.Run(loop).ok()) << runner.error_detail();
+  ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   EXPECT_EQ(events.Read(), GetParam().trace);
 }
 INSTANTIATE_TEST_SUITE_P(
@@ -458,15 +490,16 @@ TEST(TradingRunnerTest, StopCancelsAll200UnsentOrdersWithoutSendingAny) {
   loop.source = &source;
   loop.adapter = &adapter;
   loop.stop_after_quote = true;
-  StrategyRunner runner(&clock, &source, nullptr, &adapter);
-  ASSERT_TRUE(runner
-                  .Handle(LoadAndStart{YQUANT_TEST_TRADING_BULK_PATH,
-                                       YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                       YQUANT_TEST_TRADING_CONFIG_PATH})
-                  .ok())
+  RunnerTestHarness runner(clock, loop, source, adapter);
+  ASSERT_TRUE(
+      runner
+          .Handle(StrategyOptions{YQUANT_TEST_TRADING_BULK_PATH,
+                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
+                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                                  YQUANT_TEST_TRADING_CONFIG_PATH})
+          .ok())
       << runner.error_detail();
-  ASSERT_TRUE(runner.Run(loop).ok()) << runner.error_detail();
+  ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   EXPECT_EQ(adapter.send_orders, 0);
   const auto trace = events.Read();
   EXPECT_EQ(trace, "CPSQ" + std::string(200, 'N') + std::string(200, 'B') +
@@ -489,15 +522,16 @@ TEST_P(TradingCallbackFailureTest, SuppressesCallbacksButCompletesHostDrain) {
   ObservedTradingAdapter adapter;
   TradingLoopEnvironment loop(clock);
   loop.adapter = &adapter;
-  StrategyRunner runner(&clock, &source, nullptr, &adapter);
-  ASSERT_TRUE(runner
-                  .Handle(LoadAndStart{GetParam().plugin,
-                                       YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                       YQUANT_TEST_TRADING_CONFIG_PATH})
-                  .ok())
+  RunnerTestHarness runner(clock, loop, source, adapter);
+  ASSERT_TRUE(
+      runner
+          .Handle(StrategyOptions{GetParam().plugin,
+                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
+                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                                  YQUANT_TEST_TRADING_CONFIG_PATH})
+          .ok())
       << runner.error_detail();
-  EXPECT_EQ(runner.Run(loop).code, ErrorCode::kInvalidArgument);
+  EXPECT_EQ(runner.Run().code, ErrorCode::kInvalidArgument);
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   EXPECT_STREQ(runner.error_stage(), GetParam().stage);
   const auto trace = events.Read();
@@ -531,15 +565,16 @@ TEST(TradingRunnerTest, DuplicateReportDoesNotRepeatBusinessCallbacks) {
   adapter.duplicate_first = true;
   TradingLoopEnvironment loop(clock);
   loop.adapter = &adapter;
-  StrategyRunner runner(&clock, &source, nullptr, &adapter);
-  ASSERT_TRUE(runner
-                  .Handle(LoadAndStart{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                       YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                       YQUANT_TEST_TRADING_CONFIG_PATH})
-                  .ok())
+  RunnerTestHarness runner(clock, loop, source, adapter);
+  ASSERT_TRUE(
+      runner
+          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
+                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
+                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                                  YQUANT_TEST_TRADING_CONFIG_PATH})
+          .ok())
       << runner.error_detail();
-  ASSERT_TRUE(runner.Run(loop).ok()) << runner.error_detail();
+  ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   EXPECT_EQ(adapter.published, 4);
   EXPECT_EQ(events.Read(), "CPSQNAVFHVFHfTD");
 }
@@ -553,15 +588,16 @@ TEST(TradingRunnerTest, SequenceGapStopsWithoutApplyingTheInvalidReport) {
   adapter.sequence_gap = true;
   TradingLoopEnvironment loop(clock);
   loop.adapter = &adapter;
-  StrategyRunner runner(&clock, &source, nullptr, &adapter);
-  ASSERT_TRUE(runner
-                  .Handle(LoadAndStart{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                       YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                       YQUANT_TEST_TRADING_CONFIG_PATH})
-                  .ok())
+  RunnerTestHarness runner(clock, loop, source, adapter);
+  ASSERT_TRUE(
+      runner
+          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
+                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
+                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                                  YQUANT_TEST_TRADING_CONFIG_PATH})
+          .ok())
       << runner.error_detail();
-  EXPECT_FALSE(runner.Run(loop).ok());
+  EXPECT_FALSE(runner.Run().ok());
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   EXPECT_STREQ(runner.error_stage(), "trading_event");
   EXPECT_EQ(events.Read(), "CPSQNpTD");
@@ -580,15 +616,16 @@ TEST(TradingRunnerTest, UncertainSendIsNotRetriedOrLocallyCanceled) {
   adapter.fail_send = true;
   TradingLoopEnvironment loop(clock);
   loop.adapter = &adapter;
-  StrategyRunner runner(&clock, &source, nullptr, &adapter);
-  ASSERT_TRUE(runner
-                  .Handle(LoadAndStart{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                       YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                       YQUANT_TEST_TRADING_CONFIG_PATH})
-                  .ok())
+  RunnerTestHarness runner(clock, loop, source, adapter);
+  ASSERT_TRUE(
+      runner
+          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
+                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
+                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                                  YQUANT_TEST_TRADING_CONFIG_PATH})
+          .ok())
       << runner.error_detail();
-  EXPECT_EQ(runner.Run(loop).code, ErrorCode::kIoError);
+  EXPECT_EQ(runner.Run().code, ErrorCode::kIoError);
   EXPECT_STREQ(runner.error_stage(), "trading_send");
   EXPECT_EQ(adapter.send_orders, 1);
   EXPECT_EQ(events.Read(), "CPSQNpTD");
@@ -604,15 +641,16 @@ TEST(TradingRunnerTest, PendingAcceptanceTimesOutAtTheOriginalDrainDeadline) {
   TradingLoopEnvironment loop(clock);
   loop.adapter = &adapter;
   loop.stop_after_send = true;
-  StrategyRunner runner(&clock, &source, nullptr, &adapter);
-  ASSERT_TRUE(runner
-                  .Handle(LoadAndStart{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                       YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                       YQUANT_TEST_TRADING_CONFIG_PATH})
-                  .ok())
+  RunnerTestHarness runner(clock, loop, source, adapter);
+  ASSERT_TRUE(
+      runner
+          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
+                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
+                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                                  YQUANT_TEST_TRADING_CONFIG_PATH})
+          .ok())
       << runner.error_detail();
-  EXPECT_FALSE(runner.Run(loop).ok());
+  EXPECT_FALSE(runner.Run().ok());
   EXPECT_STREQ(runner.error_stage(), "trading_drain_timeout");
   EXPECT_EQ(clock.now, 100000000U);
   EXPECT_EQ(adapter.send_orders, 1);
@@ -633,15 +671,16 @@ TEST(TradingRunnerTest, ReadyQuotesDoNotStarveTradingAndShareTheBatchBudget) {
   TradingLoopEnvironment loop(clock);
   loop.adapter = &adapter;
   loop.check_advance_ns = 1000000;
-  StrategyRunner runner(&clock, &source, nullptr, &adapter);
-  ASSERT_TRUE(runner
-                  .Handle(LoadAndStart{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                       YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                       YQUANT_TEST_TRADING_CONFIG_PATH})
-                  .ok())
+  RunnerTestHarness runner(clock, loop, source, adapter);
+  ASSERT_TRUE(
+      runner
+          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
+                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
+                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                                  YQUANT_TEST_TRADING_CONFIG_PATH})
+          .ok())
       << runner.error_detail();
-  ASSERT_TRUE(runner.Run(loop).ok()) << runner.error_detail();
+  ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   ASSERT_EQ(adapter.published, 3);
   for (std::size_t index = 1; index < 3; ++index) {
     EXPECT_LE(adapter.source_polls_at_reports[index] -
@@ -670,15 +709,16 @@ TEST_P(MarketIdleDeadlineTest, ValidatesIdleAgainstTheTimePassedToPoll) {
   ObservedTradingAdapter adapter;
   TradingLoopEnvironment loop(clock);
   loop.adapter = &adapter;
-  StrategyRunner runner(&clock, &source, nullptr, &adapter);
-  ASSERT_TRUE(runner
-                  .Handle(LoadAndStart{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                       YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                       YQUANT_TEST_TRADING_CONFIG_PATH})
-                  .ok())
+  RunnerTestHarness runner(clock, loop, source, adapter);
+  ASSERT_TRUE(
+      runner
+          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
+                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
+                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                                  YQUANT_TEST_TRADING_CONFIG_PATH})
+          .ok())
       << runner.error_detail();
-  const auto result = runner.Run(loop);
+  const auto result = runner.Run();
   EXPECT_EQ(source.idle.idle_returns, 1);
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   if (GetParam()) {
@@ -714,15 +754,16 @@ TEST_P(TradingIdleDeadlineTest, ValidatesIdleAgainstTheTimePassedToPoll) {
   adapter.idle.retain_due_deadline = GetParam();
   TradingLoopEnvironment loop(clock);
   loop.adapter = &adapter;
-  StrategyRunner runner(&clock, &source, nullptr, &adapter);
-  ASSERT_TRUE(runner
-                  .Handle(LoadAndStart{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                       YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                       YQUANT_TEST_TRADING_CONFIG_PATH})
-                  .ok())
+  RunnerTestHarness runner(clock, loop, source, adapter);
+  ASSERT_TRUE(
+      runner
+          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
+                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
+                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                                  YQUANT_TEST_TRADING_CONFIG_PATH})
+          .ok())
       << runner.error_detail();
-  const auto result = runner.Run(loop);
+  const auto result = runner.Run();
   EXPECT_EQ(adapter.idle.idle_returns, 1);
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   if (GetParam()) {
@@ -766,15 +807,15 @@ TEST_P(SellAccountTest, UpdatesCashAndSellReservationsBeforeCallbacks) {
   ObservedTradingAdapter adapter;
   TradingLoopEnvironment loop(clock);
   loop.adapter = &adapter;
-  StrategyRunner runner(&clock, &source, nullptr, &adapter);
+  RunnerTestHarness runner(clock, loop, source, adapter);
   ASSERT_TRUE(
       runner
-          .Handle(LoadAndStart{GetParam().plugin, strategy_config.path(),
-                               YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                               trading_config.path()})
+          .Handle(StrategyOptions{GetParam().plugin, strategy_config.path(),
+                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                                  trading_config.path()})
           .ok())
       << runner.error_detail();
-  ASSERT_TRUE(runner.Run(loop).ok()) << runner.error_detail();
+  ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   EXPECT_EQ(events.Read(), GetParam().trace);
   EXPECT_EQ(adapter.send_orders, 1);
 }
@@ -804,15 +845,15 @@ TEST(TradingRunnerTest, ImprovedExecutionPriceReleasesUnusedBuyReservation) {
   adapter.price_improvement = 1;
   TradingLoopEnvironment loop(clock);
   loop.adapter = &adapter;
-  StrategyRunner runner(&clock, &source, nullptr, &adapter);
+  RunnerTestHarness runner(clock, loop, source, adapter);
   ASSERT_TRUE(runner
-                  .Handle(LoadAndStart{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                       strategy_config.path(),
-                                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                       YQUANT_TEST_TRADING_CONFIG_PATH})
+                  .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
+                                          strategy_config.path(),
+                                          YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                                          YQUANT_TEST_TRADING_CONFIG_PATH})
                   .ok())
       << runner.error_detail();
-  ASSERT_TRUE(runner.Run(loop).ok()) << runner.error_detail();
+  ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   EXPECT_EQ(events.Read(), "CPSQNAVFHVFHfTD");
 }
 
@@ -837,15 +878,15 @@ TEST_P(InsufficientAccountTest,
   loop.adapter = &adapter;
   loop.source = &source;
   loop.stop_after_quote = true;
-  StrategyRunner runner(&clock, &source, nullptr, &adapter);
+  RunnerTestHarness runner(clock, loop, source, adapter);
   ASSERT_TRUE(runner
-                  .Handle(LoadAndStart{YQUANT_TEST_TRADING_INSUFFICIENT_PATH,
-                                       strategy_config.path(),
-                                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                       trading_config.path()})
+                  .Handle(StrategyOptions{YQUANT_TEST_TRADING_INSUFFICIENT_PATH,
+                                          strategy_config.path(),
+                                          YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                                          trading_config.path()})
                   .ok())
       << runner.error_detail();
-  ASSERT_TRUE(runner.Run(loop).ok()) << runner.error_detail();
+  ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   EXPECT_EQ(events.Read(), "CPSQLTD");
   EXPECT_EQ(adapter.send_orders, 0);
   EXPECT_EQ(adapter.send_cancels, 0);
@@ -868,13 +909,14 @@ TEST_P(AccountBootstrapFailureTest, RejectsBeforeFactoryAndOnStart) {
   ObservedTradingAdapter adapter;
   adapter.fail_account_read = GetParam();
   adapter.invalid_account = !GetParam();
-  StrategyRunner runner(&clock, &source, nullptr, &adapter);
+  TradingLoopEnvironment loop(clock);
+  RunnerTestHarness runner(clock, loop, source, adapter);
   EXPECT_FALSE(
       runner
-          .Handle(LoadAndStart{YQUANT_TEST_TRADING_NORMAL_PATH,
-                               YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                               YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                               YQUANT_TEST_TRADING_CONFIG_PATH})
+          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
+                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
+                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                                  YQUANT_TEST_TRADING_CONFIG_PATH})
           .ok());
   EXPECT_STREQ(runner.error_stage(), "trading_account");
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
@@ -902,15 +944,16 @@ TEST(TradingRunnerTest, PollDrivenEmptyReadsDoNotStarveReportsOrStopping) {
   TradingLoopEnvironment loop(clock);
   loop.adapter = &adapter;
   loop.check_advance_ns = 1000000;
-  StrategyRunner runner(&clock, &source, nullptr, &adapter);
-  ASSERT_TRUE(runner
-                  .Handle(LoadAndStart{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                       YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                       YQUANT_TEST_TRADING_CONFIG_PATH})
-                  .ok())
+  RunnerTestHarness runner(clock, loop, source, adapter);
+  ASSERT_TRUE(
+      runner
+          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
+                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
+                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                                  YQUANT_TEST_TRADING_CONFIG_PATH})
+          .ok())
       << runner.error_detail();
-  ASSERT_TRUE(runner.Run(loop).ok()) << runner.error_detail();
+  ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   EXPECT_EQ(source.poll_calls, 1);
   EXPECT_GT(source.idle_polls, 0);
@@ -931,15 +974,16 @@ TEST(TradingRunnerTest, ColdServiceDeadlinePrecedesTheNextTradingReport) {
   ObservedTradingAdapter adapter;
   TradingLoopEnvironment loop(clock);
   loop.adapter = &adapter;
-  StrategyRunner runner(&clock, &source, nullptr, &adapter);
-  ASSERT_TRUE(runner
-                  .Handle(LoadAndStart{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                       YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                       YQUANT_TEST_TRADING_CONFIG_PATH})
-                  .ok())
+  RunnerTestHarness runner(clock, loop, source, adapter);
+  ASSERT_TRUE(
+      runner
+          .Handle(StrategyOptions{YQUANT_TEST_TRADING_NORMAL_PATH,
+                                  YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
+                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                                  YQUANT_TEST_TRADING_CONFIG_PATH})
+          .ok())
       << runner.error_detail();
-  ASSERT_TRUE(runner.Run(loop).ok()) << runner.error_detail();
+  ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   ASSERT_GE(loop.wait_calls, 2);
   EXPECT_EQ(loop.waits[0], 500000U);
   EXPECT_EQ(loop.waits[1], 500000U);
@@ -961,15 +1005,15 @@ TEST(TradingRunnerTest, MarketServiceErrorStillDrainsTheWorkingOrder) {
   ObservedTradingAdapter adapter;
   TradingLoopEnvironment loop(clock);
   loop.adapter = &adapter;
-  StrategyRunner runner(&clock, &source, nullptr, &adapter);
+  RunnerTestHarness runner(clock, loop, source, adapter);
   ASSERT_TRUE(runner
-                  .Handle(LoadAndStart{YQUANT_TEST_TRADING_NORMAL_PATH,
-                                       YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
-                                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
-                                       config.path()})
+                  .Handle(StrategyOptions{
+                      YQUANT_TEST_TRADING_NORMAL_PATH,
+                      YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH,
+                      YQUANT_TEST_MARKET_DATA_CONFIG_PATH, config.path()})
                   .ok())
       << runner.error_detail();
-  EXPECT_EQ(runner.Run(loop).code, ErrorCode::kIoError);
+  EXPECT_EQ(runner.Run().code, ErrorCode::kIoError);
   EXPECT_STREQ(runner.error_stage(), "market_data_service");
   EXPECT_NE(std::string(runner.error_detail())
                 .find("injected market maintenance failure"),

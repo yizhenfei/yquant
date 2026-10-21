@@ -19,16 +19,16 @@ flowchart LR
 
 | 组件 | 职责 |
 | --- | --- |
-| `tradingd::Server` | 网关程序专用的身份握手、请求归属、共享账户受理、柜台驱动、回报路由、断线撤单与排空 |
+| `tradingd::Server` | 网关程序专用的身份握手、请求归属、回报路由、客户端断线撤单与排空 |
 | `md::InstrumentScope` | 网关持有的运行标的范围，供握手校验及交易账本查询 |
-| `trading::TradingImpl` | 网关唯一可写的委托、成交、资金和持仓账本，复用公共整数计算与事件校验 |
+| `trading::LocalTradingRuntime` | 网关唯一的本地交易会话，维护共享账本与预占，初始化柜台、发送请求并提交规范化回报 |
 | `trading::Connection` | 两端共用的有界非阻塞 TCP 收发、帧完整性、逐方向连续序号及背压 |
-| `trading::TradingRuntime` | 本机账本与策略侧远端服务共用的生命周期边界 |
+| `trading::TradingService` | 本地会话与策略侧远端服务共用的抽象服务接口 |
 | `strategyd::RemoteTrading` | 策略程序专用的交易服务，维护本策略委托缓存和共享账户只读快照 |
 
 各进程内部串行驱动交易，不在策略回调栈内处理远端回报。策略通过 `context.trading()` 访问公共 [Trading 接口](../../include/yquant/strategy/trading.h)，进程内与共享模式复用该接口。本机模拟模式保留原行为。
 
-网关与策略客户端通过公共 `yquant::trading` 库复用账本、配置、模拟柜台、协议和连接。网关自行持有 `md::InstrumentScope` 并提供给账本，客户端借用策略宿主的标的范围；公共交易代码不依赖 `strategyd::MarketDataImpl`。协议定义与编解码位于 `include/yquant/trading/protocol.h`、`src/trading/protocol.cc`，连接位于 `include/yquant/trading/connection.h`、`src/trading/connection.cc`。`src/tradingd/` 仅保留网关配置、服务器及入口，`RemoteTrading` 保留在 `src/strategyd/`；构建归属见[目录与模块](engineering.md#目录与模块)。
+网关与策略进程通过公共 `yquant::trading` 库复用本地交易运行时、配置、模拟柜台、协议和连接。网关自行持有 `md::InstrumentScope`、时钟和适配器，初始化由 `LocalTradingRuntime::Init()` 完成；请求发送使用 `ProcessRequests()`，回报读取和落账使用统一的 `Poll()`。客户端权限与订单归属由 `Server` 校验，按客户端的停止撤单由网关安排；交易运行时不依赖策略回调阶段。公共交易代码不依赖 `strategyd::MarketDataImpl`。协议定义与编解码位于 `include/yquant/trading/protocol.h`、`src/trading/protocol.cc`，连接位于 `include/yquant/trading/connection.h`、`src/trading/connection.cc`。`src/tradingd/` 仅保留网关配置、服务器及入口，`RemoteTrading` 保留在 `src/strategyd/`；构建归属见[目录与模块](engineering.md#目录与模块)。
 
 ## 账户与事件一致性
 

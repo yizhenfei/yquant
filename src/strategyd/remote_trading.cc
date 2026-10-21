@@ -121,7 +121,8 @@ base::Status RemoteTrading::FailSession(base::Status status,
 base::Status RemoteTrading::Init(
     const trading::TradingConfig& config,
     const md::MarketDataConfig& dictionary) noexcept {
-  if (storage_ != nullptr || phase_ != strategy::CallbackPhase::kNone)
+  error_stage_ = "trading_connect";
+  if (storage_ != nullptr || accept_requests_)
     return {
         Fail(ErrorCode::kInvalidState, "remote trading already initialized"),
         {}};
@@ -228,30 +229,26 @@ base::Status RemoteTrading::Init(
 void RemoteTrading::Reset() noexcept {
   connection_.Close();
   storage_.reset();
-  running_ = false;
+  prefer_local_ = true;
+  accept_requests_ = false;
   stopping_ = false;
-  phase_ = strategy::CallbackPhase::kNone;
   error_detail_[0] = '\0';
 }
 
 void RemoteTrading::BeginStopping() noexcept {
-  running_ = false;
+  accept_requests_ = false;
   stopping_ = true;
 }
 
 bool RemoteTrading::accepting_orders() const noexcept {
-  const bool business = phase_ == strategy::CallbackPhase::kTick ||
-                        phase_ == strategy::CallbackPhase::kOrderUpdate ||
-                        phase_ == strategy::CallbackPhase::kFill;
-  return storage_ != nullptr && !storage_->failed && running_ && !stopping_ &&
-         business;
+  return storage_ != nullptr && !storage_->failed && accept_requests_ &&
+         !stopping_;
 }
 
 ErrorCode RemoteTrading::SubmitOrder(const model::OrderRequest& request,
                                      model::ClientOrderId& out) noexcept {
   if (!accepting_orders())
-    return Fail(ErrorCode::kInvalidState,
-                "orders require a running business callback");
+    return Fail(ErrorCode::kInvalidState, "trading requests are not enabled");
   model::InstrumentDefinition definition;
   if (!instruments_.TryGetInstrument(request.instrument_id, definition) ||
       (request.side != model::OrderSide::kBuy &&
@@ -338,11 +335,12 @@ bool RemoteTrading::TryGetPosition(
   return true;
 }
 
-base::Status RemoteTrading::ProcessRequests(trading::TradingAdapter&,
-                                            std::uint64_t now,
+base::Status RemoteTrading::ProcessRequests(std::uint64_t now,
                                             std::size_t limit) noexcept {
-  if (phase_ != strategy::CallbackPhase::kNone)
-    return {Fail(ErrorCode::kInvalidState, "cannot send inside a callback"),
+  error_stage_ = "trading_send";
+  if (accept_requests_)
+    return {Fail(ErrorCode::kInvalidState,
+                 "close request acceptance before sending"),
             {}};
   if (storage_ == nullptr) return {};
   auto& s = *storage_;
@@ -429,6 +427,11 @@ bool RemoteTrading::has_local_updates() const noexcept {
   return storage_ != nullptr && storage_->local_count != 0;
 }
 
+bool RemoteTrading::has_ready_event(std::uint64_t now) const noexcept {
+  return has_local_updates() ||
+         (storage_ != nullptr && storage_->next_poll_ns <= now);
+}
+
 bool RemoteTrading::is_drained() const noexcept {
   if (storage_ == nullptr) return true;
   const auto& s = *storage_;
@@ -445,12 +448,6 @@ bool RemoteTrading::is_drained() const noexcept {
 
 std::size_t RemoteTrading::order_count() const noexcept {
   return storage_ == nullptr ? 0 : storage_->order_count;
-}
-
-ErrorCode RemoteTrading::ApplyEvent(const trading::TradingEvent&,
-                                    trading::TradingDispatch&) noexcept {
-  return Fail(ErrorCode::kInvalidState,
-              "remote runtime does not accept local adapter events");
 }
 
 ErrorCode RemoteTrading::ApplyLocalUpdate(
@@ -672,6 +669,12 @@ ErrorCode RemoteTrading::ApplyUpdate(const trading::Message& message,
 base::Status RemoteTrading::Poll(std::uint64_t now,
                                  trading::TradingDispatch& out,
                                  bool& event) noexcept {
+  error_stage_ = "trading_poll";
+  if (accept_requests_)
+    return {Fail(ErrorCode::kInvalidState,
+                 "close request acceptance before polling"),
+            {}};
+
   if (storage_ == nullptr)
     return {Fail(ErrorCode::kInvalidState, "remote trading is disabled"), {}};
   auto& s = *storage_;
@@ -681,6 +684,15 @@ base::Status RemoteTrading::Poll(std::uint64_t now,
   if (now < s.last_received_ns)
     return FailSession({ErrorCode::kCorrupt, {}},
                        "remote polling clock regressed");
+  if (has_local_updates() && (prefer_local_ || now < s.next_poll_ns)) {
+    error_stage_ = "trading_local_update";
+    const auto applied = ApplyLocalUpdate(out);
+    if (applied != ErrorCode::kOk) return {applied, {}};
+    prefer_local_ = false;
+    event = true;
+    return {};
+  }
+  prefer_local_ = true;
   trading::Message message;
   const auto received = connection_.Poll(message);
   if (received.state == trading::ReceiveState::kIdle) {

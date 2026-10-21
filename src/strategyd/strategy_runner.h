@@ -7,15 +7,14 @@
 #include <string_view>
 
 #include "strategyd/market_data.h"
-#include "strategyd/remote_trading.h"
-#include "strategyd/shm_market_data_source.h"
+#include "strategyd/market_data_source.h"
+#include "strategyd/strategy_config_loader.h"
 #include "strategyd/strategy_context.h"
 #include "strategyd/strategy_library.h"
 #include "yquant/base/event_loop_environment.h"
 #include "yquant/base/status.h"
 #include "yquant/strategy/strategy.h"
-#include "yquant/trading/mock_trading_adapter.h"
-#include "yquant/trading/trading.h"
+#include "yquant/trading/trading_service.h"
 
 namespace yquant::strategyd {
 
@@ -23,11 +22,13 @@ inline constexpr std::size_t kMaxStrategyBatchSize = 64;
 
 enum class RunnerState { kIdle, kStarting, kRunning, kStopping, kFinished };
 
+// All configuration values are borrowed only during Handle. The assembly has
+// already validated them and selected matching source/runtime implementations.
 struct LoadAndStart {
   const char* library_path;
-  const char* config_path;
-  const char* market_data_config_path = nullptr;
-  const char* trading_config_path = nullptr;
+  StrategyConfigLoader& config;
+  const md::MarketDataConfig& market_data;
+  const trading::TradingConfig* trading_config = nullptr;
 };
 
 struct Stop {};
@@ -35,16 +36,12 @@ struct Stop {};
 // Commands and lifecycle callbacks execute serially on the owning thread.
 class StrategyRunner {
  public:
-  // Optional dependencies are borrowed until destruction. Defaults use the
-  // host's steady clock and shared-memory market-data receiver.
-  // Tests may inject a source through the same interface. Environment is
-  // optional for startup cancellation, but Run() requires an explicit
-  // environment.
-  explicit StrategyRunner(
-      const base::MonotonicClock* clock = nullptr,
-      MarketDataSource* source = nullptr,
-      base::EventLoopEnvironment* environment = nullptr,
-      trading::TradingAdapter* trading_adapter = nullptr) noexcept;
+  // Every dependency is required and borrowed until destruction. The same
+  // environment handles startup cancellation and the running event loop.
+  StrategyRunner(const base::MonotonicClock& clock,
+                 base::EventLoopEnvironment& environment,
+                 MarketDataSource& source,
+                 trading::TradingService& trading) noexcept;
   ~StrategyRunner() noexcept;
 
   StrategyRunner(const StrategyRunner&) = delete;
@@ -52,6 +49,9 @@ class StrategyRunner {
   StrategyRunner(StrategyRunner&&) = delete;
   StrategyRunner& operator=(StrategyRunner&&) = delete;
 
+  // Starts once from Idle using validated assembly inputs. Configuration JSON
+  // is consumed/reset after plugin initialization. Failure finishes cleanup;
+  // an invalid state preserves the active instance and component resources.
   [[nodiscard]] base::Status Handle(LoadAndStart command) noexcept;
   // Running requests are recorded for Run to drain, without invoking callbacks.
   // Idle/finished stops are immediate and idempotent. No callback reentry.
@@ -61,8 +61,7 @@ class StrategyRunner {
   // Running, outside callbacks. Stops close new requests and drain outstanding
   // orders before finalization. Failures retain the first diagnostic; invalid
   // state leaves resources unchanged. All dependencies outlive this call.
-  [[nodiscard]] base::Status Run(
-      base::EventLoopEnvironment& environment) noexcept;
+  [[nodiscard]] base::Status Run() noexcept;
   // Earliest source event, cold maintenance, local work, or drain deadline.
   std::optional<std::uint64_t> next_deadline() const noexcept;
   // Saturating total of structurally valid old/duplicate quotes ignored during
@@ -106,7 +105,7 @@ class StrategyRunner {
   void BeginCallback(strategy::CallbackPhase phase) noexcept;
   void EndCallback() noexcept;
   // Receives stop requests; a failed environment makes further draining unsafe.
-  void CheckStop(base::EventLoopEnvironment& environment) noexcept;
+  void CheckStop() noexcept;
   // Closes new strategy requests and stops market data once; a second call
   // preserves the original drain deadline and outstanding orders.
   void EnterStopping() noexcept;
@@ -121,9 +120,6 @@ class StrategyRunner {
   // Copies only the first failure within an operation, including cleanup.
   void SetError(base::Status status, const char* stage,
                 const char* detail) noexcept;
-  // Copies field diagnostics before a loader or plugin buffer is released.
-  void SetConfigError(base::Status status, const char* stage,
-                      const base::ConfigError& error) noexcept;
   // Copies the quote's stable identity into the current operation diagnostic.
   void SetQuoteError(base::Status status, const char* stage, const char* detail,
                      const model::QuoteTick& tick) noexcept;
@@ -139,19 +135,13 @@ class StrategyRunner {
   void Finalize() noexcept;
 
   static constexpr std::size_t kErrorDetailSize = 1024;
-  base::SteadyMonotonicClock default_clock_;
   const base::MonotonicClock& clock_;
-  // Own the service before constructing the context that borrows it.
+  base::EventLoopEnvironment& environment_;
+  MarketDataSource& source_;
+  trading::TradingService& trading_service_;
+  // Services and context share this runner's serial callback lifetime.
   MarketDataImpl market_data_;
-  trading::TradingImpl trading_;
-  RemoteTrading remote_trading_;
-  trading::TradingRuntime* trading_runtime_ = &trading_;
   StrategyContextImpl context_;
-  ShmMarketDataSource shm_source_;
-  MarketDataSource* source_;
-  trading::MockTradingAdapter default_trading_adapter_;
-  trading::TradingAdapter& trading_adapter_;
-  base::EventLoopEnvironment* startup_environment_;
   StrategyLibrary library_;
   strategy::StrategyId strategy_id_;
   strategy::Strategy* instance_ = nullptr;
@@ -161,13 +151,11 @@ class StrategyRunner {
   bool source_started_ = false;
   bool trading_prepared_ = false;
   bool trading_started_ = false;
-  bool remote_trading_selected_ = false;
   bool callback_active_ = false;
   bool stop_requested_ = false;
   bool callbacks_enabled_ = true;
   bool drain_viable_ = true;
   bool prefer_market_ = true;
-  bool prefer_local_ = true;
   std::uint64_t shutdown_timeout_ns_ = trading::kDefaultTradingTimeoutNs;
   std::optional<std::uint64_t> shutdown_deadline_;
   std::uint64_t ignored_quote_count_ = 0;

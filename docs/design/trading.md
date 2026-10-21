@@ -18,15 +18,19 @@
 | --- | --- |
 | `StrategyContext` | 提供时间及行情、交易服务的访问入口，回调期间借用 |
 | `Trading` | 策略可见的交易接口，通过 `context.trading()` 访问 |
-| `trading::TradingImpl` | 可写的委托、持仓与资金账本、预占、成交去重记录和待发送请求，供进程内模拟运行时或共享网关使用 |
-| `trading::TradingRuntime` | 策略交易服务的生命周期及请求、事件处理边界，供本地账本与远端服务实现 |
+| `trading::TradingService` | 宿主使用的抽象交易服务接口，定义生命周期、请求处理与事件提交契约 |
+| `trading::LocalTradingRuntime` | 管理本地交易会话，持有委托、资金、持仓、预占和请求队列，驱动柜台并提交回报，供策略进程与网关复用 |
+| `trading::DisabledTradingRuntime` | 未启用交易时的明确实现，查询返回空，业务阶段请求返回 `kUnsupported` |
 | `trading::TradingAdapter` | 柜台接入边界，提供初始账户快照、发送请求和规范化回报，不调用策略 |
 | `trading::MockTradingAdapter` | 以定时脚本生成受理、成交或撤单结果，由使用方持有 |
 | `md::InstrumentScope` | 持有运行范围内的只读标的定义，供行情和交易独立查询 |
 | `strategyd::RemoteTrading` | 策略程序专用的远端运行时，保存本策略订单缓存和网关发布的账户视图 |
 | `StrategyRunner` | 驱动请求、行情、交易回报及停止排空，串行调用策略 |
+| `StrategyAssembly` | 读取启动配置，持有标的范围，选择并持有具体行情源和交易运行时 |
 
-公共交易实现使用 `yquant::trading` 命名空间，构建为 `yquant_trading`。`TradingImpl` 借用 `md::InstrumentScope`，不依赖策略程序的行情服务；策略进程将 `MarketDataImpl` 内嵌的范围提供给交易服务，网关自行持有范围，价格精度与标的身份均来自[共享标的字典](market-data.md#共享标的字典)。借用范围与 `base::MonotonicClock` 的存活时间覆盖交易服务；上下文及策略服务的存活时间覆盖全部策略回调及实例销毁。库与程序的归属规则见[目录与模块](engineering.md#目录与模块)。
+公共交易实现使用 `yquant::trading` 命名空间，构建为 `yquant_trading`。`LocalTradingRuntime` 统一持有账本和执行状态，借用 `TradingAdapter`、`md::InstrumentScope` 与 `base::MonotonicClock`。策略装配层与网关分别持有这些依赖，其存活时间覆盖交易运行时；价格精度与标的身份均来自[共享标的字典](market-data.md#共享标的字典)。上下文及策略服务的存活时间覆盖全部策略回调及实例销毁。库与程序的归属规则见[目录与模块](engineering.md#目录与模块)。
+
+`StrategyRunner` 必须借用一个 `TradingService`。运行时通过 `Init(config, dictionary)` 建立账户，通过 `ProcessRequests(now)` 推进自身传输，通过 `Poll(now, dispatch, event)` 返回已经提交的回调数据。`next_deadline()` 汇总传输与本地工作的期限，`has_ready_event(now)` 单独表示可轮询事件，`is_drained()` 包含账本和传输的排空状态。具体实现选择及所有权见[组件装配](strategyd.md#组件装配)。
 
 ## 委托模型
 
@@ -225,7 +229,7 @@ base::ErrorCode OnFill(
 
 `OnStart` 可查询初始账户、初始化策略和声明行情订阅，首个行情回调触发交易。这样启动失败时仍可直接销毁实例，不会留下启动回调发出的委托。
 
-行情与交易服务使用 `strategy::CallbackPhase` 表达回调门禁阶段，枚举定义在公共 `include/yquant/strategy/callback_phase.h` 中，由调用方在回调前后切换。公共交易实现不借用策略程序的阶段类型或回调服务。
+策略 runner 使用 `strategy::CallbackPhase` 区分回调阶段，只在正常运行的业务回调期间通过 `SetAcceptingRequests(true)` 开放交易请求，回调结束即关闭。停止排空和启动、停止回调期间保持关闭。交易运行时只检查宿主给出的请求权限，不依赖策略回调阶段；`BeginStopping()` 会关闭请求，直至 `Reset()` 才可建立新会话。网关在完成身份、客户端状态和订单归属检查后开放单次请求入口，关闭入口后再推进发送与回报处理。
 
 ## 柜台回报与委托账本
 
@@ -316,7 +320,7 @@ Stop() -> Status
 
 ### 启动与事件调度
 
-启动时依次校验策略、行情和交易配置，准备标的字典与两个接入。启动交易接入、读取并校验初始账户、建立交易账本后，再加载和初始化策略。`OnStart()` 成功后冻结订阅并启动行情源，全部成功才允许策略提交交易请求。各阶段边界沿用现有停止信号检查。
+装配层依次校验策略、行情和交易配置，建立标的范围并选择组件。runner 准备行情接入并初始化交易运行时；本地运行时启动柜台、读取并校验初始账户、建立交易账本，远端运行时完成握手和账户同步。初始化完成后再加载和初始化策略。`OnStart()` 成功后冻结订阅并启动行情源，全部成功才允许策略提交交易请求。配置读取、组件初始化和策略生命周期的同步阶段边界均检查停止信号。
 
 运行期的 `Handle(Stop)` 只登记停止请求，由 `Run()` 统一推进排空与最终释放；重复请求不延长停止期限。产生委托后，调用方须等待 `Run()` 完成收尾再销毁 `StrategyRunner`，析构不另建排空事件循环。启动失败或尚未运行时没有策略委托，仍可同步释放已有资源。
 
@@ -469,9 +473,10 @@ OnFill(context, fill):
 | `include/yquant/strategy/strategy_context.h` | 交易服务访问器 |
 | `include/yquant/strategy/strategy.h` | 委托和成交回调 |
 | `include/yquant/trading/trading_account.h` | 柜台初始账户快照 |
-| `include/yquant/trading/trading.h`、`src/trading/trading.cc` | 本地请求、委托与账户账本、预占及成交幂等 |
-| `include/yquant/trading/trading_runtime.h` | 本地账本及远端服务共用的运行时边界与分派结果 |
 | `include/yquant/trading/trading_adapter.h` | 柜台接入与规范化事件协议 |
+| `include/yquant/trading/trading_service.h`、`trading_dispatch.h` | 统一交易服务接口与已提交事件 |
+| `include/yquant/trading/local_trading_runtime.h`、`src/trading/local_trading_runtime.cc` | 本地交易会话、账本、预占、请求与回报处理及停止排空 |
+| `include/yquant/trading/disabled_trading_runtime.h` | 未启用交易时的服务 |
 | `include/yquant/trading/trading_limits.h` | 交易记录和请求的容量上限 |
 | `include/yquant/trading/mock_trading_adapter.h`、`src/trading/mock_trading_adapter.cc` | 定时模拟回报 |
 | `include/yquant/trading/trading_config.h`、`src/trading/trading_config.cc` | 交易配置加载与校验 |

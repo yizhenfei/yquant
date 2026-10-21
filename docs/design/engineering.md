@@ -82,8 +82,8 @@ CMakePresets.json
 | `yquant::base` | `yquant_base`，别名 `yquant::base` | 日志、队列、共享内存、路径、JSON 文档、单调时钟及进程等待和退出信号；队列不依赖日志或 fmt |
 | `yquant::model` | `yquant_model`，别名 `yquant::model`，`INTERFACE` 目标 | 标识、标的、行情、委托和账户等领域类型 |
 | `yquant::md` | `yquant_md`，别名 `yquant::md` | 标的字典、运行标的范围、接收配置、模拟报价、编解码及行情广播适配；依赖 `base` 和 `model` |
-| `yquant::trading` | `yquant_trading`，别名 `yquant::trading` | 交易账本、接入协议、配置、模拟柜台、网关协议及连接；依赖 `base`、`md`、`model` 和策略服务接口 |
-| `yquant::strategy` | `yquant_strategy_api`，别名 `yquant::strategy_api` | 策略 SDK 的 `INTERFACE` 目标，提供公开头文件和编译要求；回调门禁枚举位于 `callback_phase.h` |
+| `yquant::trading` | `yquant_trading`，别名 `yquant::trading` | 本地交易会话、账本、接入协议、配置、模拟柜台、网关协议及连接；依赖 `base`、`md`、`model` 和策略服务接口 |
+| `yquant::strategy` | `yquant_strategy_api`，别名 `yquant::strategy_api` | 策略 SDK 的 `INTERFACE` 目标，提供公开头文件和编译要求；宿主回调阶段枚举位于 `callback_phase.h` |
 
 库不依赖程序私有实现。`MarketDataImpl` 保留在 `strategyd` 中，负责策略订阅、缓存与回调阶段；公共交易账本只借用 `md::InstrumentScope` 查询标的。程序私有对象目标与可执行目标的组织见[构建与依赖](#构建与依赖)。
 

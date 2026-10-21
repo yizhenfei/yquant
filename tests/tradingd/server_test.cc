@@ -1,6 +1,7 @@
 #include "tradingd/server.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -98,6 +99,20 @@ class ServerTest : public ::testing::Test {
     }
   }
 
+  // Independent TCP connections may deliver in either order. Wait for the
+  // expected observation while keeping simulated broker time unchanged.
+  template <typename Predicate>
+  bool PumpUntil(Predicate ready) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    do {
+      Pump();
+      if (HasFatalFailure()) return false;
+      if (ready()) return true;
+    } while (std::chrono::steady_clock::now() < deadline);
+    return false;
+  }
+
   void Advance() {
     clock.now += 1000000;
     Pump();
@@ -162,18 +177,25 @@ TEST_F(ServerTest, MultipleClientsCannotReserveTheSameCash) {
   ASSERT_EQ(first.generation, second.generation);
   Order(first, 1, 60);
   Order(second, 1, 60);
-  Pump();
+  ASSERT_TRUE(PumpUntil([&] {
+    return Update(first, model::OrderUpdateKind::kRejected) != nullptr ||
+           Update(second, model::OrderUpdateKind::kRejected) != nullptr;
+  }));
   EXPECT_EQ(server.account().cash.reserved, 600000000);
   EXPECT_EQ(server.account().cash.available, 400000000);
-  ASSERT_NE(Update(second, model::OrderUpdateKind::kRejected), nullptr);
-  EXPECT_EQ(Update(second, model::OrderUpdateKind::kRejected)
-                ->update.order.report_sequence,
-            1U);
+  const auto* rejected = Update(first, model::OrderUpdateKind::kRejected);
+  const auto& accepted_peer = rejected != nullptr ? second : first;
+  if (rejected == nullptr)
+    rejected = Update(second, model::OrderUpdateKind::kRejected);
+  ASSERT_NE(rejected, nullptr);
+  EXPECT_EQ(rejected->update.order.report_sequence, 1U);
   Advance();
-  ASSERT_NE(Update(first, model::OrderUpdateKind::kAccepted), nullptr);
-  EXPECT_EQ(
-      Update(first, model::OrderUpdateKind::kAccepted)->account.cash.reserved,
-      600000000);
+  ASSERT_TRUE(PumpUntil([&] {
+    return Update(accepted_peer, model::OrderUpdateKind::kAccepted) != nullptr;
+  }));
+  EXPECT_EQ(Update(accepted_peer, model::OrderUpdateKind::kAccepted)
+                ->account.cash.reserved,
+            600000000);
 }
 
 TEST_F(ServerTest, MultipleClientsCannotReserveTheSameShares) {
@@ -185,11 +207,13 @@ TEST_F(ServerTest, MultipleClientsCannotReserveTheSameShares) {
   Connect(second, 22);
   Order(first, 1, 60, model::OrderSide::kSell);
   Order(second, 1, 60, model::OrderSide::kSell);
-  Pump();
+  ASSERT_TRUE(PumpUntil([&] {
+    return Update(first, model::OrderUpdateKind::kRejected) != nullptr ||
+           Update(second, model::OrderUpdateKind::kRejected) != nullptr;
+  }));
   ASSERT_EQ(server.account().position_count, 1U);
   EXPECT_EQ(server.account().positions[0].available_qty, 40);
   EXPECT_EQ(server.account().positions[0].reserved_qty, 60);
-  EXPECT_NE(Update(second, model::OrderUpdateKind::kRejected), nullptr);
 }
 
 TEST_F(ServerTest, IdenticalLocalOrderIdsRouteFillsOnlyToTheirOwners) {

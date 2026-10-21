@@ -7,14 +7,14 @@
 #include "yquant/md/instrument_scope.h"
 #include "yquant/trading/connection.h"
 #include "yquant/trading/trading_config.h"
-#include "yquant/trading/trading_runtime.h"
+#include "yquant/trading/trading_service.h"
 
 namespace yquant::strategyd {
 
 // Main-thread TCP trading client. Orders are locally queued, while account
 // reservations and final risk acceptance belong to tradingd. A failed stream
 // terminates this session; uncertain commands are never resent automatically.
-class RemoteTrading final : public trading::TradingRuntime {
+class RemoteTrading final : public trading::TradingService {
  public:
   // Borrows clock and instrument scope for the entire client lifetime.
   RemoteTrading(const base::MonotonicClock& clock,
@@ -25,14 +25,16 @@ class RemoteTrading final : public trading::TradingRuntime {
   // a diagnostic. Dictionary and config are borrowed only during this call.
   [[nodiscard]] base::Status Init(
       const trading::TradingConfig& config,
-      const md::MarketDataConfig& dictionary) noexcept;
-  void Reset() noexcept override;
-  void SetRunning(bool running) noexcept override { running_ = running; }
-  void BeginCallback(strategy::CallbackPhase phase) noexcept override {
-    phase_ = phase;
+      const md::MarketDataConfig& dictionary) noexcept override;
+  [[nodiscard]] base::Status Stop() noexcept override {
+    accept_requests_ = false;
+    stopping_ = true;
+    connection_.Close();
+    return {};
   }
-  void EndCallback() noexcept override {
-    phase_ = strategy::CallbackPhase::kNone;
+  void Reset() noexcept override;
+  void SetAcceptingRequests(bool accepting) noexcept override {
+    accept_requests_ = accepting && !stopping_;
   }
   void BeginStopping() noexcept override;
   bool accepting_orders() const noexcept override;
@@ -52,26 +54,24 @@ class RemoteTrading final : public trading::TradingRuntime {
       model::InstrumentId id,
       model::PositionSnapshot& out) const noexcept override;
   [[nodiscard]] base::Status ProcessRequests(
-      trading::TradingAdapter& unused, std::uint64_t now,
-      std::size_t limit = 64) noexcept override;
+      std::uint64_t now, std::size_t limit = 64) noexcept override;
   [[nodiscard]] base::Status ScheduleStopping(
       std::uint64_t now, std::size_t max_scan = 64) noexcept override;
   std::optional<std::uint64_t> next_deadline() const noexcept override;
-  bool has_local_updates() const noexcept override;
+  bool has_local_updates() const noexcept;
+  bool has_ready_event(std::uint64_t now) const noexcept override;
   bool is_drained() const noexcept override;
   std::size_t order_count() const noexcept override;
   const char* error_detail() const noexcept override { return error_detail_; }
-  [[nodiscard]] base::ErrorCode ApplyEvent(
-      const trading::TradingEvent& event,
-      trading::TradingDispatch& out) noexcept override;
+  const char* error_stage() const noexcept override { return error_stage_; }
   [[nodiscard]] base::ErrorCode ApplyLocalUpdate(
-      trading::TradingDispatch& out) noexcept override;
+      trading::TradingDispatch& out) noexcept;
   // Commits at most one incoming message and its complete account before
   // callbacks. Idle sets event=false and advances polling to a future deadline.
   // Failure preserves out and event and makes the session unusable.
   [[nodiscard]] base::Status Poll(std::uint64_t now,
                                   trading::TradingDispatch& out,
-                                  bool& event) noexcept;
+                                  bool& event) noexcept override;
 
  private:
   struct Storage;
@@ -91,9 +91,10 @@ class RemoteTrading final : public trading::TradingRuntime {
   const md::InstrumentScope& instruments_;
   std::unique_ptr<Storage> storage_;
   trading::Connection connection_;
-  bool running_ = false;
+  bool prefer_local_ = true;
+  const char* error_stage_ = "trading_connect";
+  bool accept_requests_ = false;
   bool stopping_ = false;
-  strategy::CallbackPhase phase_ = strategy::CallbackPhase::kNone;
   char error_detail_[256] = {};
 };
 

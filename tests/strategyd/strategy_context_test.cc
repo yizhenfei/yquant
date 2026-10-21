@@ -3,7 +3,7 @@
 #include "gtest/gtest.h"
 #include "strategyd/market_data.h"
 #include "yquant/model/identifiers.h"
-#include "yquant/trading/trading.h"
+#include "yquant/trading/disabled_trading_runtime.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -55,7 +55,7 @@ model::QuoteTick ContextQuote(model::InstrumentId id, std::uint64_t sequence,
 TEST(StrategyContextTest, EmptyDictionaryPreservesOutputsAndHasNoSource) {
   ContextTestClock clock;
   MarketDataImpl market_data(clock);
-  trading::TradingImpl trading(clock, market_data.instruments());
+  trading::DisabledTradingRuntime trading;
   StrategyContextImpl context(clock, market_data, trading);
   const auto definition = ContextConfig().instruments[0].instrument;
   auto unchanged_definition = definition;
@@ -83,7 +83,7 @@ TEST(StrategyContextTest, EmptyDictionaryPreservesOutputsAndHasNoSource) {
 TEST(StrategyContextTest, ResolvesDefinitionsAndRegistersOnlyDuringStart) {
   ContextTestClock clock;
   MarketDataImpl market_data(clock);
-  trading::TradingImpl trading(clock, market_data.instruments());
+  trading::DisabledTradingRuntime trading;
   StrategyContextImpl context(clock, market_data, trading);
   const auto config = ContextConfig();
   ASSERT_TRUE(market_data.Configure(config).ok());
@@ -124,7 +124,7 @@ TEST(StrategyContextTest, ResolvesDefinitionsAndRegistersOnlyDuringStart) {
 TEST(StrategyContextTest, KeepsAcceptedSnapshotAndRejectsMismatchedSource) {
   ContextTestClock clock;
   MarketDataImpl market_data(clock);
-  trading::TradingImpl trading(clock, market_data.instruments());
+  trading::DisabledTradingRuntime trading;
   StrategyContextImpl context(clock, market_data, trading);
   const strategy::StrategyContext& read_only_context = context;
   const auto config = ContextConfig({17});

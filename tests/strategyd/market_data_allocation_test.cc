@@ -11,7 +11,7 @@
 #include "strategyd/strategy_context.h"
 #include "yquant/md/mock_quote_source.h"
 #include "yquant/model/identifiers.h"
-#include "yquant/trading/trading.h"
+#include "yquant/trading/disabled_trading_runtime.h"
 
 namespace {
 
@@ -298,7 +298,7 @@ TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
   }
   ManualClock clock;
   MarketDataImpl market_data(clock);
-  trading::TradingImpl trading(clock, market_data.instruments());
+  trading::DisabledTradingRuntime trading;
   StrategyContextImpl context(clock, market_data, trading);
   md::MarketDataConfig host;
   host.source_id = config.source_id;

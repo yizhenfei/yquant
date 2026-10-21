@@ -59,7 +59,7 @@ add_library(yquant_trading STATIC
   src/trading/protocol.cc
   src/trading/connection.cc
   src/trading/mock_trading_adapter.cc
-  src/trading/trading.cc
+  src/trading/local_trading_runtime.cc
   src/trading/trading_config.cc)
 add_library(yquant::trading ALIAS yquant_trading)
 target_include_directories(yquant_trading PUBLIC
@@ -78,7 +78,8 @@ add_library(yquant_strategyd_objects OBJECT
   src/strategyd/strategy_config_loader.cc
   src/strategyd/market_data.cc
   src/strategyd/strategy_library.cc
-  src/strategyd/strategy_runner.cc)
+  src/strategyd/strategy_runner.cc
+  src/strategyd/strategy_assembly.cc)
 target_include_directories(yquant_strategyd_objects PRIVATE
   "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(yquant_strategyd_objects PUBLIC

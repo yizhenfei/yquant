@@ -10,8 +10,8 @@
 
 #include "yquant/md/instrument_scope.h"
 #include "yquant/trading/connection.h"
+#include "yquant/trading/local_trading_runtime.h"
 #include "yquant/trading/mock_trading_adapter.h"
-#include "yquant/trading/trading.h"
 #include "yquant/trading/trading_adapter.h"
 
 namespace yquant::tradingd {
@@ -71,7 +71,7 @@ bool HasInstrument(const Client& client, model::InstrumentId id) noexcept {
 }
 
 bool ClientDrained(const Client& client,
-                   const trading::TradingImpl& trading) noexcept {
+                   const trading::LocalTradingRuntime& trading) noexcept {
   for (std::size_t i = 0; i < client.order_count; ++i) {
     if (client.orders[i].core_id.value == 0) continue;
     model::OrderSnapshot snapshot;
@@ -86,12 +86,12 @@ bool ClientDrained(const Client& client,
 
 struct Server::Storage {
   explicit Storage(const base::MonotonicClock& clock) noexcept
-      : trading(clock, instruments) {}
+      : trading(clock, instruments, adapter) {}
   ServerConfig config;
   trading::Listener listener;
   md::InstrumentScope instruments;
-  trading::TradingImpl trading;
   trading::MockTradingAdapter adapter;
+  trading::LocalTradingRuntime trading;
   std::array<Client, trading::kMaxClients> clients;
   std::array<OrderOwner, trading::kMaxTradingOrders> owners = {};
   trading::AccountView account;
@@ -135,17 +135,12 @@ base::Status Server::Init(const ServerConfig& config) noexcept {
     return Fail(base::ErrorCode::kIoError, "cannot create server generation");
   }
   status = s.instruments.Configure(config.market_data);
-  if (status.ok()) status = s.adapter.Prepare(config.trading);
-  if (status.ok()) status = s.adapter.Start(clock_.Now());
-  trading::TradingAccountSnapshot initial;
-  if (status.ok()) status = s.adapter.ReadAccountSnapshot(initial);
-  if (status.ok()) status = s.trading.Configure(initial);
+  if (status.ok()) status = s.trading.Init(config.trading, config.market_data);
   if (status.ok()) status = s.listener.Open(config.listen);
   if (!status.ok()) {
     Close();
     return Fail(status.code, "cannot initialize trading account or listener");
   }
-  s.trading.SetRunning(true);
   s.account.revision = 1;
   RefreshAccount();
   return {};
@@ -259,9 +254,9 @@ base::Status Server::Handle(std::size_t index, const trading::Message& message,
     }
     const auto local_index = client.order_count++;
     auto& local = client.orders[local_index];
-    s.trading.BeginCallback(strategy::CallbackPhase::kTick);
+    s.trading.SetAcceptingRequests(true);
     const auto code = s.trading.SubmitOrder(message.request, local.core_id);
-    s.trading.EndCallback();
+    s.trading.SetAcceptingRequests(false);
     if (code == base::ErrorCode::kOk) {
       s.owners[local.core_id.value - 1] = {index, local_index};
       ++s.account.revision;
@@ -309,9 +304,9 @@ base::Status Server::Handle(std::size_t index, const trading::Message& message,
   if (has_core && !client.stopping && !s.stopping &&
       (message.broker_order_id.empty() ||
        message.broker_order_id == snapshot.broker_order_id)) {
-    s.trading.BeginCallback(strategy::CallbackPhase::kTick);
+    s.trading.SetAcceptingRequests(true);
     code = s.trading.CancelOrder(local.core_id);
-    s.trading.EndCallback();
+    s.trading.SetAcceptingRequests(false);
   }
   if (code == base::ErrorCode::kOk) {
     (void)s.trading.TryGetOrder(local.core_id, snapshot);
@@ -345,19 +340,10 @@ base::Status Server::Dispatch(std::uint64_t now) noexcept {
   auto& s = *storage_;
   for (std::size_t count = 0; count < kBrokerEventsPerService; ++count) {
     trading::TradingDispatch dispatch;
-    base::ErrorCode code;
-    if (s.trading.has_local_updates()) {
-      code = s.trading.ApplyLocalUpdate(dispatch);
-    } else {
-      trading::TradingEvent event;
-      const auto poll = s.adapter.Poll(now, event);
-      if (poll.state == trading::TradingPollState::kIdle) break;
-      if (poll.state == trading::TradingPollState::kError)
-        return Fail(poll.status.code, s.adapter.error_detail());
-      code = s.trading.ApplyEvent(event, dispatch);
-    }
-    if (code != base::ErrorCode::kOk)
-      return Fail(code, s.trading.error_detail());
+    bool event = false;
+    const auto polled = s.trading.Poll(now, dispatch, event);
+    if (!polled.ok()) return Fail(polled.code, s.trading.error_detail());
+    if (!event) break;
     if (dispatch.update.order.client_order_id.value == 0) continue;
     const auto core_id = dispatch.update.order.client_order_id.value;
     if (core_id == 0 || core_id > s.trading.order_count())
@@ -418,9 +404,9 @@ void Server::ScheduleClientCancels(std::uint64_t now) noexcept {
     if (!s.trading.TryGetOrder(id, order) ||
         order.state != model::OrderState::kWorking || order.cancel_pending)
       continue;
-    s.trading.BeginCallback(strategy::CallbackPhase::kTick);
+    s.trading.SetAcceptingRequests(true);
     const auto code = s.trading.CancelOrder(id);
-    s.trading.EndCallback();
+    s.trading.SetAcceptingRequests(false);
     if (code == base::ErrorCode::kOk) {
       (void)s.trading.TryGetOrder(id, order);
       local.core_cancel = order.cancel_request_id;
@@ -494,7 +480,7 @@ base::Status Server::Service(std::uint64_t now) noexcept {
     }
   }
   ScheduleClientCancels(now);
-  auto status = s.trading.ProcessRequests(s.adapter, now);
+  auto status = s.trading.ProcessRequests(now);
   if (!status.ok()) return Fail(status.code, s.trading.error_detail());
   status = Dispatch(now);
   if (!status.ok()) return status;
@@ -539,7 +525,7 @@ void Server::BeginStopping(std::uint64_t now) noexcept {
 bool Server::is_drained() const noexcept {
   if (!storage_) return true;
   const auto& s = *storage_;
-  if (!s.trading.is_drained() || !s.adapter.is_drained()) return false;
+  if (!s.trading.is_drained()) return false;
   for (const auto& client : s.clients) {
     if (!client.authenticated || !client.connection.open()) continue;
     if (!client.connection.empty()) return false;
@@ -588,7 +574,7 @@ void Server::ReportUnconfirmed() const noexcept {
 
 void Server::Close() noexcept {
   if (!storage_) return;
-  (void)storage_->adapter.Stop();
+  (void)storage_->trading.Stop();
   storage_.reset();
 }
 

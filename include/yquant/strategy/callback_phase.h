@@ -3,8 +3,8 @@
 
 namespace yquant::strategy {
 
-// Host-side lifecycle gate shared by market-data and trading services. The
-// caller enters/exits phases serially; no phase dispatches callbacks itself.
+// Strategy-host lifecycle phase. The host enters/exits phases serially and
+// uses them to gate market subscriptions and trading request acceptance.
 enum class CallbackPhase { kNone, kStart, kTick, kOrderUpdate, kFill, kStop };
 
 }  // namespace yquant::strategy
