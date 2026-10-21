@@ -1,6 +1,10 @@
 #ifndef YQUANT_STRATEGYD_STRATEGY_RUNNER_H_
 #define YQUANT_STRATEGYD_STRATEGY_RUNNER_H_
 
+// Provides host-side lifecycle control for a single strategy through runner
+// commands and state. Coordinates strategy loading, event dispatch, shutdown,
+// and resource cleanup.
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -36,7 +40,10 @@ struct LoadAndStart {
 
 struct Stop {};
 
-// Commands and lifecycle callbacks execute serially on the owning thread.
+// Owns the strategy plugin and host services, dispatching market data, trading
+// events, and timers to strategy callbacks. Call Handle(LoadAndStart) to start
+// the strategy, then Run() to drive the event loop and complete shutdown.
+// Commands and strategy callbacks execute serially on the owning thread.
 class StrategyRunner {
  public:
   // Optional dependencies are borrowed until destruction. Defaults use the
