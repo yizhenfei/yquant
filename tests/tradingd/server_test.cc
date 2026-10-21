@@ -410,6 +410,37 @@ TEST(TradingdConfigTest,
   EXPECT_FALSE(ValidateConfig(config, error).ok());
 }
 
+TEST(TradingdConfigTest, MysqlArchiveRequiresDurableSourceAndBoundedOptions) {
+  auto config = Config();
+  auto& archive = config.mysql_archive;
+  archive.enabled = true;
+  std::snprintf(archive.database, sizeof(archive.database), "yquant");
+  std::snprintf(archive.user, sizeof(archive.user), "archive");
+  std::snprintf(archive.password_env, sizeof(archive.password_env),
+                "MYSQL_PASSWORD");
+  strategy::ConfigError error;
+  EXPECT_FALSE(ValidateConfig(config, error).ok());
+  std::snprintf(config.persistence.directory,
+                sizeof(config.persistence.directory),
+                "/tmp/yquant-config-only");
+  std::snprintf(config.persistence.account_key,
+                sizeof(config.persistence.account_key), "simulation/test");
+#ifdef YQUANT_WITH_MYSQL
+  EXPECT_TRUE(ValidateConfig(config, error).ok()) << error.message;
+  archive.batch_bytes = 1;
+  EXPECT_FALSE(ValidateConfig(config, error).ok());
+  archive.batch_bytes = 1048576;
+  std::snprintf(archive.host, sizeof(archive.host), "database.example.test");
+  EXPECT_FALSE(ValidateConfig(config, error).ok());
+  EXPECT_STREQ(error.field_path, "mysql_archive.tls_ca");
+  std::snprintf(archive.tls_ca, sizeof(archive.tls_ca), "/tmp/ca.pem");
+  EXPECT_TRUE(ValidateConfig(config, error).ok()) << error.message;
+#else
+  EXPECT_FALSE(ValidateConfig(config, error).ok());
+  EXPECT_STREQ(error.field_path, "mysql_archive");
+#endif
+}
+
 TEST(TradingdConfigTest, UnknownBootstrapInstrumentIsRejected) {
   auto config = Config();
   config.trading.initial_account.position_count = 1;

@@ -14,6 +14,7 @@
 #include "strategyd/trading_persistence.h"
 #include "tradingd/connection.h"
 #include "tradingd/journal.h"
+#include "tradingd/mysql_archive.h"
 #include "tradingd/server.h"
 
 namespace yquant::tradingd {
@@ -121,6 +122,7 @@ struct Server::Storage final : strategyd::TradingMutationSink {
   std::size_t cancel_cursor = 0;
   bool account_dirty = false;
   Journal journal;
+  MysqlArchive mysql_archive;
   std::uint64_t run_id = 0;
   std::array<std::uint64_t, 2> ledger_id{};
   std::uint64_t last_namespace = 0;
@@ -134,6 +136,7 @@ struct Server::Storage final : strategyd::TradingMutationSink {
   model::CancelRequestId context_cancel;
   std::uint64_t last_record_time = 0;
   bool degraded = false;
+  bool archive_disk_pressure = false;
   bool replaying = false;
   base::Status persistence_failure;
   char persistence_detail[256] = {};
@@ -180,6 +183,11 @@ struct Server::Storage final : strategyd::TradingMutationSink {
   // Holds LOCK throughout load/replay/reconcile; starts workers only after
   // durable identity allocation. Caller discards Storage on any failure.
   base::Status StartPersistence() noexcept;
+  // Saves immutable input and links the previous archive run before listening.
+  // Startup-only; failure leaves durable diagnostic files for operator review.
+  base::Status PublishArchiveBaseline(bool initialized) noexcept;
+  // Cold final boundary; called only after the prefix has been synchronized.
+  base::Status SaveArchiveEnd(std::uint64_t run, std::uint64_t lsn) noexcept;
   // Resolves the complete recovered simulation prefix and drains old orders.
   // No independent counter evidence exists for a lost simulation WAL tail.
   base::Status RecoverMock() noexcept;
