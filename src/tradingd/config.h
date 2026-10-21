@@ -4,6 +4,7 @@
 #include "strategyd/market_data_config.h"
 #include "strategyd/trading_config.h"
 #include "tradingd/journal.h"
+#include "tradingd/mysql_archive_store.h"
 #include "tradingd/protocol.h"
 
 namespace yquant::tradingd {
@@ -43,6 +44,7 @@ struct PersistenceConfig {
 struct ServerConfig {
   Endpoint listen;
   PersistenceConfig persistence;
+  MysqlArchiveOptions mysql_archive;
   strategyd::MarketDataConfig market_data;
   strategyd::TradingConfig trading;
   char token[kMaxTokenBytes + 1] = {};

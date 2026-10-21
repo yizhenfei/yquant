@@ -23,6 +23,9 @@ constexpr std::size_t kSegmentHeaderBytes = 64;
 constexpr std::size_t kRecordHeaderBytes = 40;
 constexpr std::size_t kPublicationBytes = sizeof(std::uint64_t);
 constexpr std::size_t kRecordAlignment = alignof(std::uint64_t);
+constexpr std::size_t kMaxRecordBytes =
+    kRecordHeaderBytes + kJournalMaxPayloadBytes + kPublicationBytes +
+    kRecordAlignment - 1;
 constexpr std::size_t kSegmentEndPayloadBytes = 16;
 constexpr std::size_t kSegmentEndBytes =
     kRecordHeaderBytes + kSegmentEndPayloadBytes + kPublicationBytes;
@@ -163,6 +166,21 @@ int ReadAll(int fd, std::span<std::byte> bytes) noexcept {
   return 0;
 }
 
+// Copies from a stable file prefix without sharing the descriptor's offset.
+// A premature EOF is an I/O failure, including a concurrent truncation.
+int PreadAll(int fd, std::uint64_t offset,
+             std::span<std::byte> bytes) noexcept {
+  while (!bytes.empty()) {
+    const auto count =
+        ::pread(fd, bytes.data(), bytes.size(), static_cast<off_t>(offset));
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0) return count < 0 ? errno : EIO;
+    offset += static_cast<std::size_t>(count);
+    bytes = bytes.subspan(static_cast<std::size_t>(count));
+  }
+  return 0;
+}
+
 bool ValidName(const char* name) noexcept {
   if (name == nullptr || *name == '\0') return false;
   const auto size = ::strnlen(name, kMaxFileNameBytes + 1);
@@ -187,6 +205,244 @@ void SegmentName(char (&name)[48], std::uint64_t sequence) noexcept {
 void StreamName(char (&name)[48], std::uint64_t stream_id) noexcept {
   std::snprintf(name, sizeof(name), "stream-%020llu",
                 static_cast<unsigned long long>(stream_id));
+}
+
+// Validates the immutable header and exact preallocated file size. Failure
+// preserves segment_bytes; no record may be inspected before this succeeds.
+base::Status ReadSegmentHeader(int fd, std::uint64_t stream_id,
+                               std::uint64_t sequence,
+                               std::uint64_t& segment_bytes) noexcept {
+  struct stat metadata{};
+  std::array<std::byte, kSegmentHeaderBytes> header{};
+  if (::fstat(fd, &metadata) != 0) return IoError();
+  if (metadata.st_size < static_cast<off_t>(header.size()))
+    return {base::ErrorCode::kCorrupt, {}};
+  if (const auto error = PreadAll(fd, 0, header); error != 0)
+    return IoError(error);
+  const auto bytes = Load<std::uint64_t>(header.data() + 32);
+  if (std::memcmp(header.data(), kSegmentMagic, 8) != 0 ||
+      Load<std::uint32_t>(header.data() + 8) != kStorageVersion ||
+      Load<std::uint32_t>(header.data() + 12) != kSegmentHeaderBytes ||
+      Load<std::uint64_t>(header.data() + 16) != stream_id ||
+      Load<std::uint64_t>(header.data() + 24) != sequence ||
+      Load<std::uint32_t>(header.data() + 40) !=
+          Crc(std::span(header).first(40)) ||
+      bytes < kJournalMinSegmentBytes || bytes > kJournalMaxSegmentBytes ||
+      (bytes & (bytes - 1)) != 0 ||
+      bytes != static_cast<std::uint64_t>(metadata.st_size))
+    return {base::ErrorCode::kCorrupt, {}};
+  segment_bytes = bytes;
+  return {};
+}
+
+// Checks all framing and content fields before any callback sees the copy.
+bool ValidRecord(std::span<const std::byte> record,
+                 std::uint64_t stream_id) noexcept {
+  const auto* bytes = record.data();
+  const auto payload_size = Load<std::uint32_t>(bytes + 4);
+  return payload_size <= kJournalMaxPayloadBytes &&
+         Load<std::uint32_t>(bytes) == record.size() &&
+         record.size() == RecordBytes(payload_size) &&
+         Load<std::uint16_t>(bytes + 10) == kStorageVersion &&
+         Load<std::uint64_t>(bytes + 16) == stream_id &&
+         Load<std::uint64_t>(bytes + record.size() - kPublicationBytes) ==
+             kPublicationMarker &&
+         Load<std::uint32_t>(bytes + 32) == RecordCrc(bytes, payload_size);
+}
+
+// Checks an untouched suffix in bounded chunks. Only offline recovery uses
+// this operation; live scans stop at an explicit stable LSN bound.
+base::Status ZeroTail(int fd, std::uint64_t offset, std::uint64_t segment_bytes,
+                      std::span<std::byte> storage, bool& zero) noexcept {
+  zero = true;
+  while (offset < segment_bytes) {
+    auto part = storage.first(static_cast<std::size_t>(
+        std::min<std::uint64_t>(storage.size(), segment_bytes - offset)));
+    if (const auto error = PreadAll(fd, offset, part); error != 0)
+      return IoError(error);
+    if (std::any_of(part.begin(), part.end(),
+                    [](std::byte byte) { return byte != std::byte{0}; })) {
+      zero = false;
+      return {};
+    }
+    offset += part.size();
+  }
+  return {};
+}
+
+// Common cold-path decoder. Bounded scans require the complete requested
+// prefix, while recovery accepts its first damaged/unpublished tail. Only a
+// successful call publishes either output; callbacks may already have run.
+base::Status ScanStream(int root, const JournalCursor& cursor, bool bounded,
+                        std::uint64_t through_lsn, bool synchronize,
+                        JournalReplayCallback callback, void* context,
+                        JournalCursor& end,
+                        JournalReplayResult& result) noexcept {
+  char stream_name[48];
+  StreamName(stream_name, cursor.stream_id);
+  const int directory =
+      ::openat(root, stream_name, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (directory < 0) return IoError();
+  JournalCursor position = cursor;
+  JournalReplayResult recovered{cursor.lsn, 0, false};
+  std::array<std::byte, kMaxRecordBytes> storage{};
+  base::Status status;
+  bool continuation = true;
+  while (continuation && status.ok() &&
+         (!bounded || position.lsn < through_lsn)) {
+    continuation = false;
+    char name[48];
+    SegmentName(name, position.segment);
+    const int fd = ::openat(directory, name, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+      if (errno == ENOENT && position.segment != cursor.segment) {
+        if (bounded)
+          status = {base::ErrorCode::kCorrupt, {}};
+        else
+          recovered.tail_discarded = true;
+      } else {
+        status = IoError();
+      }
+      break;
+    }
+    std::uint64_t segment_bytes = 0;
+    status = ReadSegmentHeader(fd, cursor.stream_id, position.segment,
+                               segment_bytes);
+    const bool valid_header = status.ok();
+    if (status.ok() && position.offset > segment_bytes - kSegmentEndBytes)
+      status = {base::ErrorCode::kCorrupt, {}};
+    while (status.ok() &&
+           position.offset + kRecordHeaderBytes + kPublicationBytes <=
+               segment_bytes &&
+           (!bounded || position.lsn < through_lsn)) {
+      if (const auto error =
+              PreadAll(fd, position.offset,
+                       std::span(storage).first(kRecordHeaderBytes));
+          error != 0) {
+        status = IoError(error);
+        break;
+      }
+      const auto length = Load<std::uint32_t>(storage.data());
+      if (length == 0) {
+        if (bounded) {
+          status = {base::ErrorCode::kCorrupt, {}};
+        } else {
+          bool zero = false;
+          status = ZeroTail(fd, position.offset, segment_bytes, storage, zero);
+          recovered.tail_discarded = !zero;
+        }
+        break;
+      }
+      const auto payload_size = Load<std::uint32_t>(storage.data() + 4);
+      bool valid = payload_size <= kJournalMaxPayloadBytes &&
+                   length == RecordBytes(payload_size) &&
+                   length <= segment_bytes - position.offset;
+      if (valid) {
+        auto record = std::span(storage).first(length);
+        if (const auto error = PreadAll(fd, position.offset, record);
+            error != 0) {
+          status = IoError(error);
+          break;
+        }
+        valid = ValidRecord(record, cursor.stream_id);
+      }
+      const auto type = Load<std::uint16_t>(storage.data() + 8);
+      const auto lsn = Load<std::uint64_t>(storage.data() + 24);
+      if (valid && type == 0) {
+        valid =
+            payload_size == kSegmentEndPayloadBytes &&
+            position.segment != std::numeric_limits<std::uint64_t>::max() &&
+            lsn == position.lsn &&
+            Load<std::uint64_t>(storage.data() + kRecordHeaderBytes) ==
+                position.segment + 1 &&
+            Load<std::uint64_t>(storage.data() + kRecordHeaderBytes + 8) == lsn;
+        if (valid) {
+          ++position.segment;
+          position.offset = kSegmentHeaderBytes;
+          continuation = true;
+          break;
+        }
+      } else if (valid) {
+        valid = position.lsn != std::numeric_limits<std::uint64_t>::max() &&
+                lsn != 0 && lsn == position.lsn + 1;
+      }
+      if (!valid) {
+        if (bounded)
+          status = {base::ErrorCode::kCorrupt, {}};
+        else
+          recovered.tail_discarded = true;
+        break;
+      }
+      status = callback(context, type, lsn,
+                        {storage.data() + kRecordHeaderBytes, payload_size});
+      if (!status.ok()) break;
+      position.offset += length;
+      position.lsn = recovered.last_lsn = lsn;
+      ++recovered.records;
+    }
+    if (synchronize && valid_header) {
+      if (const auto error = SyncFile(fd); error != 0 && status.ok())
+        status = IoError(error);
+    }
+    if (::close(fd) != 0 && status.ok()) status = IoError();
+  }
+  if (bounded && status.ok() && position.lsn != through_lsn)
+    status = {base::ErrorCode::kCorrupt, {}};
+  if (synchronize) {
+    if (const auto error = SyncDirectory(directory); error != 0 && status.ok())
+      status = IoError(error);
+    if (const auto error = SyncDirectory(root); error != 0 && status.ok())
+      status = IoError(error);
+  }
+  if (::close(directory) != 0 && status.ok()) status = IoError();
+  if (status.ok()) {
+    end = position;
+    result = recovered;
+  }
+  return status;
+}
+
+// Reads one immutable inode, including when its directory entry is replaced.
+// Failure preserves size; the supplied storage may have been overwritten.
+base::Status LoadFileAt(int directory, const char* name,
+                        std::span<std::byte> storage,
+                        std::size_t& size) noexcept {
+  if (!ValidName(name)) return {base::ErrorCode::kInvalidArgument, {}};
+  const int fd = ::openat(directory, name, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return IoError();
+  struct stat metadata{};
+  std::array<std::byte, kFileHeaderBytes> header{};
+  base::Status status;
+  if (::fstat(fd, &metadata) != 0) {
+    status = IoError();
+  } else if (metadata.st_size < static_cast<off_t>(header.size())) {
+    status = {base::ErrorCode::kCorrupt, {}};
+  } else if (const auto error = ReadAll(fd, header); error != 0) {
+    status = IoError(error);
+  } else if (std::memcmp(header.data(), kFileMagic, 8) != 0 ||
+             Load<std::uint32_t>(header.data() + 8) != kStorageVersion ||
+             Load<std::uint32_t>(header.data() + 12) != kFileHeaderBytes ||
+             Load<std::uint32_t>(header.data() + 28) !=
+                 Crc(std::span(header).first(28))) {
+    status = {base::ErrorCode::kCorrupt, {}};
+  }
+  const auto payload_size = Load<std::uint64_t>(header.data() + 16);
+  if (status.ok() && (payload_size > kJournalMaxSnapshotBytes ||
+                      payload_size + header.size() !=
+                          static_cast<std::uint64_t>(metadata.st_size)))
+    status = {base::ErrorCode::kCorrupt, {}};
+  if (status.ok() && payload_size > storage.size())
+    status = {base::ErrorCode::kResourceExhausted, {}};
+  if (status.ok()) {
+    auto output = storage.first(static_cast<std::size_t>(payload_size));
+    if (const auto error = ReadAll(fd, output); error != 0)
+      status = IoError(error);
+    else if (Crc(output) != Load<std::uint32_t>(header.data() + 24))
+      status = {base::ErrorCode::kCorrupt, {}};
+  }
+  if (::close(fd) != 0 && status.ok()) status = IoError();
+  if (status.ok()) size = static_cast<std::size_t>(payload_size);
+  return status;
 }
 
 std::uint64_t NowNs() noexcept {
@@ -222,6 +478,64 @@ base::Status SyncParents(const char* directory) noexcept {
 }
 
 }  // namespace
+
+JournalCursor JournalStartCursor(std::uint64_t stream_id) noexcept {
+  return {stream_id, 0, kSegmentHeaderBytes, 0};
+}
+
+base::Status ReadJournalFile(const char* directory, const char* name,
+                             std::span<std::byte> storage,
+                             std::size_t& size) noexcept {
+  if (directory == nullptr || *directory == '\0' || !ValidName(name))
+    return {base::ErrorCode::kInvalidArgument, {}};
+  const int fd = ::open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (fd < 0) return IoError();
+  std::size_t loaded_size = 0;
+  auto status = LoadFileAt(fd, name, storage, loaded_size);
+  if (::close(fd) != 0 && status.ok()) status = IoError();
+  if (status.ok()) size = loaded_size;
+  return status;
+}
+
+base::Status ScanJournal(const char* directory, JournalCursor& cursor,
+                         std::uint64_t through_lsn,
+                         JournalReplayCallback callback,
+                         void* context) noexcept {
+  if (directory == nullptr || *directory == '\0' || cursor.stream_id == 0 ||
+      callback == nullptr || through_lsn < cursor.lsn)
+    return {base::ErrorCode::kInvalidArgument, {}};
+  if (cursor.offset < kSegmentHeaderBytes ||
+      cursor.offset % kRecordAlignment != 0)
+    return {base::ErrorCode::kCorrupt, {}};
+  const int fd = ::open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (fd < 0) return IoError();
+  JournalCursor end;
+  JournalReplayResult result;
+  auto status = ScanStream(fd, cursor, true, through_lsn, false, callback,
+                           context, end, result);
+  if (::close(fd) != 0 && status.ok()) status = IoError();
+  if (status.ok()) cursor = end;
+  return status;
+}
+
+base::Status ProbeJournal(const char* directory, std::uint64_t stream_id,
+                          JournalReplayResult& result) noexcept {
+  if (directory == nullptr || *directory == '\0' || stream_id == 0)
+    return {base::ErrorCode::kInvalidArgument, {}};
+  const int fd = ::open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (fd < 0) return IoError();
+  JournalCursor end;
+  JournalReplayResult recovered;
+  const auto ignore = [](void*, std::uint16_t, std::uint64_t,
+                         std::span<const std::byte>) noexcept -> base::Status {
+    return {};
+  };
+  auto status = ScanStream(fd, JournalStartCursor(stream_id), false, 0, true,
+                           ignore, nullptr, end, recovered);
+  if (::close(fd) != 0 && status.ok()) status = IoError();
+  if (status.ok()) result = recovered;
+  return status;
+}
 
 Journal::~Journal() noexcept { (void)Close(); }
 
@@ -578,8 +892,7 @@ base::Status Journal::Close() noexcept {
 base::Status Journal::Replay(std::uint64_t stream_id,
                              JournalReplayCallback callback, void* context,
                              JournalReplayResult& result) noexcept {
-  return ReplayFrom({stream_id, 0, kSegmentHeaderBytes, 0}, callback, context,
-                    result);
+  return ReplayFrom(JournalStartCursor(stream_id), callback, context, result);
 }
 
 base::Status Journal::ReplayFrom(const JournalCursor& cursor,
@@ -591,126 +904,9 @@ base::Status Journal::ReplayFrom(const JournalCursor& cursor,
   if (cursor.offset < kSegmentHeaderBytes ||
       cursor.offset % kRecordAlignment != 0)
     return {base::ErrorCode::kCorrupt, {}};
-  char stream_name[48];
-  StreamName(stream_name, cursor.stream_id);
-  const int directory =
-      ::openat(directory_fd_, stream_name, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-  if (directory < 0) return IoError();
-  JournalReplayResult recovered;
-  recovered.last_lsn = cursor.lsn;
-  base::Status status;
-  std::uint64_t sequence = cursor.segment;
-  bool continue_stream = true;
-  while (continue_stream && status.ok()) {
-    char name[48];
-    SegmentName(name, sequence);
-    const int fd = ::openat(directory, name, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) {
-      if (errno == ENOENT && sequence != cursor.segment) {
-        recovered.tail_discarded = true;
-        break;
-      }
-      status = IoError();
-      break;
-    }
-    struct stat metadata{};
-    std::array<std::byte, kSegmentHeaderBytes> header{};
-    if (::fstat(fd, &metadata) != 0) {
-      status = IoError();
-    } else if (metadata.st_size < static_cast<off_t>(header.size())) {
-      status = {base::ErrorCode::kCorrupt, {}};
-    } else if (const auto error = ReadAll(fd, header); error != 0) {
-      status = IoError(error);
-    } else if (std::memcmp(header.data(), kSegmentMagic, 8) != 0 ||
-               Load<std::uint32_t>(header.data() + 8) != kStorageVersion ||
-               Load<std::uint32_t>(header.data() + 12) != kSegmentHeaderBytes ||
-               Load<std::uint64_t>(header.data() + 16) != cursor.stream_id ||
-               Load<std::uint64_t>(header.data() + 24) != sequence ||
-               Load<std::uint32_t>(header.data() + 40) !=
-                   Crc(std::span(header).first(40))) {
-      status = {base::ErrorCode::kCorrupt, {}};
-    }
-    const auto segment_bytes = Load<std::uint64_t>(header.data() + 32);
-    if (status.ok() &&
-        (segment_bytes < kJournalMinSegmentBytes ||
-         segment_bytes > kJournalMaxSegmentBytes ||
-         (segment_bytes & (segment_bytes - 1)) != 0 ||
-         segment_bytes != static_cast<std::uint64_t>(metadata.st_size)))
-      status = {base::ErrorCode::kCorrupt, {}};
-    if (status.ok() && sequence == cursor.segment &&
-        cursor.offset > segment_bytes - kSegmentEndBytes)
-      status = {base::ErrorCode::kCorrupt, {}};
-    void* mapping = MAP_FAILED;
-    if (status.ok()) {
-      mapping = ::mmap(nullptr, static_cast<std::size_t>(segment_bytes),
-                       PROT_READ, MAP_PRIVATE, fd, 0);
-      if (mapping == MAP_FAILED) status = IoError();
-    }
-    if (status.ok()) {
-      const auto* bytes = static_cast<const std::byte*>(mapping);
-      std::size_t offset = sequence == cursor.segment
-                               ? static_cast<std::size_t>(cursor.offset)
-                               : kSegmentHeaderBytes;
-      continue_stream = false;
-      while (offset + kRecordHeaderBytes + kPublicationBytes <= segment_bytes) {
-        const auto* record = bytes + offset;
-        const auto length = Load<std::uint32_t>(record);
-        if (length == 0) {
-          // The untouched preallocated suffix is the normal active segment.
-          recovered.tail_discarded =
-              std::any_of(bytes + offset, bytes + segment_bytes,
-                          [](std::byte byte) { return byte != std::byte{0}; });
-          break;
-        }
-        const auto payload_size = Load<std::uint32_t>(record + 4);
-        const auto type = Load<std::uint16_t>(record + 8);
-        const auto lsn = Load<std::uint64_t>(record + 24);
-        const bool valid_length = payload_size <= kJournalMaxPayloadBytes &&
-                                  length == RecordBytes(payload_size) &&
-                                  length <= segment_bytes - offset;
-        if (!valid_length ||
-            Load<std::uint16_t>(record + 10) != kStorageVersion ||
-            Load<std::uint64_t>(record + 16) != cursor.stream_id ||
-            Load<std::uint64_t>(record + length - kPublicationBytes) !=
-                kPublicationMarker ||
-            Load<std::uint32_t>(record + 32) !=
-                RecordCrc(record, payload_size)) {
-          recovered.tail_discarded = true;
-          break;
-        }
-        if (type == 0) {
-          if (payload_size != kSegmentEndPayloadBytes ||
-              lsn != recovered.last_lsn ||
-              Load<std::uint64_t>(record + kRecordHeaderBytes) !=
-                  sequence + 1 ||
-              Load<std::uint64_t>(record + kRecordHeaderBytes + 8) != lsn) {
-            recovered.tail_discarded = true;
-          } else {
-            continue_stream = true;
-          }
-          break;
-        }
-        if (lsn == 0 || lsn != recovered.last_lsn + 1) {
-          recovered.tail_discarded = true;
-          break;
-        }
-        status = callback(context, type, lsn,
-                          {record + kRecordHeaderBytes, payload_size});
-        if (!status.ok()) break;
-        recovered.last_lsn = lsn;
-        ++recovered.records;
-        offset += length;
-      }
-    }
-    if (mapping != MAP_FAILED)
-      (void)::munmap(mapping, static_cast<std::size_t>(segment_bytes));
-    (void)::close(fd);
-    ++sequence;
-    if (sequence == 0) status = {base::ErrorCode::kCorrupt, {}};
-  }
-  (void)::close(directory);
-  if (status.ok()) result = recovered;
-  return status;
+  JournalCursor end;
+  return ScanStream(directory_fd_, cursor, false, 0, false, callback, context,
+                    end, result);
 }
 
 base::Status Journal::SaveFile(
@@ -748,42 +944,7 @@ base::Status Journal::SaveFile(
 base::Status Journal::LoadFile(const char* name, std::span<std::byte> storage,
                                std::size_t& size) const noexcept {
   if (directory_fd_ < 0) return {base::ErrorCode::kInvalidState, {}};
-  if (!ValidName(name)) return {base::ErrorCode::kInvalidArgument, {}};
-  const int fd = ::openat(directory_fd_, name, O_RDONLY | O_CLOEXEC);
-  if (fd < 0) return IoError();
-  struct stat metadata{};
-  std::array<std::byte, kFileHeaderBytes> header{};
-  base::Status status;
-  if (::fstat(fd, &metadata) != 0) {
-    status = IoError();
-  } else if (metadata.st_size < static_cast<off_t>(header.size())) {
-    status = {base::ErrorCode::kCorrupt, {}};
-  } else if (const auto error = ReadAll(fd, header); error != 0) {
-    status = IoError(error);
-  } else if (std::memcmp(header.data(), kFileMagic, 8) != 0 ||
-             Load<std::uint32_t>(header.data() + 8) != kStorageVersion ||
-             Load<std::uint32_t>(header.data() + 12) != kFileHeaderBytes ||
-             Load<std::uint32_t>(header.data() + 28) !=
-                 Crc(std::span(header).first(28))) {
-    status = {base::ErrorCode::kCorrupt, {}};
-  }
-  const auto payload_size = Load<std::uint64_t>(header.data() + 16);
-  if (status.ok() && (payload_size > kJournalMaxSnapshotBytes ||
-                      payload_size + header.size() !=
-                          static_cast<std::uint64_t>(metadata.st_size)))
-    status = {base::ErrorCode::kCorrupt, {}};
-  if (status.ok() && payload_size > storage.size())
-    status = {base::ErrorCode::kResourceExhausted, {}};
-  if (status.ok()) {
-    auto output = storage.first(static_cast<std::size_t>(payload_size));
-    if (const auto error = ReadAll(fd, output); error != 0)
-      status = IoError(error);
-    else if (Crc(output) != Load<std::uint32_t>(header.data() + 24))
-      status = {base::ErrorCode::kCorrupt, {}};
-  }
-  if (::close(fd) != 0 && status.ok()) status = IoError();
-  if (status.ok()) size = static_cast<std::size_t>(payload_size);
-  return status;
+  return LoadFileAt(directory_fd_, name, storage, size);
 }
 
 }  // namespace yquant::tradingd

@@ -73,6 +73,40 @@ struct JournalCursor {
   std::uint64_t lsn = 0;
 };
 
+// Returns the position before LSN 1. A stream identifier must be nonzero.
+JournalCursor JournalStartCursor(std::uint64_t stream_id) noexcept;
+
+// Reads a CRC-checked control file without acquiring LOCK. Atomic replacement
+// by SaveFile may run concurrently. Name and size limits match LoadFile.
+// Failure preserves size; storage contents are unspecified on failure.
+[[nodiscard]] base::Status ReadJournalFile(const char* directory,
+                                           const char* name,
+                                           std::span<std::byte> storage,
+                                           std::size_t& size) noexcept;
+
+// Reads business records after cursor through the inclusive LSN bound, without
+// acquiring LOCK or accessing a Journal object. The caller supplies a validated
+// cursor and a bound no greater than the writer's acquired durable_lsn. Appends
+// may run concurrently; existing segments must not be removed or modified.
+// Each borrowed callback payload is a private, fixed-capacity copy. Success
+// advances cursor through the bound. Invalid/missing records before the bound
+// fail; cursor is unchanged on failure, including callback failure, although
+// earlier callbacks may already have run. through_lsn must be >= cursor.lsn.
+[[nodiscard]] base::Status ScanJournal(const char* directory,
+                                       JournalCursor& cursor,
+                                       std::uint64_t through_lsn,
+                                       JournalReplayCallback callback,
+                                       void* context) noexcept;
+
+// Finds the valid prefix from LSN 1 without acquiring LOCK. Stops at the first
+// invalid/unpublished tail or missing continuation and never skips records;
+// invalid required segment headers fail. Synchronizes every inspected segment
+// and its directory before publishing result. The caller must exclude writes
+// to this stream and retain its files until return. Failure preserves result.
+[[nodiscard]] base::Status ProbeJournal(const char* directory,
+                                        std::uint64_t stream_id,
+                                        JournalReplayResult& result) noexcept;
+
 // One owning thread acquires the directory lock, replays old streams and starts
 // a fresh stream. Thereafter only that thread calls TryAppend. Appending writes
 // MAP_SHARED pages without allocation, mutexes, file syscalls or sync waits.

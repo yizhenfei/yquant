@@ -102,6 +102,9 @@ set_target_properties(yquant_strategyd PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 add_library(yquant_tradingd_runtime STATIC
+  src/tradingd/archive_projection.cc
+  src/tradingd/mysql_archive.cc
+  src/tradingd/mysql_archive_store.cc
   src/tradingd/journal.cc
   src/tradingd/recovery.cc
   src/tradingd/config.cc
@@ -112,6 +115,14 @@ target_link_libraries(yquant_tradingd_runtime PUBLIC
   yquant_strategyd_runtime yquant_trading_wire
   PRIVATE simdjson::simdjson Threads::Threads)
 target_compile_options(yquant_tradingd_runtime PRIVATE -Wall -Wextra -Wpedantic)
+option(YQUANT_WITH_MYSQL "Enable MySQL trading archive (Oracle client API)" OFF)
+if(YQUANT_WITH_MYSQL)
+  find_path(YQUANT_MYSQL_INCLUDE_DIR mysql.h PATH_SUFFIXES mysql REQUIRED)
+  find_library(YQUANT_MYSQL_LIBRARY NAMES mysqlclient REQUIRED)
+  target_include_directories(yquant_tradingd_runtime PRIVATE "${YQUANT_MYSQL_INCLUDE_DIR}")
+  target_link_libraries(yquant_tradingd_runtime PRIVATE "${YQUANT_MYSQL_LIBRARY}")
+  target_compile_definitions(yquant_tradingd_runtime PUBLIC YQUANT_WITH_MYSQL=1)
+endif()
 add_executable(yquant_tradingd src/tradingd/main.cc)
 target_link_libraries(yquant_tradingd PRIVATE yquant_tradingd_runtime)
 target_compile_options(yquant_tradingd PRIVATE -Wall -Wextra -Wpedantic)
@@ -191,7 +202,7 @@ foreach(config IN ITEMS mock_source local tcp_source tcp_relay record_local
     "${CMAKE_BINARY_DIR}/marketd/${config}.json" COPYONLY)
 endforeach()
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/tradingd")
-foreach(config IN ITEMS local persistent client_1 client_2)
+foreach(config IN ITEMS local persistent mysql client_1 client_2)
   configure_file("examples/tradingd/${config}.json"
     "${CMAKE_BINARY_DIR}/tradingd/${config}.json" COPYONLY)
 endforeach()

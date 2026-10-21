@@ -23,7 +23,7 @@ inline constexpr std::uint64_t kIdentityVersion = 2;
 inline constexpr std::uint16_t kLedgerRecord = 1;
 inline constexpr std::uint16_t kMockRecord = 2;
 inline constexpr std::uint16_t kRejectedRecord = 3;
-inline constexpr std::size_t kIdentityBufferBytes = 32 * 1024;
+inline constexpr std::size_t kIdentityBufferBytes = kArchiveIdentityBytes;
 inline constexpr std::size_t kControlBufferBytes = 256;
 inline constexpr std::size_t kSnapshotNameBytes = 96;
 inline constexpr std::size_t kRecoveryStepBudget =
@@ -84,7 +84,12 @@ base::Status WriteMessage(StateWriter& writer,
                           const Message& message) noexcept {
   std::array<std::byte, kMaxFrameSize> bytes{};
   std::size_t size = 0;
-  auto status = EncodeMessage(message, bytes, size);
+  // Persistent copies do not traverse Connection::Queue, which normally
+  // assigns the transport sequence. Use a valid envelope for the shared codec;
+  // this sequence is never replayed to a client.
+  auto encoded = message;
+  if (encoded.sequence == 0) encoded.sequence = 1;
+  auto status = EncodeMessage(encoded, bytes, size);
   if (!status.ok()) return status;
   writer.U64(size);
   writer.Bytes(std::span(bytes).first(size));
@@ -313,7 +318,14 @@ base::Status Server::Storage::SaveIdentity() noexcept {
     }
   }
   if (!writer.ok()) return {base::ErrorCode::kResourceExhausted, {}};
-  return journal.SaveFile("IDENTITY", std::span(bytes).first(writer.size()));
+  auto status =
+      journal.SaveFile("IDENTITY", std::span(bytes).first(writer.size()));
+  if (status.ok() && config.mysql_archive.enabled) {
+    char name[96];
+    ArchiveName(name, "identity", last_namespace);
+    status = journal.SaveFile(name, std::span(bytes).first(writer.size()));
+  }
+  return status;
 }
 
 base::Status Server::Storage::LoadIdentity() noexcept {
@@ -739,6 +751,11 @@ base::Status Server::Storage::StartPersistence() noexcept {
   status = CaptureCheckpoint(clock_.Now());
   if (status.ok()) status = PublishCheckpoint();
   if (!status.ok()) return status;
+  if (config.mysql_archive.enabled) {
+    status = PublishArchiveBaseline(p.initialize);
+    if (status.ok()) status = mysql_archive.Start(config, journal, run_id);
+    if (!status.ok()) return status;
+  }
   status = trading.SetMutationSink(this);
   if (!status.ok()) return status;
   mock.SetMutationObserver(ObserveMock, this);
@@ -748,6 +765,86 @@ base::Status Server::Storage::StartPersistence() noexcept {
     return {base::ErrorCode::kResourceExhausted, {}};
   checkpoint_thread_started = true;
   return {};
+}
+
+base::Status Server::Storage::SaveArchiveEnd(std::uint64_t run,
+                                             std::uint64_t lsn) noexcept {
+  char name[96];
+  ArchiveName(name, "end", run);
+  std::array<std::byte, 32> bytes{};
+  StateWriter writer(bytes);
+  writer.U64(kArchiveFormatVersion);
+  writer.U64(run);
+  writer.U64(lsn);
+  // Existing end manifests are immutable. A replay cannot silently shrink or
+  // extend a previously published final boundary.
+  std::array<std::byte, 32> existing{};
+  std::size_t size = 0;
+  auto status = journal.LoadFile(name, existing, size);
+  if (status.ok()) {
+    if (size != writer.size() ||
+        std::memcmp(existing.data(), bytes.data(), size) != 0)
+      return CorruptState();
+    return {};
+  }
+  if (status.system_error.value() != ENOENT) return status;
+  return journal.SaveFile(name, std::span(bytes).first(writer.size()));
+}
+
+base::Status Server::Storage::PublishArchiveBaseline(
+    bool initialized) noexcept {
+  std::uint64_t previous = 0;
+  for (;;) {
+    std::uint64_t next = 0;
+    auto status = NextArchiveRun(config.persistence.directory, previous, next);
+    if (!status.ok()) return status;
+    if (next == 0) break;
+    if (next >= run_id) return CorruptState();
+    previous = next;
+  }
+  JournalReplayResult prefix;
+  bool gap = !initialized && previous == 0;
+  if (previous != 0) {
+    auto status = ProbeJournal(config.persistence.directory, previous, prefix);
+    if (!status.ok()) return status;
+    status = SaveArchiveEnd(previous, prefix.last_lsn);
+    if (!status.ok()) return status;
+    gap = prefix.tail_discarded || replay_cursor.stream_id != previous;
+    // A durable checkpoint may cover missing records. Preserve the state while
+    // explicitly recording that individual historical events are unavailable.
+    gap |= replay_cursor.stream_id == previous &&
+           replay_cursor.lsn > prefix.last_lsn;
+  }
+  std::array<std::byte, kIdentityBufferBytes> metadata{};
+  std::size_t metadata_size = 0;
+  auto status = journal.LoadFile("IDENTITY", metadata, metadata_size);
+  if (!status.ok()) return status;
+  std::unique_ptr<std::byte[]> bytes(new (std::nothrow)
+                                         std::byte[kJournalMaxSnapshotBytes]);
+  if (!bytes) return {base::ErrorCode::kResourceExhausted, {}};
+  StateWriter baseline({bytes.get(), kJournalMaxSnapshotBytes});
+  baseline.U64(kArchiveFormatVersion);
+  for (auto id : ledger_id) baseline.U64(id);
+  baseline.U64(run_id);
+  baseline.Text(config.persistence.account_key);
+  baseline.U64(metadata_size);
+  baseline.Bytes(std::span(metadata).first(metadata_size));
+  baseline.U64(checkpoint_size);
+  baseline.Bytes({checkpoint.get(), checkpoint_size});
+  if (!baseline.ok()) return {base::ErrorCode::kResourceExhausted, {}};
+  char name[96];
+  ArchiveName(name, "base", run_id);
+  status = journal.SaveFile(name, {bytes.get(), baseline.size()});
+  if (!status.ok()) return status;
+  std::array<std::byte, 64> manifest{};
+  StateWriter writer(manifest);
+  writer.U64(kArchiveFormatVersion);
+  writer.U64(run_id);
+  writer.U64(previous);
+  writer.U64(prefix.last_lsn);
+  writer.U64(gap);
+  ArchiveName(name, "run", run_id);
+  return journal.SaveFile(name, std::span(manifest).first(writer.size()));
 }
 
 void* Server::Storage::CheckpointEntry(void* context) noexcept {

@@ -204,6 +204,17 @@ bool TradingImpl::TryGetOrderAt(std::size_t index,
   return true;
 }
 
+std::size_t TradingImpl::fill_count() const noexcept {
+  return storage_ != nullptr ? storage_->fill_count : 0;
+}
+
+bool TradingImpl::TryGetFillAt(std::size_t index,
+                              model::Fill& out) const noexcept {
+  if (storage_ == nullptr || index >= storage_->fill_count) return false;
+  out = storage_->fills[index];
+  return true;
+}
+
 base::Status TradingImpl::SetNextOrderIdAtLeast(std::uint64_t id) noexcept {
   if (storage_ == nullptr || running_ || phase_ != CallbackPhase::kNone ||
       id == 0) {

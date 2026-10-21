@@ -109,6 +109,11 @@ class TradingImpl final : public TradingRuntime {
   // Cold/bounded retained-slot iteration; false preserves out.
   [[nodiscard]] bool TryGetOrderAt(std::size_t index,
                                    model::OrderSnapshot& out) const noexcept;
+  std::size_t fill_count() const noexcept;
+  // Cold retained execution iteration; false preserves out. Access must be
+  // serialized with ledger mutations, matching the order iteration contract.
+  [[nodiscard]] bool TryGetFillAt(std::size_t index,
+                                model::Fill& out) const noexcept;
   // Cold identity allocation: never lowers the next ID, allocates no storage,
   // and changes no existing order. The owner persists its lease before use.
   [[nodiscard]] base::Status SetNextOrderIdAtLeast(std::uint64_t id) noexcept;

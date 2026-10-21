@@ -443,6 +443,11 @@ base::Status Server::Service(std::uint64_t now) noexcept {
     return Fail(base::ErrorCode::kInvalidState, "server is not initialized");
   auto& s = *storage_;
   s.PollCheckpoint(now);
+  if (s.mysql_archive.disk_full()) s.archive_disk_pressure = true;
+  if (s.archive_disk_pressure) {
+    BeginStopping(now);
+    s.trading.BeginStopping();
+  }
   if (s.degraded) {
     BeginStopping(now);
     s.trading.BeginStopping();
@@ -517,6 +522,11 @@ base::Status Server::Service(std::uint64_t now) noexcept {
         now - client.stop_time >= s.config.shutdown_timeout_ns)
       Disconnect(i);
   }
+  if (s.config.mysql_archive.enabled && !s.degraded)
+    s.mysql_archive.PublishApplied(s.journal.published_lsn());
+  if (s.archive_disk_pressure && is_drained())
+    return Fail(base::ErrorCode::kResourceExhausted,
+                "archive disk reserve exhausted");
   if (s.degraded && is_drained())
     return Fail(s.persistence_failure.code, s.persistence_detail);
   if (s.stopping && !is_drained() && now >= s.stop_time &&
@@ -610,6 +620,13 @@ base::Status Server::Finish() noexcept {
   if (status.ok()) status = s.PublishCheckpoint();
   if (!status.ok())
     return Fail(status.code, "final state synchronization failed");
+  if (s.config.mysql_archive.enabled) {
+    s.mysql_archive.PublishApplied(s.journal.published_lsn());
+    status = s.SaveArchiveEnd(s.run_id, s.journal.published_lsn());
+    if (!status.ok())
+      return Fail(status.code, "archive end synchronization failed");
+    s.mysql_archive.Stop(true);
+  }
   return {};
 }
 
@@ -617,6 +634,7 @@ void Server::Close() noexcept {
   if (!storage_) return;
   (void)storage_->trading.SetMutationSink(nullptr);
   storage_->mock.SetMutationObserver(nullptr, nullptr);
+  storage_->mysql_archive.Stop(false);
   storage_->StopCheckpoint();
   (void)storage_->adapter.Stop();
   (void)storage_->journal.Close();
