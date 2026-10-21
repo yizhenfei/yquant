@@ -12,7 +12,7 @@
 
 当前命令来源为启动参数和退出信号：命令行指定动态库与策略配置文件路径，可选提供宿主行情与交易配置，进程启动后将其转换为加载命令；`SIGINT`、`SIGTERM` 发布停止请求。策略进程仅使用主线程，同步处理请求、来源事件和策略回调，以前台常驻方式运行。
 
-每次进程运行只加载一个策略实例，支持模拟或共享内存行情与模拟柜台，不提供重新加载、热替换或多实例管理。持仓与资金账本随交易服务维护，真实柜台接入另行扩展。
+每次进程运行只加载一个策略实例，通过共享内存接收行情，支持模拟柜台，不提供重新加载、热替换或多实例管理。持仓与资金账本随交易服务维护，真实柜台接入另行扩展。
 
 ## 启动方式与命令
 
@@ -25,7 +25,7 @@
 
 `--strategy <path>` 与 `--config <path>` 为必填参数，各出现一次，顺序不限。缺少路径、空路径、重复参数或未知参数均输出用法并退出；`--help` 单独使用时输出用法并成功退出。
 
-`--market-data-config <path>` 为可选参数，最多出现一次，仅供宿主配置行情源。省略时标的字典为空，不接受行情订阅；不订阅行情的策略仍可正常启动和停止。行情配置按 `adapter` 选择 `mock` 或 `shm`；格式与命令示例见[行情驱动设计](market-data.md#配置与启动方式)，行情发布端见[行情进程设计](marketd.md)。
+`--market-data-config <path>` 为可选参数，最多出现一次，仅供宿主配置行情源。省略时标的字典为空，不接受行情订阅；不订阅行情的策略仍可正常启动和停止。行情配置的 `adapter` 只接受 `shm`；格式与命令示例见[行情驱动设计](market-data.md#配置与启动方式)，行情发布端见[行情进程设计](marketd.md)。
 
 `--trading-config <path>` 为可选参数，配置模拟柜台时必须同时提供行情配置，用它引用的共享字典解析运行范围并建立本地标的字典。参数约束和交易配置见[宿主交易配置](trading.md#宿主配置)。
 
@@ -290,12 +290,12 @@ tests/strategyd/missing_dependency.cc       缺失依赖场景的测试库
 | --- | --- |
 | `yquant_strategy_api`，别名 `yquant::strategy_api` | `INTERFACE`，提供公开头文件与编译要求 |
 | `yquant_strategyd_runtime` | 内部静态库，供程序和运行时测试复用加载、账本、调度及生命周期逻辑 |
-| `yquant_host_support` | 两个守护进程共用的配置读取、模拟行情和退出信号支持 |
+| `yquant_host_support` | 宿主行情接收配置与退出信号支持 |
 | `yquant_md`，别名 `yquant::md` | 行情事件广播适配与报价帧编解码 |
 | `yquant_strategyd` | 可执行程序，`OUTPUT_NAME` 为 `yquant-strategyd` |
 | `lifecycle_strategy` | `MODULE`，用户策略示例，不链接进策略进程 |
 | `parameterized_strategy` | `MODULE`，展示派生强类型配置，通过私有依赖解析自定义参数 |
-| `quote_observer_strategy` | `MODULE`，订阅行情，检查回调快照并输出停止汇总；宿主配置选择模拟或共享内存源 |
+| `quote_observer_strategy` | `MODULE`，订阅行情，检查回调快照并输出停止汇总；行情生产端提供模拟或其他上游输入，宿主通过共享内存接收 |
 | `order_lifecycle_strategy` | `MODULE`，提交一次限价委托，检查委托与成交回调及最终状态 |
 
 程序输出到 `build/<preset>/bin/`，策略模块输出到 `build/<preset>/strategies/`。示例模块去掉默认 `lib` 前缀，使用 CMake 的本机模块后缀；Linux 示例为 `lifecycle_strategy.so`。macOS 使用本机 `MODULE` 产物，测试与构建命令通过 `$<TARGET_FILE:...>` 取得实际路径，不手写后缀。

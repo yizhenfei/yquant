@@ -1,40 +1,35 @@
-#include "strategyd/mock_market_data_source.h"
+#include "yquant/md/mock_quote_source.h"
 
 #include <chrono>
 #include <cstdio>
 #include <limits>
 
-namespace yquant::strategyd {
+namespace yquant::md {
 
-base::Status MockMarketDataSource::Error(base::ErrorCode code,
-                                         const char* detail) noexcept {
+base::Status MockQuoteSource::Error(base::ErrorCode code,
+                                    const char* detail) noexcept {
   std::snprintf(error_detail_, sizeof(error_detail_), "%s", detail);
   return {code, {}};
 }
 
-MarketDataPollResult MockMarketDataSource::PollError(
-    base::ErrorCode code, const char* detail) noexcept {
+MockQuotePollResult MockQuoteSource::PollError(base::ErrorCode code,
+                                               const char* detail) noexcept {
   state_ = State::kFailed;
   deadline_.reset();
-  return {MarketDataPollState::kError, Error(code, detail)};
+  return {MockQuotePollState::kError, Error(code, detail)};
 }
 
-base::Status MockMarketDataSource::Prepare(
-    const MarketDataConfig& config) noexcept {
+base::Status MockQuoteSource::Prepare(const MockQuoteConfig& config) noexcept {
   if (state_ != State::kUnprepared) {
     return Error(base::ErrorCode::kInvalidState,
                  "source can only be prepared once before activation");
   }
   base::ConfigError error;
-  const auto result = ValidateMarketDataConfig(config, error);
+  const auto result = ValidateMockQuoteConfig(config, error);
   if (!result.ok()) {
     std::snprintf(error_detail_, sizeof(error_detail_), "%s: %s",
                   error.field_path, error.message);
     return result;
-  }
-  if (config.adapter != MarketDataAdapter::kMock) {
-    return Error(base::ErrorCode::kInvalidArgument,
-                 "mock source requires adapter=mock");
   }
   config_ = config;
   state_ = State::kPrepared;
@@ -42,65 +37,37 @@ base::Status MockMarketDataSource::Prepare(
   return {};
 }
 
-base::Status MockMarketDataSource::Start(
-    std::span<const model::InstrumentId> subscriptions,
-    std::uint64_t now) noexcept {
-  if (state_ != State::kPrepared) {
+base::Status MockQuoteSource::Start(std::uint64_t now) noexcept {
+  if (state_ != State::kPrepared)
     return Error(base::ErrorCode::kInvalidState,
                  "source must be prepared before activation");
-  }
-  if (subscriptions.size() > kMaxMarketDataInstruments) {
-    return Error(base::ErrorCode::kInvalidArgument,
-                 "too many market data subscriptions");
-  }
-  if (!subscriptions.empty() &&
-      now > std::numeric_limits<std::uint64_t>::max() - config_.interval_ns) {
+  if (now > std::numeric_limits<std::uint64_t>::max() - config_.interval_ns)
     return Error(base::ErrorCode::kResourceExhausted,
                  "initial market data deadline overflows");
-  }
-  std::array<bool, kMaxMarketDataInstruments> selected = {};
-  for (const auto id : subscriptions) {
-    std::size_t index = 0;
-    while (index < config_.instrument_count &&
-           config_.instruments[index].instrument.id != id)
-      ++index;
-    if (index == config_.instrument_count || selected[index]) {
-      return Error(base::ErrorCode::kInvalidArgument,
-                   "subscription contains an unknown or duplicate instrument");
-    }
-    selected[index] = true;
-  }
-  // Store the selection in configuration order, regardless of registration
-  // order, so each batch follows the configured source stream
-  // deterministically.
-  subscription_count_ = 0;
-  for (std::size_t index = 0; index < config_.instrument_count; ++index) {
-    if (selected[index]) subscribed_indices_[subscription_count_++] = index;
-  }
   next_index_ = 0;
   shifted_batch_ = false;
   sequences_.fill(0);
-  if (subscription_count_ != 0) deadline_ = now + config_.interval_ns;
+  deadline_ = now + config_.interval_ns;
   state_ = State::kActive;
   error_detail_[0] = '\0';
   return {};
 }
 
-MarketDataPollResult MockMarketDataSource::Poll(
-    std::uint64_t now, model::QuoteTick& out) noexcept {
+MockQuotePollResult MockQuoteSource::Poll(std::uint64_t now,
+                                          model::QuoteTick& out) noexcept {
   if (state_ != State::kActive) {
-    return {MarketDataPollState::kError,
+    return {MockQuotePollState::kError,
             Error(base::ErrorCode::kInvalidState,
                   "source must be active when polling")};
   }
   if (!deadline_.has_value() || now < *deadline_) return {};
-  const auto index = subscribed_indices_[next_index_];
+  const auto index = next_index_;
   const auto& item = config_.instruments[index];
   if (sequences_[index] == std::numeric_limits<std::uint64_t>::max()) {
     return PollError(base::ErrorCode::kResourceExhausted,
                      "market data sequence exhausted");
   }
-  const bool last = next_index_ + 1 == subscription_count_;
+  const bool last = next_index_ + 1 == config_.instrument_count;
   if (last &&
       now > std::numeric_limits<std::uint64_t>::max() - config_.interval_ns) {
     return PollError(base::ErrorCode::kResourceExhausted,
@@ -150,15 +117,14 @@ MarketDataPollResult MockMarketDataSource::Poll(
     deadline_ = now;
   }
   out = tick;
-  return {MarketDataPollState::kEvent, {}};
+  return {MockQuotePollState::kEvent, {}};
 }
 
-base::Status MockMarketDataSource::Stop() noexcept {
+base::Status MockQuoteSource::Stop() noexcept {
   state_ = State::kStopped;
   deadline_.reset();
-  subscription_count_ = 0;
   next_index_ = 0;
   return {};
 }
 
-}  // namespace yquant::strategyd
+}  // namespace yquant::md

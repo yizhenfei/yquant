@@ -80,7 +80,7 @@ flowchart LR
 ```json
 {
   "listen": {"address": "127.0.0.1", "port": 19200},
-  "market_data_config": "examples/strategies/mock_market_data.json",
+  "market_data_config": "examples/strategies/market_data.json",
   "trading_config": "examples/strategies/mock_trading.json",
   "token": "yquant-local-demo",
   "max_clients": 16,
@@ -116,7 +116,7 @@ flowchart LR
 ./build/debug/bin/yquant-strategyd \
   --strategy ./build/debug/strategies/shared_account_strategy.so \
   --config ./build/debug/strategies/shared_account_strategy.json \
-  --market-data-config ./build/debug/strategies/mock_market_data.json \
+  --market-data-config ./build/debug/strategies/market_data.json \
   --trading-config ./build/debug/tradingd/client_1.json
 ```
 

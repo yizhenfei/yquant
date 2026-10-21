@@ -20,7 +20,7 @@ class ContextTestClock final : public MonotonicClock {
 MarketDataConfig ContextConfig(model::SourceId source_id = {1}) {
   MarketDataConfig config;
   config.source_id = source_id;
-  config.interval_ns = 1000000;
+
   config.instrument_count = 2;
   const char* symbols[] = {"600000", "600001"};
   for (std::size_t index = 0; index < config.instrument_count; ++index) {
@@ -33,11 +33,6 @@ MarketDataConfig ContextConfig(model::SourceId source_id = {1}) {
       item.instrument.symbol[digit] = symbols[index][digit];
     }
     item.instrument.price_decimals = 2;
-    item.bid_price = 1000;
-    item.bid_qty = 100;
-    item.ask_price = 1001;
-    item.ask_qty = 200;
-    item.price_step = 1;
   }
   return config;
 }

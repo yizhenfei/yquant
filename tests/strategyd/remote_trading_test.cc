@@ -26,7 +26,7 @@ class RemoteTradingTest : public ::testing::Test {
  protected:
   void SetUp() override {
     dictionary.source_id = {1};
-    dictionary.interval_ns = 1000000;
+
     dictionary.instrument_count = 1;
     auto& item = dictionary.instruments[0];
     ASSERT_EQ(model::MakeInstrumentId("SSE", "600000", item.instrument.id),
@@ -35,11 +35,7 @@ class RemoteTradingTest : public ::testing::Test {
     item.instrument.venue = model::Venue::kSse;
     std::memcpy(item.instrument.symbol, "600000", model::kSymbolLength);
     item.instrument.price_decimals = 2;
-    item.bid_price = 1000;
-    item.ask_price = 1001;
-    item.bid_qty = 100;
-    item.ask_qty = 100;
-    item.price_step = 1;
+
     ASSERT_TRUE(market.Configure(dictionary).ok());
     config.adapter = TradingAdapterKind::kTcp;
     config.remote.client_id = 9;

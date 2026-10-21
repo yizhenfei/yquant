@@ -74,10 +74,8 @@ set_target_properties(strategyd_fixture_missing_dependency PROPERTIES
   INSTALL_RPATH "${strategy_dependency_rpath}")
 
 add_executable(yquant_strategyd_test
-  tests/strategyd/instrument_catalog_test.cc
   tests/strategyd/market_model_test.cc
   tests/strategyd/market_data_config_test.cc
-  tests/strategyd/mock_market_data_source_test.cc
   tests/strategyd/shm_market_data_source_test.cc
   tests/strategyd/market_runner_test.cc
   tests/strategyd/strategy_context_test.cc
@@ -97,7 +95,7 @@ target_compile_options(yquant_strategyd_test PRIVATE -Wall -Wextra -Wpedantic)
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/test_data")
 configure_file("tests/fixtures/instruments.json"
   "${CMAKE_BINARY_DIR}/test_data/instruments.json" COPYONLY)
-foreach(config IN ITEMS lifecycle typed quote_observer mock_market_data
+foreach(config IN ITEMS lifecycle typed quote_observer market_data
     trading_strategy mock_trading)
   configure_file("tests/strategyd/configs/${config}.json"
     "${CMAKE_BINARY_DIR}/test_data/${config}.json" COPYONLY)
@@ -114,7 +112,7 @@ target_compile_definitions(yquant_strategyd_test PRIVATE
   YQUANT_TEST_TYPED_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/typed.json")
 target_compile_definitions(yquant_strategyd_test PRIVATE
   YQUANT_TEST_QUOTE_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/quote_observer.json"
-  YQUANT_TEST_MARKET_DATA_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/mock_market_data.json"
+  YQUANT_TEST_MARKET_DATA_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/market_data.json"
   YQUANT_TEST_QUOTE_EXAMPLE_PATH="$<TARGET_FILE:quote_observer_strategy>"
   YQUANT_TEST_QUOTE_EXAMPLE_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/quote_observer_strategy.json")
 target_compile_definitions(yquant_strategyd_test PRIVATE

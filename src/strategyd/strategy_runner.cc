@@ -114,9 +114,7 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
     }
     dictionary = market_loader.config();
     if (source_ == nullptr) {
-      source_ = market_loader.config().adapter == MarketDataAdapter::kShm
-                    ? static_cast<MarketDataSource*>(&shm_source_)
-                    : static_cast<MarketDataSource*>(&mock_source_);
+      source_ = &shm_source_;
     }
     // Prepare may acquire resources before reporting failure; Stop is safe
     // even when preparation did not finish.

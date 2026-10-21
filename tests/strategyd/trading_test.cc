@@ -74,7 +74,7 @@ class TradingTest : public ::testing::Test {
   void SetUp() override {
     auto& config = market_config;
     config.source_id = {1};
-    config.interval_ns = 1000000;
+
     config.instrument_count = 1;
     auto& item = config.instruments[0];
     ASSERT_EQ(model::MakeInstrumentId("SSE", "600000", item.instrument.id),
@@ -83,11 +83,7 @@ class TradingTest : public ::testing::Test {
     item.instrument.venue = model::Venue::kSse;
     std::memcpy(item.instrument.symbol, "600000", model::kSymbolLength);
     item.instrument.price_decimals = 2;
-    item.bid_price = 1000;
-    item.ask_price = 1001;
-    item.bid_qty = 100;
-    item.ask_qty = 200;
-    item.price_step = 1;
+
     ASSERT_TRUE(market_data.Configure(config).ok());
     TradingAccountSnapshot account;
     account.cash_balance = std::numeric_limits<std::int64_t>::max();

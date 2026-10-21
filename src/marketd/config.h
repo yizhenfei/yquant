@@ -6,8 +6,8 @@
 
 #include "marketd/file_config.h"
 #include "marketd/tcp_transport.h"
-#include "strategyd/market_data_config.h"
 #include "yquant/base/config_error.h"
+#include "yquant/md/mock_quote_config.h"
 
 namespace yquant::marketd {
 
@@ -21,7 +21,7 @@ enum class Adapter { kMock, kShm, kTcp, kReplay, kRecord };
 // is loaded before any transport is opened. Paths and names are NUL-terminated.
 struct SourceConfig {
   Adapter adapter = Adapter::kMock;
-  strategyd::MarketDataConfig mock;
+  md::MockQuoteConfig mock;
   char runtime_directory[kMaxRuntimePathBytes + 1] = {};
   char stream[kMaxStreamBytes + 1] = {};
   TcpEndpoint tcp;

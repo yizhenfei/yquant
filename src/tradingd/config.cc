@@ -154,7 +154,7 @@ base::Status ValidateConfig(const ServerConfig& config,
       config.shutdown_timeout_ns > kMaximumTimeoutNs)
     return InvalidConfig("shutdown_timeout_ms", "must be from 1000 to 60000 ms",
                          error);
-  auto status = strategyd::ValidateMarketDataConfig(config.market_data, error);
+  auto status = strategyd::ValidateMarketDataScope(config.market_data, error);
   if (!status.ok()) return status;
   status = strategyd::ValidateTradingConfig(config.trading, error);
   if (!status.ok()) return status;

@@ -430,9 +430,7 @@ base::Status ValidateConfig(const MarketdConfig& config,
   base::Status status;
   switch (config.source.adapter) {
     case Adapter::kMock:
-      if (config.source.mock.adapter != strategyd::MarketDataAdapter::kMock)
-        return InvalidConfig("source.config.adapter", "must be mock", error);
-      status = strategyd::ValidateMarketDataConfig(config.source.mock, error);
+      status = md::ValidateMockQuoteConfig(config.source.mock, error);
       break;
     case Adapter::kShm:
       status = ValidateShm(config.source.runtime_directory,
@@ -576,7 +574,7 @@ base::Status ConfigLoader::Load(const char* path) noexcept {
     status = ResolveConfigPath(mock_path, std::span(mock_path), "source.config",
                                error_);
     if (!status.ok()) return status;
-    strategyd::MarketDataConfigLoader loader;
+    md::MockQuoteConfigLoader loader;
     status = loader.Load(mock_path);
     if (!status.ok()) {
       char field[256];

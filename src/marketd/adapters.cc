@@ -1,9 +1,7 @@
 #include "marketd/adapters.h"
 
-#include <array>
 #include <cstdio>
 #include <limits>
-#include <span>
 
 #include "yquant/md/quote_codec.h"
 
@@ -21,24 +19,21 @@ std::uint64_t NextControl(std::uint64_t now) noexcept {
 
 }  // namespace
 
-base::Status MockSource::Init(const strategyd::MarketDataConfig& config,
+base::Status MockSource::Init(const md::MockQuoteConfig& config,
                               std::uint64_t now) noexcept {
   auto status = source_.Prepare(config);
   if (!status.ok()) return status;
-  std::array<model::InstrumentId, strategyd::kMaxMarketDataInstruments> ids;
-  for (std::size_t i = 0; i < config.instrument_count; ++i)
-    ids[i] = config.instruments[i].instrument.id;
-  return source_.Start(std::span(ids).first(config.instrument_count), now);
+  return source_.Start(now);
 }
 
 PollResult MockSource::Poll(std::uint64_t now, model::QuoteTick& out) noexcept {
   const auto result = source_.Poll(now, out);
   switch (result.state) {
-    case strategyd::MarketDataPollState::kEvent:
+    case md::MockQuotePollState::kEvent:
       return {PollState::kEvent, result.status};
-    case strategyd::MarketDataPollState::kIdle:
+    case md::MockQuotePollState::kIdle:
       return {PollState::kIdle, result.status};
-    case strategyd::MarketDataPollState::kError:
+    case md::MockQuotePollState::kError:
       return {PollState::kError, result.status};
   }
   return {PollState::kError, {base::ErrorCode::kInternalError, {}}};

@@ -1,4 +1,4 @@
-#include "strategyd/instrument_catalog.h"
+#include "yquant/md/instrument_catalog.h"
 
 #include <simdjson.h>
 
@@ -17,7 +17,7 @@
 #include "yquant/base/json_config_document.h"
 #include "yquant/model/identifiers.h"
 
-namespace yquant::strategyd {
+namespace yquant::md {
 namespace {
 
 using base::InvalidConfig;
@@ -206,4 +206,4 @@ bool InstrumentCatalog::Find(model::InstrumentId id,
   return true;
 }
 
-}  // namespace yquant::strategyd
+}  // namespace yquant::md

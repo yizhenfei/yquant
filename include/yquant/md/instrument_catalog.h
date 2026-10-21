@@ -1,5 +1,5 @@
-#ifndef YQUANT_STRATEGYD_INSTRUMENT_CATALOG_H_
-#define YQUANT_STRATEGYD_INSTRUMENT_CATALOG_H_
+#ifndef YQUANT_MD_INSTRUMENT_CATALOG_H_
+#define YQUANT_MD_INSTRUMENT_CATALOG_H_
 
 #include <cstddef>
 #include <memory>
@@ -8,7 +8,7 @@
 #include "yquant/base/status.h"
 #include "yquant/model/instrument.h"
 
-namespace yquant::strategyd {
+namespace yquant::md {
 
 // Catalog capacity is independent of a process's active instrument limit.
 inline constexpr std::size_t kMaxInstrumentCatalogEntries = 16384;
@@ -39,6 +39,6 @@ class InstrumentCatalog {
   base::ConfigError error_;
 };
 
-}  // namespace yquant::strategyd
+}  // namespace yquant::md
 
-#endif  // YQUANT_STRATEGYD_INSTRUMENT_CATALOG_H_
+#endif  // YQUANT_MD_INSTRUMENT_CATALOG_H_

@@ -324,7 +324,7 @@ void CheckTradingHeap(bool cancel, bool sell = false) {
   TradingHeapClock clock;
   MarketDataConfig market_config;
   market_config.source_id = {1};
-  market_config.interval_ns = 1000000;
+
   market_config.instrument_count = 1;
   auto& item = market_config.instruments[0];
   ASSERT_EQ(model::MakeInstrumentId("SSE", "600000", item.instrument.id),
@@ -332,10 +332,7 @@ void CheckTradingHeap(bool cancel, bool sell = false) {
   item.instrument.venue = model::Venue::kSse;
   std::copy_n("600000", model::kSymbolLength, item.instrument.symbol);
   item.instrument.price_decimals = 2;
-  item.bid_price = 1000;
-  item.ask_price = 1001;
-  item.bid_qty = 100;
-  item.ask_qty = 200;
+
   MarketDataImpl market_data(clock);
   ASSERT_TRUE(market_data.Configure(market_config).ok());
   TradingImpl trading(clock, market_data);

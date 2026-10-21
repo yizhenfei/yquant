@@ -1,8 +1,12 @@
 add_executable(yquant_md_test
+  tests/md/instrument_catalog_test.cc
+  tests/md/mock_quote_source_test.cc
+  tests/md/mock_quote_config_test.cc
   tests/md/event_filter_test.cc
   tests/md/shm_broadcast_test.cc
   tests/md/quote_codec_test.cc)
-target_include_directories(yquant_md_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_include_directories(yquant_md_test PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/tests")
+target_compile_definitions(yquant_md_test PRIVATE YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json")
 target_link_libraries(yquant_md_test PRIVATE
   yquant::md GTest::gtest_main Threads::Threads)
 target_compile_options(yquant_md_test PRIVATE -Wall -Wextra -Wpedantic)

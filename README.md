@@ -110,24 +110,24 @@ cmake -P cmake/DownloadTestData.cmake
 
 强类型参数示例见 [parameterized_strategy.cc](examples/strategies/parameterized_strategy.cc) 和[配套配置](examples/strategies/parameterized_strategy.json)。构建后将上述命令的动态库与配置文件名都换成 `parameterized_strategy` 即可运行；配置约定见[策略配置设计](docs/design/strategy-config.md)。
 
-使用模拟行情驱动观察策略：
+先按[行情进程](#行情进程)启动 `marketd` 的模拟输入，再在另一个终端启动观察策略：
 
 ```sh
 ./build/debug/bin/yquant-strategyd \
   --strategy ./build/debug/strategies/quote_observer_strategy.so \
   --config ./build/debug/strategies/quote_observer_strategy.json \
-  --market-data-config ./build/debug/strategies/mock_market_data.json
+  --market-data-config ./build/debug/strategies/market_data.json
 ```
 
-`--market-data-config` 为可选的宿主行情配置，可选择模拟源或共享内存源，并将行情服务绑定到配置中的唯一来源。配置通过 `instrument_catalog` 引用[共享标的文件](examples/instruments.json)，`instruments` 只列运行标的身份及模拟源所需的价量参数，价格精度统一从字典读取。示例使用来源 `1`，每 100 ms 生成 `SSE/600000` 的一档报价；观察策略只通过 `parameters.venue` 和 `parameters.symbol` 选择标的。首次行情输出 `quote_observer: first quote received`，停止时输出 `ticks`、`last_sequence` 和 `max_age_ns` 汇总。省略行情配置时，两个不订阅行情的示例仍可运行。路径规则与字典格式见[行情驱动设计](docs/design/market-data.md#共享标的字典)。
+`--market-data-config` 为可选的宿主行情接收配置，使用共享内存并绑定唯一来源。配置通过 `instrument_catalog` 引用[共享标的文件](examples/instruments.json)，`instruments` 只列接收范围内的标的身份。模拟报价的价量、步长和间隔配置在 `marketd` 生产端。观察策略首次行情输出 `quote_observer: first quote received`，停止时输出 `ticks`、`last_sequence` 和 `max_age_ns` 汇总。省略行情配置时，不订阅行情的示例仍可运行。路径规则与字典格式见[行情驱动设计](docs/design/market-data.md#共享标的字典)。
 
-运行单笔限价委托示例：
+保持 `marketd` 运行，再启动单笔限价委托示例：
 
 ```sh
 ./build/debug/bin/yquant-strategyd \
   --strategy ./build/debug/strategies/order_lifecycle_strategy.so \
   --config ./build/debug/strategies/order_lifecycle_strategy.json \
-  --market-data-config ./build/debug/strategies/mock_market_data.json \
+  --market-data-config ./build/debug/strategies/market_data.json \
   --trading-config ./build/debug/strategies/mock_trading.json
 ```
 
@@ -147,7 +147,7 @@ cmake -P cmake/DownloadTestData.cmake
 ./build/debug/bin/yquant-strategyd \
   --strategy ./build/debug/strategies/shared_account_strategy.so \
   --config ./build/debug/strategies/shared_account_strategy.json \
-  --market-data-config ./build/debug/strategies/mock_market_data.json \
+  --market-data-config ./build/debug/strategies/market_data.json \
   --trading-config ./build/debug/tradingd/client_1.json
 ```
 
@@ -200,7 +200,7 @@ cmake --build --preset debug --target download_test_data
 - [单写多读广播队列](docs/design/broadcast-queue.md)：外部内存、seqlock、独立游标和覆盖缺口。
 - [策略进程与动态策略加载设计](docs/design/strategyd.md)：生命周期接口、动态库协议与命令执行流程。
 - [策略配置设计](docs/design/strategy-config.md)：JSON 分层、强类型配置与启动校验。
-- [行情驱动与策略事件循环](docs/design/market-data.md)：一档报价、策略上下文、模拟行情源与事件分派。
+- [行情驱动与策略事件循环](docs/design/market-data.md)：一档报价、策略上下文、共享内存接收与事件分派。
 - [行情进程设计](docs/design/marketd.md)：可配置行情管线、本机广播和跨机中继。
 - [行情回放与录制](docs/design/market-data-replay.md)：真实 CSV 转换、回放时序和异步录制格式。
 - [共享内存行情广播组件](docs/design/shared-memory-broadcast.md)：映射、流注册、心跳、重启隔离和行情适配。

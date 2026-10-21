@@ -8,9 +8,9 @@
 
 #include "gtest/gtest.h"
 #include "strategyd/market_data.h"
-#include "strategyd/mock_market_data_source.h"
 #include "strategyd/strategy_context.h"
 #include "strategyd/trading.h"
+#include "yquant/md/mock_quote_source.h"
 #include "yquant/model/identifiers.h"
 
 namespace {
@@ -155,7 +155,7 @@ struct ExerciseCounts {
 
 // Performs only allocation-counted work. A literal failure reason and counters
 // defer all GoogleTest reporting until after the observation window closes.
-const char* ExerciseMarketData(MockMarketDataSource& source,
+const char* ExerciseMarketData(md::MockQuoteSource& source,
                                MarketDataImpl& market_data,
                                const strategy::StrategyContext& context,
                                ManualClock& clock, std::uint64_t interval,
@@ -167,7 +167,7 @@ const char* ExerciseMarketData(MockMarketDataSource& source,
   for (std::size_t batch = 0; batch < kBatches; ++batch) {
     const auto idle_output = tick;
     clock.now += interval - 1;
-    if (source.Poll(clock.Now(), tick).state != MarketDataPollState::kIdle ||
+    if (source.Poll(clock.Now(), tick).state != md::MockQuotePollState::kIdle ||
         tick != idle_output) {
       return "idle polling changed the output or produced early data";
     }
@@ -176,7 +176,8 @@ const char* ExerciseMarketData(MockMarketDataSource& source,
     for (std::size_t instrument = 0; instrument < instrument_count;
          ++instrument) {
       const auto result = source.Poll(clock.Now(), tick);
-      if (result.state != MarketDataPollState::kEvent || !result.status.ok()) {
+      if (result.state != md::MockQuotePollState::kEvent ||
+          !result.status.ok()) {
         return "source failed to produce the next scheduled quote";
       }
       bool accepted = false;
@@ -273,7 +274,7 @@ TEST(MarketDataCppHeapCounterTest, CountsReplacementOperatorCalls) {
 }
 
 TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
-  MarketDataConfig config;
+  md::MockQuoteConfig config;
   config.source_id = {17};
   config.interval_ns = 1000000;
   config.instrument_count = kMaxMarketDataInstruments;
@@ -299,7 +300,12 @@ TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
   MarketDataImpl market_data(clock);
   TradingImpl trading(clock, market_data);
   StrategyContextImpl context(clock, market_data, trading);
-  ASSERT_TRUE(market_data.Configure(config).ok());
+  MarketDataConfig host;
+  host.source_id = config.source_id;
+  host.instrument_count = config.instrument_count;
+  for (std::size_t i = 0; i < host.instrument_count; ++i)
+    host.instruments[i].instrument = config.instruments[i].instrument;
+  ASSERT_TRUE(market_data.Configure(host).ok());
   market_data.BeginCallback(CallbackPhase::kStart);
   for (std::size_t index = 0; index < config.instrument_count; ++index) {
     ASSERT_EQ(context.market_data().SubscribeQuotes(
@@ -307,9 +313,9 @@ TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
               base::ErrorCode::kOk);
   }
   market_data.EndCallback();
-  MockMarketDataSource source;
+  md::MockQuoteSource source;
   ASSERT_TRUE(source.Prepare(config).ok());
-  ASSERT_TRUE(source.Start(market_data.subscriptions(), clock.Now()).ok());
+  ASSERT_TRUE(source.Start(clock.Now()).ok());
 
   ExerciseCounts counts;
   const char* failure = nullptr;

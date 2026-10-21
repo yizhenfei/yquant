@@ -17,7 +17,7 @@
 #include <string_view>
 #include <utility>
 
-#include "strategyd/instrument_catalog.h"
+#include "yquant/md/instrument_catalog.h"
 
 namespace yquant::marketd {
 namespace {
@@ -251,7 +251,7 @@ base::Status LoadDolphinDbCsv(const ReplayConfig& config, ReplayData& output,
       config.max_records == 0 || config.max_records > kMaxReplayRecords)
     return Failure(error_detail, 0, "invalid replay configuration",
                    base::ErrorCode::kInvalidArgument);
-  strategyd::InstrumentCatalog catalog;
+  md::InstrumentCatalog catalog;
   auto status = catalog.Load(config.instrument_catalog);
   if (!status.ok()) {
     if (!error_detail.empty())

@@ -8,7 +8,6 @@
 
 #include "strategyd/event_loop_environment.h"
 #include "strategyd/market_data.h"
-#include "strategyd/mock_market_data_source.h"
 #include "strategyd/mock_trading_adapter.h"
 #include "strategyd/remote_trading.h"
 #include "strategyd/shm_market_data_source.h"
@@ -37,9 +36,10 @@ struct Stop {};
 class StrategyRunner {
  public:
   // Optional dependencies are borrowed until destruction. Defaults use the
-  // host's steady clock and a mock/SHM source selected by configuration.
-  // An injected source overrides that selection. Environment is optional for
-  // startup cancellation, but Run() requires an explicit environment.
+  // host's steady clock and shared-memory market-data receiver.
+  // Tests may inject a source through the same interface. Environment is
+  // optional for startup cancellation, but Run() requires an explicit
+  // environment.
   explicit StrategyRunner(const MonotonicClock* clock = nullptr,
                           MarketDataSource* source = nullptr,
                           EventLoopEnvironment* environment = nullptr,
@@ -145,7 +145,6 @@ class StrategyRunner {
   RemoteTrading remote_trading_;
   TradingRuntime* trading_runtime_ = &trading_;
   StrategyContextImpl context_;
-  MockMarketDataSource mock_source_;
   ShmMarketDataSource shm_source_;
   MarketDataSource* source_;
   MockTradingAdapter default_trading_adapter_;

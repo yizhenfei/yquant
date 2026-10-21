@@ -32,6 +32,9 @@ target_include_directories(yquant_strategy_api INTERFACE
 target_link_libraries(yquant_strategy_api INTERFACE yquant_compile_options)
 
 add_library(yquant_md STATIC
+  src/md/instrument_catalog.cc
+  src/md/mock_quote_config.cc
+  src/md/mock_quote_source.cc
   src/md/event_codec.cc
   src/md/quote_codec.cc
   src/md/shm_broadcast.cc)
@@ -41,18 +44,17 @@ target_include_directories(yquant_md PUBLIC
   PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(yquant_md PUBLIC
   yquant::base yquant_compile_options Threads::Threads)
+target_link_libraries(yquant_md PRIVATE simdjson::simdjson)
 target_compile_options(yquant_md PRIVATE -Wall -Wextra -Wpedantic)
 
-# Both daemons reuse host configuration, mock input and termination handling.
+# Host dictionary/receive configuration and termination handling are shared.
 add_library(yquant_host_support STATIC
-  src/strategyd/instrument_catalog.cc
   src/strategyd/market_data_config.cc
-  src/strategyd/mock_market_data_source.cc
   src/strategyd/termination_signals.cc)
 target_include_directories(yquant_host_support PUBLIC
   "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(yquant_host_support PUBLIC yquant::strategy_api
-  PRIVATE yquant::base simdjson::simdjson Threads::Threads)
+  PRIVATE yquant::base yquant::md simdjson::simdjson Threads::Threads)
 target_compile_options(yquant_host_support PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(yquant_trading_wire STATIC
@@ -150,8 +152,8 @@ target_link_libraries(order_lifecycle_strategy PRIVATE simdjson::simdjson)
 target_link_libraries(shared_account_strategy PRIVATE simdjson::simdjson)
 configure_file(examples/instruments.json
   "${CMAKE_BINARY_DIR}/instruments.json" COPYONLY)
-configure_file(examples/strategies/mock_market_data.json
-  "${CMAKE_BINARY_DIR}/strategies/mock_market_data.json" COPYONLY)
+configure_file(examples/strategies/market_data.json
+  "${CMAKE_BINARY_DIR}/strategies/market_data.json" COPYONLY)
 configure_file(examples/strategies/shm_market_data.json
   "${CMAKE_BINARY_DIR}/strategies/shm_market_data.json" COPYONLY)
 configure_file(examples/strategies/mock_trading.json

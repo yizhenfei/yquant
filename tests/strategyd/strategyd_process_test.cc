@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "market_data_feed.h"
 #include "test_config_file.h"
 
 extern char** environ;
@@ -88,6 +89,9 @@ class ChildProcess {
 
   int Start(const std::vector<std::string>& arguments, bool block_start = false,
             InheritedSignals signals = InheritedSignals::kUnchanged) {
+    auto adapted_arguments = arguments;
+    const int feed_error = feed_.Prepare(adapted_arguments);
+    if (feed_error) return feed_error;
     int output[2] = {-1, -1};
     int events[2] = {-1, -1};
     int release[2] = {-1, -1};
@@ -104,7 +108,8 @@ class ChildProcess {
     }
 
     std::vector<std::string> argv_storage{YQUANT_TEST_STRATEGYD_PATH};
-    argv_storage.insert(argv_storage.end(), arguments.begin(), arguments.end());
+    argv_storage.insert(argv_storage.end(), adapted_arguments.begin(),
+                        adapted_arguments.end());
     if (signals != InheritedSignals::kUnchanged) {
       argv_storage.insert(
           argv_storage.begin(),
@@ -248,6 +253,7 @@ class ChildProcess {
           return false;
         }
       }
+      if (output_.find("Running") != std::string::npos) feed_.Release();
       if (done()) {
         return true;
       }
@@ -268,6 +274,7 @@ class ChildProcess {
     }
   }
 
+  ::yquant::testing::MarketDataFeed feed_;
   pid_t pid_ = -1;
   int output_fd_ = -1;
   int event_fd_ = -1;
@@ -298,15 +305,15 @@ void ExpectQuoteLifecycle(const std::string& events, std::size_t min_quotes) {
   EXPECT_EQ(quotes, std::string(quotes.size(), 'Q'));
 }
 
-std::string MockMarketConfig(
+std::string HostMarketConfig(
     std::uint32_t interval_ms, std::uint32_t source_id = 1,
     std::string_view catalog = YQUANT_TEST_INSTRUMENT_CATALOG_PATH) {
   return R"({"source_id":)" + std::to_string(source_id) +
-         R"(,"instrument_catalog":")" + std::string(catalog) + '"' +
-         R"(,"adapter":"mock","interval_ms":)" + std::to_string(interval_ms) +
-         R"(,"instruments":[{"venue":"SSE","symbol":"600000",)"
-         R"("bid_price":1000,"bid_qty":100,)"
-         R"("ask_price":1001,"ask_qty":200,"price_step":1}]})";
+         R"(,"instrument_catalog":")" + std::string(catalog) +
+         R"(","adapter":"shm","runtime_directory":"/tmp/yquant-test-feed",)"
+         R"("stream":"quotes","poll_interval_us":)" +
+         std::to_string(interval_ms * 1000U) +
+         R"(,"instruments":[{"venue":"SSE","symbol":"600000"}]})";
 }
 
 TEST(StrategydProcessTest, HelpExitsSuccessfullyWithoutLoading) {
@@ -708,7 +715,7 @@ class QuoteObserverSourceTest : public ::testing::TestWithParam<std::uint32_t> {
 };
 
 TEST_P(QuoteObserverSourceTest, ReusesStrategyConfigAcrossHostSources) {
-  testing::ConfigFile market(MockMarketConfig(1, GetParam()));
+  testing::ConfigFile market(HostMarketConfig(1, GetParam()));
   ASSERT_TRUE(market.valid());
   ChildProcess child;
   ASSERT_EQ(child.Start({"--market-data-config", market.path(), "--config",
@@ -738,8 +745,28 @@ TEST_P(QuoteObserverSourceTest, ReusesStrategyConfigAcrossHostSources) {
 INSTANTIATE_TEST_SUITE_P(HostBinding, QuoteObserverSourceTest,
                          ::testing::Values(1U, 17U));
 
+TEST(StrategydMarketProcessTest, RejectsInProcessMockBeforeLibraryLoading) {
+  auto json = HostMarketConfig(1);
+  const auto adapter = json.find("\"shm\"");
+  ASSERT_NE(adapter, std::string::npos);
+  json.replace(adapter, 5, "\"mock\"");
+  testing::ConfigFile market(json);
+  ASSERT_TRUE(market.valid());
+  ChildProcess child;
+  ASSERT_EQ(child.Start({"--strategy", "/yquant-no-such-strategy.so",
+                         "--config", YQUANT_TEST_CONFIG_PATH,
+                         "--market-data-config", market.path()}),
+            0);
+  ASSERT_TRUE(child.Wait()) << child.output();
+  EXPECT_EQ(child.exit_code(), 1);
+  EXPECT_NE(child.output().find("stage=market_data_config"), std::string::npos);
+  EXPECT_NE(child.output().find("adapter"), std::string::npos);
+  EXPECT_EQ(child.output().find("stage=dlopen"), std::string::npos);
+  EXPECT_TRUE(child.events().empty());
+}
+
 TEST(StrategydMarketProcessTest, MarketConfigValidationPrecedesLibraryLoading) {
-  testing::ConfigFile market(MockMarketConfig(1, 0));
+  testing::ConfigFile market(HostMarketConfig(1, 0));
   ASSERT_TRUE(market.valid());
   ChildProcess child;
   ASSERT_EQ(child.Start({"--strategy", "/yquant-no-such-strategy.so",
@@ -769,7 +796,7 @@ TEST_P(CatalogFailureProcessTest, RejectsBeforeCreatingOrStartingStrategy) {
   if (fault.contents[0] == '\0') {
     ASSERT_EQ(unlink(catalog.path()), 0);
   }
-  testing::ConfigFile market(MockMarketConfig(1, 1, catalog.path()));
+  testing::ConfigFile market(HostMarketConfig(1, 1, catalog.path()));
   ASSERT_TRUE(market.valid());
   ChildProcess child;
   ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_QUOTES_PATH,
@@ -816,8 +843,9 @@ TEST(StrategydMarketProcessTest, MissingMarketConfigDoesNotCreateStrategy) {
   EXPECT_TRUE(child.events().empty());
 }
 
-TEST(StrategydMarketProcessTest, SignalInterruptsThe60000MillisecondInterval) {
-  testing::ConfigFile market(MockMarketConfig(60000));
+TEST(StrategydMarketProcessTest,
+     SignalInterruptsThe60000MillisecondPollInterval) {
+  testing::ConfigFile market(HostMarketConfig(60000));
   ASSERT_TRUE(market.valid());
   ChildProcess child;
   ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_QUOTES_PATH,

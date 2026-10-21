@@ -59,8 +59,8 @@ class RuntimeDirectory {
   bool valid_ = false;
 };
 
-inline strategyd::MarketDataConfig MockConfig(std::size_t count = 1) {
-  strategyd::MarketDataConfig config;
+inline md::MockQuoteConfig MockConfig(std::size_t count = 1) {
+  md::MockQuoteConfig config;
   config.source_id = {42};
   config.interval_ns = 1000000;
   config.instrument_count = count;

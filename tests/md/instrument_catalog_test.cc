@@ -1,4 +1,4 @@
-#include "strategyd/instrument_catalog.h"
+#include "yquant/md/instrument_catalog.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -7,15 +7,15 @@
 #include <type_traits>
 
 #include "gtest/gtest.h"
-#include "test_config_file.h"
+#include "strategyd/test_config_file.h"
 #include "yquant/model/identifiers.h"
 #include "yquant/model/instrument.h"
 
-namespace yquant::strategyd {
+namespace yquant::md {
 namespace {
 
 using base::ErrorCode;
-using testing::ConfigFile;
+using ::yquant::strategyd::testing::ConfigFile;
 
 static_assert(!std::is_move_constructible_v<InstrumentCatalog>);
 static_assert(!std::is_move_assignable_v<InstrumentCatalog>);
@@ -178,4 +178,4 @@ TEST(InstrumentCatalogTest, FailedReloadHidesAllDefinitionsAndCanLoadAgain) {
 }
 
 }  // namespace
-}  // namespace yquant::strategyd
+}  // namespace yquant::md

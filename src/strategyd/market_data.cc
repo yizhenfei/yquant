@@ -44,7 +44,7 @@ base::Status MarketDataImpl::Configure(
     return {base::ErrorCode::kInvalidState, {}};
   }
   base::ConfigError error;
-  const auto result = ValidateMarketDataConfig(config, error);
+  const auto result = ValidateMarketDataScope(config, error);
   if (!result.ok()) {
     return result;
   }

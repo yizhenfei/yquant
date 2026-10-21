@@ -271,7 +271,7 @@ TEST(TradingdCppHeap, EstablishedOrderFillAndCancelHaveNoCppHeapActivity) {
   config.listen.port = 0;
   std::memcpy(config.token, "allocation-test", 16);
   config.market_data.source_id = {1};
-  config.market_data.interval_ns = 1000000;
+
   config.market_data.instrument_count = 1;
   auto& item = config.market_data.instruments[0];
   ASSERT_EQ(model::MakeInstrumentId("SSE", "600000", item.instrument.id),
@@ -279,11 +279,7 @@ TEST(TradingdCppHeap, EstablishedOrderFillAndCancelHaveNoCppHeapActivity) {
   item.instrument.venue = model::Venue::kSse;
   std::memcpy(item.instrument.symbol, "600000", model::kSymbolLength);
   item.instrument.price_decimals = 2;
-  item.bid_price = 1000;
-  item.ask_price = 1001;
-  item.bid_qty = 100;
-  item.ask_qty = 100;
-  item.price_step = 1;
+
   config.trading.mode = strategyd::MockTradingMode::kFill;
   config.trading.report_interval_ns = 1000000;
   config.trading.initial_account.cash_balance = 1000000000;

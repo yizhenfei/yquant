@@ -28,7 +28,7 @@ ServerConfig Config() {
   config.listen.port = 0;
   std::snprintf(config.token, sizeof(config.token), "test-token");
   config.market_data.source_id = {1};
-  config.market_data.interval_ns = 1000000;
+
   config.market_data.instrument_count = 1;
   auto& item = config.market_data.instruments[0];
   EXPECT_EQ(model::MakeInstrumentId("SSE", "600000", item.instrument.id),
@@ -36,11 +36,7 @@ ServerConfig Config() {
   item.instrument.venue = model::Venue::kSse;
   std::memcpy(item.instrument.symbol, "600000", model::kSymbolLength);
   item.instrument.price_decimals = 2;
-  item.bid_price = 1000;
-  item.ask_price = 1001;
-  item.bid_qty = 100;
-  item.ask_qty = 100;
-  item.price_step = 1;
+
   config.trading.mode = strategyd::MockTradingMode::kWorking;
   config.trading.initial_account.cash_balance = 1000000000;
   return config;
@@ -465,11 +461,9 @@ TEST(TradingdConfigTest, LoadsStrictConfigurationAndRelativeReferences) {
   ::yquant::testing::ScopedWorkingDirectory working_directory(
       files.Path("").c_str());
   ASSERT_TRUE(working_directory.valid());
-  ASSERT_TRUE(files.Write("market.json", R"({"source_id":1,"adapter":"mock",
-    "instrument_catalog":"instruments.json",
-    "interval_ms":1,"instruments":[{"venue":"SSE","symbol":"600000",
-    "bid_price":1000,"bid_qty":100,"ask_price":1001,
-    "ask_qty":100,"price_step":1}]})"));
+  ASSERT_TRUE(files.Write("market.json", R"({"source_id":1,"adapter":"shm",
+    "instrument_catalog":"instruments.json","runtime_directory":"/tmp/yquant-test-feed",
+    "stream":"quotes","instruments":[{"venue":"SSE","symbol":"600000"}]})"));
   ASSERT_TRUE(files.Write("trading.json", R"({"adapter":"mock","mode":"working",
     "report_interval_ms":1,"shutdown_timeout_ms":5000,"initial_cash":1234,
     "initial_positions":[]})"));
@@ -512,10 +506,9 @@ TEST(TradingdConfigTest, NestedMarketConfigAndClientShareCatalogDefinitions) {
       files.Path("").c_str());
   ASSERT_TRUE(working_directory.valid());
   ASSERT_TRUE(files.Write("sources/market.json",
-                          R"({"source_id":1,"adapter":"mock",
-    "instrument_catalog":"instruments.json","interval_ms":1,
-    "instruments":[{"venue":"SZSE","symbol":"000557","bid_price":43000,
-    "bid_qty":100,"ask_price":43001,"ask_qty":100,"price_step":1}]})"));
+                          R"({"source_id":1,"adapter":"shm",
+    "instrument_catalog":"instruments.json","runtime_directory":"/tmp/yquant-test-feed",
+    "stream":"quotes","instruments":[{"venue":"SZSE","symbol":"000557"}]})"));
   ASSERT_TRUE(files.Write("broker/trading.json",
                           R"({"adapter":"mock","mode":"working",
     "report_interval_ms":1,"shutdown_timeout_ms":5000,"initial_cash":1234,

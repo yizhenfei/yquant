@@ -16,6 +16,8 @@
 #include <string_view>
 #include <vector>
 
+#include "market_data_feed.h"
+
 extern char** environ;
 
 namespace yquant::strategyd::trading_testing {
@@ -41,6 +43,9 @@ class Process {
   // Spawns strategyd with copied arguments/environment. On error owns no child
   // and retains only descriptors reclaimed by the destructor.
   int Start(const std::vector<std::string>& arguments) {
+    auto adapted_arguments = arguments;
+    const int feed_error = feed_.Prepare(adapted_arguments);
+    if (feed_error) return feed_error;
     int output[2] = {-1, -1};
     int events[2] = {-1, -1};
     if (pipe(output) != 0 || pipe(events) != 0) {
@@ -49,7 +54,8 @@ class Process {
       return error;
     }
     std::vector<std::string> storage{YQUANT_TEST_STRATEGYD_PATH};
-    storage.insert(storage.end(), arguments.begin(), arguments.end());
+    storage.insert(storage.end(), adapted_arguments.begin(),
+                   adapted_arguments.end());
     std::vector<char*> argv;
     for (auto& argument : storage) argv.push_back(argument.data());
     argv.push_back(nullptr);
@@ -140,6 +146,7 @@ class Process {
         } else if (result == -1 && errno != EINTR)
           return false;
       }
+      if (output_.find("Running") != std::string::npos) feed_.Release();
       if (done()) return true;
       if (pid_ < 0) return false;
       const auto remaining =
@@ -153,6 +160,7 @@ class Process {
     }
   }
 
+  ::yquant::testing::MarketDataFeed feed_;
   pid_t pid_ = -1;
   int output_fd_ = -1;
   int event_fd_ = -1;
