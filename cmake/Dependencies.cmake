@@ -15,7 +15,7 @@ FetchContent_MakeAvailable(fmt)
 target_link_libraries(fmt PUBLIC yquant_compile_options)
 target_compile_definitions(fmt PUBLIC FMT_USE_EXCEPTIONS=0)
 
-# simdjson 5.0.4, used only during strategy configuration initialization.
+# simdjson 5.0.4, used for configuration initialization.
 FetchContent_Declare(simdjson
   URL https://codeload.github.com/simdjson/simdjson/tar.gz/refs/tags/v5.0.4
   URL_HASH SHA256=827417bcf88309df170962e7bd1b4b4a4992d5d4e5cb82a0442ada9530e916d2)

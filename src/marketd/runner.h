@@ -7,8 +7,8 @@
 
 #include "marketd/config.h"
 #include "marketd/pipeline.h"
-#include "strategyd/event_loop_environment.h"
-#include "strategyd/monotonic_clock.h"
+#include "yquant/base/event_loop_environment.h"
+#include "yquant/base/monotonic_clock.h"
 
 namespace yquant::marketd {
 
@@ -33,8 +33,8 @@ class MarketdRunner {
   // publisher failure terminates the pipeline. Replay EOF is a normal stop.
   // All exits drain recording outputs and close resources; delayed output
   // failures make otherwise normal exits fail.
-  [[nodiscard]] base::Status Run(const strategyd::MonotonicClock& clock,
-                                 strategyd::EventLoopEnvironment& environment,
+  [[nodiscard]] base::Status Run(const base::MonotonicClock& clock,
+                                 base::EventLoopEnvironment& environment,
                                  std::uint64_t max_events = 0) noexcept;
   // Best-effort, idempotent cleanup; use Run to observe delayed output errors.
   // Preserves counters and existing failure diagnostics.

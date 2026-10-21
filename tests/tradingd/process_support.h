@@ -14,6 +14,8 @@
 #include <string_view>
 #include <vector>
 
+#include "market_data_feed.h"
+
 extern char** environ;
 
 namespace yquant::tradingd::testing {
@@ -38,10 +40,14 @@ class ChildProcess {
   ChildProcess& operator=(const ChildProcess&) = delete;
 
   int Start(const char* executable, const std::vector<std::string>& arguments) {
+    auto adapted_arguments = arguments;
+    const int feed_error = feed_.Prepare(adapted_arguments);
+    if (feed_error) return feed_error;
     int output[2];
     if (pipe(output) != 0) return errno;
     std::vector<std::string> storage{executable};
-    storage.insert(storage.end(), arguments.begin(), arguments.end());
+    storage.insert(storage.end(), adapted_arguments.begin(),
+                   adapted_arguments.end());
     std::vector<char*> argv;
     for (auto& argument : storage) argv.push_back(argument.data());
     argv.push_back(nullptr);
@@ -118,6 +124,7 @@ class ChildProcess {
           return false;
         }
       }
+      if (output_.find("Running") != std::string::npos) feed_.Release();
       if (done()) return true;
       if (pid_ < 0) return false;
       const auto remaining =
@@ -131,6 +138,7 @@ class ChildProcess {
     }
   }
 
+  ::yquant::testing::MarketDataFeed feed_;
   pid_t pid_ = -1;
   int output_fd_ = -1;
   int status_ = 0;

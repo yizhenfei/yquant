@@ -1,5 +1,6 @@
 #include "tradingd/mysql_archive_store.h"
 
+#include "trading_engine_harness.h"
 #include "tradingd/archive_projection.h"
 
 #if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
@@ -22,27 +23,27 @@
 
 #include "../marketd/test_support.h"
 #include "gtest/gtest.h"
-#include "strategyd/mock_trading_adapter.h"
 #include "tradingd/state_codec.h"
+#include "yquant/trading/mock_trading_adapter.h"
 
 namespace yquant::tradingd {
 namespace {
 using base::ErrorCode;
 
-class ArchiveClock final : public strategyd::MonotonicClock {
+class ArchiveClock final : public base::MonotonicClock {
  public:
   std::uint64_t Now() const noexcept override { return 1000; }
 };
 
 // Captures the same owned facts that gateway WAL carries.
-class FactSink final : public strategyd::TradingMutationSink {
+class FactSink final : public trading::TradingMutationSink {
  public:
   base::Status BeforeCommit(
-      const strategyd::TradingMutation& mutation) noexcept override {
+      const trading::TradingMutation& mutation) noexcept override {
     facts.push_back(mutation);
     return {};
   }
-  std::vector<strategyd::TradingMutation> facts;
+  std::vector<trading::TradingMutation> facts;
 };
 
 // A real TCP relay strips the optional SSL capability from the greeting so
@@ -217,7 +218,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
                   static_cast<unsigned long long>(ledger_lo));
     key = std::string("UNHEX('") + encoded + "')";
     ASSERT_TRUE(store.Connect(options).ok()) << store.error_detail();
-    config.market_data = marketd::testing::MockConfig();
+    config.market_data = marketd::testing::ScopeConfig();
     config.trading.initial_account.cash_balance = 1000000000;
     std::snprintf(config.persistence.directory,
                   sizeof(config.persistence.directory), "/unused");
@@ -260,7 +261,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
     }
     out.U64(static_cast<unsigned>(config.trading.mode));
     out.U64(config.trading.report_interval_ns);
-    for (std::size_t i = 0; i < kMaxClients; ++i) {
+    for (std::size_t i = 0; i < trading::kMaxClients; ++i) {
       const bool present = i == 0 || (second && i == 1);
       out.U64(present ? (i == 0 ? first_client : 42) : 0);
       out.U64(present ? (i == 0 ? 2 : 4) : 0);
@@ -287,7 +288,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
     out.U64(1);
     out.U64(64);
     out.U64(clock.Now());
-    for (std::size_t i = 0; i < kMaxClients; ++i) {
+    for (std::size_t i = 0; i < trading::kMaxClients; ++i) {
       out.U64(i == 0 ? 41 : 0);
       out.U64(i == 0 ? 2 : 0);
       out.U64(i == 0 && has_order ? 1 : 0);
@@ -300,7 +301,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
         out.U64(0);
       }
     }
-    std::vector<std::byte> ledger(strategyd::kMaxTradingCheckpointBytes);
+    std::vector<std::byte> ledger(trading::kMaxTradingCheckpointBytes);
     std::size_t size = 0;
     EXPECT_TRUE(source.ExportCheckpoint(ledger, size).ok());
     out.U64(size);
@@ -326,7 +327,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
   }
 
   void SubmitAndFill() {
-    source.BeginCallback(strategyd::CallbackPhase::kTick);
+    source.BeginCallback(strategy::CallbackPhase::kTick);
     model::ClientOrderId id;
     ASSERT_EQ(
         source.SubmitOrder({config.market_data.instruments[0].instrument.id,
@@ -337,12 +338,12 @@ class MysqlArchiveStoreTest : public ::testing::Test {
     ASSERT_TRUE(mock.Prepare(config.trading).ok());
     ASSERT_TRUE(mock.Start(clock.Now()).ok());
     ASSERT_TRUE(source.ProcessRequests(mock, clock.Now()).ok());
-    strategyd::TradingEvent accepted;
+    trading::TradingEvent accepted;
     accepted.client_order_id = id;
     ASSERT_EQ(accepted.broker_order_id.Assign("broker-1"), ErrorCode::kOk);
     accepted.report_sequence = 1;
     accepted.receive_time_ns = clock.Now();
-    strategyd::TradingDispatch dispatch;
+    trading::TradingDispatch dispatch;
     ASSERT_EQ(source.ApplyEvent(accepted, dispatch), ErrorCode::kOk);
     auto fill = accepted;
     fill.report_sequence = 2;
@@ -359,9 +360,10 @@ class MysqlArchiveStoreTest : public ::testing::Test {
     ASSERT_EQ(source.ApplyEvent(fill, dispatch), ErrorCode::kOk);
   }
 
-  std::vector<std::byte> LedgerRecord(
-      const strategyd::TradingMutation& mutation, std::size_t slot = 0,
-      std::size_t local = 0, std::uint64_t cancel = 0) {
+  std::vector<std::byte> LedgerRecord(const trading::TradingMutation& mutation,
+                                      std::size_t slot = 0,
+                                      std::size_t local = 0,
+                                      std::uint64_t cancel = 0) {
     std::vector<std::byte> bytes(2048);
     StateWriter writer(bytes);
     writer.U64(slot);
@@ -369,21 +371,21 @@ class MysqlArchiveStoreTest : public ::testing::Test {
     writer.U64(cancel);
     std::size_t size = 0;
     EXPECT_TRUE(
-        strategyd::EncodeTradingMutation(mutation, writer.tail(), size).ok());
+        trading::EncodeTradingMutation(mutation, writer.tail(), size).ok());
     writer.Advance(size);
     bytes.resize(writer.size());
     return bytes;
   }
 
-  std::vector<std::byte> RejectionRecord(const Message& message,
+  std::vector<std::byte> RejectionRecord(const trading::Message& message,
                                          std::size_t local = 0) {
     std::vector<std::byte> bytes(8192);
     StateWriter writer(bytes);
     writer.U64(0);
     writer.U64(local);
-    std::array<std::byte, kMaxFrameSize> encoded{};
+    std::array<std::byte, trading::kMaxFrameSize> encoded{};
     std::size_t size = 0;
-    EXPECT_TRUE(EncodeMessage(message, encoded, size).ok());
+    EXPECT_TRUE(trading::EncodeMessage(message, encoded, size).ok());
     writer.U64(size);
     writer.Bytes(std::span(encoded).first(size));
     bytes.resize(writer.size());
@@ -448,9 +450,9 @@ class MysqlArchiveStoreTest : public ::testing::Test {
 
   ArchiveClock clock;
   ServerConfig config;
-  strategyd::MarketDataImpl market{clock};
-  strategyd::TradingImpl source{clock, market};
-  strategyd::MockTradingAdapter mock;
+  md::InstrumentScope market;
+  ::yquant::testing::TradingEngineHarness source{clock, market};
+  trading::MockTradingAdapter mock;
   FactSink sink;
   ArchiveProjection projection{clock};
 };

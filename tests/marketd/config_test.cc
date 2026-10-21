@@ -4,6 +4,7 @@
 #include <string>
 
 #include "gtest/gtest.h"
+#include "scoped_working_directory.h"
 #include "test_support.h"
 
 namespace yquant::marketd {
@@ -16,15 +17,17 @@ class ConfigTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ASSERT_TRUE(directory_.valid());
+    ASSERT_TRUE(working_directory_.valid());
+    ASSERT_TRUE(std::filesystem::create_directory(directory_.File("configs")));
     ASSERT_TRUE(directory_.Write("mock.json", testing::kMockJson));
   }
   base::Status Load(std::string_view source, std::string_view publishers,
                     std::string_view extra = "") {
     EXPECT_TRUE(directory_.Write(
-        "marketd.json", "{\"source\":" + std::string(source) +
-                            ",\"publishers\":" + std::string(publishers) +
-                            std::string(extra) + "}"));
-    return loader_.Load(directory_.File("marketd.json").c_str());
+        "configs/marketd.json",
+        "{\"source\":" + std::string(source) + ",\"publishers\":" +
+            std::string(publishers) + std::string(extra) + "}"));
+    return loader_.Load(directory_.File("configs/marketd.json").c_str());
   }
   std::string Shm(std::string_view fields = "") const {
     return "{\"adapter\":\"shm\",\"runtime_directory\":\"" +
@@ -32,6 +35,8 @@ class ConfigTest : public ::testing::Test {
            std::string(fields) + "}";
   }
   RuntimeDirectory directory_;
+  ::yquant::testing::ScopedWorkingDirectory working_directory_{
+      directory_.path()};
   ConfigLoader loader_;
 };
 
@@ -45,18 +50,6 @@ TEST_F(ConfigTest, LoadsRelativeMockAndPublisherDefaultsWithoutOutputs) {
   EXPECT_EQ(loader_.config().publishers[0].capacity, 1024U);
   EXPECT_EQ(loader_.config().publishers[0].max_payload_size, 256U);
   EXPECT_FALSE(std::filesystem::exists(directory_.File("quotes.lock")));
-}
-
-TEST_F(ConfigTest, MockInputRejectsTypedReplayConfiguration) {
-  ASSERT_TRUE(
-      Load(R"({"adapter":"mock","config":"mock.json"})", "[" + Shm() + "]")
-          .ok());
-  auto config = loader_.config();
-  config.source.mock.adapter = strategyd::MarketDataAdapter::kReplay;
-  strategy::ConfigError error;
-  EXPECT_EQ(ValidateConfig(config, error).code,
-            base::ErrorCode::kInvalidArgument);
-  EXPECT_STREQ(error.field_path, "source.config.adapter");
 }
 
 TEST_F(ConfigTest, LoadsTcpInputAndMixedOutputsIndependentOfKeyOrder) {
@@ -164,7 +157,7 @@ TEST_F(ConfigTest, RejectsNetworkAndStringBoundViolations) {
   auto config = testing::LocalConfig(directory_.path());
   std::memset(config.publishers[0].stream, 'x',
               sizeof(config.publishers[0].stream));
-  strategy::ConfigError error;
+  base::ConfigError error;
   EXPECT_FALSE(ValidateConfig(config, error).ok());
 }
 
@@ -180,7 +173,7 @@ TEST_F(ConfigTest, RejectsDirectFeedbackAndNormalizedDuplicateEndpoints) {
                 sizeof(config.publishers[1].runtime_directory), "%s/./",
                 directory_.path());
   config.publisher_count = 2;
-  strategy::ConfigError error;
+  base::ConfigError error;
   EXPECT_FALSE(ValidateConfig(config, error).ok());
   EXPECT_FALSE(Load(R"({"adapter":"tcp","address":"127.0.0.1","port":19100})",
                     R"([{"adapter":"tcp","address":"0.0.0.0","port":19100}])")
@@ -220,16 +213,38 @@ TEST_F(ConfigTest, ResolvesReplayAndRecordingPathsWithoutOpeningFiles) {
   EXPECT_EQ(config.source.adapter, Adapter::kReplay);
   EXPECT_EQ(config.source.replay.format, ReplayFormat::kDolphinDbCsv);
   EXPECT_STREQ(config.source.replay.path,
-               directory_.File("history.csv").c_str());
+               (std::filesystem::current_path() / "history.csv").c_str());
   EXPECT_EQ(config.source.replay.speed, 2.5);
   EXPECT_EQ(config.source.replay.source_id.value, 7U);
   EXPECT_STREQ(config.source.replay.instrument_catalog,
-               directory_.File("catalog.json").c_str());
+               (std::filesystem::current_path() / "catalog.json").c_str());
   EXPECT_EQ(config.publishers[0].adapter, Adapter::kRecord);
   EXPECT_STREQ(config.publishers[0].record.path,
-               directory_.File("quotes.yqr").c_str());
+               (std::filesystem::current_path() / "quotes.yqr").c_str());
   EXPECT_EQ(config.publishers[0].record.queue_capacity, 4096U);
   EXPECT_FALSE(std::filesystem::exists(directory_.File("quotes.yqr")));
+}
+
+TEST_F(ConfigTest, EnforcesCatalogPathCapacityBeforeAndAfterResolution) {
+  const auto load = [&](const std::string& catalog) {
+    return Load(R"({"adapter":"replay","format":"dolphindb_csv",)"
+                R"("path":"missing.csv","source_id":1,"instrument_catalog":")" +
+                    catalog + R"("})",
+                R"([{"adapter":"record","path":"quotes.yqr"}])");
+  };
+  std::string path(4095, 'x');
+  path.front() = '/';
+  ASSERT_TRUE(load(path).ok()) << loader_.error().message;
+  EXPECT_STREQ(loader_.config().source.replay.instrument_catalog, path.c_str());
+  path += 'x';
+  EXPECT_EQ(load(path).code, base::ErrorCode::kInvalidArgument);
+  EXPECT_STREQ(loader_.error().field_path, "source.instrument_catalog");
+  EXPECT_EQ(loader_.config().publisher_count, 0U);
+  ASSERT_TRUE(load("catalog.json").ok());
+  EXPECT_EQ(load(std::string(4095, 'x')).code,
+            base::ErrorCode::kInvalidArgument);
+  EXPECT_STREQ(loader_.error().field_path, "source.instrument_catalog");
+  EXPECT_EQ(loader_.config().publisher_count, 0U);
 }
 
 TEST_F(ConfigTest, LoadsRecordingReplayAndRejectsFileSchemaViolations) {

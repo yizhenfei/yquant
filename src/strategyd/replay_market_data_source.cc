@@ -99,7 +99,7 @@ base::Status ReplayMarketDataSource::Error(base::ErrorCode code,
 }
 
 base::Status ReplayMarketDataSource::ReadFrames(
-    const MarketDataConfig& config) noexcept {
+    const md::MarketDataConfig& config) noexcept {
   FileDescriptor file{
       open(config.replay_path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)};
   if (file.value < 0) {
@@ -202,18 +202,18 @@ base::Status ReplayMarketDataSource::ReadFrames(
 }
 
 base::Status ReplayMarketDataSource::Prepare(
-    const MarketDataConfig& config) noexcept {
+    const md::MarketDataConfig& config) noexcept {
   if (state_ != State::kUnprepared)
     return Error(base::ErrorCode::kInvalidState,
                  "source can only be prepared once");
-  strategy::ConfigError error;
-  const auto validated = ValidateMarketDataConfig(config, error);
+  base::ConfigError error;
+  const auto validated = md::ValidateMarketDataConfig(config, error);
   if (!validated.ok()) {
     std::snprintf(error_detail_, sizeof(error_detail_), "%s: %s",
                   error.field_path, error.message);
     return validated;
   }
-  if (config.adapter != MarketDataAdapter::kReplay)
+  if (config.adapter != md::MarketDataAdapter::kReplay)
     return Error(base::ErrorCode::kInvalidArgument,
                  "replay source requires adapter=replay");
   const auto loaded = ReadFrames(config);

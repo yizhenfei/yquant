@@ -3,6 +3,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 #include "gtest/gtest.h"
 
@@ -10,6 +11,7 @@ namespace yquant::strategy {
 namespace {
 
 using base::ErrorCode;
+static_assert(std::is_same_v<ConfigError, base::ConfigError>);
 
 StrategyId MakeId(std::string_view text = "test-strategy") {
   StrategyId id;
@@ -136,36 +138,6 @@ TEST(StrategyConfigTest, DefaultParametersAcceptOnlyEmptyObjects) {
     EXPECT_FALSE(config.ready());
     EXPECT_NE(std::strlen(error.message), 0U);
   }
-}
-
-TEST(ConfigErrorTest, OwnsTextAndClearsPreviousDiagnostics) {
-  ConfigError error;
-  std::string path = "quote_qty";
-  std::string reason = "must be positive";
-  error.Set(path, reason);
-  path.assign(path.size(), 'x');
-  reason.assign(reason.size(), 'x');
-  EXPECT_STREQ(error.field_path, "quote_qty");
-  EXPECT_STREQ(error.message, "must be positive");
-  EXPECT_FALSE(error.truncated);
-  error.Clear();
-  EXPECT_STREQ(error.field_path, "");
-  EXPECT_STREQ(error.message, "");
-  EXPECT_FALSE(error.truncated);
-}
-
-TEST(ConfigErrorTest, TruncatesBothBuffersAndAlwaysTerminates) {
-  ConfigError error;
-  const std::string path(sizeof(error.field_path) * 2, 'p');
-  const std::string reason(sizeof(error.message) * 2, 'm');
-  error.Set(path, reason);
-  EXPECT_TRUE(error.truncated);
-  EXPECT_EQ(std::strlen(error.field_path), sizeof(error.field_path) - 1);
-  EXPECT_EQ(std::strlen(error.message), sizeof(error.message) - 1);
-  error.Set("short", "message");
-  EXPECT_FALSE(error.truncated);
-  EXPECT_STREQ(error.field_path, "short");
-  EXPECT_STREQ(error.message, "message");
 }
 
 }  // namespace

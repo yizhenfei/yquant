@@ -1,5 +1,5 @@
 {
-  "source": {"adapter": "mock", "config": "mock_source.json"},
+  "source": {"adapter": "mock", "config": "examples/marketd/mock_source.json"},
   "publishers": [
     {
       "adapter": "shm",

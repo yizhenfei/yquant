@@ -8,9 +8,10 @@
 #include <span>
 #include <string_view>
 
-#include "strategyd/market_data.h"
-#include "strategyd/trading.h"
 #include "tradingd/config.h"
+#include "yquant/md/instrument_scope.h"
+#include "yquant/trading/mock_trading_adapter.h"
+#include "yquant/trading/trading_engine.h"
 
 namespace yquant::tradingd {
 
@@ -19,7 +20,7 @@ struct ArchiveSession {
   std::size_t slot = 0;
   std::uint64_t client_id = 0;
   std::uint64_t session_id = 0;
-  std::array<InstrumentSpec, kMaxInstruments> instruments{};
+  std::array<trading::InstrumentSpec, trading::kMaxInstruments> instruments{};
   std::size_t instrument_count = 0;
 };
 
@@ -57,7 +58,7 @@ class ArchiveProjection {
  public:
   // Borrows clock for this object's lifetime; callbacks never read live time
   // during replay because each ledger fact supplies its original timestamp.
-  explicit ArchiveProjection(const strategyd::MonotonicClock& clock) noexcept;
+  explicit ArchiveProjection(const base::MonotonicClock& clock) noexcept;
   ~ArchiveProjection() noexcept;
   ArchiveProjection(const ArchiveProjection&) = delete;
   ArchiveProjection& operator=(const ArchiveProjection&) = delete;
@@ -88,14 +89,14 @@ class ArchiveProjection {
   std::uint64_t last_lsn() const noexcept { return last_lsn_; }
   std::uint64_t last_record_time() const noexcept { return last_record_time_; }
   std::span<const ArchiveSession> sessions() const noexcept;
-  std::span<const InstrumentSpec> instruments() const noexcept;
+  std::span<const trading::InstrumentSpec> instruments() const noexcept;
   std::span<const ArchiveOrder> orders() const noexcept;
-  const strategyd::TradingImpl& trading() const noexcept { return trading_; }
+  const trading::TradingEngine& trading() const noexcept { return trading_; }
   // Returns nullptr for unknown/zero core identities.
   const ArchiveOrder* FindOrder(model::ClientOrderId core_id) const noexcept;
-  // Retained fill indices share TradingImpl::TryGetFillAt's ordering. Baseline
-  // fills use zero; later fills retain their introducing record LSN. Invalid
-  // indices return zero.
+  // Retained fill indices share TradingEngine::TryGetFillAt's ordering.
+  // Baseline fills use zero; later fills retain their introducing record LSN.
+  // Invalid indices return zero.
   std::uint64_t FillSourceLsn(std::size_t index) const noexcept;
   bool has_update() const noexcept;
   // Requires has_update(). The result lives until the next replay/restore.
@@ -106,8 +107,9 @@ class ArchiveProjection {
   [[nodiscard]] base::Status RestoreGateway(
       std::span<const std::byte> checkpoint) noexcept;
   [[nodiscard]] base::Status RefreshOrders() noexcept;
-  strategyd::MarketDataImpl market_data_;
-  strategyd::TradingImpl trading_;
+  md::InstrumentScope instruments_;
+  trading::MockTradingAdapter replay_adapter_;
+  trading::TradingEngine trading_;
   std::unique_ptr<Storage> storage_;
   std::array<std::uint64_t, 2> ledger_id_{};
   std::uint64_t run_id_ = 0;

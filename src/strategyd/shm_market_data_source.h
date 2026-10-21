@@ -1,12 +1,13 @@
 #ifndef YQUANT_STRATEGYD_SHM_MARKET_DATA_SOURCE_H_
 #define YQUANT_STRATEGYD_SHM_MARKET_DATA_SOURCE_H_
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <span>
 
 #include "strategyd/market_data_source.h"
-#include "yquant/md/shm_pubsub.h"
+#include "yquant/md/shm_broadcast.h"
 
 namespace yquant::strategyd {
 
@@ -14,12 +15,12 @@ inline constexpr std::uint64_t kShmHealthCheckIntervalNs = 250000000;
 
 // Main-thread SHM quote adapter. Prepare only copies configuration; Start
 // attaches after strategy subscriptions are complete and starts at Live.
-// Poll copies at most one quote, using bounded subscriber scan/retry budgets.
+// Poll copies at most one quote, using bounded receiver scan/retry budgets.
 // Gaps, generation changes and invalid frames stop delivery until destruction.
 class ShmMarketDataSource final : public MarketDataSource {
  public:
   [[nodiscard]] base::Status Prepare(
-      const MarketDataConfig& config) noexcept override;
+      const md::MarketDataConfig& config) noexcept override;
   // Unknown/duplicate subscriptions fail without attaching. Open failure keeps
   // the source prepared, allowing Start to be retried while the publisher
   // starts.
@@ -56,9 +57,12 @@ class ShmMarketDataSource final : public MarketDataSource {
                                  const char* detail) noexcept;
 
   State state_ = State::kUnprepared;
-  MarketDataConfig config_;
-  md::ShmSubscriber subscriber_;
+  md::MarketDataConfig config_;
+  md::ShmReader reader_;
   md::EventBuffer buffer_;
+  // Owned selection copied at Start; unchanged while active.
+  std::array<std::uint64_t, md::kMaxMarketDataInstruments> instruments_{};
+  std::size_t instrument_count_ = 0;
   std::optional<std::uint64_t> deadline_;
   std::optional<std::uint64_t> service_deadline_;
   md::RefreshResult health_;

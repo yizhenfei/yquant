@@ -23,12 +23,12 @@
 | 字段 | 规则 |
 | --- | --- |
 | `format` | 必填：`dolphindb_csv` 或 `recording` |
-| `path` | 必填；相对主配置文件解析，解析后最多 4095 字节 |
+| `path` | 必填；相对进程工作目录解析，解析后最多 4095 字节 |
 | `speed` | 默认 1；0 为最快，0.5 为半速，2 为两倍速；必须有限且非负 |
 | `start_delay_ms` | 默认 0，范围 0 至 60000；首次轮询后等待指定时间再开始交付 |
 | `max_records` | 默认 1000000，范围 1 至 2000000；超过上限时整次初始化失败 |
 | `source_id` | CSV 必填，1 至 4294967295；录制格式禁止设置，使用文件中的来源 |
-| `instrument_catalog` | CSV 必填；共享标的字典路径，相对本配置文件目录解析，解析后最多 4095 字节；录制格式禁止设置 |
+| `instrument_catalog` | CSV 必填；共享标的字典路径，相对进程工作目录解析，解析后最多 4095 字节；录制格式禁止设置 |
 
 `ReplaySource::Init(config)` 完整校验文件并预分配报价数组；CSV 输入先加载共享标的字典，按每个标的的定义转换价格。字典格式及维护规则见[行情驱动设计](market-data.md#标的与计量单位)。轮询路径没有文件读取或内存分配。内存按 `max_records` 上限分配 CSV 存储；录制输入按文件条数分配。`max_records` 是资源上限，不会截断文件；需要有限事件运行时使用 `--max-events N`。
 
@@ -69,7 +69,7 @@
 {"adapter": "record", "path": "capture.yqr", "queue_capacity": 1048576}
 ```
 
-路径相对主配置文件解析，父目录必须存在。输出采用独占创建，文件存在时失败，不覆盖或追加。每次运行使用新的文件名，文件轮转由启动环境管理。
+路径相对进程工作目录解析，父目录必须存在。输出采用独占创建，文件存在时失败，不覆盖或追加。每次运行使用新的文件名，文件轮转由启动环境管理。
 
 `queue_capacity` 是 SPSC 队列的数据区字节容量，默认 1 MiB，范围 256 字节至 64 MiB，必须为 2 的幂。队列还包含帧头、对齐与回卷空间开销，容量不能直接除以文件记录大小来计算可容纳条数。
 
@@ -109,14 +109,14 @@ FNV-1a 64 的初值为 `14695981039346656037`，乘数为 `1099511628211`。校�
 
 ## 使用示例
 
-构建配置生成 `build/debug/marketd/replay_csv.json`，其中 CSV 路径取 CMake 的 `YQUANT_TEST_DATA_DIR`，字典引用 `build/debug/instruments.json`，包含历史样本全部标的的四位价格精度。准备数据后，最快导入官方历史样本并录制：
+构建配置生成 `build/debug/marketd/replay_csv.json`，其中 CSV 路径取 CMake 的 `YQUANT_TEST_DATA_DIR`，字典引用 `examples/instruments.json`，包含历史样本全部标的的四位价格精度。准备数据后，最快导入官方历史样本并录制：
 
 ```sh
 cmake --build --preset debug --target download_test_data
 ./build/debug/bin/yquant-marketd --config ./build/debug/marketd/replay_csv.json
 ```
 
-该示例生成 `build/debug/marketd/capture.yqr`，录制队列设为 64 MiB。再次运行前修改输出文件名或移动已有文件。可在配置中同时增加共享内存或 TCP 输出，或者用 `--max-events N` 录制有限前缀。
+在仓库根目录运行命令，该示例生成工作目录中的 `capture.yqr`，录制队列设为 64 MiB。再次运行前修改输出文件名或移动已有文件。可在配置中同时增加共享内存或 TCP 输出，或者用 `--max-events N` 录制有限前缀。
 
 将录制文件发布到共享内存：
 
@@ -130,7 +130,8 @@ cmake --build --preset debug --target download_test_data
 ./build/debug/bin/yquant-strategyd \
   --strategy ./build/debug/strategies/quote_observer_strategy.so \
   --config ./build/debug/strategies/replay_observer.json \
-  --market-data-config ./build/debug/strategies/replay_market_data.json
+  --market-data-config ./build/debug/strategies/replay_market_data.json \
+  --trading-config examples/tradingd/client_1.json
 ```
 
 示例观察 `SZSE/000557`，来源 1，价格四位小数。回放结束时 `marketd` 正常退出，策略仍按共享内存协议报告上游停止。若直接回放 CSV 到策略，将 CSV 输入的输出改为共享内存并设置启动等待和所需速度。

@@ -19,13 +19,16 @@ flowchart LR
 
 | 组件 | 职责 |
 | --- | --- |
-| `Server` | 身份握手、请求归属、共享账户受理、柜台驱动、回报路由、断线撤单与排空 |
-| `TradingImpl` | 网关内部唯一可写的委托、成交、资金和持仓账本，复用既有整数计算与事件校验 |
-| `Connection` | 有界的非阻塞 TCP 收发、帧完整性、逐方向连续序号及背压 |
-| `RemoteTrading` | `strategyd` 内部的交易服务实现，维护本策略委托缓存和共享账户只读快照 |
-| `TradingRuntime` | 宿主对本机模拟运行时与远端运行时共用的生命周期边界 |
+| `tradingd::Server` | 网关程序专用的身份握手、请求归属、回报路由、客户端断线撤单与排空 |
+| `md::InstrumentScope` | 网关持有的运行标的范围，供握手校验及交易账本查询 |
+| `trading::TradingEngine` | 网关唯一的权威交易会话，维护共享账本与预占，初始化柜台、发送请求并提交规范化回报 |
+| `trading::Connection` | 两端共用的有界非阻塞 TCP 收发、帧完整性、逐方向连续序号及背压 |
+| `trading::TradingService` | 本地会话与策略侧远端服务共用的抽象服务接口 |
+| `strategyd::TradingServiceImpl` | 策略程序专用的交易服务，维护本策略委托缓存和共享账户只读快照 |
 
-各进程内部串行驱动交易，不在策略回调栈内处理远端回报。策略通过 `context.trading()` 访问公共 [Trading 接口](../../include/yquant/strategy/trading.h)，进程内与共享模式复用该接口。本机模拟模式保留原行为。
+各进程内部串行驱动交易，不在策略回调栈内处理回报。策略通过 `context.trading()` 访问公共 [Trading 接口](../../include/yquant/strategy/trading.h)，所有生产交易均经网关执行。模拟柜台也只在网关中装配。股票使用 `mock`，期货使用 `simulated_futures`；期货模拟不支持持久化。
+
+网关持有 `TradingEngine`、`md::InstrumentScope`、时钟和适配器。引擎完成柜台初始化、请求发送、回报读取和权威落账，不实现策略侧 `TradingService`。客户端权限与订单归属由 `Server` 校验，按客户端的停止撤单由网关安排。策略侧 `TradingServiceImpl` 只维护客户端状态。两侧通过公共 `yquant::trading` 库复用模型、配置加载和传输协议；生产策略不创建网关引擎。构建归属见[目录与模块](engineering.md#目录与模块)。
 
 ## 账户与事件一致性
 
@@ -45,7 +48,7 @@ flowchart LR
 
 策略撤单请求使用非零客户端撤单号，结果返回同一标识。网关因停止或断线发起的自动撤单使用客户端撤单号零；这类事件不会伪装成策略发出的撤单。
 
-帧采用显式小端编码，不传输 C++ 结构体布局。固定 32 字节头包含 magic、版本、类型、总长、零保留字段、代次与序号，最大帧长 4096 字节。每个方向独立从 1 连续递增；序号缺口、非法长度、保留字段、枚举或账户不变量均终止该连接。初始化之后的消息必须属于欢迎时的代次。
+帧采用显式小端编码，不传输 C++ 结构体布局。固定 32 字节头包含 magic、版本、类型、总长、零保留字段、代次与序号，版本 2 的最大帧长 16384 字节，可容纳 64 个期货持仓快照。每个方向独立从 1 连续递增；序号缺口、非法长度、保留字段、枚举或账户不变量均终止该连接。初始化之后的消息必须属于欢迎时的代次。
 
 | 消息 | 语义 |
 | --- | --- |
@@ -57,7 +60,13 @@ flowchart LR
 | `Heartbeat` | 空闲连接活性检测 |
 | `Error` | 协议定义的显式错误结果 |
 
-`receive_time_ns` 在每个接收进程用本地单调时钟重新赋值，不跨进程比较单调时间。报价、订单和成交的业务事件时间仍使用各自模型约定。
+`receive_time_ns` 在每个接收进程用本地 `base::MonotonicClock` 重新赋值，时钟域遵循[公共进程基础设施](engineering.md#进程基础设施)约定。报价、订单和成交的业务事件时间仍使用各自模型约定。
+
+### 期货模拟输入
+
+版本 2 携带开平仓方向及期货账户和四桶持仓。`SimulationQuote` 只供 `simulated_futures` 网关使用：策略客户端将已校验的期货行情排队发送，网关检查来源、标的和价量单位，再更新估值与撮合。每个网关代次只接受一个客户端发布模拟行情，旧序号不重复撮合；股票网关拒绝该消息。单笔回报仍携带权威提交点的账户快照。
+
+编码器输出版本 2；解码器保留版本 1 股票帧读取能力，用于已有日志和检查点恢复。运行时客户端与网关应同步升级。
 
 ## 资源与故障边界
 
@@ -83,13 +92,13 @@ flowchart LR
 
 ## 配置与运行
 
-网关配置示例见 [local.json](../../examples/tradingd/local.json)：
+网关配置通过 `base::JsonConfigDocument` 遵循[通用 JSON 输入规则](engineering.md#json-配置文档)，网关加载器校验监听地址、客户端限制及引用配置的组合约束，诊断使用 `base::ConfigError`。示例见 [local.json](../../examples/tradingd/local.json)：
 
 ```json
 {
   "listen": {"address": "127.0.0.1", "port": 19200},
-  "market_data_config": "../strategies/mock_market_data.json",
-  "trading_config": "../strategies/mock_trading.json",
+  "market_data_config": "examples/strategies/market_data.json",
+  "trading_config": "examples/tradingd/mock_trading.json",
   "token": "yquant-local-demo",
   "max_clients": 16,
   "heartbeat_timeout_ms": 5000,
@@ -97,7 +106,7 @@ flowchart LR
 }
 ```
 
-两个引用配置路径相对网关配置文件解析，柜台配置只能选择 `adapter: "mock"`；行情配置引用共享标的字典并声明网关运行范围，不启动行情源。`instrument_catalog` 相对该行情配置文件所在目录解析。`max_clients` 为 1 至 16，超时范围为 1000 至 60000 ms。JSON 监听端口为 1 至 65535，类型化组件接口支持端口零供测试。
+两个引用配置分别由 `md::MarketDataConfigLoader` 和 `trading::TradingConfigLoader` 解析；策略连接文件单独由 `TradingClientConfigLoader` 解析。路径遵循[路径解析约定](../../README.md#路径解析)。柜台配置只能选择 `adapter: "mock"`；行情配置引用共享标的字典并声明网关运行范围，不启动行情源。`max_clients` 为 1 至 16，超时范围为 1000 至 60000 ms。JSON 监听端口为 1 至 65535，类型化组件接口支持端口零供测试。
 
 客户端配置见 [client_1.json](../../examples/tradingd/client_1.json) 与 [client_2.json](../../examples/tradingd/client_2.json)：
 
@@ -124,11 +133,13 @@ flowchart LR
 ./build/debug/bin/yquant-strategyd \
   --strategy ./build/debug/strategies/shared_account_strategy.so \
   --config ./build/debug/strategies/shared_account_strategy.json \
-  --market-data-config ./build/debug/strategies/mock_market_data.json \
+  --market-data-config ./build/debug/strategies/market_data.json \
   --trading-config ./build/debug/tradingd/client_1.json
 ```
 
 示例每个策略提交一笔订单，打印自身委托状态和全账户余额，不假设账户只由自己交易。行情源也可以换成 `marketd` 的共享内存流，交易配置保持不变。`yquant-tradingd --check-config --config ...` 仅校验配置，不绑定端口或建立柜台会话。
+
+网关的 `Running`、正常停止、统计及配置校验成功消息写入 `stdout`，`Running` 写入后立即刷新。失败、警告和未确认订单或撤单诊断写入 `stderr`，遵循[标准输出与诊断约定](engineering.md#标准输出与诊断)。
 
 ## 验证
 

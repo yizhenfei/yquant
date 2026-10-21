@@ -107,9 +107,9 @@ class LifecycleStrategy final : public Strategy {
       return ErrorCode::kInvalidState;
     }
     const auto message = config_.startup_message();
-    std::fprintf(stderr, "lifecycle_strategy: startup_message=%.*s\n",
+    std::fprintf(stdout, "lifecycle_strategy: startup_message=%.*s\n",
                  static_cast<int>(message.size()), message.data());
-    std::fflush(stderr);
+    std::fflush(stdout);
     state_ = State::kRunning;
     return ErrorCode::kOk;
   }

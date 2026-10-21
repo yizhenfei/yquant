@@ -40,12 +40,12 @@ import sys
 
 project, run = map(Path, sys.argv[1:3])
 for name in ("futures_bbo_strategy", "futures_trading", "futures_market_data"):
-    template = project / "examples" / "strategies" / (name + ".json")
+    template = project / "examples" / ("tradingd" if name == "futures_trading" else "strategies") / (name + ".json")
     config = json.loads(template.read_text(encoding="utf-8"))
     if name == "futures_market_data":
-        config["replay_path"] = str((template.parent / config["replay_path"]).resolve())
+        config["replay_path"] = str((project / config["replay_path"]).resolve())
         config["replay_speed"] = int(sys.argv[3])
-        catalog = (template.parent / config["instrument_catalog"]).resolve()
+        catalog = (project / config["instrument_catalog"]).resolve()
         (run / "instruments.json").write_bytes(catalog.read_bytes())
         config["instrument_catalog"] = str(run / "instruments.json")
     (run / (name + ".json")).write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
@@ -53,9 +53,8 @@ PY
 
 printf 'Instrument: DCE/a1805\nReplay speed: %s\nRun directory: %s\nLog: %s/run.log\n' \
   "$speed" "$run_dir" "$run_dir"
-"$strategyd" \
-  --strategy "$strategy" \
+python3 "$script_dir/run_gateway_strategy.py" \
+  --run-dir "$run_dir" --strategy "$strategy" \
   --config "$run_dir/futures_bbo_strategy.json" \
   --market-data-config "$run_dir/futures_market_data.json" \
-  --trading-config "$run_dir/futures_trading.json" \
-  2>&1 | tee -i "$run_dir/run.log"
+  --trading-config "$run_dir/futures_trading.json"

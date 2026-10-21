@@ -100,7 +100,7 @@ struct MysqlArchive::Storage {
   std::atomic<std::int64_t> deadline_ns{0};
   pthread_t thread{};
   bool started = false;
-  strategyd::SteadyMonotonicClock clock;
+  base::SteadyMonotonicClock clock;
   std::unique_ptr<ArchiveProjection> projection;
   std::unique_ptr<std::byte[]> baseline;
   std::size_t baseline_size = 0;

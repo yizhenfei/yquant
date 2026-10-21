@@ -133,15 +133,14 @@ min(当前报价过期期限, 买侧重试期限, 卖侧重试期限)
 
 ## 运行与验收
 
+脚本启动独立的行情和交易进程，再连接策略客户端：
+
 ```sh
-./build/debug/bin/yquant-strategyd \
-  --strategy ./build/debug/strategies/bbo_market_making_strategy.so \
-  --config ./build/debug/strategies/bbo_market_making_strategy.json \
-  --market-data-config ./build/debug/strategies/mock_market_data.json \
-  --trading-config ./build/debug/strategies/bbo_mock_trading.json
+./scripts/run_bbo_strategy.sh
+./scripts/run_bbo_strategy.sh working
 ```
 
-柜台样例初始现金为 30,000 元，总持仓 1,000 股、可卖 800 股，默认 `working` 模式。进程通过停止信号收尾。启动、首次提交和停止时输出低频标记及摘要，不逐条行情打印。
+柜台样例初始现金为 30,000 元，总持仓 1,000 股、可卖 800 股。默认 `fill` 模式，传入 `working` 保持挂单；停止信号先关闭策略，再排空网关。脚本保留行情、网关、客户端配置及各进程日志。
 
 当前委托和成交记录保留到进程退出，容量规则见[交易容量](trading.md#容量与实现位置)。本版本验证有限轮次报价，记录回收及跨会话库存恢复另行设计。
 

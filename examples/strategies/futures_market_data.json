@@ -1,7 +1,7 @@
 {
   "adapter": "replay",
   "source_id": 1,
-  "replay_path": "../data/a1805_20171227.csv",
+  "replay_path": "examples/data/a1805_20171227.csv",
   "replay_speed": 100,
   "replay_tail_ms": 1000,
   "instruments": [
@@ -10,5 +10,5 @@
       "symbol": "a1805"
     }
   ],
-  "instrument_catalog": "../instruments.json"
+  "instrument_catalog": "examples/instruments.json"
 }

@@ -43,16 +43,17 @@ bool ValidSide(model::OrderSide side) noexcept {
   return side == model::OrderSide::kBuy || side == model::OrderSide::kSell;
 }
 
-const InstrumentSpec* FindInstrument(
-    std::span<const InstrumentSpec> instruments,
+const trading::InstrumentSpec* FindInstrument(
+    std::span<const trading::InstrumentSpec> instruments,
     model::InstrumentId id) noexcept {
   for (const auto& instrument : instruments)
     if (instrument.id == id) return &instrument;
   return nullptr;
 }
 
-bool ValidAccount(const AccountView& account,
-                  std::span<const InstrumentSpec> instruments) noexcept {
+bool ValidAccount(
+    const trading::AccountView& account,
+    std::span<const trading::InstrumentSpec> instruments) noexcept {
   if (account.position_count > account.positions.size() ||
       account.cash.balance < 0 || account.cash.reserved < 0 ||
       account.cash.reserved > account.cash.balance ||
@@ -85,7 +86,7 @@ bool FitsNotional(std::int64_t price, std::int64_t quantity,
 }
 
 bool ValidOrder(const BrokerRecoveryOrder& order,
-                std::span<const InstrumentSpec> instruments,
+                std::span<const trading::InstrumentSpec> instruments,
                 std::uint64_t cut) noexcept {
   const auto& request = order.request;
   const auto* instrument = FindInstrument(instruments, request.instrument_id);
@@ -143,7 +144,7 @@ bool SameFill(const BrokerRecoveryFill& left,
 }
 
 bool ValidFill(const BrokerRecoveryFill& fill, const BrokerRecoveryOrder& order,
-               std::span<const InstrumentSpec> instruments) noexcept {
+               std::span<const trading::InstrumentSpec> instruments) noexcept {
   const auto* instrument = FindInstrument(instruments, fill.instrument_id);
   return instrument != nullptr &&
          fill.position_effect == model::PositionEffect::kNone &&
@@ -263,8 +264,8 @@ base::Status BuildRecoveredBrokerState(
     const BrokerRecoveryView& view,
     const BrokerRecoveryRequirements& requirements,
     std::span<const DurableStrategyIdentity> identities,
-    std::span<const InstrumentSpec> instruments, RecoveredBrokerState& output,
-    BrokerRecoveryError* error) noexcept {
+    std::span<const trading::InstrumentSpec> instruments,
+    RecoveredBrokerState& output, BrokerRecoveryError* error) noexcept {
   if (error) *error = BrokerRecoveryError::kNone;
   const auto fail = [&](BrokerRecoveryError reason,
                         base::ErrorCode code = base::ErrorCode::kCorrupt) {
@@ -274,7 +275,7 @@ base::Status BuildRecoveredBrokerState(
   if (requirements.account_key.empty() ||
       requirements.account_key.size() > kMaxAccountKeyBytes ||
       requirements.account_key.find('\0') != std::string_view::npos ||
-      instruments.empty() || instruments.size() > kMaxInstruments)
+      instruments.empty() || instruments.size() > trading::kMaxInstruments)
     return fail(BrokerRecoveryError::kInvalidRequirements,
                 base::ErrorCode::kInvalidArgument);
   if (requirements.account_key != view.account_key)

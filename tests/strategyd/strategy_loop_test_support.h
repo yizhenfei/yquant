@@ -15,18 +15,19 @@
 #include <string_view>
 #include <system_error>
 
-#include "strategyd/event_loop_environment.h"
+#include "runner_test_harness.h"
 #include "strategyd/market_data_source.h"
-#include "strategyd/monotonic_clock.h"
-#include "strategyd/trading_adapter.h"
+#include "yquant/base/event_loop_environment.h"
+#include "yquant/base/monotonic_clock.h"
+#include "yquant/trading/trading_adapter.h"
 
 namespace yquant::strategyd::loop_testing {
 
 inline constexpr std::uint64_t kMs = 1000000;
 
-class Clock final : public MonotonicClock {
+class Clock final : public base::MonotonicClock {
  public:
-  std::uint64_t Now() const noexcept override { return now; }
+  std::uint64_t Now() const noexcept { return now; }
   std::uint64_t now = 0;
 };
 
@@ -82,9 +83,9 @@ class StderrCapture {
   StderrCapture() {
     file_ = std::tmpfile();
     if (file_ == nullptr) return;
-    std::fflush(stderr);
-    saved_ = dup(STDERR_FILENO);
-    valid_ = saved_ >= 0 && dup2(fileno(file_), STDERR_FILENO) >= 0;
+    std::fflush(stdout);
+    saved_ = dup(STDOUT_FILENO);
+    valid_ = saved_ >= 0 && dup2(fileno(file_), STDOUT_FILENO) >= 0;
   }
   ~StderrCapture() {
     Restore();
@@ -104,8 +105,8 @@ class StderrCapture {
  private:
   void Restore() {
     if (saved_ >= 0) {
-      std::fflush(stderr);
-      (void)dup2(saved_, STDERR_FILENO);
+      std::fflush(stdout);
+      (void)dup2(saved_, STDOUT_FILENO);
       close(saved_);
       saved_ = -1;
     }
@@ -131,7 +132,7 @@ class QuoteSource final : public MarketDataSource {
   bool continuous = false;
   int polls = 0;
   int stops = 0;
-  base::Status Prepare(const MarketDataConfig& config) noexcept override {
+  base::Status Prepare(const md::MarketDataConfig& config) noexcept override {
     source_id_ = config.source_id;
     return {};
   }
@@ -206,10 +207,186 @@ struct PlannedFill {
 // A bounded normalized broker used by both timer and BBO DLL tests. Accepted
 // orders remain working unless an explicit fill or cancel plan terminates them.
 // Histories are retained for assertions; no plan or input is borrowed.
-class Broker final : public TradingAdapter {
+class Broker final : public trading::TradingService {
  public:
+  base::Status Init(const trading::TradingClientConfig&,
+                    const md::MarketDataConfig& dictionary) noexcept override {
+    instrument_ = dictionary.instruments[0].instrument;
+    cash_ = {account_.cash_balance, 0, account_.cash_balance};
+    position_ = {instrument_.id, 0, 0, 0};
+    for (std::size_t i = 0; i < account_.position_count; ++i)
+      if (account_.positions[i].instrument_id == instrument_.id)
+        position_ = account_.positions[i];
+    initialized_ = true;
+    return {};
+  }
+  void Reset() noexcept override { initialized_ = false; }
+  void SetAcceptingRequests(bool enabled) noexcept override {
+    accepting_ = enabled && !stopping_;
+  }
+  void BeginStopping() noexcept override {
+    stopping_ = true;
+    accepting_ = false;
+  }
+  bool accepting_orders() const noexcept override {
+    return initialized_ && accepting_ && !stopping_;
+  }
+  base::ErrorCode SubmitOrder(const model::OrderRequest& request,
+                              model::ClientOrderId& out) noexcept override {
+    if (!accepting_orders()) return base::ErrorCode::kInvalidState;
+    if (count_ == snapshots_.size()) return base::ErrorCode::kResourceExhausted;
+    auto& p = snapshots_[count_++];
+    p.client_order_id = {count_};
+    p.instrument_id = request.instrument_id;
+    p.side = request.side;
+    p.limit_price = request.limit_price;
+    p.original_qty = p.leaves_qty = request.quantity;
+    p.position_effect = request.position_effect;
+    out = p.client_order_id;
+    return base::ErrorCode::kOk;
+  }
+  base::ErrorCode CancelOrder(model::ClientOrderId id) noexcept override {
+    if (!accepting_orders()) return base::ErrorCode::kInvalidState;
+    if (id.value == 0 || id.value > count_)
+      return base::ErrorCode::kInvalidArgument;
+    auto& p = snapshots_[id.value - 1];
+    if (p.state != model::OrderState::kWorking || p.cancel_pending)
+      return base::ErrorCode::kInvalidState;
+    p.cancel_pending = true;
+    p.cancel_request_id = {++cancel_id_};
+    return base::ErrorCode::kOk;
+  }
+  bool TryGetOrder(model::ClientOrderId id,
+                   model::OrderSnapshot& out) const noexcept override {
+    if (!initialized_ || id.value == 0 || id.value > count_) return false;
+    out = snapshots_[id.value - 1];
+    return true;
+  }
+  bool TryGetCash(model::CashSnapshot& out) const noexcept override {
+    if (!initialized_) return false;
+    out = cash_;
+    return true;
+  }
+  bool TryGetPosition(model::InstrumentId id,
+                      model::PositionSnapshot& out) const noexcept override {
+    if (!initialized_ || id != instrument_.id) return false;
+    out = position_;
+    return true;
+  }
+  bool TryGetFuturesAccount(
+      model::FuturesAccountSnapshot&) const noexcept override {
+    return false;
+  }
+  bool TryGetFuturesPosition(
+      model::InstrumentId,
+      model::FuturesPositionSnapshot&) const noexcept override {
+    return false;
+  }
+  base::Status OnQuote(const model::QuoteTick&) noexcept override {
+    return quote_result;
+  }
+  base::Status quote_result;
+  std::size_t order_count() const noexcept override { return count_; }
+  const char* error_stage() const noexcept override { return "trading_poll"; }
+  bool has_ready_event(std::uint64_t now) const noexcept override {
+    const auto p = NextPlan();
+    return local_count_ != 0 || (p && plans_[*p].at <= now);
+  }
+  base::Status ProcessRequests(std::uint64_t now,
+                               std::size_t = 64) noexcept override {
+    for (std::size_t i = 0; i < count_; ++i) {
+      auto& p = snapshots_[i];
+      if (!attempted_[i]) {
+        attempted_[i] = true;
+        if (stopping_) {
+          p.state = model::OrderState::kCanceled;
+          p.leaves_qty = 0;
+          local_[local_count_++] = i;
+          continue;
+        }
+        auto status = SendOrder(p.client_order_id,
+                                {p.instrument_id, p.side, p.limit_price,
+                                 p.original_qty, p.position_effect},
+                                now);
+        if (!status.ok()) return status;
+      }
+      if (stopping_ && p.state == model::OrderState::kWorking &&
+          !p.cancel_pending) {
+        p.cancel_pending = true;
+        p.cancel_request_id = {++cancel_id_};
+      }
+      if (p.cancel_pending && sent_cancel_[i] != p.cancel_request_id) {
+        sent_cancel_[i] = p.cancel_request_id;
+        auto status = SendCancel(p.client_order_id, p.broker_order_id,
+                                 p.cancel_request_id, now);
+        if (!status.ok()) return status;
+      }
+    }
+    return {};
+  }
+  base::Status Poll(std::uint64_t now, trading::TradingDispatch& out,
+                    bool& event) noexcept override {
+    if (local_count_) {
+      const auto i = local_[--local_count_];
+      out = {};
+      out.notify_order = true;
+      out.update.kind = model::OrderUpdateKind::kCanceledBeforeSend;
+      out.update.order = snapshots_[i];
+      event = true;
+      return {};
+    }
+    trading::TradingEvent report;
+    const auto result = Poll(now, report);
+    if (!result.status.ok()) return result.status;
+    if (result.state == trading::TradingPollState::kIdle) {
+      event = false;
+      return {};
+    }
+    auto& p = snapshots_[report.client_order_id.value - 1];
+    p.broker_order_id = report.broker_order_id;
+    p.report_sequence = report.report_sequence;
+    p.receive_time_ns = now;
+    if (report.kind == model::OrderUpdateKind::kAccepted)
+      p.state = model::OrderState::kWorking;
+    else if (report.kind == model::OrderUpdateKind::kRejected) {
+      p.state = model::OrderState::kRejected;
+      p.leaves_qty = 0;
+    } else if (report.kind == model::OrderUpdateKind::kCanceled) {
+      p.state = model::OrderState::kCanceled;
+      p.leaves_qty = 0;
+      p.cancel_pending = false;
+    } else if (report.kind == model::OrderUpdateKind::kCancelRejected)
+      p.cancel_pending = false;
+    else if (report.kind == model::OrderUpdateKind::kFill) {
+      p.cumulative_filled_qty = report.cumulative_filled_qty;
+      p.leaves_qty = p.original_qty - p.cumulative_filled_qty;
+      if (!p.leaves_qty) p.state = model::OrderState::kFilled;
+      const auto qty = report.fill.quantity;
+      std::int64_t scale = 1;
+      for (unsigned d = instrument_.price_decimals; d < 6; ++d) scale *= 10;
+      if (p.side == model::OrderSide::kBuy) {
+        cash_.balance -= report.fill.price * qty * scale;
+        position_.total_qty += qty;
+      } else {
+        cash_.balance += report.fill.price * qty * scale;
+        position_.total_qty -= qty;
+        position_.available_qty -= qty;
+      }
+      cash_.available = cash_.balance;
+    }
+    out = {};
+    out.notify_order = true;
+    out.update.order = p;
+    out.update.kind = report.kind;
+    out.update.cancel_request_id = report.cancel_request_id;
+    out.has_fill = report.kind == model::OrderUpdateKind::kFill;
+    out.fill = report.fill;
+    event = true;
+    return {};
+  }
+
   std::array<SentOrder, 64> orders = {};
-  std::size_t order_count = 0;
+  std::size_t sent_count = 0;
   std::array<SentCancel, 128> cancels = {};
   std::size_t cancel_count = 0;
   std::uint64_t ack_delay = 1000;
@@ -222,21 +399,21 @@ class Broker final : public TradingAdapter {
   int fills = 0;
   int stops = 0;
 
-  base::Status Prepare(const TradingConfig& config) noexcept override {
+  base::Status Prepare(const trading::TradingConfig& config) noexcept {
     account_ = config.initial_account;
     return {};
   }
-  base::Status Start(std::uint64_t) noexcept override { return {}; }
+  base::Status Start(std::uint64_t) noexcept { return {}; }
   base::Status ReadAccountSnapshot(
-      TradingAccountSnapshot& out) noexcept override {
+      trading::TradingAccountSnapshot& out) noexcept {
     out = account_;
     return {};
   }
   base::Status SendOrder(model::ClientOrderId id,
                          const model::OrderRequest& request,
-                         std::uint64_t now) noexcept override {
-    if (order_count == orders.size()) return Error();
-    const auto index = order_count++;
+                         std::uint64_t now) noexcept {
+    if (sent_count == orders.size()) return Error();
+    const auto index = sent_count++;
     auto& order = orders[index];
     order.id = id;
     order.request = request;
@@ -269,10 +446,10 @@ class Broker final : public TradingAdapter {
   base::Status SendCancel(model::ClientOrderId id,
                           const model::BrokerOrderId& broker,
                           model::CancelRequestId cancel_id,
-                          std::uint64_t now) noexcept override {
+                          std::uint64_t now) noexcept {
     if (cancel_count == cancels.size()) return Error();
     cancels[cancel_count++] = {id, cancel_id, now};
-    for (std::size_t index = 0; index < order_count; ++index)
+    for (std::size_t index = 0; index < sent_count; ++index)
       if (orders[index].id == id && orders[index].broker == broker) {
         const bool reject = reject_cancels > 0;
         if (reject) --reject_cancels;
@@ -288,8 +465,8 @@ class Broker final : public TradingAdapter {
       }
     return Error();
   }
-  TradingPollResult Poll(std::uint64_t now,
-                         TradingEvent& out) noexcept override {
+  trading::TradingPollResult Poll(std::uint64_t now,
+                                  trading::TradingEvent& out) noexcept {
     const auto selected = NextPlan();
     if (!selected || plans_[*selected].at > now) return {};
     const auto plan = plans_[*selected];
@@ -316,7 +493,7 @@ class Broker final : public TradingAdapter {
       if (fill.execution_id.Assign(
               {execution, static_cast<std::size_t>(size)}) !=
           base::ErrorCode::kOk)
-        return {TradingPollState::kError, Error()};
+        return {trading::TradingPollState::kError, Error()};
       fill.instrument_id = order.request.instrument_id;
       fill.side = order.request.side;
       fill.price = order.request.limit_price;
@@ -336,15 +513,28 @@ class Broker final : public TradingAdapter {
     } else if (plan.kind == model::OrderUpdateKind::kRejected)
       order.finished = true;
     out.cumulative_filled_qty = order.cumulative;
-    return {TradingPollState::kEvent, {}};
+    return {trading::TradingPollState::kEvent, {}};
   }
   std::optional<std::uint64_t> next_deadline() const noexcept override {
+    if (local_count_) return 0;
+    for (std::size_t i = 0; i < count_; ++i)
+      if (!attempted_[i] ||
+          (snapshots_[i].cancel_pending &&
+           sent_cancel_[i] != snapshots_[i].cancel_request_id) ||
+          (stopping_ && snapshots_[i].state == model::OrderState::kWorking &&
+           !snapshots_[i].cancel_pending))
+        return 0;
     const auto plan = NextPlan();
     return plan ? std::optional<std::uint64_t>{plans_[*plan].at} : std::nullopt;
   }
   bool is_drained() const noexcept override {
+    if (local_count_) return false;
+    for (std::size_t i = 0; i < count_; ++i)
+      if (!model::IsTerminalOrderState(snapshots_[i].state) ||
+          snapshots_[i].cancel_pending)
+        return false;
     if (NextPlan()) return false;
-    for (std::size_t index = 0; index < order_count; ++index)
+    for (std::size_t index = 0; index < sent_count; ++index)
       if (!orders[index].finished) return false;
     return true;
   }
@@ -357,6 +547,17 @@ class Broker final : public TradingAdapter {
   }
 
  private:
+  bool initialized_ = false, accepting_ = false, stopping_ = false;
+  model::InstrumentDefinition instrument_;
+  model::CashSnapshot cash_;
+  model::PositionSnapshot position_;
+  std::array<model::OrderSnapshot, 64> snapshots_{};
+  std::array<bool, 64> attempted_{};
+  std::array<model::CancelRequestId, 64> sent_cancel_{};
+  std::array<std::size_t, 64> local_{};
+  std::size_t count_ = 0, local_count_ = 0;
+  std::uint64_t cancel_id_ = 0;
+
   struct Plan {
     bool active = false;
     std::size_t order = 0;
@@ -390,7 +591,7 @@ class Broker final : public TradingAdapter {
   static base::Status Error() noexcept {
     return {base::ErrorCode::kInternalError, {}};
   }
-  TradingAccountSnapshot account_;
+  trading::TradingAccountSnapshot account_;
   std::array<Plan, 128> plans_ = {};
   std::uint64_t registration_ = 0;
   bool buy_seen_ = false;
@@ -398,21 +599,22 @@ class Broker final : public TradingAdapter {
 
 // Wait simulates either the earliest host deadline or a scheduled stop signal.
 // Calls are bounded; an unscheduled infinite wait fails instead of hanging.
-class Environment final : public EventLoopEnvironment {
+class Environment final : public base::EventLoopEnvironment {
  public:
   explicit Environment(Clock& clock) : clock_(clock) {}
   std::optional<std::uint64_t> stop_at;
   std::uint64_t advance_on_check = 0;
+  bool running = false;
   int checks = 0;
   int waits = 0;
   std::array<std::uint64_t, 128> timeouts = {};
-  base::Status CheckStop(bool& out) noexcept override {
+  base::Status CheckStop(bool& out) noexcept {
     if (++checks > 10000) return {base::ErrorCode::kInternalError, {}};
-    clock_.now += advance_on_check;
+    if (running) clock_.now += advance_on_check;
     out = stop_at && clock_.now >= *stop_at;
     return {};
   }
-  base::Status Wait(std::optional<std::uint64_t> timeout) noexcept override {
+  base::Status Wait(std::optional<std::uint64_t> timeout) noexcept {
     if (stop_at && clock_.now < *stop_at &&
         (!timeout || *timeout > *stop_at - clock_.now))
       timeout = *stop_at - clock_.now;
@@ -437,6 +639,39 @@ inline std::string TradingJson(std::int64_t cash = 100000000000000,
          std::to_string(total) + R"(,"available_qty":)" +
          std::to_string(available) + "}]}";
 }
+
+// Supplies mandatory dependencies while configuring the independent scripted
+// service.
+class LoopRunner : public RunnerTestHarness {
+ public:
+  LoopRunner(const base::MonotonicClock& clock, Environment& environment,
+             MarketDataSource& source, Broker& broker) noexcept
+      : RunnerTestHarness(clock, environment, source, broker),
+        broker_(broker),
+        environment_(environment) {}
+  base::Status Handle(StrategyOptions options) noexcept {
+    trading::TradingConfig config;
+    config.initial_account.cash_balance = 100000000000000;
+    if (options.trading_config_path) {
+      trading::TradingConfigLoader loader;
+      auto status = loader.Load(options.trading_config_path);
+      if (!status.ok()) return status;
+      config = loader.config();
+    }
+    auto status = broker_.Prepare(config);
+    if (!status.ok()) return status;
+    options.trading_config_path = nullptr;
+    return RunnerTestHarness::Handle(options);
+  }
+  base::Status Run() noexcept {
+    environment_.running = true;
+    return RunnerTestHarness::Run();
+  }
+
+ private:
+  Broker& broker_;
+  Environment& environment_;
+};
 
 // Reads one named integer from the final stopped line, excluding startup
 // account fields with the same names and any later host diagnostics.

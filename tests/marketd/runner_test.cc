@@ -7,12 +7,13 @@
 #include "gtest/gtest.h"
 #include "test_support.h"
 #include "yquant/md/quote_codec.h"
+#include "yquant/md/shm_broadcast.h"
 
 namespace yquant::marketd {
 namespace {
 
 // Advances one mock interval per source poll; no wall-clock waiting is needed.
-class AdvancingClock final : public strategyd::MonotonicClock {
+class AdvancingClock final : public base::MonotonicClock {
  public:
   std::uint64_t Now() const noexcept override {
     now_ += 1000000;
@@ -24,7 +25,7 @@ class AdvancingClock final : public strategyd::MonotonicClock {
 };
 
 // Requests stop at a selected batch boundary and records any unexpected waits.
-class Environment final : public strategyd::EventLoopEnvironment {
+class Environment final : public base::EventLoopEnvironment {
  public:
   base::Status CheckStop(bool& out) noexcept override {
     ++checks;
@@ -50,8 +51,8 @@ TEST(MarketdRunnerTest, PublishesExactlyLimitToEveryOutputAndClosesDiscovery) {
   config.publisher_count = 2;
   MarketdRunner runner;
   ASSERT_TRUE(runner.Init(config, 0).ok()) << runner.error_detail();
-  md::ShmSubscriber first;
-  md::ShmSubscriber second;
+  md::ShmReader first;
+  md::ShmReader second;
   ASSERT_TRUE(first.Open({directory.path(), "quotes"}).ok());
   ASSERT_TRUE(second.Open({directory.path(), "other"}).ok());
   AdvancingClock clock;
@@ -73,7 +74,7 @@ TEST(MarketdRunnerTest, PublishesExactlyLimitToEveryOutputAndClosesDiscovery) {
   }
   md::EventBuffer buffer;
   EXPECT_EQ(first.TryNext(buffer).status, md::ReadStatus::kEndOfGeneration);
-  md::ShmSubscriber later;
+  md::ShmReader later;
   EXPECT_FALSE(later.Open({directory.path(), "quotes"}).ok());
 }
 
@@ -102,8 +103,8 @@ TEST(MarketdRunnerTest, ValidatesAllConfigurationBeforeCreatingOutputs) {
   EXPECT_FALSE(runner.Init(config, 0).ok());
   EXPECT_STREQ(runner.error_stage(), "config");
   EXPECT_FALSE(std::filesystem::exists(directory.File("quotes.lock")));
-  md::ShmSubscriber subscriber;
-  EXPECT_FALSE(subscriber.Open({directory.path(), "quotes"}).ok());
+  md::ShmReader reader;
+  EXPECT_FALSE(reader.Open({directory.path(), "quotes"}).ok());
 }
 
 TEST(MarketdRunnerTest, PartialOutputInitializationUnwindsAndReleasesLocks) {
@@ -117,8 +118,8 @@ TEST(MarketdRunnerTest, PartialOutputInitializationUnwindsAndReleasesLocks) {
   MarketdRunner runner;
   EXPECT_FALSE(runner.Init(config, 0).ok());
   EXPECT_STREQ(runner.error_stage(), "publisher_init");
-  md::ShmSubscriber subscriber;
-  EXPECT_FALSE(subscriber.Open({directory.path(), "quotes"}).ok());
+  md::ShmReader reader;
+  EXPECT_FALSE(reader.Open({directory.path(), "quotes"}).ok());
   md::ShmPublisher replacement;
   EXPECT_TRUE(replacement.Create({{directory.path(), "quotes"}, 16, 80}).ok());
 }

@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "strategyd/instrument_catalog.h"
 #include "yquant/model/identifiers.h"
 
 namespace yquant::marketd {
@@ -22,12 +21,12 @@ struct ReplayConfig {
   char path[kMaxDataPathBytes + 1] = {};
   ReplayFormat format = ReplayFormat::kRecording;
   double speed = 1.0;
-  // Delay from the first Poll, allowing local subscribers to attach first.
+  // Delay from the first Poll, allowing local readers to attach first.
   std::uint64_t start_delay_ns = 0;
   std::size_t max_records = 1000000;
   model::SourceId source_id{1};
   // Absolute catalog path, loaded only while converting the CSV input.
-  char instrument_catalog[strategyd::kMaxInstrumentCatalogPathLength + 1] = {};
+  char instrument_catalog[kMaxDataPathBytes + 1] = {};
 };
 
 // The output is created exclusively, never appended to or overwritten.

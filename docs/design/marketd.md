@@ -12,14 +12,14 @@ Source → model::QuoteTick → Publisher[]
 
 | 输入适配器 | 数据来源 | 行为 |
 | --- | --- | --- |
-| `mock` | 模拟行情配置 | 复用模拟源，订阅配置中的全部品种 |
+| `mock` | 模拟行情配置 | 使用行情组件的模拟源，生成配置中全部品种的报价 |
 | `shm` | 另一条本机共享内存流 | 独立读取游标，从连接后的新事件开始 |
 | `tcp` | 上游 `marketd` | 非阻塞接收标准报价帧 |
 | `replay` | 历史 CSV 或本系统录制文件 | 启动时预加载，按时间或最快速度逐条交付，文件结束后正常退出 |
 
 | 输出适配器 | 下游 | 行为 |
 | --- | --- | --- |
-| `shm` | 本机多个 `strategyd` 或其他 `marketd` | 共享内存广播环，一次写入、各订阅端独立读取 |
+| `shm` | 本机多个 `strategyd` 或其他 `marketd` | 共享内存广播环，一次写入、各接收端独立读取 |
 | `tcp` | 多个远端 `marketd` | 监听数字 IPv4 地址，按连接分发标准报价帧 |
 | `record` | 本地录制文件 | 经预分配 SPSC 队列交给后台线程批量写入 |
 
@@ -58,13 +58,13 @@ yquant-marketd --config /path/to/marketd.json --max-events 100
 
 `--check-config` 读取并校验配置，不创建发布者或发现入口。`--max-events` 在成功向所有输出提交指定数量的报价后停止；TCP 提交表示进入连接发送路径，不包含接收端处理确认。
 
-配置拒绝未知字段、重复键、错误类型、超长路径和不支持的组合。所有配置完成校验后才初始化输出；初始化失败会清理本次已获得的资源。
+配置通过 `base::JsonConfigDocument` 遵循[通用 JSON 输入规则](engineering.md#json-配置文档)，加载器拒绝未知字段、错误类型、超长路径和不支持的组合，诊断使用 `base::ConfigError`。所有配置完成校验后才初始化输出；初始化失败会清理本次已获得的资源。
 
 ### 模拟输入与本机广播
 
 ```json
 {
-  "source": {"adapter": "mock", "config": "mock_source.json"},
+  "source": {"adapter": "mock", "config": "examples/marketd/mock_source.json"},
   "publishers": [
     {"adapter": "shm", "runtime_directory": "/tmp/yquant-md",
      "stream": "quotes", "capacity": 16384, "max_payload_size": 80}
@@ -72,9 +72,44 @@ yquant-marketd --config /path/to/marketd.json --max-events 100
 }
 ```
 
-`source.config` 相对主配置文件所在目录解析。模拟行情配置引用[共享标的字典](market-data.md#共享标的字典)，并保存来源、间隔、运行标的及其模拟报价，格式与 `strategyd` 模拟源一致；示例见 [mock_source.json](../../examples/marketd/mock_source.json)。其中 `instrument_catalog` 相对模拟源配置文件所在目录解析，而非相对 `marketd` 主配置。标的精度由字典提供。
+`source.config` 与模拟源配置中的 `instrument_catalog` 均按进程工作目录解析，遵循[路径解析约定](../../README.md#路径解析)。模拟行情配置引用[共享标的字典](market-data.md#共享标的字典)，保存来源、间隔、运行标的及其模拟报价，标的精度由字典提供；由 `md::MockQuoteConfigLoader` 独立解析，示例见 [mock_source.json](../../examples/marketd/mock_source.json)。
 
 共享内存输出的容量为 2 的幂，默认 1024；载荷上限默认 256 字节，本报价帧要求至少 80 字节，组件上限为 4096 字节。运行目录必须使用当前用户拥有的绝对路径，组和其他用户不可写入。
+
+#### 模拟报价生成
+
+`md::MockQuoteSource` 属于行情组件，持有 `MockQuoteConfig` 中的报价种子和批次状态。`marketd::MockSource` 为生产端选择配置中的全部标的，逐条取得规范化报价。对象由单一执行流使用，不创建线程、不执行等待，轮询路径不分配内存。
+
+每隔 `interval_ms` 对每个选择的标的生成一次报价，按配置中的标的顺序通过多次 `Poll()` 返回。第一批在激活后经过一个间隔生成，此后持续运行，不设置自动结束条数。
+
+第 `n` 批的价格偏移为 `((n - 1) % 2) * price_step`，同时加到配置的买一和卖一价格上；数量保持不变。每个来源与标的组合的发布序号从 `1` 开始，事件时间填写生成时的 UTC 时间，接收时间使用本次 `Poll()` 的单调时间。价格变化始终有界，初始化时检查基础价格加步长不溢出。
+
+生成当前批最后一条记录时，以传入该次 `Poll()` 的 `now + interval` 安排下一批；下游处理耗时不回推已定期限。调度落后时不补发一串已经过时的批次，系统日历时间的调整不改变发布间隔。
+
+模拟源配置示例：
+
+```json
+{
+  "source_id": 1,
+  "adapter": "mock",
+  "instrument_catalog": "examples/instruments.json",
+  "interval_ms": 100,
+  "instruments": [
+    {
+      "venue": "SSE",
+      "symbol": "600000",
+      "bid_price": 1000,
+      "bid_qty": 100,
+      "ask_price": 1001,
+      "ask_qty": 200,
+      "price_step": 1
+    }
+  ]
+}
+```
+
+模拟配置的所有字段必填。`interval_ms` 为 `1..60000` 的整数；基础价格和数量为正整数，卖价高于买价，步长为非负整数，价格和数量均在 `int64_t` 范围内，基础价格加步长不得溢出。无效行情、重复序号和源故障由测试注入，模拟源的正常配置不制造协议错误。
+
 
 ### 共享内存输入
 
@@ -97,7 +132,7 @@ yquant-marketd --config /path/to/marketd.json --max-events 100
 
 ```json
 {
-  "source": {"adapter": "mock", "config": "mock_source.json"},
+  "source": {"adapter": "mock", "config": "examples/marketd/mock_source.json"},
   "publishers": [
     {"adapter": "tcp", "address": "0.0.0.0", "port": 19100,
      "max_clients": 16}
@@ -121,7 +156,7 @@ yquant-marketd --config /path/to/marketd.json --max-events 100
 
 ### 历史回放与录制
 
-`replay` 输入支持 `dolphindb_csv` 与 `recording` 两种格式，`record` 输出可以与共享内存或 TCP 输出并用。路径相对主配置文件所在目录解析。配置拒绝输入与录制输出指向同一文件，以及重复录制输出。
+`replay` 输入支持 `dolphindb_csv` 与 `recording` 两种格式，`record` 输出可以与共享内存或 TCP 输出并用。相对路径基于进程工作目录解析。配置拒绝输入与录制输出指向同一文件，以及重复录制输出。
 
 `--check-config` 检查字段与路径，不读取行情文件或创建录制文件。实际启动先完整读取并校验历史输入，再初始化输出；发现损坏行或超出条数上限时不会开始发布。
 
@@ -129,7 +164,7 @@ yquant-marketd --config /path/to/marketd.json --max-events 100
 
 ## 执行与关闭
 
-启动顺序为配置校验、输入初始化、输出初始化，全部成功后输出 `Running`。运行器每轮服务所有输出，最多处理 64 条事件，再检查停止信号。模拟源只在间隔到期时产出，历史源按预计算的时间偏移交付，网络操作使用非阻塞套接字和固定工作预算。
+启动顺序为配置校验、输入初始化、输出初始化，全部成功后向 `stdout` 输出 `Running` 并刷新，供监督进程读取。正常停止和统计汇总也写入 `stdout`，失败诊断写入 `stderr`，遵循[标准输出与诊断约定](engineering.md#标准输出与诊断)。运行器每轮服务所有输出，最多处理 64 条事件，再检查停止信号。模拟源只在间隔到期时产出，历史源按预计算的时间偏移交付，网络操作使用非阻塞套接字和固定工作预算。
 
 共享内存输出每 250 ms 更新一次心跳；输入在控制周期检查发布者健康状态。发现新代次立即停止旧代次交付，缺口也终止当前管线。发布者停滞或停止时，先交付仍完整的已提交事件，再报告上游故障。
 
@@ -139,7 +174,7 @@ SIGINT、SIGTERM、有限事件计数、回放结束及错误退出均关闭输�
 
 ## 输出隔离
 
-共享内存输出使用[共享内存订阅发布协议](shared-memory-pubsub.md)，慢策略通过独立游标检测覆盖，不阻塞其他读者。
+共享内存输出使用[共享内存广播协议](shared-memory-broadcast.md)，慢策略通过独立游标检测覆盖，不阻塞其他读者。
 
 TCP 输出为每个客户端预分配 64 帧队列，保存部分发送进度。网络拥塞导致单个队列满时断开该客户端，其他连接和其他输出保持推进；接收端遇到断流会终止其管线。空闲断开的连接在控制服务时释放，不等待下一条行情。
 
@@ -153,7 +188,7 @@ TCP 新连接只接收接入后的报价，不补发连接前的事件。停止�
 
 策略共享内存输入维护自己的过滤器和游标，逐条读取匹配报价。缺口、非法帧、源标识不匹配、发布者停止或更换代次均报告错误并停止策略。空读的 `poll_interval_us` 默认为 0；设为正数时仅在无积压事件时等待该间隔。
 
-宿主每 250 ms 执行冷路径维护，等待时间取行情与维护的最早截止时间。即使没有订阅或配置了较长空读间隔，也会继续检查发布者健康状态。原模拟源和不订阅行情的策略保留原生命周期行为。
+宿主每 250 ms 执行冷路径维护，等待时间取行情与维护的最早截止时间。即使没有订阅或配置了较长空读间隔，也会继续检查发布者健康状态。不订阅行情的策略仍保留原生命周期行为。
 
 ## 验证
 

@@ -4,7 +4,7 @@
     "format": "dolphindb_csv",
     "path": "@YQUANT_TEST_DATA_DIR@/dolphindb/2020-12-31/snapshot.csv",
     "source_id": 1,
-    "instrument_catalog": "../instruments.json",
+    "instrument_catalog": "examples/instruments.json",
     "speed": 0,
     "max_records": 400000
   },

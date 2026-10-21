@@ -1,33 +1,24 @@
 # 国内期货模拟交易
 
-`yquant-strategyd` 使用期货合约规格、开平仓委托和保证金账本运行双边报价策略；历史报价由回放源发布，成交由进程内模拟交易所生成。
+`yquant-strategyd` 使用期货合约规格、开平仓委托和保证金账本运行双边报价策略；历史报价由回放源发布，成交由 `tradingd` 中的模拟交易所生成。
 
 ## 组件与执行顺序
 
-行情、撮合、账本和策略回调都在主线程执行，不新增线程。策略使用现有 `market_data()`、`trading()` 和 `timer()` 服务；策略动态库和宿主共同使用最新插件 ABI。
+`strategyd` 串行驱动行情与策略回调；`tradingd` 串行驱动撮合和权威账本。两进程通过 TCP 交换请求、账户快照和回报。策略使用现有 `market_data()`、`trading()` 和 `timer()` 服务；策略动态库和宿主共同使用最新插件 ABI。
 
 ```mermaid
-flowchart TD
-    LOOP[主线程事件循环] --> POLL[回放源发布到期报价]
-    POLL --> CACHE[校验并更新最新行情]
-    CACHE --> MARK[更新期货估值]
-    MARK --> MATCH[模拟交易所更新盘口并计划成交]
-    MATCH --> TICK[策略 OnTick 维护双边委托]
-    TICK --> LOOP
-    LOOP --> SEND[发送排队的报单与撤单]
-    SEND --> LOOP
-    LOOP --> REPORT[读取到期交易回报]
-    REPORT --> LEDGER[校验回报并原子更新委托与期货账本]
-    LEDGER --> CALLBACK[OnOrderUpdate 后调用 OnFill]
-    CALLBACK --> LOOP
-    LOOP --> TIMER[到期 OnTimer]
-    TIMER --> LOOP
-    LOOP --> EOF[回放结束或停止信号]
-    EOF --> DRAIN[停止新请求并撤单排空]
-    DRAIN --> STOP[OnStop 输出结果]
+flowchart LR
+    REPLAY[strategyd 回放与行情缓存] --> STRATEGY[策略回调]
+    REPLAY --> QUOTE[TCP 模拟行情输入]
+    STRATEGY --> REQUEST[TCP 委托与撤单]
+    QUOTE --> GATEWAY[tradingd 估值与撮合]
+    REQUEST --> GATEWAY
+    GATEWAY --> ENGINE[TradingEngine 权威落账]
+    ENGINE --> REPORT[TCP 回报与账户快照]
+    REPORT --> STRATEGY
 ```
 
-报价进入策略前，最新行情、期货估值和模拟交易所盘口均已更新。撮合只计划回报；持仓在回报通过交易账本校验后改变。委托和成交回调的顺序、去重、失败及停止规则沿用[交易执行设计](trading.md)。
+报价先更新策略的最新行情，再作为模拟输入排入发往网关的队列。网关按接收顺序更新盘口与估值、处理委托；撮合只计划回报，持仓在交易引擎提交回报后改变。策略查询到的账户是最近收到的网关快照，本地 PendingNew 尚无已确认预占。委托和成交回调的顺序、去重、失败及停止规则沿用[交易执行设计](trading.md)。
 
 ## 合约与计量
 
@@ -109,7 +100,7 @@ available = equity - margin - reserved
 
 ## 模拟交易所
 
-宿主交易配置选择 `adapter: "simulated_futures"`，由 `SimulatedFuturesExchange` 实现 `TradingAdapter`。它保留独立的外部盘口，策略自己的挂单不写回该盘口。
+网关柜台配置选择 `adapter: "simulated_futures"`，由 `SimulatedFuturesExchange` 实现 `TradingAdapter`。它保留独立的外部盘口，策略自己的挂单不写回该盘口。
 
 新单在一个 `report_interval_ms` 后收到受理；若报单时买单限价不低于卖一、卖单限价不高于买一，则按对侧报价安排主动成交。其余订单留在簿内，后续报价跨过限价时按原挂单限价成交。
 
@@ -131,7 +122,7 @@ elapsed_ns,event_time_ns,bid_price,bid_qty,ask_price,ask_qty,flags
 
 `elapsed_ns` 是相对回放起点的时间，必须非递减，相同时按文件顺序发布。事件时间及标志沿用 `QuoteTick` 契约。来源、标的、序号由回放源填写，接收时间取当前主线程单调时钟。
 
-行情配置使用 `adapter: "replay"`、`replay_path`、`replay_speed` 和 `replay_tail_ms`，不包含 mock 报价种子。`replay_path` 相对行情配置文件所在目录解析；速度为 `1..1000` 的整数，默认 1；尾部等待为 `0..60000` 毫秒，默认 1000，不随速度缩放。最后一帧发出后等待尾部期限，宿主随后自动进入撤单排空并退出。未订阅行情的策略不接收帧，仍在相同的结束期限退出。
+行情配置使用 `adapter: "replay"`、`replay_path`、`replay_speed` 和 `replay_tail_ms`，不包含 mock 报价种子。`replay_path` 相对进程工作目录解析；速度为 `1..1000` 的整数，默认 1；尾部等待为 `0..60000` 毫秒，默认 1000，不随速度缩放。最后一帧发出后等待尾部期限，宿主随后自动进入撤单排空并退出。未订阅行情的策略不接收帧，仍在相同的结束期限退出。
 
 默认样本包含 2017-12-27 09:38:06.422000 至 10:09:25.324000 的 744 条 `a1805` 报价，保留原始买卖一价量，用采集时间差控制回放，不进行插值。原始文件名为 `a1803_few.csv`，内容的合约字段全部为 `a1805`。样本中的交易所时间字段不用于生成事件时间，回放 `event_time_ns=0` 且不设置事件时间有效标志。
 
@@ -164,7 +155,7 @@ cmake --build --preset debug
 
 脚本以 100 倍速度回放上述约 31 分钟的样本，约 20 秒自动收尾；本次配置与输出保存在启动时打印的临时目录中。也可按 `Ctrl+C` 提前停止。最终 `futures_bbo: stopped` 行中的 `reserved`、冻结总量 `frozen_qty` 和活动委托数 `slots` 应为零，实际成交形成的仓位仍在汇总中。
 
-交易配置示例：
+脚本分别启动交易网关和策略，保存网关、客户端及柜台配置。策略的 `--trading-config` 使用 `adapter: "tcp"` 的客户端配置；以下柜台配置由 `tradingd` 加载：
 
 ```json
 {
@@ -180,4 +171,4 @@ cmake --build --preset debug
 
 ## 验证场景
 
-账本测试覆盖开仓保证金、平今平昨、分批 FIFO 成本、手续费和损益、负权益减仓、锁仓、撤单释放、回报去重及溢出原子性。撮合测试覆盖主动和被动成交、共享流动性、部分成交及撤单竞争。策略集成测试通过动态库和主线程循环验证双向开平、锁仓解锁、风险上限及定时撤单；进程测试运行回放配置并验证自动收尾。
+账本测试覆盖开仓保证金、平今平昨、分批 FIFO 成本、手续费和损益、负权益减仓、锁仓、撤单释放、回报去重及溢出原子性。撮合测试覆盖主动和被动成交、共享流动性、部分成交及撤单竞争。策略单元测试注入 mock TradingService，检查双向开仓和未确认平仓请求；账本及撮合测试验证锁仓、FIFO 和风险约束。进程测试启动真实 tradingd，运行历史回放并验证开平仓及自动收尾。

@@ -16,8 +16,8 @@ class TimerImpl final : public strategy::Timer {
   // Enables dispatch after all startup stages succeed; preserves a deadline
   // armed in OnStart. BeginStopping is the explicit closing/disarming boundary.
   void SetRunning(bool running) noexcept { running_ = running; }
-  void BeginCallback(CallbackPhase phase) noexcept { phase_ = phase; }
-  void EndCallback() noexcept { phase_ = CallbackPhase::kNone; }
+  void BeginCallback(strategy::CallbackPhase phase) noexcept { phase_ = phase; }
+  void EndCallback() noexcept { phase_ = strategy::CallbackPhase::kNone; }
   // Idempotently closes mutation and discards any pending notification.
   void BeginStopping() noexcept;
   // Restores empty startup state outside callbacks; owns no external resource.
@@ -42,7 +42,7 @@ class TimerImpl final : public strategy::Timer {
   std::optional<std::uint64_t> deadline_;
   bool running_ = false;
   bool stopping_ = false;
-  CallbackPhase phase_ = CallbackPhase::kNone;
+  strategy::CallbackPhase phase_ = strategy::CallbackPhase::kNone;
 };
 
 }  // namespace yquant::strategyd

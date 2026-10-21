@@ -3,7 +3,7 @@
 
 #include <cstdint>
 
-#include "strategyd/monotonic_clock.h"
+#include "yquant/base/monotonic_clock.h"
 #include "yquant/strategy/strategy_context.h"
 
 namespace yquant::strategyd {
@@ -15,35 +15,31 @@ class StrategyContextImpl final : public strategy::StrategyContext {
   // Borrows clock and all services for this view's entire lifetime. No
   // reference returned to a strategy may outlive the callback in which it was
   // obtained.
-  StrategyContextImpl(const MonotonicClock& clock,
+  StrategyContextImpl(const base::MonotonicClock& clock,
                       strategy::MarketData& market_data,
                       strategy::Trading& trading,
                       strategy::Timer& timer) noexcept
       : clock_(clock),
         market_data_(market_data),
-        trading_(&trading),
+        trading_(trading),
         timer_(timer) {}
-
-  // Selects the run's service before loading the strategy. The selected
-  // service must outlive this context and cannot change during callbacks.
-  void SetTrading(strategy::Trading& trading) noexcept { trading_ = &trading; }
 
   std::uint64_t Now() const noexcept override { return clock_.Now(); }
   strategy::MarketData& market_data() noexcept override { return market_data_; }
   const strategy::MarketData& market_data() const noexcept override {
     return market_data_;
   }
-  strategy::Trading& trading() noexcept override { return *trading_; }
+  strategy::Trading& trading() noexcept override { return trading_; }
   const strategy::Trading& trading() const noexcept override {
-    return *trading_;
+    return trading_;
   }
   strategy::Timer& timer() noexcept override { return timer_; }
   const strategy::Timer& timer() const noexcept override { return timer_; }
 
  private:
-  const MonotonicClock& clock_;
+  const base::MonotonicClock& clock_;
   strategy::MarketData& market_data_;
-  strategy::Trading* trading_;
+  strategy::Trading& trading_;
   strategy::Timer& timer_;
 };
 

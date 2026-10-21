@@ -2,19 +2,18 @@
 #include <array>
 #include <cstddef>
 #include <cstdlib>
-#include <cstring>
 #include <new>
 #include <span>
 #include <utility>
 
 #include "gtest/gtest.h"
+#include "mock_trading_service.h"
 #include "strategyd/market_data.h"
-#include "strategyd/mock_market_data_source.h"
 #include "strategyd/replay_market_data_source.h"
 #include "strategyd/strategy_context.h"
 #include "strategyd/timer.h"
-#include "strategyd/trading.h"
 #include "test_config_file.h"
+#include "yquant/md/mock_quote_source.h"
 #include "yquant/model/identifiers.h"
 
 namespace {
@@ -142,7 +141,7 @@ namespace yquant::strategyd {
 namespace {
 
 // Test clock shares the source/context time domain without wall-clock sleeps.
-class ManualClock final : public MonotonicClock {
+class ManualClock final : public base::MonotonicClock {
  public:
   std::uint64_t Now() const noexcept override { return now; }
   std::uint64_t now = 0;
@@ -159,7 +158,7 @@ struct ExerciseCounts {
 
 // Performs only allocation-counted work. A literal failure reason and counters
 // defer all GoogleTest reporting until after the observation window closes.
-const char* ExerciseMarketData(MockMarketDataSource& source,
+const char* ExerciseMarketData(md::MockQuoteSource& source,
                                MarketDataImpl& market_data,
                                const strategy::StrategyContext& context,
                                ManualClock& clock, std::uint64_t interval,
@@ -171,7 +170,7 @@ const char* ExerciseMarketData(MockMarketDataSource& source,
   for (std::size_t batch = 0; batch < kBatches; ++batch) {
     const auto idle_output = tick;
     clock.now += interval - 1;
-    if (source.Poll(clock.Now(), tick).state != MarketDataPollState::kIdle ||
+    if (source.Poll(clock.Now(), tick).state != md::MockQuotePollState::kIdle ||
         tick != idle_output) {
       return "idle polling changed the output or produced early data";
     }
@@ -180,7 +179,8 @@ const char* ExerciseMarketData(MockMarketDataSource& source,
     for (std::size_t instrument = 0; instrument < instrument_count;
          ++instrument) {
       const auto result = source.Poll(clock.Now(), tick);
-      if (result.state != MarketDataPollState::kEvent || !result.status.ok()) {
+      if (result.state != md::MockQuotePollState::kEvent ||
+          !result.status.ok()) {
         return "source failed to produce the next scheduled quote";
       }
       bool accepted = false;
@@ -189,7 +189,7 @@ const char* ExerciseMarketData(MockMarketDataSource& source,
         return "context did not accept a fresh quote";
       }
       ++counts.quotes;
-      market_data.BeginCallback(CallbackPhase::kTick);
+      market_data.BeginCallback(strategy::CallbackPhase::kTick);
       model::QuoteTick snapshot;
       if (!context.market_data().TryGetLatestQuote(tick.instrument_id,
                                                    snapshot) ||
@@ -277,10 +277,10 @@ TEST(MarketDataCppHeapCounterTest, CountsReplacementOperatorCalls) {
 }
 
 TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
-  MarketDataConfig config;
+  md::MockQuoteConfig config;
   config.source_id = {17};
   config.interval_ns = 1000000;
-  config.instrument_count = kMaxMarketDataInstruments;
+  config.instrument_count = md::kMaxMarketDataInstruments;
   for (std::size_t index = 0; index < config.instrument_count; ++index) {
     auto& item = config.instruments[index];
     item.instrument.venue = model::Venue::kSse;
@@ -301,20 +301,25 @@ TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
   }
   ManualClock clock;
   MarketDataImpl market_data(clock);
-  TradingImpl trading(clock, market_data);
+  testing::MockTradingService trading;
   TimerImpl timer;
   StrategyContextImpl context(clock, market_data, trading, timer);
-  ASSERT_TRUE(market_data.Configure(config).ok());
-  market_data.BeginCallback(CallbackPhase::kStart);
+  md::MarketDataConfig host;
+  host.source_id = config.source_id;
+  host.instrument_count = config.instrument_count;
+  for (std::size_t i = 0; i < host.instrument_count; ++i)
+    host.instruments[i].instrument = config.instruments[i].instrument;
+  ASSERT_TRUE(market_data.Configure(host).ok());
+  market_data.BeginCallback(strategy::CallbackPhase::kStart);
   for (std::size_t index = 0; index < config.instrument_count; ++index) {
     ASSERT_EQ(context.market_data().SubscribeQuotes(
                   config.instruments[index].instrument.id),
               base::ErrorCode::kOk);
   }
   market_data.EndCallback();
-  MockMarketDataSource source;
+  md::MockQuoteSource source;
   ASSERT_TRUE(source.Prepare(config).ok());
-  ASSERT_TRUE(source.Start(market_data.subscriptions(), clock.Now()).ok());
+  ASSERT_TRUE(source.Start(clock.Now()).ok());
 
   ExerciseCounts counts;
   const char* failure = nullptr;
@@ -326,10 +331,10 @@ TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
                            config.interval_ns, config.instrument_count, counts);
   });
   EXPECT_EQ(failure, nullptr) << (failure == nullptr ? "" : failure);
-  EXPECT_EQ(counts.quotes, 128U * kMaxMarketDataInstruments);
+  EXPECT_EQ(counts.quotes, 128U * md::kMaxMarketDataInstruments);
   EXPECT_EQ(counts.idle, 128U);
   EXPECT_EQ(counts.duplicates, counts.quotes);
-  EXPECT_EQ(counts.old_quotes, 127U * kMaxMarketDataInstruments);
+  EXPECT_EQ(counts.old_quotes, 127U * md::kMaxMarketDataInstruments);
   EXPECT_EQ(counts.rejected, counts.quotes);
   EXPECT_EQ(counts.query_misses, 2 * counts.quotes);
   EXPECT_EQ(activity.allocation_calls, 0U);
@@ -344,8 +349,8 @@ TEST(MarketDataCppHeapTest,
       "0,0,1000,100,1001,200,7\n4,0,1000,100,1001,200,7\n"
       "4,0,1000,100,1001,200,7\n10,0,1000,100,1001,200,7\n");
   ASSERT_TRUE(csv.valid());
-  MarketDataConfig config;
-  config.adapter = MarketDataAdapter::kReplay;
+  md::MarketDataConfig config;
+  config.adapter = md::MarketDataAdapter::kReplay;
   config.source_id = {1};
   config.instrument_count = 1;
   config.replay_speed = 2;
@@ -398,6 +403,44 @@ TEST(MarketDataCppHeapTest,
   EXPECT_EQ(activity.allocation_calls, 0U);
   EXPECT_EQ(activity.deallocation_calls, 0U);
   EXPECT_TRUE(source.Stop().ok());
+}
+
+TEST(TimerCppHeapTest,
+     FirstUseAndRepeatedOneShotOperationsHaveNoCppHeapActivity) {
+  const char* failure = nullptr;
+  const auto activity = ObserveCppHeap([&]() noexcept {
+    TimerImpl timer;
+    timer.BeginCallback(strategy::CallbackPhase::kStart);
+    if (timer.Arm(0) != base::ErrorCode::kOk) {
+      failure = "startup timer could not be armed";
+      return;
+    }
+    timer.EndCallback();
+    timer.SetRunning(true);
+    const strategy::Timer& read_only = timer;
+    for (std::uint64_t now = 0; now < 4096; ++now) {
+      strategy::TimerEvent event;
+      if (read_only.deadline() != now || !timer.TryTakeDue(now, event) ||
+          event.deadline_ns != now || event.fire_time_ns != now ||
+          read_only.deadline()) {
+        failure = "one-shot dispatch or copied query was inconsistent";
+        return;
+      }
+      timer.BeginCallback(strategy::CallbackPhase::kTimer);
+      if (timer.Arm(now + 2) != base::ErrorCode::kOk ||
+          timer.Cancel() != base::ErrorCode::kOk || read_only.deadline() ||
+          timer.Arm(now + 1) != base::ErrorCode::kOk) {
+        failure = "callback replacement, cancellation or rearming failed";
+        return;
+      }
+      timer.EndCallback();
+    }
+    timer.BeginStopping();
+    if (read_only.deadline()) failure = "stopping retained a timer";
+  });
+  EXPECT_EQ(failure, nullptr) << (failure == nullptr ? "" : failure);
+  EXPECT_EQ(activity.allocation_calls, 0U);
+  EXPECT_EQ(activity.deallocation_calls, 0U);
 }
 
 }  // namespace

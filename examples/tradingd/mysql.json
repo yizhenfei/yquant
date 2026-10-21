@@ -1,7 +1,7 @@
 {
   "listen": {"address": "127.0.0.1", "port": 19200},
-  "market_data_config": "../strategies/mock_market_data.json",
-  "trading_config": "../strategies/mock_trading.json",
+  "market_data_config": "examples/tradingd/instrument_scope.json",
+  "trading_config": "examples/tradingd/mock_trading.json",
   "token": "development-token",
   "max_clients": 16,
   "heartbeat_timeout_ms": 5000,

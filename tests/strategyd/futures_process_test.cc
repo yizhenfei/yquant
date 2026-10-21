@@ -10,9 +10,9 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "strategyd/market_data_config.h"
 #include "test_config_file.h"
 #include "trading_process_helpers.h"
+#include "yquant/md/market_data_config.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -20,7 +20,7 @@ namespace {
 // Copies the shipped replay configuration, retaining its data/catalog paths
 // when the temporary configuration moves to another directory.
 std::string AcceleratedReplay() {
-  MarketDataConfigLoader loader;
+  md::MarketDataConfigLoader loader;
   if (!loader.Load(YQUANT_TEST_FUTURES_MARKET_CONFIG_PATH).ok()) return {};
   std::ifstream input(YQUANT_TEST_FUTURES_MARKET_CONFIG_PATH);
   std::string json{std::istreambuf_iterator<char>(input), {}};
@@ -39,13 +39,11 @@ std::string AcceleratedReplay() {
     return result + '"';
   };
   const auto catalog_path =
-      (std::filesystem::path(YQUANT_TEST_FUTURES_MARKET_CONFIG_PATH)
-           .parent_path() /
-       "../instruments.json")
-          .lexically_normal();
-  if (!replace("\"../data/a1805_20171227.csv\"",
+      std::filesystem::absolute("examples/instruments.json");
+  if (!replace("\"examples/data/a1805_20171227.csv\"",
                quote_path(loader.config().replay_path)) ||
-      !replace("\"../instruments.json\"", quote_path(catalog_path.native())) ||
+      !replace("\"examples/instruments.json\"",
+               quote_path(catalog_path.native())) ||
       !replace("\"replay_speed\": 100", "\"replay_speed\": 1000"))
     return {};
   return json;

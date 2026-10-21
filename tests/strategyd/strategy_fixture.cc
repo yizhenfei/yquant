@@ -24,8 +24,8 @@ extern "C" int YQuantTestDependency() noexcept;
 
 namespace {
 
+using yquant::base::ConfigError;
 using yquant::base::ErrorCode;
-using yquant::strategy::ConfigError;
 using yquant::strategy::Strategy;
 using yquant::strategy::StrategyConfig;
 using yquant::strategy::StrategyContext;

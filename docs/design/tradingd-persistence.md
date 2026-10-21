@@ -27,7 +27,7 @@ WAL 使用文件支持的 `mmap(MAP_SHARED)`。主线程写入内核管理的文
 后台：同步已发布前缀 → 推进刷盘水位
 ```
 
-`TradingImpl` 的变更钩子在全部校验通过、业务状态改变前调用。记录完整复制成功后才提交相应变更；容量及日志失败不改变新单预占、订单号、请求队列或输出。发送尝试也先记录，再调用适配器。计划提交后不再分配或重新决策；后续请求立即读取已更新的可用资金和持仓。
+`TradingEngine` 的变更钩子在全部校验通过、业务状态改变前调用。记录完整复制成功后才提交相应变更；容量及日志失败不改变新单预占、订单号、请求队列或输出。发送尝试也先记录，再调用适配器。计划提交后不再分配或重新决策；后续请求立即读取已更新的可用资金和持仓。
 
 日志保存经过验证的事实，包含输入、预期订单及撤单号、原始单调时间和连续账本修订号。重放通过相同的确定性整数账务路径重建，核验修订号、ID、状态与容量；不匹配则阻塞，不将历史受理改判为业务拒绝。重放不调用历史柜台发送，也不重放策略回调。
 
@@ -128,7 +128,7 @@ state_directory/
 - 历史分页、实时衔接及终态查询均完成。空页或查询超时不能证明订单不存在。
 - 柜台字段已规范化为账本单位，区分余额与可用、总持仓与可卖、冻结与本地预占。
 
-恢复组件验证覆盖、字典、业务身份、内容冲突及累计量，输出新的账户基线和去重事实。旧活动单还须执行风险减少撤单并重新取得最终边界。`TradingImpl::RestoreReconciled` 安装已排空订单、完整成交及账户基线，历史成交不再次扣减该余额或持仓。
+恢复组件验证覆盖、字典、业务身份、内容冲突及累计量，输出新的账户基线和去重事实。旧活动单还须执行风险减少撤单并重新取得最终边界。`TradingEngine::RestoreReconciled` 安装已排空订单、完整成交及账户基线，历史成交不再次扣减该余额或持仓。
 
 基线耐久发布期间，边界之后的回报必须保存在有界缓冲；发布后按连续游标去重、追加新 WAL 并应用，再开放交易。缓冲溢出、查询缺口、无法归属、冲突或差异未解决均保持关闸。实盘 SDK 的查询、发送者隔离及回报衔接由相应适配器提供，当前网关未配置实盘适配器。
 
@@ -151,10 +151,10 @@ Status Journal::ReplayFrom(const JournalCursor&, Callback, void*, Result&) noexc
 Status Journal::Flush() noexcept;  // 冷路径
 
 Status TradingMutationSink::BeforeCommit(const TradingMutation&) noexcept;
-Status TradingImpl::ExportCheckpoint(span<byte>, size_t&) const noexcept;
-Status TradingImpl::RestoreCheckpoint(span<const byte>) noexcept;
-Status TradingImpl::ReplayMutation(const TradingMutation&, Dispatch*) noexcept;
-Status TradingImpl::RestoreReconciled(const AccountSnapshot&,
+Status TradingEngine::ExportCheckpoint(span<byte>, size_t&) const noexcept;
+Status TradingEngine::RestoreCheckpoint(span<const byte>) noexcept;
+Status TradingEngine::ReplayMutation(const TradingMutation&, Dispatch*) noexcept;
+Status TradingEngine::RestoreReconciled(const AccountSnapshot&,
     span<const OrderSnapshot>, span<const Fill>) noexcept;
 ```
 

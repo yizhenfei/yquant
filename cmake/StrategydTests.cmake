@@ -93,25 +93,16 @@ set_target_properties(strategyd_fixture_missing_dependency PROPERTIES
   INSTALL_RPATH "${strategy_dependency_rpath}")
 
 add_executable(yquant_strategyd_test
-  tests/strategyd/instrument_catalog_test.cc
   tests/strategyd/replay_market_data_source_test.cc
   tests/strategyd/market_model_test.cc
-  tests/strategyd/market_data_config_test.cc
-  tests/strategyd/mock_market_data_source_test.cc
   tests/strategyd/shm_market_data_source_test.cc
   tests/strategyd/market_runner_test.cc
   tests/strategyd/strategy_context_test.cc
   tests/strategyd/remote_timer_runner_test.cc
   tests/strategyd/futures_host_test.cc
-  tests/strategyd/futures_exchange_test.cc
   tests/strategyd/futures_bbo_test.cc
   tests/strategyd/futures_process_test.cc
-  tests/strategyd/futures_ledger_test.cc
-  tests/strategyd/trading_persistence_test.cc
-  tests/strategyd/mock_trading_persistence_test.cc
-  tests/strategyd/trading_test.cc
-  tests/strategyd/trading_config_test.cc
-  tests/strategyd/mock_trading_adapter_test.cc
+  tests/strategyd/remote_trading_test.cc
   tests/strategyd/trading_runner_test.cc
   tests/strategyd/trading_process_test.cc
   tests/strategyd/timer_test.cc
@@ -124,18 +115,19 @@ add_executable(yquant_strategyd_test
   tests/strategyd/strategyd_process_test.cc)
 target_include_directories(yquant_strategyd_test PRIVATE src)
 target_link_libraries(yquant_strategyd_test PRIVATE
-  yquant_strategyd_runtime GTest::gtest_main yquant_compile_options)
+  yquant_strategyd_objects GTest::gtest_main yquant_compile_options)
 target_compile_options(yquant_strategyd_test PRIVATE -Wall -Wextra -Wpedantic)
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/test_data")
 configure_file("tests/fixtures/instruments.json"
   "${CMAKE_BINARY_DIR}/test_data/instruments.json" COPYONLY)
-foreach(config IN ITEMS lifecycle typed quote_observer mock_market_data
-    trading_strategy mock_trading)
+foreach(config IN ITEMS lifecycle typed quote_observer market_data
+    trading_strategy mock_trading trading_client)
   configure_file("tests/strategyd/configs/${config}.json"
     "${CMAKE_BINARY_DIR}/test_data/${config}.json" COPYONLY)
 endforeach()
 target_compile_definitions(yquant_strategyd_test PRIVATE
   YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json"
+  YQUANT_TEST_TRADINGD_PATH="$<TARGET_FILE:yquant_tradingd>"
   YQUANT_TEST_STRATEGYD_PATH="$<TARGET_FILE:yquant_strategyd>"
   YQUANT_TEST_SIGNAL_LAUNCHER_PATH="$<TARGET_FILE:strategyd_signal_launcher>"
   YQUANT_TEST_EXAMPLE_PATH="$<TARGET_FILE:lifecycle_strategy>"
@@ -146,26 +138,27 @@ target_compile_definitions(yquant_strategyd_test PRIVATE
   YQUANT_TEST_TYPED_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/typed.json")
 target_compile_definitions(yquant_strategyd_test PRIVATE
   YQUANT_TEST_QUOTE_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/quote_observer.json"
-  YQUANT_TEST_MARKET_DATA_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/mock_market_data.json"
+  YQUANT_TEST_MARKET_DATA_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/market_data.json"
   YQUANT_TEST_QUOTE_EXAMPLE_PATH="$<TARGET_FILE:quote_observer_strategy>"
   YQUANT_TEST_QUOTE_EXAMPLE_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/quote_observer_strategy.json")
 target_compile_definitions(yquant_strategyd_test PRIVATE
   YQUANT_TEST_ORDER_EXAMPLE_PATH="$<TARGET_FILE:order_lifecycle_strategy>"
   YQUANT_TEST_ORDER_EXAMPLE_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/order_lifecycle_strategy.json"
+  YQUANT_TEST_TRADING_CLIENT_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/trading_client.json"
   YQUANT_TEST_TRADING_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/mock_trading.json"
   YQUANT_TEST_TRADING_STRATEGY_CONFIG_PATH="${CMAKE_BINARY_DIR}/test_data/trading_strategy.json")
 target_compile_definitions(yquant_strategyd_test PRIVATE
   YQUANT_TEST_BBO_EXAMPLE_PATH="$<TARGET_FILE:bbo_market_making_strategy>"
   YQUANT_TEST_BBO_EXAMPLE_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/bbo_market_making_strategy.json"
-  YQUANT_TEST_BBO_TRADING_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/bbo_mock_trading.json")
+  YQUANT_TEST_BBO_TRADING_CONFIG_PATH="${CMAKE_BINARY_DIR}/tradingd/bbo_mock_trading.json")
 target_compile_definitions(yquant_strategyd_test PRIVATE
   YQUANT_TEST_FUTURES_BBO_PATH="$<TARGET_FILE:futures_bbo_strategy>"
   YQUANT_TEST_FUTURES_STRATEGY_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/futures_bbo_strategy.json"
   YQUANT_TEST_FUTURES_MARKET_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/futures_market_data.json"
-  YQUANT_TEST_FUTURES_TRADING_CONFIG_PATH="${CMAKE_BINARY_DIR}/strategies/futures_trading.json")
+  YQUANT_TEST_FUTURES_TRADING_CONFIG_PATH="${CMAKE_BINARY_DIR}/tradingd/futures_trading.json")
 add_dependencies(yquant_strategyd_test
   futures_bbo_strategy
-  yquant_strategyd lifecycle_strategy parameterized_strategy
+  yquant_strategyd yquant_tradingd lifecycle_strategy parameterized_strategy
   quote_observer_strategy order_lifecycle_strategy bbo_market_making_strategy
   strategyd_signal_launcher)
 
@@ -195,6 +188,7 @@ endforeach()
 
 gtest_discover_tests(yquant_strategyd_test
   NO_PRETTY_VALUES
+  WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
   DISCOVERY_MODE PRE_TEST
   DISCOVERY_TIMEOUT 30
   PROPERTIES ${yquant_test_properties})

@@ -5,16 +5,16 @@
 
 #include "marketd/config.h"
 #include "marketd/pipeline.h"
-#include "strategyd/mock_market_data_source.h"
-#include "yquant/md/shm_pubsub.h"
+#include "yquant/md/mock_quote_source.h"
+#include "yquant/md/shm_broadcast.h"
 
 namespace yquant::marketd {
 
-// Wraps the shared mock adapter and subscribes every configured instrument.
+// Wraps the standalone generator and emits every configured instrument.
 // Poll and Close are serialized by the owning daemon thread.
 class MockSource final : public Source {
  public:
-  [[nodiscard]] base::Status Init(const strategyd::MarketDataConfig& config,
+  [[nodiscard]] base::Status Init(const md::MockQuoteConfig& config,
                                   std::uint64_t now) noexcept;
   [[nodiscard]] PollResult Poll(std::uint64_t now,
                                 model::QuoteTick& out) noexcept override;
@@ -22,7 +22,7 @@ class MockSource final : public Source {
   const char* error_detail() const noexcept override;
 
  private:
-  strategyd::MockMarketDataSource source_;
+  md::MockQuoteSource source_;
 };
 
 // Attaches once at the live cursor. A gap, generation replacement, stopped or
@@ -40,7 +40,7 @@ class ShmSource final : public Source {
   // Records the first terminal error and leaves future polls in that state.
   PollResult Fail(base::Status status, const char* detail) noexcept;
 
-  md::ShmSubscriber subscriber_;
+  md::ShmReader reader_;
   md::EventBuffer buffer_;
   md::RefreshResult refreshed_;
   std::uint64_t next_refresh_ = 0;

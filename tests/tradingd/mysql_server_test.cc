@@ -14,13 +14,13 @@
 
 #include "../marketd/test_support.h"
 #include "gtest/gtest.h"
-#include "tradingd/connection.h"
+#include "yquant/trading/connection.h"
 
 namespace yquant::tradingd {
 namespace {
 
 #if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
-class MysqlServerClock final : public strategyd::MonotonicClock {
+class MysqlServerClock final : public base::MonotonicClock {
  public:
   std::uint64_t Now() const noexcept override { return now; }
   std::uint64_t now = 1000000;
@@ -43,8 +43,8 @@ class MysqlServerTest : public ::testing::Test {
     const char* port = std::getenv("YQUANT_MYSQL_TEST_PORT");
     config.listen.port = 0;
     std::snprintf(config.token, sizeof(config.token), "mysql-test-token");
-    config.market_data = marketd::testing::MockConfig();
-    config.trading.mode = strategyd::MockTradingMode::kFill;
+    config.market_data = marketd::testing::ScopeConfig();
+    config.trading.mode = trading::MockTradingMode::kFill;
     config.trading.initial_account.cash_balance = 1000000000;
     config.heartbeat_timeout_ns = kMaximumTimeoutNs;
     std::snprintf(config.persistence.directory,
@@ -155,11 +155,11 @@ class MysqlServerTest : public ::testing::Test {
     peer.Close();
     updates.clear();
     generation = 0;
-    Endpoint endpoint;
+    trading::Endpoint endpoint;
     endpoint.port = server.port();
     ASSERT_TRUE(peer.Connect(endpoint, 1000000000).ok());
-    Message hello;
-    hello.type = MessageType::kHello;
+    trading::Message hello;
+    hello.type = trading::MessageType::kHello;
     hello.client_id = client_id;
     std::snprintf(hello.token, sizeof(hello.token), "mysql-test-token");
     hello.instrument_count = 1;
@@ -176,12 +176,12 @@ class MysqlServerTest : public ::testing::Test {
       const auto status = server.Service(clock.Now());
       ASSERT_TRUE(status.ok()) << server.error_detail();
       while (peer.open()) {
-        Message message;
+        trading::Message message;
         const auto result = peer.Poll(message);
-        if (result.state != ReceiveState::kMessage) break;
-        if (message.type == MessageType::kWelcome)
+        if (result.state != trading::ReceiveState::kMessage) break;
+        if (message.type == trading::MessageType::kWelcome)
           generation = message.generation;
-        if (message.type == MessageType::kOrderUpdate)
+        if (message.type == trading::MessageType::kOrderUpdate)
           updates.push_back(message);
       }
       std::this_thread::yield();
@@ -189,8 +189,8 @@ class MysqlServerTest : public ::testing::Test {
   }
 
   void Order(std::uint64_t local_id = 1, std::int64_t quantity = 10) {
-    Message message;
-    message.type = MessageType::kNewOrder;
+    trading::Message message;
+    message.type = trading::MessageType::kNewOrder;
     message.generation = generation;
     message.order_id = {local_id};
     message.request = {config.market_data.instruments[0].instrument.id,
@@ -224,9 +224,9 @@ class MysqlServerTest : public ::testing::Test {
   MysqlServerClock clock;
   ServerConfig config;
   Server server{clock};
-  Connection peer;
+  trading::Connection peer;
   std::uint64_t generation = 0;
-  std::vector<Message> updates;
+  std::vector<trading::Message> updates;
   MYSQL* connection = nullptr;
 };
 
@@ -265,7 +265,7 @@ TEST_F(MysqlServerTest, ArchivesSocketFillsAndLocalRejectionsWithAccount) {
 }
 
 TEST_F(MysqlServerTest, RestartInstallsRecoveredBaselineAfterUnfinishedClose) {
-  config.trading.mode = strategyd::MockTradingMode::kWorking;
+  config.trading.mode = trading::MockTradingMode::kWorking;
   Start();
   ASSERT_FALSE(HasFatalFailure());
   Connect();

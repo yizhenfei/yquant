@@ -1,0 +1,14 @@
+{
+  "source_id": 1,
+  "adapter": "shm",
+  "instrument_catalog": "examples/instruments.json",
+  "runtime_directory": "/tmp/yquant-marketd",
+  "stream": "quotes",
+  "poll_interval_us": 0,
+  "instruments": [
+    {
+      "venue": "SSE",
+      "symbol": "600000"
+    }
+  ]
+}
