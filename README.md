@@ -2,11 +2,15 @@
 
 ## 项目简介
 
-YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake 管理构建配置。
+YQuant 是一个支持多策略运行的低延迟量化交易系统，使用 C++ 开发。
 
-项目不使用 C++ 异常。
+为支持多个策略稳定、高效地同时运行，系统提供以下能力：
 
-公共实现按职责组织为 `yquant_base`、`yquant_md` 和 `yquant_trading` 静态库，供可执行程序复用。
+- **策略隔离**：每个策略在独立进程中执行，可在部署时绑定独立的 CPU 核心，减少策略之间的调度干扰和故障传播，提升延迟稳定性与运行可靠性。
+- **集群扩展**：策略可分布到集群中的多台机器上，共享行情与交易服务，通过增加节点扩展策略运行规模。
+- **高效通信**：提供独立的行情、交易进程服务。单机进程间通过共享内存与无锁数据结构实现高吞吐、低延迟通信；跨机进程间目前使用 TCP，后续将采用基于 UDP 的协议与 Kernel Bypass 技术进一步降低通信延迟。
+
+项目定位、系统架构与技术设计见[项目介绍](docs/project-introduction.md)。
 
 ## 程序命名
 
@@ -31,6 +35,8 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 生产环境执行构建、功能及并发验收；开发环境支持本机构建、功能测试和调试。
 
 ## 项目目录
+
+公共实现按职责组织为 `yquant_base`、`yquant_md` 和 `yquant_trading` 静态库，供可执行程序复用。
 
 - `include/yquant/base/`：基础组件公开头文件。
 - `include/yquant/model/`：交易领域公共类型。
@@ -62,7 +68,7 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 
 ## 构建与测试
 
-需要 CMake 3.21 或更高版本、Ninja 和支持 C++20 的编译器。日志依赖 fmt，配置解析依赖 simdjson，测试依赖 GoogleTest；依赖由 CMake 获取固定版本并以无异常配置构建。
+需要 CMake 3.21 或更高版本、Ninja 和支持 C++20 的编译器。日志依赖 fmt，配置解析依赖 simdjson，测试依赖 GoogleTest；依赖由 CMake 获取固定版本，项目及依赖均以无异常配置构建。
 
 ```sh
 cmake --preset debug
@@ -245,6 +251,7 @@ cmake --build --preset debug --target download_test_data
 
 ## 工程方案
 
+- [架构图制作与维护](docs/architecture-diagrams.md)：SVG 内容确认、手绘展示图、图例与配色规范。
 - [工程组织与验证方案](docs/design/engineering.md)：平台、错误处理、构建依赖与测试工具方案。
 
 ## 组件设计
