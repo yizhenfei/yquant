@@ -1,0 +1,282 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2200" height="1280" viewBox="0 0 2200 1280" role="img" aria-labelledby="title desc">
+  <title id="title">YQuant 单机部署架构</title>
+  <desc id="desc">单机部署包含一个 marketd、多个 strategyd 和一个 tradingd。策略进程及交易通道以 1 到 N 表示。tradingd 分别连接独立的 WAL 文件图元和 MySQL 数据库图元。图中采用 logd 后端，本机业务进程经各 Logger 独立的共享内存 SPSC 队列发送日志，由一个本机 logd 写入日志文件。</desc>
+  <defs>
+    <marker id="blue" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto-start-reverse">
+      <path d="M0 0 L9 4.5 L0 9 Z" fill="#112D4E" />
+    </marker>
+    <marker id="orange" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto-start-reverse">
+      <path d="M0 0 L9 4.5 L0 9 Z" fill="#112D4E" />
+    </marker>
+    <marker id="log-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0 0 L8 4 L0 8 Z" fill="#64748B" />
+    </marker>
+  </defs>
+  <rect width="2200" height="1280" fill="white" />
+  <g font-family="Chalkboard SE,Comic Sans MS,PingFang SC,Heiti SC,sans-serif" fill="#172033">
+<text x="36" y="49" font-size="32" font-weight="600" text-anchor="start" fill="#112D4E">YQuant 单机部署架构</text>
+<rect x="210.0" y="95.0" width="1710.0" height="1020.0" rx="0.0" fill="#ffffff"/>
+<path d="M 210.00 95.00 C 780.00 96.83, 1350.00 95.43, 1920.00 95.00 C 1919.98 435.00, 1918.62 775.00, 1920.00 1115.00 C 1350.00 1117.28, 780.00 1116.46, 210.00 1115.00 C 208.07 775.00, 208.92 435.00, 210.00 95.00 Z" fill="none" stroke="#868e96" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="9 7"/>
+<text x="231" y="126" font-size="21" font-weight="600" text-anchor="start" fill="#64748b">YQuant</text>
+<rect x="235.0" y="145.0" width="1655.0" height="920.0" rx="0.0" fill="#f8f9fa"/>
+<path d="M 235.00 145.00 C 786.67 144.29, 1338.33 146.33, 1890.00 145.00 C 1890.20 451.67, 1891.28 758.33, 1890.00 1065.00 C 1338.33 1067.15, 786.67 1065.64, 235.00 1065.00 C 234.18 758.33, 233.89 451.67, 235.00 145.00 Z" fill="none" stroke="#868e96" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 236.45 144.54 C 788.13 146.36, 1339.82 147.00, 1891.50 145.33 C 1891.96 452.08, 1889.63 758.82, 1890.15 1065.58 C 1338.94 1065.32, 787.73 1064.45, 236.52 1065.05 C 238.69 758.21, 235.34 451.38, 236.45 144.54 Z" fill="none" stroke="#868e96" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<text x="260" y="184" font-size="25" font-weight="600" text-anchor="start" fill="#112D4E">单机部署主机</text>
+<rect x="25.0" y="440.0" width="145.0" height="90.0" rx="0.0" fill="#ffffff"/>
+<path d="M 25.00 440.00 C 73.33 437.69, 121.67 441.86, 170.00 440.00 C 171.59 470.00, 168.14 500.00, 170.00 530.00 C 121.67 529.45, 73.33 531.10, 25.00 530.00 C 26.06 500.00, 25.51 470.00, 25.00 440.00 Z" fill="none" stroke="#112D4E" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 25.84 439.84 C 73.96 438.05, 122.09 438.06, 170.23 438.47 C 169.69 468.82, 169.66 499.17, 171.24 529.49 C 122.76 529.39, 74.30 532.31, 25.81 530.34 C 24.60 500.17, 23.80 470.01, 25.84 439.84 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<text x="97.5" y="494" font-size="26" font-weight="600" text-anchor="middle" fill="#112D4E">行情源</text>
+<rect x="2000.0" y="440.0" width="175.0" height="90.0" rx="0.0" fill="#ffffff"/>
+<path d="M 2000.00 440.00 C 2058.33 438.36, 2116.67 441.35, 2175.00 440.00 C 2175.11 470.00, 2173.84 500.00, 2175.00 530.00 C 2116.67 528.85, 2058.33 530.69, 2000.00 530.00 C 1999.97 500.00, 1999.07 470.00, 2000.00 440.00 Z" fill="none" stroke="#112D4E" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 2001.38 439.61 C 2058.85 439.51, 2116.33 438.61, 2173.80 440.36 C 2176.55 470.34, 2173.88 500.47, 2176.38 530.46 C 2117.40 532.32, 2058.46 528.47, 1999.49 529.10 C 1998.10 499.23, 2000.35 469.43, 2001.38 439.61 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<text x="2087.5" y="494" font-size="26" font-weight="600" text-anchor="middle" fill="#112D4E">交易柜台</text>
+<rect x="270.0" y="440.0" width="180.0" height="90.0" rx="0.0" fill="#3F72AF"/>
+<path d="M 270.00 440.00 C 330.00 441.99, 390.00 440.76, 450.00 440.00 C 450.01 470.00, 448.54 500.00, 450.00 530.00 C 390.00 529.51, 330.00 531.19, 270.00 530.00 C 268.47 500.00, 267.81 470.00, 270.00 440.00 Z" fill="none" stroke="#112D4E" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 269.64 440.15 C 329.43 440.00, 389.22 438.34, 449.01 439.53 C 448.30 469.54, 451.63 499.49, 450.02 529.50 C 389.99 530.67, 329.93 529.73, 269.90 531.38 C 268.32 500.98, 268.40 470.57, 269.64 440.15 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<text x="360.0" y="479" font-size="27" font-weight="600" text-anchor="middle" fill="#F9F7F7">marketd</text>
+<text x="360.0" y="510" font-size="20" font-weight="400" text-anchor="middle" fill="#F9F7F7">行情接入与分发</text>
+<rect x="510.0" y="445.0" width="210.0" height="80.0" rx="0.0" fill="#F9F7F7"/>
+<path d="M 510.00 445.00 C 580.00 446.79, 650.00 442.68, 720.00 445.00 C 718.65 471.67, 719.09 498.33, 720.00 525.00 C 650.00 523.76, 580.00 527.06, 510.00 525.00 C 509.03 498.33, 508.51 471.67, 510.00 445.00 Z" fill="none" stroke="#112D4E" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 511.28 443.67 C 580.90 444.98, 650.53 446.58, 720.18 445.43 C 719.75 471.75, 721.33 498.10, 718.92 524.38 C 649.76 526.86, 580.57 525.49, 511.39 525.80 C 510.98 498.42, 512.82 471.04, 511.28 443.67 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<text x="615.0" y="472" font-size="20" font-weight="600" text-anchor="middle" fill="#112D4E">共享内存广播队列</text>
+<rect x="531.0" y="497.0" width="23.0" height="16.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 531.00 497.00 C 538.67 497.08, 546.33 496.80, 554.00 497.00 C 553.08 502.33, 555.43 507.67, 554.00 513.00 C 546.33 511.74, 538.67 510.69, 531.00 513.00 C 532.35 507.67, 531.64 502.33, 531.00 497.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 530.27 496.85 C 537.96 496.64, 545.66 495.31, 553.35 496.94 C 554.49 501.99, 550.56 506.76, 552.50 511.85 C 545.19 511.99, 537.85 513.76, 530.59 511.41 C 530.62 506.55, 529.08 501.73, 530.27 496.85 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<rect x="560.0" y="497.0" width="23.0" height="16.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 560.00 497.00 C 567.67 499.15, 575.33 498.21, 583.00 497.00 C 582.75 502.33, 581.51 507.67, 583.00 513.00 C 575.33 510.89, 567.67 511.60, 560.00 513.00 C 558.42 507.67, 561.82 502.33, 560.00 497.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 559.83 496.90 C 567.17 497.40, 574.29 494.66, 581.64 495.44 C 581.12 501.56, 582.54 507.67, 581.74 513.79 C 575.04 516.30, 568.15 512.54, 561.43 514.43 C 560.97 508.58, 562.40 502.56, 559.83 496.90 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<rect x="589.0" y="497.0" width="23.0" height="16.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 589.00 497.00 C 596.67 494.92, 604.33 497.27, 612.00 497.00 C 612.11 502.33, 613.98 507.67, 612.00 513.00 C 604.33 514.67, 596.67 513.38, 589.00 513.00 C 589.31 507.67, 591.21 502.33, 589.00 497.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 587.46 495.72 C 595.60 494.96, 603.73 496.06, 611.87 495.70 C 612.78 501.97, 612.54 508.19, 611.07 514.36 C 603.83 516.58, 596.54 513.02, 589.29 514.54 C 587.35 508.39, 588.15 501.99, 587.46 495.72 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<rect x="618.0" y="497.0" width="23.0" height="16.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 618.00 497.00 C 625.67 498.41, 633.33 496.57, 641.00 497.00 C 640.89 502.33, 641.45 507.67, 641.00 513.00 C 633.33 515.34, 625.67 513.85, 618.00 513.00 C 619.14 507.67, 615.63 502.33, 618.00 497.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 617.88 496.04 C 625.72 497.70, 633.47 495.22, 641.27 495.48 C 640.18 501.77, 641.18 508.15, 640.38 514.45 C 633.18 514.06, 626.26 510.80, 618.87 512.39 C 616.21 507.08, 620.43 501.36, 617.88 496.04 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<rect x="647.0" y="497.0" width="23.0" height="16.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 647.00 497.00 C 654.67 499.09, 662.33 499.08, 670.00 497.00 C 672.04 502.33, 669.76 507.67, 670.00 513.00 C 662.33 513.42, 654.67 510.63, 647.00 513.00 C 647.38 507.67, 646.65 502.33, 647.00 497.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 646.65 498.06 C 654.41 497.35, 662.10 495.72, 669.96 496.53 C 667.46 502.22, 668.80 508.05, 669.30 513.85 C 662.25 514.18, 655.17 513.77, 648.13 514.49 C 649.90 508.81, 645.52 503.69, 646.65 498.06 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<rect x="676.0" y="497.0" width="23.0" height="16.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 676.00 497.00 C 683.67 498.61, 691.33 497.53, 699.00 497.00 C 698.25 502.33, 697.01 507.67, 699.00 513.00 C 691.33 513.24, 683.67 513.26, 676.00 513.00 C 674.08 507.67, 677.38 502.33, 676.00 497.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 675.61 498.08 C 683.26 496.53, 690.90 494.91, 698.79 495.71 C 698.23 501.87, 697.66 508.02, 697.45 514.20 C 690.29 513.39, 683.13 512.54, 675.91 513.37 C 676.10 508.27, 674.53 503.20, 675.61 498.08 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<text x="615" y="567" font-size="19" font-weight="400" text-anchor="middle" fill="#64748b">独立游标消费</text>
+<rect x="800.0" y="270.0" width="280.0" height="140.0" rx="0.0" fill="#3F72AF"/>
+<path d="M 800.00 270.00 C 893.33 268.90, 986.67 271.90, 1080.00 270.00 C 1080.75 316.67, 1081.85 363.33, 1080.00 410.00 C 986.67 411.43, 893.33 409.56, 800.00 410.00 C 798.89 363.33, 801.18 316.67, 800.00 270.00 Z" fill="none" stroke="#112D4E" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 799.95 270.99 C 893.61 272.87, 987.27 269.44, 1080.93 270.23 C 1078.87 316.61, 1082.31 362.99, 1081.16 409.38 C 987.95 408.05, 894.74 407.22, 801.53 409.30 C 799.95 363.21, 802.46 317.07, 799.95 270.99 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<text x="940" y="308" font-size="25" font-weight="600" text-anchor="middle" fill="#F9F7F7">strategyd 1</text>
+<rect x="820.0" y="338.0" width="240.0" height="48.0" rx="13.0" fill="#DBE2EF"/>
+<rect x="820.0" y="338.0" width="240.0" height="48.0" rx="13.0" fill="none" stroke="#112D4E" stroke-width="1.5"/>
+<rect x="821.2" y="337.2" width="238.2" height="49.4" rx="14.0" fill="none" stroke="#112D4E" stroke-width="0.8" opacity="0.48"/>
+<text x="940" y="370" font-size="24" font-weight="500" text-anchor="middle" fill="#112D4E">策略 1</text>
+<rect x="1190.0" y="300.0" width="230.0" height="80.0" rx="0.0" fill="#F9F7F7"/>
+<path d="M 1190.00 300.00 C 1266.67 300.12, 1343.33 302.16, 1420.00 300.00 C 1420.59 326.67, 1420.10 353.33, 1420.00 380.00 C 1343.33 378.13, 1266.67 382.07, 1190.00 380.00 C 1188.09 353.33, 1191.55 326.67, 1190.00 300.00 Z" fill="none" stroke="#112D4E" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 1189.69 299.40 C 1266.40 297.61, 1343.11 300.63, 1419.81 299.94 C 1420.43 326.57, 1420.73 353.21, 1420.50 379.86 C 1343.89 382.33, 1267.27 378.82, 1190.67 380.32 C 1188.73 353.37, 1191.70 326.35, 1189.69 299.40 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<text x="1305.0" y="327" font-size="20" font-weight="600" text-anchor="middle" fill="#112D4E">共享内存交易通道 1</text>
+<rect x="1221.0" y="352.0" width="23.0" height="16.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 1221.00 352.00 C 1228.67 351.95, 1236.33 350.23, 1244.00 352.00 C 1241.68 357.33, 1246.00 362.67, 1244.00 368.00 C 1236.33 365.90, 1228.67 365.92, 1221.00 368.00 C 1220.21 362.67, 1223.06 357.33, 1221.00 352.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 1221.36 350.71 C 1228.95 352.17, 1236.77 349.47, 1244.32 351.92 C 1244.28 357.34, 1244.74 362.74, 1244.95 368.16 C 1236.79 367.88, 1228.75 370.01, 1220.57 369.28 C 1222.08 363.14, 1219.75 356.84, 1221.36 350.71 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<rect x="1250.0" y="352.0" width="23.0" height="16.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 1250.00 352.00 C 1257.67 350.11, 1265.33 353.85, 1273.00 352.00 C 1273.05 357.33, 1271.94 362.67, 1273.00 368.00 C 1265.33 367.21, 1257.67 368.58, 1250.00 368.00 C 1249.50 362.67, 1249.91 357.33, 1250.00 352.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 1249.19 350.48 C 1257.61 351.74, 1266.02 353.08, 1274.59 352.30 C 1271.79 357.73, 1274.28 364.05, 1271.72 369.52 C 1264.11 368.51, 1256.49 368.17, 1248.84 369.00 C 1248.68 362.82, 1249.34 356.66, 1249.19 350.48 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<rect x="1279.0" y="352.0" width="23.0" height="16.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 1279.00 352.00 C 1286.67 354.09, 1294.33 352.46, 1302.00 352.00 C 1300.31 357.33, 1299.74 362.67, 1302.00 368.00 C 1294.33 366.64, 1286.67 369.22, 1279.00 368.00 C 1277.76 362.67, 1280.13 357.33, 1279.00 352.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 1277.53 353.00 C 1285.45 352.31, 1293.47 353.38, 1301.32 351.62 C 1299.56 357.57, 1301.08 363.59, 1300.90 369.57 C 1293.58 369.87, 1286.31 369.01, 1279.02 368.50 C 1279.40 363.25, 1276.42 358.32, 1277.53 353.00 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<rect x="1308.0" y="352.0" width="23.0" height="16.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 1308.00 352.00 C 1315.67 350.57, 1323.33 350.30, 1331.00 352.00 C 1332.36 357.33, 1329.79 362.67, 1331.00 368.00 C 1323.33 369.13, 1315.67 369.14, 1308.00 368.00 C 1308.86 362.67, 1306.35 357.33, 1308.00 352.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 1308.48 351.67 C 1316.14 350.77, 1323.73 352.23, 1331.36 352.29 C 1333.38 357.22, 1329.70 362.33, 1331.83 367.26 C 1323.53 368.00, 1315.28 369.78, 1306.87 368.53 C 1306.94 362.87, 1307.68 357.27, 1308.48 351.67 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<rect x="1337.0" y="352.0" width="23.0" height="16.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 1337.00 352.00 C 1344.67 351.19, 1352.33 350.86, 1360.00 352.00 C 1359.67 357.33, 1361.26 362.67, 1360.00 368.00 C 1352.33 368.43, 1344.67 368.49, 1337.00 368.00 C 1336.40 362.67, 1338.69 357.33, 1337.00 352.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 1337.53 350.54 C 1344.94 350.64, 1352.37 350.47, 1359.60 352.56 C 1358.63 357.54, 1359.99 362.45, 1359.95 367.40 C 1352.79 369.38, 1345.68 366.99, 1338.55 367.13 C 1336.46 361.70, 1336.97 356.12, 1337.53 350.54 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<rect x="1366.0" y="352.0" width="23.0" height="16.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 1366.00 352.00 C 1373.67 349.76, 1381.33 352.78, 1389.00 352.00 C 1386.74 357.33, 1390.18 362.67, 1389.00 368.00 C 1381.33 369.81, 1373.67 369.55, 1366.00 368.00 C 1366.99 362.67, 1367.30 357.33, 1366.00 352.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 1366.95 350.66 C 1374.36 351.79, 1382.08 350.26, 1389.27 353.27 C 1387.79 357.80, 1390.93 362.47, 1388.83 366.97 C 1380.68 366.42, 1372.63 367.80, 1364.53 368.19 C 1365.34 362.35, 1368.47 356.83, 1366.95 350.66 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<text x="1305" y="420" font-size="19" font-weight="400" text-anchor="middle" fill="#64748b">请求／回报／账户</text>
+<path fill="none" stroke="#112D4E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" marker-start="url(#orange)" d="M 1080.00 340.00 C 1116.67 340.49, 1153.33 341.02, 1190.00 340.00"/>
+<path d="M 1080.10 340.67 C 1116.95 340.28, 1153.81 340.06, 1190.66 339.25" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".4" stroke-linecap="round"/>
+<path fill="none" stroke="#112D4E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M 1420.00 340.00 C 1436.67 340.37, 1453.33 339.48, 1470.00 340.00"/>
+<path d="M 1420.02 339.28 C 1436.82 338.95, 1453.57 340.44, 1470.36 340.33" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".4" stroke-linecap="round"/>
+<rect x="800.0" y="570.0" width="280.0" height="140.0" rx="0.0" fill="#3F72AF"/>
+<path d="M 800.00 570.00 C 893.33 568.38, 986.67 572.24, 1080.00 570.00 C 1080.88 616.67, 1080.68 663.33, 1080.00 710.00 C 986.67 710.12, 893.33 708.72, 800.00 710.00 C 799.39 663.33, 801.30 616.67, 800.00 570.00 Z" fill="none" stroke="#112D4E" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 800.50 568.70 C 893.99 570.87, 987.49 570.44, 1080.99 569.24 C 1078.70 615.68, 1082.71 662.14, 1080.59 708.59 C 987.03 709.94, 893.46 710.38, 799.89 711.33 C 800.88 663.79, 799.95 616.24, 800.50 568.70 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<text x="940" y="608" font-size="25" font-weight="600" text-anchor="middle" fill="#F9F7F7">strategyd N</text>
+<rect x="820.0" y="638.0" width="240.0" height="48.0" rx="13.0" fill="#DBE2EF"/>
+<rect x="820.0" y="638.0" width="240.0" height="48.0" rx="13.0" fill="none" stroke="#112D4E" stroke-width="1.5"/>
+<rect x="821.2" y="637.2" width="238.2" height="49.4" rx="14.0" fill="none" stroke="#112D4E" stroke-width="0.8" opacity="0.48"/>
+<text x="940" y="670" font-size="24" font-weight="500" text-anchor="middle" fill="#112D4E">策略 N</text>
+<rect x="1190.0" y="600.0" width="230.0" height="80.0" rx="0.0" fill="#F9F7F7"/>
+<path d="M 1190.00 600.00 C 1266.67 599.10, 1343.33 601.12, 1420.00 600.00 C 1420.83 626.67, 1421.83 653.33, 1420.00 680.00 C 1343.33 678.54, 1266.67 681.68, 1190.00 680.00 C 1189.66 653.33, 1191.52 626.67, 1190.00 600.00 Z" fill="none" stroke="#112D4E" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 1191.33 601.06 C 1267.63 598.56, 1343.97 601.74, 1420.28 599.83 C 1420.05 626.47, 1418.77 653.12, 1420.95 679.74 C 1344.41 679.35, 1267.87 678.36, 1191.36 681.14 C 1191.67 654.45, 1189.07 627.76, 1191.33 601.06 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<text x="1305.0" y="627" font-size="20" font-weight="600" text-anchor="middle" fill="#112D4E">共享内存交易通道 N</text>
+<rect x="1221.0" y="652.0" width="23.0" height="16.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 1221.00 652.00 C 1228.67 651.17, 1236.33 651.14, 1244.00 652.00 C 1243.20 657.33, 1242.82 662.67, 1244.00 668.00 C 1236.33 667.59, 1228.67 669.42, 1221.00 668.00 C 1219.56 662.67, 1221.76 657.33, 1221.00 652.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 1219.79 652.62 C 1228.17 654.42, 1236.20 650.39, 1244.51 651.16 C 1244.35 656.96, 1245.79 662.87, 1243.41 668.54 C 1235.64 666.62, 1227.90 667.98, 1220.15 668.69 C 1220.88 663.32, 1219.07 657.99, 1219.79 652.62 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<rect x="1250.0" y="652.0" width="23.0" height="16.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 1250.00 652.00 C 1257.67 652.85, 1265.33 653.83, 1273.00 652.00 C 1273.90 657.33, 1275.10 662.67, 1273.00 668.00 C 1265.33 667.58, 1257.67 668.76, 1250.00 668.00 C 1248.51 662.67, 1248.33 657.33, 1250.00 652.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 1249.91 651.21 C 1257.32 653.16, 1265.01 651.39, 1272.44 652.98 C 1273.23 657.70, 1274.21 662.39, 1274.52 667.18 C 1266.51 666.23, 1258.97 670.39, 1250.95 669.34 C 1250.55 663.30, 1249.35 657.31, 1249.91 651.21 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<rect x="1279.0" y="652.0" width="23.0" height="16.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 1279.00 652.00 C 1286.67 650.68, 1294.33 651.88, 1302.00 652.00 C 1301.32 657.33, 1303.89 662.67, 1302.00 668.00 C 1294.33 666.14, 1286.67 668.84, 1279.00 668.00 C 1279.37 662.67, 1279.02 657.33, 1279.00 652.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 1280.42 653.49 C 1287.61 651.49, 1295.10 651.91, 1302.38 650.70 C 1303.25 656.34, 1303.72 661.95, 1301.40 667.40 C 1294.11 665.69, 1286.77 665.52, 1279.38 666.53 C 1281.30 662.31, 1282.09 658.00, 1280.42 653.49 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<rect x="1308.0" y="652.0" width="23.0" height="16.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 1308.00 652.00 C 1315.67 650.75, 1323.33 652.29, 1331.00 652.00 C 1329.99 657.33, 1328.85 662.67, 1331.00 668.00 C 1323.33 667.25, 1315.67 665.69, 1308.00 668.00 C 1308.85 662.67, 1309.12 657.33, 1308.00 652.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 1306.87 653.15 C 1314.43 651.89, 1322.03 651.19, 1329.70 651.12 C 1331.51 656.60, 1332.77 662.14, 1331.72 667.96 C 1324.45 670.36, 1317.02 669.82, 1309.59 669.22 C 1307.02 664.15, 1306.80 658.67, 1306.87 653.15 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<rect x="1337.0" y="652.0" width="23.0" height="16.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 1337.00 652.00 C 1344.67 652.83, 1352.33 652.31, 1360.00 652.00 C 1358.74 657.33, 1360.42 662.67, 1360.00 668.00 C 1352.33 666.96, 1344.67 669.06, 1337.00 668.00 C 1336.53 662.67, 1337.57 657.33, 1337.00 652.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 1338.53 652.65 C 1345.22 653.74, 1351.92 654.66, 1358.69 653.38 C 1358.94 658.21, 1361.33 662.65, 1361.35 667.52 C 1353.50 665.18, 1345.51 666.10, 1337.55 666.58 C 1337.07 661.88, 1336.62 657.18, 1338.53 652.65 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<rect x="1366.0" y="652.0" width="23.0" height="16.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 1366.00 652.00 C 1373.67 653.85, 1381.33 652.30, 1389.00 652.00 C 1387.75 657.33, 1387.75 662.67, 1389.00 668.00 C 1381.33 668.33, 1373.67 670.16, 1366.00 668.00 C 1367.85 662.67, 1363.61 657.33, 1366.00 652.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 1365.37 653.11 C 1372.85 652.36, 1380.35 653.60, 1387.82 652.80 C 1390.02 657.68, 1389.76 662.60, 1388.13 667.56 C 1380.93 667.58, 1373.82 668.63, 1366.68 669.42 C 1364.39 664.13, 1366.66 658.48, 1365.37 653.11 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<text x="1305" y="720" font-size="19" font-weight="400" text-anchor="middle" fill="#64748b">请求／回报／账户</text>
+<path fill="none" stroke="#112D4E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" marker-start="url(#orange)" d="M 1080.00 640.00 C 1116.67 641.91, 1153.33 639.47, 1190.00 640.00"/>
+<path d="M 1079.59 640.63 C 1116.49 641.39, 1153.37 639.08, 1190.27 639.69" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".4" stroke-linecap="round"/>
+<path fill="none" stroke="#112D4E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M 1420.00 640.00 C 1436.67 639.79, 1453.33 641.98, 1470.00 640.00"/>
+<path d="M 1420.67 640.35 C 1436.97 641.38, 1453.29 640.57, 1469.59 640.72" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".4" stroke-linecap="round"/>
+<rect x="1560.0" y="440.0" width="270.0" height="90.0" rx="0.0" fill="#3F72AF"/>
+<path d="M 1560.00 440.00 C 1650.00 437.77, 1740.00 438.54, 1830.00 440.00 C 1829.08 470.00, 1832.02 500.00, 1830.00 530.00 C 1740.00 531.86, 1650.00 528.20, 1560.00 530.00 C 1560.22 500.00, 1560.08 470.00, 1560.00 440.00 Z" fill="none" stroke="#112D4E" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 1558.99 438.57 C 1649.57 437.46, 1740.13 440.86, 1830.71 439.16 C 1828.84 469.60, 1830.26 500.05, 1830.49 530.49 C 1740.79 529.79, 1651.10 531.53, 1561.41 531.45 C 1558.54 500.54, 1560.40 469.52, 1558.99 438.57 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<text x="1695.0" y="479" font-size="27" font-weight="600" text-anchor="middle" fill="#F9F7F7">tradingd</text>
+<text x="1695.0" y="510" font-size="20" font-weight="400" text-anchor="middle" fill="#F9F7F7">共享账户与交易管理</text>
+<path fill="none" stroke="#112D4E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)" d="M 170.00 485.00 C 203.33 486.69, 236.67 483.93, 270.00 485.00"/>
+<path d="M 169.62 484.87 C 203.12 484.11, 236.63 483.40, 270.14 484.24" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".4" stroke-linecap="round"/>
+<path fill="none" stroke="#112D4E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)" d="M 450.00 485.00 C 470.00 484.51, 490.00 484.92, 510.00 485.00"/>
+<path d="M 450.38 484.88 C 470.22 485.12, 490.07 483.88, 509.91 485.02" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".4" stroke-linecap="round"/>
+<path fill="none" stroke="#112D4E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M 720.00 485.00 C 733.33 485.97, 746.67 484.47, 760.00 485.00"/>
+<path d="M 719.63 484.79 C 732.84 484.32, 746.04 483.97, 759.25 484.66" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".4" stroke-linecap="round"/>
+<path fill="none" stroke="#112D4E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M 760.00 340.00 C 759.10 440.00, 758.70 540.00, 760.00 640.00"/>
+<path d="M 760.44 340.59 C 760.42 440.51, 758.89 540.42, 759.59 640.34" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".4" stroke-linecap="round"/>
+<path fill="none" stroke="#112D4E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)" d="M 760.00 340.00 C 773.33 338.27, 786.67 338.09, 800.00 340.00"/>
+<path d="M 759.58 340.26 C 772.82 339.50, 786.05 341.46, 799.30 340.46" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".4" stroke-linecap="round"/>
+<path fill="none" stroke="#112D4E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)" d="M 760.00 640.00 C 773.33 639.00, 786.67 641.58, 800.00 640.00"/>
+<path d="M 760.14 639.96 C 773.16 638.93, 786.23 640.27, 799.26 639.26" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".4" stroke-linecap="round"/>
+<path fill="none" stroke="#112D4E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M 1470.00 340.00 C 1469.63 440.00, 1469.14 540.00, 1470.00 640.00"/>
+<path d="M 1470.13 340.51 C 1470.91 440.27, 1469.25 540.03, 1469.25 639.78" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".4" stroke-linecap="round"/>
+<path fill="none" stroke="#112D4E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#orange)" d="M 1470.00 485.00 C 1500.00 486.71, 1530.00 485.86, 1560.00 485.00"/>
+<path d="M 1470.34 485.41 C 1500.33 485.38, 1530.32 486.31, 1560.32 485.79" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".4" stroke-linecap="round"/>
+<path fill="none" stroke="#112D4E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" marker-start="url(#orange)" marker-end="url(#orange)" d="M 1830.00 485.00 C 1886.67 484.45, 1943.33 484.71, 2000.00 485.00"/>
+<path d="M 1830.03 485.43 C 1886.69 485.09, 1943.36 485.19, 2000.03 484.87" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".4" stroke-linecap="round"/>
+<text x="1915" y="418" font-size="19" font-weight="400" text-anchor="middle" fill="#64748b">下单／撤单 →</text>
+<text x="1915" y="575" font-size="19" font-weight="400" text-anchor="middle" fill="#64748b">← 委托／成交</text>
+<rect x="240.0" y="1185.0" width="46.0" height="30.0" rx="0.0" fill="#f8f9fa"/>
+<path d="M 240.00 1185.00 C 255.33 1182.67, 270.67 1186.38, 286.00 1185.00 C 283.78 1195.00, 286.30 1205.00, 286.00 1215.00 C 270.67 1213.09, 255.33 1213.11, 240.00 1215.00 C 241.51 1205.00, 239.81 1195.00, 240.00 1185.00 Z" fill="none" stroke="#868e96" stroke-width="1.0" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 240.03 1184.46 C 255.35 1183.80, 270.52 1187.53, 285.87 1186.09 C 288.28 1195.36, 288.45 1204.76, 287.40 1214.22 C 271.36 1214.83, 255.33 1216.45, 239.30 1214.12 C 239.26 1204.23, 238.14 1194.31, 240.03 1184.46 Z" fill="none" stroke="#868e96" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<text x="302" y="1208" font-size="20" font-weight="400" text-anchor="start" fill="#112D4E">主机</text>
+<rect x="440.0" y="1185.0" width="46.0" height="30.0" rx="0.0" fill="#3F72AF"/>
+<path d="M 440.00 1185.00 C 455.33 1184.11, 470.67 1186.76, 486.00 1185.00 C 486.79 1195.00, 488.19 1205.00, 486.00 1215.00 C 470.67 1216.55, 455.33 1216.17, 440.00 1215.00 C 441.95 1205.00, 439.77 1195.00, 440.00 1185.00 Z" fill="none" stroke="#112D4E" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 439.77 1186.19 C 454.78 1183.84, 469.90 1186.05, 484.94 1185.14 C 483.84 1195.17, 486.59 1204.93, 487.05 1214.86 C 471.16 1215.88, 455.20 1213.91, 439.34 1216.02 C 440.00 1206.08, 439.62 1196.13, 439.77 1186.19 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<text x="502" y="1208" font-size="20" font-weight="400" text-anchor="start" fill="#112D4E">进程</text>
+<rect x="640.0" y="1185.0" width="46.0" height="30.0" rx="10.0" fill="#DBE2EF"/>
+<rect x="640.0" y="1185.0" width="46.0" height="30.0" rx="10.0" fill="none" stroke="#112D4E" stroke-width="1.5"/>
+<rect x="641.2" y="1184.2" width="44.2" height="31.4" rx="11.0" fill="none" stroke="#112D4E" stroke-width="0.8" opacity="0.48"/>
+<text x="702" y="1208" font-size="20" font-weight="400" text-anchor="start" fill="#112D4E">策略实例</text>
+<rect x="900.0" y="1185.0" width="66.0" height="30.0" rx="0.0" fill="#F9F7F7"/>
+<path d="M 900.00 1185.00 C 922.00 1186.87, 944.00 1186.58, 966.00 1185.00 C 966.27 1195.00, 966.94 1205.00, 966.00 1215.00 C 944.00 1214.30, 922.00 1216.94, 900.00 1215.00 C 902.28 1205.00, 899.95 1195.00, 900.00 1185.00 Z" fill="none" stroke="#112D4E" stroke-width="1.0" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 900.19 1184.76 C 921.97 1182.88, 943.77 1184.49, 965.57 1184.33 C 964.20 1194.19, 967.88 1203.91, 966.35 1213.78 C 944.22 1213.06, 922.27 1217.23, 900.13 1216.26 C 900.70 1205.76, 898.35 1195.26, 900.19 1184.76 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<rect x="907.0" y="1193.0" width="14.0" height="14.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 907.00 1193.00 C 911.67 1193.91, 916.33 1193.24, 921.00 1193.00 C 922.74 1197.67, 919.60 1202.33, 921.00 1207.00 C 916.33 1205.48, 911.67 1207.61, 907.00 1207.00 C 904.81 1202.33, 908.05 1197.67, 907.00 1193.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 907.38 1193.06 C 911.84 1192.04, 916.26 1192.12, 920.63 1193.54 C 922.30 1197.58, 919.78 1201.83, 921.22 1205.88 C 916.27 1204.59, 911.31 1204.23, 906.36 1205.89 C 908.53 1201.76, 905.31 1197.20, 907.38 1193.06 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<rect x="925.0" y="1193.0" width="14.0" height="14.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 925.00 1193.00 C 929.67 1193.37, 934.33 1193.62, 939.00 1193.00 C 941.35 1197.67, 937.07 1202.33, 939.00 1207.00 C 934.33 1208.18, 929.67 1208.05, 925.00 1207.00 C 924.33 1202.33, 923.41 1197.67, 925.00 1193.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 924.68 1193.20 C 929.85 1192.40, 935.19 1195.06, 940.28 1192.47 C 939.30 1197.21, 939.17 1202.07, 938.46 1206.85 C 934.47 1205.31, 930.24 1206.87, 926.21 1205.92 C 924.51 1201.83, 925.74 1197.37, 924.68 1193.20 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<rect x="943.0" y="1193.0" width="14.0" height="14.0" rx="0.0" fill="#DBE2EF"/>
+<path d="M 943.00 1193.00 C 947.67 1195.35, 952.33 1191.08, 957.00 1193.00 C 955.82 1197.67, 958.95 1202.33, 957.00 1207.00 C 952.33 1205.08, 947.67 1207.81, 943.00 1207.00 C 940.84 1202.33, 944.23 1197.67, 943.00 1193.00 Z" fill="none" stroke="#112D4E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 944.00 1193.42 C 948.43 1195.62, 952.90 1192.16, 957.33 1193.53 C 957.94 1197.89, 958.22 1202.25, 956.94 1206.56 C 952.01 1203.98, 946.89 1204.88, 941.77 1205.71 C 941.65 1201.46, 944.91 1197.82, 944.00 1193.42 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<text x="982" y="1208" font-size="20" font-weight="400" text-anchor="start" fill="#112D4E">共享队列</text>
+<path fill="none" stroke="#112D4E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)" d="M 1200.00 1200.00 C 1220.00 1200.68, 1240.00 1198.02, 1260.00 1200.00"/>
+<path d="M 1199.26 1200.50 C 1219.30 1199.53, 1239.37 1201.00, 1259.42 1199.99" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".4" stroke-linecap="round"/>
+<text x="1278" y="1208" font-size="20" font-weight="400" text-anchor="start" fill="#112D4E">行情</text>
+<path fill="none" stroke="#112D4E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" marker-start="url(#orange)" marker-end="url(#orange)" d="M 1410.00 1200.00 C 1430.00 1201.22, 1450.00 1198.28, 1470.00 1200.00"/>
+<path d="M 1410.77 1200.34 C 1430.47 1199.60, 1450.18 1200.13, 1469.88 1199.30" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".4" stroke-linecap="round"/>
+<text x="1490" y="1208" font-size="20" font-weight="400" text-anchor="start" fill="#112D4E">交易请求／回报</text>
+<text x="940" y="500" font-size="46" font-weight="400" text-anchor="middle" fill="#64748b" data-role="omitted-strategies">⋮</text>
+<text x="1305" y="500" font-size="46" font-weight="400" text-anchor="middle" fill="#64748b" data-role="omitted-channels">⋮</text>
+<g id="local-persistence" aria-label="tradingd 分别连接 WAL 和 MySQL">
+<path fill="none" stroke="#112D4E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M 1615.00 530.00 C 1615.40 550.00, 1613.51 570.00, 1615.00 590.00 C 1606.67 591.74, 1598.33 589.74, 1590.00 590.00 C 1590.59 610.00, 1588.88 630.00, 1590.00 650.00"/>
+<path d="M 1615.49 530.31 C 1615.05 550.01, 1616.56 569.69, 1615.72 589.39 C 1607.39 589.78, 1599.00 589.05, 1590.71 590.49 C 1591.10 610.14, 1589.73 629.75, 1589.69 649.38" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".4" stroke-linecap="round"/>
+<path d="M1510 650 L1645 650 L1670 675 L1670 770 L1510 770 Z" fill="#F9F7F7" stroke="none"/>
+<path d="M 1510.00 650.00 C 1555.00 647.98, 1600.00 650.33, 1645.00 650.00 C 1653.35 658.32, 1663.06 665.27, 1670.00 675.00 C 1672.38 706.67, 1670.41 738.33, 1670.00 770.00 C 1616.67 770.06, 1563.33 771.88, 1510.00 770.00 C 1510.69 730.00, 1509.87 690.00, 1510.00 650.00 Z" fill="none" stroke="#112D4E" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 1509.93 649.68 C 1554.70 649.12, 1599.47 649.80, 1644.24 650.28 C 1653.15 658.37, 1660.85 667.69, 1669.90 675.62 C 1669.77 706.87, 1671.36 738.10, 1670.50 769.35 C 1617.17 769.77, 1563.84 768.73, 1510.51 769.98 C 1511.34 729.88, 1510.80 689.78, 1509.93 649.68 Z" fill="none" stroke="#112D4E" stroke-width="0.8" opacity="0.45" stroke-linejoin="round"/>
+<path d="M 1645.00 650.00 C 1647.02 658.33, 1644.57 666.67, 1645.00 675.00 C 1653.33 675.45, 1661.67 673.10, 1670.00 675.00" fill="none" stroke="#112D4E" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 1644.22 649.62 C 1644.21 658.38, 1643.64 667.13, 1644.13 675.89 C 1652.47 674.37, 1660.94 674.75, 1669.34 674.24" fill="none" stroke="#112D4E" stroke-width="0.8" opacity="0.45" stroke-linejoin="round"/>
+<text x="1590" y="720" font-size="26" font-weight="600" text-anchor="middle" fill="#112D4E">WAL</text>
+<path fill="none" stroke="#112D4E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M 1775.00 530.00 C 1774.58 550.00, 1774.02 570.00, 1775.00 590.00 C 1781.67 589.70, 1788.33 590.72, 1795.00 590.00 C 1794.71 610.00, 1794.02 630.00, 1795.00 650.00"/>
+<path d="M 1774.61 530.24 C 1774.68 550.13, 1775.91 570.00, 1775.54 589.90 C 1781.77 589.74, 1787.99 589.81, 1794.20 590.38 C 1795.51 610.11, 1794.42 629.88, 1795.17 649.62" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".4" stroke-linecap="round"/>
+<path d="M1715 664 A80 14 0 0 1 1875 664 L1875 756 A80 14 0 0 1 1715 756 Z" fill="#F9F7F7" stroke="#112D4E" stroke-width="2" />
+<path d="M1715 664 A80 14 0 0 1 1875 664 L1875 756 A80 14 0 0 1 1715 756 Z" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".45" transform="translate(0.8 -0.5)"/>
+<ellipse cx="1795" cy="664" rx="80" ry="14" fill="#F9F7F7" stroke="#112D4E" stroke-width="2" />
+<ellipse cx="1795" cy="664" rx="80" ry="14" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".45" transform="translate(0.8 -0.5)"/>
+<text x="1795" y="725" font-size="25" font-weight="600" text-anchor="middle" fill="#112D4E">MySQL</text>
+</g>
+<g id="local-storage-legend" transform="translate(0 260)">
+<path d="M1870 933 A24 6 0 0 1 1918 933 L1918 950 A24 6 0 0 1 1870 950 Z" fill="#F9F7F7" stroke="#112D4E" stroke-width="1.5" />
+<path d="M1870 933 A24 6 0 0 1 1918 933 L1918 950 A24 6 0 0 1 1870 950 Z" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".45" transform="translate(0.8 -0.5)"/>
+<ellipse cx="1894" cy="933" rx="24" ry="6" fill="#F9F7F7" stroke="#112D4E" stroke-width="1.5" />
+<ellipse cx="1894" cy="933" rx="24" ry="6" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".45" transform="translate(0.8 -0.5)"/>
+<text x="1935" y="948" font-size="20" text-anchor="start" fill="#112D4E">数据库</text>
+</g>
+<g id="wal-legend" transform="translate(0 260)">
+<path d="M1740 925 L1762 925 L1772 935 L1772 955 L1740 955 Z" fill="#F9F7F7" stroke="none"/>
+<path d="M 1740.00 925.00 C 1747.33 925.50, 1754.67 926.77, 1762.00 925.00 C 1766.32 927.34, 1770.26 930.07, 1772.00 935.00 C 1774.12 941.67, 1773.93 948.33, 1772.00 955.00 C 1761.33 956.83, 1750.67 955.92, 1740.00 955.00 C 1739.93 945.00, 1737.64 935.00, 1740.00 925.00 Z" fill="none" stroke="#112D4E" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 1740.11 925.02 C 1747.31 925.41, 1754.50 926.06, 1761.70 925.01 C 1764.68 928.62, 1768.25 931.60, 1771.99 934.39 C 1771.26 941.47, 1771.52 948.56, 1771.93 955.65 C 1761.08 954.43, 1750.17 954.96, 1739.29 954.48 C 1739.50 944.66, 1739.26 934.82, 1740.11 925.02 Z" fill="none" stroke="#112D4E" stroke-width="0.8" opacity="0.45" stroke-linejoin="round"/>
+<path d="M 1762.00 925.00 C 1763.78 928.33, 1761.16 931.67, 1762.00 935.00 C 1765.33 932.88, 1768.67 933.16, 1772.00 935.00" fill="none" stroke="#112D4E" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 1762.56 924.30 C 1761.36 927.95, 1763.19 931.64, 1762.40 935.30 C 1765.69 934.74, 1769.01 935.86, 1772.28 935.07" fill="none" stroke="#112D4E" stroke-width="0.8" opacity="0.45" stroke-linejoin="round"/>
+<text x="1790" y="948" font-size="20" text-anchor="start" fill="#112D4E">WAL</text>
+</g>
+<g id="logging-local" aria-label="同机业务进程通过独立日志共享队列连接 logd">
+<text x="830" y="982" font-size="21" text-anchor="end" fill="#64748B" data-role="log-producer-summary">本机业务进程日志</text>
+<path fill="none" stroke="#64748B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="6 5" marker-end="url(#log-arrow)" d="M 860.00 975.00 C 890.00 975.76, 920.00 975.04, 950.00 975.00"/>
+<path d="M 859.61 974.82 C 889.83 974.35, 920.05 975.74, 950.27 975.68" fill="none" stroke="#64748B" stroke-width=".8" opacity=".4" stroke-linecap="round" stroke-dasharray="6 5"/>
+<g data-role="independent-log-queues">
+<rect x="950.0" y="930.0" width="250.0" height="90.0" rx="0.0" fill="#F9F7F7"/>
+<path d="M 950.00 930.00 C 1033.33 930.18, 1116.67 931.75, 1200.00 930.00 C 1197.89 960.00, 1199.09 990.00, 1200.00 1020.00 C 1116.67 1020.07, 1033.33 1019.86, 950.00 1020.00 C 951.05 990.00, 952.26 960.00, 950.00 930.00 Z" fill="none" stroke="#112D4E" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 949.58 930.09 C 1033.36 930.67, 1117.15 927.99, 1200.94 930.37 C 1200.59 960.63, 1199.52 990.88, 1200.50 1021.15 C 1117.46 1020.75, 1034.45 1017.59, 951.40 1018.82 C 952.16 989.21, 951.31 959.64, 949.58 930.09 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<text x="1075.0" y="955" font-size="18" fill="#112D4E" font-weight="400" text-anchor="middle">日志共享队列组</text>
+<rect x="968.0" y="964.0" width="36.8" height="7.0" fill="#DBE2EF" stroke="none"/>
+<path d="M 968.00 964.00 C 980.27 964.00, 992.53 964.20, 1004.80 964.00 C 1004.99 966.33, 1004.64 968.67, 1004.80 971.00 C 992.53 971.04, 980.27 970.80, 968.00 971.00 C 967.94 968.67, 967.68 966.33, 968.00 964.00 Z" fill="none" stroke="#64748B" stroke-width="0.8" stroke-linejoin="round"/>
+<rect x="1010.8" y="964.0" width="36.8" height="7.0" fill="#DBE2EF" stroke="none"/>
+<path d="M 1010.80 964.00 C 1023.07 964.38, 1035.33 963.78, 1047.60 964.00 C 1047.25 966.33, 1047.35 968.67, 1047.60 971.00 C 1035.33 970.61, 1023.07 971.27, 1010.80 971.00 C 1010.48 968.67, 1010.96 966.33, 1010.80 964.00 Z" fill="none" stroke="#64748B" stroke-width="0.8" stroke-linejoin="round"/>
+<rect x="1053.6" y="964.0" width="36.8" height="7.0" fill="#DBE2EF" stroke="none"/>
+<path d="M 1053.60 964.00 C 1065.87 963.71, 1078.13 964.21, 1090.40 964.00 C 1090.23 966.33, 1090.23 968.67, 1090.40 971.00 C 1078.13 970.78, 1065.87 971.22, 1053.60 971.00 C 1053.38 968.67, 1053.96 966.33, 1053.60 964.00 Z" fill="none" stroke="#64748B" stroke-width="0.8" stroke-linejoin="round"/>
+<rect x="1096.4" y="964.0" width="36.8" height="7.0" fill="#DBE2EF" stroke="none"/>
+<path d="M 1096.40 964.00 C 1108.67 964.05, 1120.93 963.78, 1133.20 964.00 C 1132.92 966.33, 1133.36 968.67, 1133.20 971.00 C 1120.93 971.11, 1108.67 970.87, 1096.40 971.00 C 1096.22 968.67, 1096.01 966.33, 1096.40 964.00 Z" fill="none" stroke="#64748B" stroke-width="0.8" stroke-linejoin="round"/>
+<rect x="1139.2" y="964.0" width="36.8" height="7.0" fill="#DBE2EF" stroke="none"/>
+<path d="M 1139.20 964.00 C 1151.47 964.07, 1163.73 964.11, 1176.00 964.00 C 1176.22 966.33, 1176.22 968.67, 1176.00 971.00 C 1163.73 970.78, 1151.47 971.13, 1139.20 971.00 C 1139.02 968.67, 1139.24 966.33, 1139.20 964.00 Z" fill="none" stroke="#64748B" stroke-width="0.8" stroke-linejoin="round"/>
+<rect x="968.0" y="975.0" width="36.8" height="7.0" fill="#DBE2EF" stroke="none"/>
+<path d="M 968.00 975.00 C 980.27 975.16, 992.53 974.77, 1004.80 975.00 C 1004.44 977.33, 1004.77 979.67, 1004.80 982.00 C 992.53 982.38, 980.27 982.31, 968.00 982.00 C 968.11 979.67, 968.14 977.33, 968.00 975.00 Z" fill="none" stroke="#64748B" stroke-width="0.8" stroke-linejoin="round"/>
+<rect x="1010.8" y="975.0" width="36.8" height="7.0" fill="#DBE2EF" stroke="none"/>
+<path d="M 1010.80 975.00 C 1023.07 974.84, 1035.33 974.63, 1047.60 975.00 C 1047.20 977.33, 1047.48 979.67, 1047.60 982.00 C 1035.33 982.05, 1023.07 982.40, 1010.80 982.00 C 1010.49 979.67, 1010.94 977.33, 1010.80 975.00 Z" fill="none" stroke="#64748B" stroke-width="0.8" stroke-linejoin="round"/>
+<rect x="1053.6" y="975.0" width="36.8" height="7.0" fill="#DBE2EF" stroke="none"/>
+<path d="M 1053.60 975.00 C 1065.87 975.13, 1078.13 975.12, 1090.40 975.00 C 1090.21 977.33, 1090.11 979.67, 1090.40 982.00 C 1078.13 981.93, 1065.87 981.67, 1053.60 982.00 C 1053.24 979.67, 1053.79 977.33, 1053.60 975.00 Z" fill="none" stroke="#64748B" stroke-width="0.8" stroke-linejoin="round"/>
+<rect x="1096.4" y="975.0" width="36.8" height="7.0" fill="#DBE2EF" stroke="none"/>
+<path d="M 1096.40 975.00 C 1108.67 975.10, 1120.93 975.26, 1133.20 975.00 C 1132.97 977.33, 1133.53 979.67, 1133.20 982.00 C 1120.93 982.06, 1108.67 982.18, 1096.40 982.00 C 1096.36 979.67, 1096.79 977.33, 1096.40 975.00 Z" fill="none" stroke="#64748B" stroke-width="0.8" stroke-linejoin="round"/>
+<rect x="1139.2" y="975.0" width="36.8" height="7.0" fill="#DBE2EF" stroke="none"/>
+<path d="M 1139.20 975.00 C 1151.47 975.31, 1163.73 975.14, 1176.00 975.00 C 1176.06 977.33, 1175.87 979.67, 1176.00 982.00 C 1163.73 982.05, 1151.47 981.68, 1139.20 982.00 C 1139.49 979.67, 1138.96 977.33, 1139.20 975.00 Z" fill="none" stroke="#64748B" stroke-width="0.8" stroke-linejoin="round"/>
+<rect x="968.0" y="986.0" width="36.8" height="7.0" fill="#DBE2EF" stroke="none"/>
+<path d="M 968.00 986.00 C 980.27 986.24, 992.53 986.16, 1004.80 986.00 C 1005.00 988.33, 1005.01 990.67, 1004.80 993.00 C 992.53 992.63, 980.27 993.18, 968.00 993.00 C 968.21 990.67, 968.34 988.33, 968.00 986.00 Z" fill="none" stroke="#64748B" stroke-width="0.8" stroke-linejoin="round"/>
+<rect x="1010.8" y="986.0" width="36.8" height="7.0" fill="#DBE2EF" stroke="none"/>
+<path d="M 1010.80 986.00 C 1023.07 985.86, 1035.33 985.60, 1047.60 986.00 C 1047.75 988.33, 1047.55 990.67, 1047.60 993.00 C 1035.33 993.10, 1023.07 992.71, 1010.80 993.00 C 1010.67 990.67, 1011.04 988.33, 1010.80 986.00 Z" fill="none" stroke="#64748B" stroke-width="0.8" stroke-linejoin="round"/>
+<rect x="1053.6" y="986.0" width="36.8" height="7.0" fill="#DBE2EF" stroke="none"/>
+<path d="M 1053.60 986.00 C 1065.87 986.37, 1078.13 986.09, 1090.40 986.00 C 1090.76 988.33, 1090.07 990.67, 1090.40 993.00 C 1078.13 993.31, 1065.87 993.29, 1053.60 993.00 C 1053.74 990.67, 1053.50 988.33, 1053.60 986.00 Z" fill="none" stroke="#64748B" stroke-width="0.8" stroke-linejoin="round"/>
+<rect x="1096.4" y="986.0" width="36.8" height="7.0" fill="#DBE2EF" stroke="none"/>
+<path d="M 1096.40 986.00 C 1108.67 985.98, 1120.93 986.02, 1133.20 986.00 C 1132.91 988.33, 1133.01 990.67, 1133.20 993.00 C 1120.93 992.69, 1108.67 993.06, 1096.40 993.00 C 1096.74 990.67, 1096.65 988.33, 1096.40 986.00 Z" fill="none" stroke="#64748B" stroke-width="0.8" stroke-linejoin="round"/>
+<rect x="1139.2" y="986.0" width="36.8" height="7.0" fill="#DBE2EF" stroke="none"/>
+<path d="M 1139.20 986.00 C 1151.47 986.06, 1163.73 985.83, 1176.00 986.00 C 1175.90 988.33, 1175.95 990.67, 1176.00 993.00 C 1163.73 992.76, 1151.47 993.33, 1139.20 993.00 C 1139.01 990.67, 1139.01 988.33, 1139.20 986.00 Z" fill="none" stroke="#64748B" stroke-width="0.8" stroke-linejoin="round"/>
+</g>
+<path fill="none" stroke="#64748B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="6 5" marker-end="url(#log-arrow)" d="M 1200.00 975.00 C 1226.67 974.39, 1253.33 975.22, 1280.00 975.00"/>
+<path d="M 1199.50 974.69 C 1226.60 973.62, 1253.69 974.46, 1280.79 974.77" fill="none" stroke="#64748B" stroke-width=".8" opacity=".4" stroke-linecap="round" stroke-dasharray="6 5"/>
+<g id="logd-single" data-role="logd-process">
+<rect x="1280.0" y="930.0" width="200.0" height="90.0" rx="0.0" fill="#3F72AF"/>
+<path d="M 1280.00 930.00 C 1346.67 932.32, 1413.33 927.90, 1480.00 930.00 C 1479.67 960.00, 1477.87 990.00, 1480.00 1020.00 C 1413.33 1019.24, 1346.67 1019.63, 1280.00 1020.00 C 1280.08 990.00, 1278.79 960.00, 1280.00 930.00 Z" fill="none" stroke="#112D4E" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 1278.58 930.53 C 1345.48 929.94, 1412.37 928.98, 1479.28 929.64 C 1482.30 959.44, 1482.75 989.30, 1481.39 1019.21 C 1413.90 1018.66, 1346.41 1017.68, 1278.91 1018.64 C 1278.28 989.27, 1280.80 959.89, 1278.58 930.53 Z" fill="none" stroke="#112D4E" stroke-width="0.85" opacity="0.54" stroke-linecap="round"/>
+<text x="1380.0" y="965" font-size="27" fill="#F9F7F7" font-weight="600" text-anchor="middle">logd</text>
+<text x="1380.0" y="994" font-size="18" fill="#F9F7F7" font-weight="400" text-anchor="middle">日志写入与轮转</text>
+</g>
+<path fill="none" stroke="#64748B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="6 5" marker-end="url(#log-arrow)" d="M 1480.00 975.00 C 1506.67 973.85, 1533.33 974.16, 1560.00 975.00"/>
+<path d="M 1479.71 975.70 C 1506.55 975.53, 1533.37 973.88, 1560.22 974.38" fill="none" stroke="#64748B" stroke-width=".8" opacity=".4" stroke-linecap="round" stroke-dasharray="6 5"/>
+<g data-role="log-files">
+<path d="M1560 925 L1722 925 L1740 943 L1740 1025 L1560 1025 Z" fill="#F9F7F7" stroke="none"/>
+<path d="M 1560.00 925.00 C 1614.00 926.90, 1668.00 926.76, 1722.00 925.00 C 1726.93 932.07, 1733.27 937.73, 1740.00 943.00 C 1741.51 970.33, 1739.68 997.67, 1740.00 1025.00 C 1680.00 1025.95, 1620.00 1024.87, 1560.00 1025.00 C 1558.17 991.67, 1559.13 958.33, 1560.00 925.00 Z" fill="none" stroke="#112D4E" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 1560.70 925.03 C 1614.29 924.44, 1667.88 925.53, 1721.47 925.37 C 1726.71 932.05, 1734.23 936.43, 1739.44 943.14 C 1740.87 970.37, 1739.30 997.63, 1740.40 1024.86 C 1680.05 1024.17, 1619.71 1025.51, 1559.36 1025.12 C 1559.54 991.75, 1560.99 958.40, 1560.70 925.03 Z" fill="none" stroke="#112D4E" stroke-width="0.8" opacity="0.45" stroke-linejoin="round"/>
+<path d="M 1722.00 925.00 C 1720.66 931.00, 1722.75 937.00, 1722.00 943.00 C 1728.00 942.86, 1734.00 940.75, 1740.00 943.00" fill="none" stroke="#112D4E" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 1722.62 925.80 C 1723.08 931.33, 1722.91 936.86, 1722.65 942.38 C 1728.72 941.30, 1734.77 941.87, 1740.83 942.48" fill="none" stroke="#112D4E" stroke-width="0.8" opacity="0.45" stroke-linejoin="round"/>
+<text x="1650.0" y="985.0" font-size="22" fill="#112D4E" font-weight="400" text-anchor="middle">日志文件</text>
+</g>
+<text x="1075" y="1050" font-size="18" fill="#64748B" font-weight="400" text-anchor="middle">每 Logger 独立 SPSC</text>
+</g>
+</g></svg>
