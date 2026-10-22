@@ -4,11 +4,11 @@ namespace yquant::strategyd {
 
 bool TimerImpl::CanChange() const noexcept {
   if (stopping_) return false;
-  return phase_ == CallbackPhase::kStart ||
-         (running_ &&
-          (phase_ == CallbackPhase::kTick ||
-           phase_ == CallbackPhase::kOrderUpdate ||
-           phase_ == CallbackPhase::kFill || phase_ == CallbackPhase::kTimer));
+  return phase_ == strategy::CallbackPhase::kStart ||
+         (running_ && (phase_ == strategy::CallbackPhase::kTick ||
+                       phase_ == strategy::CallbackPhase::kOrderUpdate ||
+                       phase_ == strategy::CallbackPhase::kFill ||
+                       phase_ == strategy::CallbackPhase::kTimer));
 }
 
 base::ErrorCode TimerImpl::Arm(std::uint64_t deadline_ns) noexcept {
@@ -33,13 +33,13 @@ void TimerImpl::Reset() noexcept {
   deadline_.reset();
   running_ = false;
   stopping_ = false;
-  phase_ = CallbackPhase::kNone;
+  phase_ = strategy::CallbackPhase::kNone;
 }
 
 bool TimerImpl::TryTakeDue(std::uint64_t now,
                            strategy::TimerEvent& out) noexcept {
-  if (!running_ || stopping_ || phase_ != CallbackPhase::kNone || !deadline_ ||
-      *deadline_ > now) {
+  if (!running_ || stopping_ || phase_ != strategy::CallbackPhase::kNone ||
+      !deadline_ || *deadline_ > now) {
     return false;
   }
   const strategy::TimerEvent event{*deadline_, now};

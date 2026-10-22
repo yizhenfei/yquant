@@ -5,8 +5,8 @@
 
 #include "marketd/config.h"
 #include "marketd/runner.h"
-#include "strategyd/monotonic_clock.h"
-#include "strategyd/termination_signals.h"
+#include "yquant/base/monotonic_clock.h"
+#include "yquant/base/termination_signals.h"
 
 namespace {
 
@@ -77,27 +77,27 @@ int main(int argc, char* argv[]) {
     std::fprintf(stdout, "yquant-marketd: configuration valid\n");
     return 0;
   }
-  yquant::strategyd::TerminationSignals signals;
+  yquant::base::TerminationSignals signals;
   status = signals.Prepare();
   if (!status.ok()) {
     PrintFailure("signal_setup", status, "cannot prepare termination signals");
     return 1;
   }
-  yquant::strategyd::SteadyMonotonicClock clock;
+  yquant::base::SteadyMonotonicClock clock;
   yquant::marketd::MarketdRunner runner;
   status = runner.Init(loader.config(), clock.Now());
   if (!status.ok()) {
     PrintFailure(runner.error_stage(), status, runner.error_detail());
     return 1;
   }
-  std::fprintf(stderr, "yquant-marketd: Running config=%s\n", config_path);
-  std::fflush(stderr);
+  std::fprintf(stdout, "yquant-marketd: Running config=%s\n", config_path);
+  std::fflush(stdout);
   status = runner.Run(clock, signals, max_events);
   if (!status.ok()) {
     PrintFailure(runner.error_stage(), status, runner.error_detail());
     return 1;
   }
-  std::fprintf(stderr, "yquant-marketd: Stopped events=%llu\n",
+  std::fprintf(stdout, "yquant-marketd: Stopped events=%llu\n",
                static_cast<unsigned long long>(runner.event_count()));
   return 0;
 }

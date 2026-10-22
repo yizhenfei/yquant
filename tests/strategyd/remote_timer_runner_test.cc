@@ -8,21 +8,21 @@
 
 #include "gtest/gtest.h"
 #include "strategy_loop_test_support.h"
+#include "strategyd/strategy_runner.h"
 #include "test_config_file.h"
-#include "test_strategy_runner.h"
-#include "tradingd/connection.h"
+#include "yquant/trading/connection.h"
 
 namespace yquant::strategyd {
 namespace {
 
-using tradingd::Message;
-using tradingd::MessageType;
+using trading::Message;
+using trading::MessageType;
 constexpr std::uint64_t kGeneration = 77;
 constexpr std::int64_t kInitialCash = 1000000000;
 
 // Stops only after the peer has acknowledged cancellation. The wall deadline
 // bounds failure paths; yielding lets the real socket peer make progress.
-class RemoteTimerEnvironment final : public EventLoopEnvironment {
+class RemoteTimerEnvironment final : public TestLoopEnvironment {
  public:
   explicit RemoteTimerEnvironment(const std::atomic<bool>& canceled) noexcept
       : canceled_(canceled),
@@ -32,7 +32,7 @@ class RemoteTimerEnvironment final : public EventLoopEnvironment {
     out = canceled_.load() || std::chrono::steady_clock::now() >= deadline_;
     return {};
   }
-  base::Status Wait(std::optional<std::uint64_t>) noexcept {
+  base::Status Wait(std::optional<std::uint64_t>) noexcept override {
     std::this_thread::yield();
     return {};
   }
@@ -49,7 +49,7 @@ class RemoteTimerEnvironment final : public EventLoopEnvironment {
 class TimerPeer {
  public:
   bool Open() {
-    tradingd::Endpoint endpoint;
+    trading::Endpoint endpoint;
     endpoint.port = 0;
     return listener_.Open(endpoint).ok();
   }
@@ -134,8 +134,8 @@ class TimerPeer {
   bool Receive(Message& message) {
     while (Active()) {
       const auto result = connection_.Poll(message);
-      if (result.state == tradingd::ReceiveState::kMessage) return true;
-      if (result.state != tradingd::ReceiveState::kIdle) return false;
+      if (result.state == trading::ReceiveState::kMessage) return true;
+      if (result.state != trading::ReceiveState::kIdle) return false;
       std::this_thread::yield();
     }
     return false;
@@ -158,8 +158,8 @@ class TimerPeer {
     return connection_.empty();
   }
 
-  tradingd::Listener listener_;
-  tradingd::Connection connection_;
+  trading::Listener listener_;
+  trading::Connection connection_;
   std::atomic<bool> aborted_ = false;
   std::atomic<bool> canceled_ = false;
   std::chrono::steady_clock::time_point deadline_;
@@ -177,12 +177,19 @@ TEST(RemoteTimerRunnerTest, TimerSubmitsCancelsAndDrainsThroughTcpRuntime) {
   loop_testing::EventPipe events;
   ASSERT_TRUE(events.valid());
   RemoteTimerEnvironment environment(peer.canceled());
-  TestStrategyRunner runner;
+  base::SteadyMonotonicClock clock;
+  StrategyAssembly assembly(clock);
+  ASSERT_TRUE(
+      assembly
+          .Load({YQUANT_TEST_TIMER_TRADING_PATH, YQUANT_TEST_CONFIG_PATH,
+                 YQUANT_TEST_MARKET_DATA_CONFIG_PATH, trading.path()},
+                environment)
+          .ok());
+  IdleTestSource source;
+  TestStrategyRunner runner(clock, environment, source, assembly.trading());
   std::thread worker([&peer] { peer.Serve(); });
-  const auto loaded = runner.Handle(
-      LoadAndStart{YQUANT_TEST_TIMER_TRADING_PATH, YQUANT_TEST_CONFIG_PATH,
-                   YQUANT_TEST_MARKET_DATA_CONFIG_PATH, trading.path()});
-  const auto result = loaded.ok() ? runner.Run(environment) : loaded;
+  const auto loaded = runner.Handle(assembly.start_command());
+  const auto result = loaded.ok() ? runner.Run() : loaded;
   peer.Abort();
   worker.join();
   ASSERT_TRUE(loaded.ok()) << runner.error_stage() << ": "

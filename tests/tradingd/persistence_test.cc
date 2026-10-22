@@ -14,23 +14,24 @@
 #include "../marketd/test_support.h"
 #include "gtest/gtest.h"
 #include "process_support.h"
-#include "tradingd/connection.h"
+#include "scoped_working_directory.h"
 #include "tradingd/server.h"
+#include "yquant/trading/connection.h"
 
 namespace yquant::tradingd {
 namespace {
 using marketd::testing::RuntimeDirectory;
 
-class PersistenceClock final : public strategyd::MonotonicClock {
+class PersistenceClock final : public base::MonotonicClock {
  public:
   std::uint64_t Now() const noexcept override { return now; }
   std::uint64_t now = 1000000;
 };
 
 struct PersistentPeer {
-  Connection connection;
+  trading::Connection connection;
   std::uint64_t generation = 0;
-  std::vector<Message> messages;
+  std::vector<trading::Message> messages;
 };
 
 // Drives the real TCP framing and shared ledger while keeping broker deadlines
@@ -41,8 +42,8 @@ class TradingdPersistenceTest : public ::testing::Test {
     ASSERT_TRUE(directory.valid());
     config.listen.port = 0;
     std::snprintf(config.token, sizeof(config.token), "persistence-token");
-    config.market_data = marketd::testing::MockConfig();
-    config.trading.mode = strategyd::MockTradingMode::kWorking;
+    config.market_data = marketd::testing::ScopeConfig();
+    config.trading.mode = trading::MockTradingMode::kWorking;
     config.trading.initial_account.cash_balance = 1000000000;
     std::snprintf(config.persistence.directory,
                   sizeof(config.persistence.directory), "%s/state",
@@ -69,11 +70,11 @@ class TradingdPersistenceTest : public ::testing::Test {
     peer.connection.Close();
     peer.messages.clear();
     peer.generation = 0;
-    Endpoint endpoint;
+    trading::Endpoint endpoint;
     endpoint.port = server.port();
     ASSERT_TRUE(peer.connection.Connect(endpoint, 1000000000).ok());
-    Message hello;
-    hello.type = MessageType::kHello;
+    trading::Message hello;
+    hello.type = trading::MessageType::kHello;
     hello.client_id = id;
     std::snprintf(hello.token, sizeof(hello.token), "persistence-token");
     hello.instrument_count = 1;
@@ -81,7 +82,7 @@ class TradingdPersistenceTest : public ::testing::Test {
     ASSERT_TRUE(peer.connection.Queue(hello).ok());
     Pump();
     for (const auto& message : peer.messages)
-      if (message.type == MessageType::kWelcome)
+      if (message.type == trading::MessageType::kWelcome)
         peer.generation = message.generation;
   }
   void Pump() {
@@ -89,9 +90,9 @@ class TradingdPersistenceTest : public ::testing::Test {
       if (peer.connection.open()) (void)peer.connection.Service();
       ASSERT_TRUE(server.Service(clock.now).ok()) << server.error_detail();
       for (int count = 0; count < 64 && peer.connection.open(); ++count) {
-        Message message;
+        trading::Message message;
         const auto result = peer.connection.Poll(message);
-        if (result.state != ReceiveState::kMessage) break;
+        if (result.state != trading::ReceiveState::kMessage) break;
         peer.messages.push_back(message);
       }
       std::this_thread::yield();
@@ -102,8 +103,8 @@ class TradingdPersistenceTest : public ::testing::Test {
     Pump();
   }
   void Order(std::uint64_t local_id = 1, std::int64_t quantity = 10) {
-    Message order;
-    order.type = MessageType::kNewOrder;
+    trading::Message order;
+    order.type = trading::MessageType::kNewOrder;
     order.generation = peer.generation;
     order.order_id = {local_id};
     order.request = {config.market_data.instruments[0].instrument.id,
@@ -111,9 +112,10 @@ class TradingdPersistenceTest : public ::testing::Test {
     ASSERT_TRUE(peer.connection.Queue(order).ok());
     Pump();
   }
-  const Message* Update(model::OrderUpdateKind kind) const {
+  const trading::Message* Update(model::OrderUpdateKind kind) const {
     for (auto it = peer.messages.rbegin(); it != peer.messages.rend(); ++it)
-      if (it->type == MessageType::kOrderUpdate && it->update.kind == kind)
+      if (it->type == trading::MessageType::kOrderUpdate &&
+          it->update.kind == kind)
         return &*it;
     return nullptr;
   }
@@ -129,7 +131,7 @@ class TradingdPersistenceTest : public ::testing::Test {
 
 TEST_F(TradingdPersistenceTest,
        FilledAccountSurvivesRestartWithoutBootstrapReset) {
-  config.trading.mode = strategyd::MockTradingMode::kFill;
+  config.trading.mode = trading::MockTradingMode::kFill;
   Start();
   Connect(11);
   ASSERT_NE(peer.generation, 0U);
@@ -238,8 +240,7 @@ TEST_F(TradingdPersistenceTest, ChangedPriceTickRefusesRecovery) {
   auto& instrument = config.market_data.instruments[0];
   instrument.instrument.price_tick = 2;
   // Keep the mock source valid so the frozen identity check rejects recovery.
-  instrument.ask_price = 1002;
-  instrument.price_step = 2;
+
   EXPECT_EQ(server.Init(config).code, base::ErrorCode::kCorrupt);
   EXPECT_NE(std::strstr(server.error_detail(), "profile mismatch"), nullptr);
 }
@@ -334,7 +335,7 @@ TEST_F(TradingdPersistenceTest,
 
 TEST_F(TradingdPersistenceTest,
        PeriodicCheckpointReplaysOnlyFollowingWalSuffix) {
-  config.trading.mode = strategyd::MockTradingMode::kFill;
+  config.trading.mode = trading::MockTradingMode::kFill;
   config.persistence.snapshot_interval_ms = 1000;
   Start();
   Connect(11);
@@ -441,8 +442,8 @@ TEST_F(TradingdPersistenceTest,
     Order();
     Advance();
     ASSERT_NE(Update(model::OrderUpdateKind::kAccepted), nullptr);
-    Message cancel;
-    cancel.type = MessageType::kCancelOrder;
+    trading::Message cancel;
+    cancel.type = trading::MessageType::kCancelOrder;
     cancel.generation = peer.generation;
     cancel.order_id = {1};
     cancel.cancel_id = {1};
@@ -479,10 +480,9 @@ class PersistenceConfigTest : public ::testing::Test {
     ASSERT_TRUE(directory.valid());
     ASSERT_TRUE(directory.Write(
         "market.json",
-        R"({"adapter":"mock","source_id":1,"interval_ms":10,)"
+        R"({"adapter":"shm","source_id":1,"runtime_directory":"/tmp/yquant","stream":"test",)"
         R"("instrument_catalog":"instruments.json","instruments":[)"
-        R"({"venue":"SSE","symbol":"600000",)"
-        R"("bid_price":1000,"bid_qty":100,"ask_price":1001,"ask_qty":100,"price_step":0}]})"));
+        R"({"venue":"SSE","symbol":"600000"}]})"));
     ASSERT_TRUE(directory.Write(
         "broker.json",
         R"({"adapter":"mock","mode":"working","report_interval_ms":1,)"
@@ -496,6 +496,8 @@ class PersistenceConfigTest : public ::testing::Test {
             R"("token":"test-token","persistence":)" +
                 std::string(persistence) + "}"))
       return {base::ErrorCode::kIoError, {}};
+    ::yquant::testing::ScopedWorkingDirectory cwd(directory.path());
+    if (!cwd.valid()) return {base::ErrorCode::kIoError, {}};
     return loader.Load(directory.File("server.json").c_str());
   }
   RuntimeDirectory directory;
@@ -507,8 +509,9 @@ TEST_F(PersistenceConfigTest, ResolvesRelativeDirectoryWithoutCreatingState) {
       Load(R"({"directory":"state","account_key":"simulation/account-A/CNY"})")
           .ok())
       << loader.error().message;
-  EXPECT_EQ(std::string(loader.config().persistence.directory),
-            directory.File("state"));
+  EXPECT_EQ(
+      std::string(loader.config().persistence.directory),
+      std::filesystem::weakly_canonical(directory.File("state")).string());
   EXPECT_FALSE(loader.config().persistence.initialize);
   EXPECT_FALSE(std::filesystem::exists(directory.File("state")));
 }
@@ -540,13 +543,14 @@ TEST_F(PersistenceConfigTest, RejectsOutOfRangeStorageOptions) {
 
 // Waits on the live wire; this helper neither advances a simulated clock nor
 // makes direct calls into the child daemon's ledger.
-bool ReadProcessMessage(Connection& connection, Message& message) {
+bool ReadProcessMessage(trading::Connection& connection,
+                        trading::Message& message) {
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(5);
   while (std::chrono::steady_clock::now() < deadline) {
     const auto result = connection.Poll(message);
-    if (result.state == ReceiveState::kMessage) return true;
-    if (result.state != ReceiveState::kIdle) return false;
+    if (result.state == trading::ReceiveState::kMessage) return true;
+    if (result.state != trading::ReceiveState::kIdle) return false;
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   return false;
@@ -568,10 +572,9 @@ TEST(TradingdPersistenceProcessTest, SigkillRecoversFileBackedPageCache) {
   ::close(socket);
   ASSERT_TRUE(directory.Write(
       "market.json",
-      R"({"adapter":"mock","source_id":1,"interval_ms":10,)"
+      R"({"adapter":"shm","source_id":1,"runtime_directory":"/tmp/yquant","stream":"test",)"
       R"("instrument_catalog":"instruments.json","instruments":[)"
-      R"({"venue":"SSE","symbol":"600000",)"
-      R"("bid_price":1000,"bid_qty":100,"ask_price":1001,"ask_qty":100,"price_step":0}]})"));
+      R"({"venue":"SSE","symbol":"600000"}]})"));
   ASSERT_TRUE(directory.Write(
       "broker.json",
       R"({"adapter":"mock","mode":"fill","report_interval_ms":1,)"
@@ -584,18 +587,20 @@ TEST(TradingdPersistenceProcessTest, SigkillRecoversFileBackedPageCache) {
           R"("shutdown_timeout_ms":2000,"persistence":{"directory":"state",)"
           R"("account_key":"simulation/account-A/CNY","wal_segment_bytes":4194304,)"
           R"("sync_interval_ms":1000,"sync_after_bytes":4194304}})"));
+  ::yquant::testing::ScopedWorkingDirectory cwd(directory.path());
+  ASSERT_TRUE(cwd.valid());
   testing::ChildProcess original;
   ASSERT_EQ(original.Start(YQUANT_TEST_TRADINGD_PATH,
                            {"--config", directory.File("server.json"),
                             "--initialize-state"}),
             0);
   ASSERT_TRUE(original.WaitForOutput("Running")) << original.output();
-  Endpoint endpoint;
+  trading::Endpoint endpoint;
   endpoint.port = port;
-  Connection peer;
+  trading::Connection peer;
   ASSERT_TRUE(peer.Connect(endpoint, 1000000000).ok());
-  Message hello;
-  hello.type = MessageType::kHello;
+  trading::Message hello;
+  hello.type = trading::MessageType::kHello;
   hello.client_id = 11;
   std::snprintf(hello.token, sizeof(hello.token), "persistence-token");
   hello.instrument_count = 1;
@@ -603,12 +608,12 @@ TEST(TradingdPersistenceProcessTest, SigkillRecoversFileBackedPageCache) {
             base::ErrorCode::kOk);
   hello.instruments[0].price_decimals = 2;
   ASSERT_TRUE(peer.Queue(hello).ok());
-  Message message;
+  trading::Message message;
   ASSERT_TRUE(ReadProcessMessage(peer, message));
-  ASSERT_EQ(message.type, MessageType::kWelcome);
+  ASSERT_EQ(message.type, trading::MessageType::kWelcome);
   const auto generation = message.generation;
-  Message order;
-  order.type = MessageType::kNewOrder;
+  trading::Message order;
+  order.type = trading::MessageType::kNewOrder;
   order.generation = generation;
   order.order_id = {1};
   order.request = {hello.instruments[0].id, model::OrderSide::kBuy, 1000, 10};
@@ -616,7 +621,7 @@ TEST(TradingdPersistenceProcessTest, SigkillRecoversFileBackedPageCache) {
   bool filled = false;
   for (int i = 0; i < 16 && !filled; ++i) {
     ASSERT_TRUE(ReadProcessMessage(peer, message));
-    filled = message.type == MessageType::kOrderUpdate &&
+    filled = message.type == trading::MessageType::kOrderUpdate &&
              message.update.order.state == model::OrderState::kFilled;
   }
   ASSERT_TRUE(filled);
@@ -633,7 +638,7 @@ TEST(TradingdPersistenceProcessTest, SigkillRecoversFileBackedPageCache) {
   hello.client_id = 22;
   ASSERT_TRUE(peer.Queue(hello).ok());
   ASSERT_TRUE(ReadProcessMessage(peer, message));
-  ASSERT_EQ(message.type, MessageType::kWelcome);
+  ASSERT_EQ(message.type, trading::MessageType::kWelcome);
   EXPECT_NE(message.generation, generation);
   EXPECT_EQ(message.account.cash.balance, 900000000);
   EXPECT_EQ(message.account.cash.reserved, 0);

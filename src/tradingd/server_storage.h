@@ -8,19 +8,20 @@
 #include <memory>
 #include <span>
 
-#include "strategyd/market_data.h"
-#include "strategyd/mock_trading_adapter.h"
-#include "strategyd/trading.h"
-#include "strategyd/trading_persistence.h"
-#include "tradingd/connection.h"
 #include "tradingd/journal.h"
 #include "tradingd/mysql_archive.h"
 #include "tradingd/server.h"
+#include "yquant/md/instrument_scope.h"
+#include "yquant/trading/connection.h"
+#include "yquant/trading/mock_trading_adapter.h"
+#include "yquant/trading/simulated_futures_exchange.h"
+#include "yquant/trading/trading_engine.h"
+#include "yquant/trading/trading_persistence.h"
 
 namespace yquant::tradingd {
 
 inline constexpr std::size_t kOwnerLookupCapacity =
-    2 * strategyd::kMaxTradingOrders;
+    2 * trading::kMaxTradingOrders;
 static_assert((kOwnerLookupCapacity & (kOwnerLookupCapacity - 1)) == 0);
 
 // Client-local identities remain retained even after a disconnected socket.
@@ -36,7 +37,7 @@ struct LocalOrder {
 // One retained client identity and its bounded local order namespace. Socket
 // timestamps/flags are runtime-only; offline identities still occupy capacity.
 struct Client {
-  Connection connection;
+  trading::Connection connection;
   std::uint64_t id = 0;
   std::uint64_t session_id = 0;
   bool authenticated = false;
@@ -46,9 +47,10 @@ struct Client {
   std::uint64_t last_receive = 0;
   std::uint64_t last_heartbeat = 0;
   std::uint64_t stop_time = 0;
-  std::array<InstrumentSpec, kMaxInstruments> instruments = {};
+  std::array<trading::InstrumentSpec, trading::kMaxInstruments> instruments =
+      {};
   std::size_t instrument_count = 0;
-  std::array<LocalOrder, strategyd::kMaxTradingOrders> orders = {};
+  std::array<LocalOrder, trading::kMaxTradingOrders> orders = {};
   std::size_t order_count = 0;
   std::uint64_t last_cancel_id = 0;
 };
@@ -62,30 +64,37 @@ struct OrderOwner {
 
 // Main-thread gateway state. Only explicitly atomic checkpoint controls and
 // Journal watermarks are shared; the checkpoint payload is immutable in flight.
-struct Server::Storage final : strategyd::TradingMutationSink {
-  explicit Storage(const strategyd::MonotonicClock& clock) noexcept
-      : clock_(clock),
-        market_data(clock),
-        trading(clock, market_data),
-        adapter(*this) {}
-  const strategyd::MonotonicClock& clock_;
+struct Server::Storage final : trading::TradingMutationSink {
+  explicit Storage(const base::MonotonicClock& clock) noexcept
+      : clock_(clock), trading(clock, instruments, adapter), adapter(*this) {}
+  const base::MonotonicClock& clock_;
   ServerConfig config;
-  Listener listener;
-  strategyd::MarketDataImpl market_data;
-  strategyd::TradingImpl trading;
-  strategyd::MockTradingAdapter mock;
+  trading::Listener listener;
+  md::InstrumentScope instruments;
+  trading::TradingEngine trading;
+  trading::MockTradingAdapter mock;
+  trading::SimulatedFuturesExchange futures;
+  trading::TradingAdapter* selected_adapter = &mock;
+  // One client publishes simulator input for the gateway generation.
+  std::uint64_t simulation_client_id = 0;
+  std::array<model::QuoteTick, md::kMaxMarketDataInstruments>
+      simulation_quotes = {};
   // Attaches the stable external key without changing the common adapter ABI.
-  struct Adapter final : strategyd::TradingAdapter {
+  struct Adapter final : trading::TradingAdapter {
     explicit Adapter(Storage& storage) noexcept : storage(storage) {}
-    base::Status Prepare(const strategyd::TradingConfig& c) noexcept override {
-      return storage.mock.Prepare(c);
+    base::Status Prepare(const trading::TradingConfig& c) noexcept override {
+      storage.selected_adapter =
+          c.adapter == trading::TradingAdapterKind::kSimulatedFutures
+              ? static_cast<trading::TradingAdapter*>(&storage.futures)
+              : static_cast<trading::TradingAdapter*>(&storage.mock);
+      return storage.selected_adapter->Prepare(c);
     }
     base::Status Start(std::uint64_t now) noexcept override {
-      return storage.mock.Start(now);
+      return storage.selected_adapter->Start(now);
     }
     base::Status ReadAccountSnapshot(
-        strategyd::TradingAccountSnapshot& out) noexcept override {
-      return storage.mock.ReadAccountSnapshot(out);
+        trading::TradingAccountSnapshot& out) noexcept override {
+      return storage.selected_adapter->ReadAccountSnapshot(out);
     }
     base::Status SendOrder(model::ClientOrderId id,
                            const model::OrderRequest& request,
@@ -94,28 +103,30 @@ struct Server::Storage final : strategyd::TradingMutationSink {
                             const model::BrokerOrderId& broker,
                             model::CancelRequestId cancel,
                             std::uint64_t now) noexcept override {
-      return storage.mock.SendCancel(id, broker, cancel, now);
+      return storage.selected_adapter->SendCancel(id, broker, cancel, now);
     }
-    strategyd::TradingPollResult Poll(
-        std::uint64_t now, strategyd::TradingEvent& out) noexcept override {
-      return storage.mock.Poll(now, out);
+    trading::TradingPollResult Poll(
+        std::uint64_t now, trading::TradingEvent& out) noexcept override {
+      return storage.selected_adapter->Poll(now, out);
     }
     std::optional<std::uint64_t> next_deadline() const noexcept override {
-      return storage.mock.next_deadline();
+      return storage.selected_adapter->next_deadline();
     }
     bool is_drained() const noexcept override {
-      return storage.mock.is_drained();
+      return storage.selected_adapter->is_drained();
     }
-    base::Status Stop() noexcept override { return storage.mock.Stop(); }
+    base::Status Stop() noexcept override {
+      return storage.selected_adapter->Stop();
+    }
     const char* error_detail() const noexcept override {
-      return storage.mock.error_detail();
+      return storage.selected_adapter->error_detail();
     }
     Storage& storage;
   } adapter;
-  std::array<Client, kMaxClients> clients;
-  std::array<OrderOwner, strategyd::kMaxTradingOrders> owners = {};
+  std::array<Client, trading::kMaxClients> clients;
+  std::array<OrderOwner, trading::kMaxTradingOrders> owners = {};
   std::array<std::uint16_t, kOwnerLookupCapacity> owner_lookup{};
-  AccountView account;
+  trading::AccountView account;
   std::uint64_t generation = 0;
   bool stopping = false;
   std::uint64_t stop_time = 0;
@@ -129,9 +140,10 @@ struct Server::Storage final : strategyd::TradingMutationSink {
   // Cold-leased bounds are persisted before any ID in the block is used.
   std::uint64_t order_id_highwater = 0;
   std::uint64_t cancel_id_highwater = 0;
-  // A request callback borrows this ownership context; kMaxClients means the
-  // mutation identifies an existing order whose owner is looked up instead.
-  std::uint64_t context_client = kMaxClients;
+  // A request callback borrows this ownership context; trading::kMaxClients
+  // means the mutation identifies an existing order whose owner is looked up
+  // instead.
+  std::uint64_t context_client = trading::kMaxClients;
   std::uint64_t context_local = 0;
   model::CancelRequestId context_cancel;
   std::uint64_t last_record_time = 0;
@@ -160,10 +172,10 @@ struct Server::Storage final : strategyd::TradingMutationSink {
   void BindOwner(std::size_t slot, const OrderOwner& owner) noexcept;
   // Copies an owned fact before ledger mutation; new-risk failure rolls back.
   base::Status BeforeCommit(
-      const strategyd::TradingMutation& mutation) noexcept override;
+      const trading::TradingMutation& mutation) noexcept override;
   // Same copy boundary for mock sends/reports; context is this live Storage.
-  static base::Status ObserveMock(
-      void*, const strategyd::MockTradingMutation&) noexcept;
+  static base::Status ObserveMock(void*,
+                                  const trading::MockTradingMutation&) noexcept;
   // Rebuilds one checked fact without invoking historical external actions.
   static base::Status ReplayRecord(void*, std::uint16_t, std::uint64_t,
                                    std::span<const std::byte>) noexcept;
@@ -207,7 +219,7 @@ struct Server::Storage final : strategyd::TradingMutationSink {
   void PollCheckpoint(std::uint64_t now) noexcept;
   // Preserves local rejection/sequence facts outside the ledger mutation path.
   base::Status PersistRejection(std::size_t client, std::size_t local,
-                                const Message& message) noexcept;
+                                const trading::Message& message) noexcept;
   // Completes/join before Journal close or payload destruction. Idempotent.
   void StopCheckpoint() noexcept;
 };

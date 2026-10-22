@@ -14,42 +14,38 @@ namespace yquant::strategy {
 class Trading {
  public:
   virtual ~Trading() noexcept = default;
-  // True only during running business callbacks with a configured adapter;
+  // True only during running business callbacks with an active gateway client;
   // does not promise valid parameters or available capacity.
   virtual bool accepting_orders() const noexcept = 0;
   // Atomically registers PendingNew and a queued request, then sets out. kOk
   // means local acceptance, not gateway risk approval or broker acceptance.
-  // Local equity execution reserves cash/shares; local futures execution
-  // reserves opening margin plus fees or closing inventory plus fees. A valid
-  // futures close remains allowed with negative available funds. With remote
-  // tradingd, final reservation belongs to the shared gateway and insufficient
-  // resources cause an asynchronous rejection. Failure changes neither state,
-  // queue nor out. Returns kInvalidState outside running business callbacks,
-  // kUnsupported
-  // without an adapter, kInvalidArgument for bad parameters or amount overflow,
-  // or kResourceExhausted for exhausted order/request storage and IDs (also
-  // insufficient cash/shares with the in-process adapter).
+  // The shared gateway checks and reserves cash/shares; insufficient resources
+  // are reported asynchronously as an order rejection. Local failure changes
+  // neither cached state, queue nor out.
+  // Returns kInvalidState outside running business callbacks or an active
+  // session, kInvalidArgument for bad parameters or amount overflow, or
+  // kResourceExhausted for exhausted local order/request storage and IDs.
   [[nodiscard]] virtual base::ErrorCode SubmitOrder(
       const model::OrderRequest& request,
       model::ClientOrderId& out) noexcept = 0;
   // Locally queues one cancel attempt on Working without an existing attempt.
   // The order can still fill. Failure preserves all state and queued requests.
-  // Uses the same phase/adapter/capacity errors as SubmitOrder; an unknown ID
+  // Uses the same phase/session/capacity errors as SubmitOrder; an unknown ID
   // returns kInvalidArgument, other order states return kInvalidState.
   [[nodiscard]] virtual base::ErrorCode CancelOrder(
       model::ClientOrderId id) noexcept = 0;
   // Includes terminal orders until teardown. Unknown IDs preserve out.
   [[nodiscard]] virtual bool TryGetOrder(
       model::ClientOrderId id, model::OrderSnapshot& out) const noexcept = 0;
-  // Copies equity-account cash, including confirmed buy reservations. With a
-  // remote gateway this is shared account state and may lag local requests or
-  // other clients; callbacks observe the account paired with their event.
-  // Disabled/futures services return false and preserve out.
+  // Copies the latest gateway cash view, including confirmed buy reservations.
+  // This is shared account state and may lag local requests or
+  // other clients; callbacks observe the account view paired with their event.
+  // An uninitialized service returns false and preserves out.
   [[nodiscard]] virtual bool TryGetCash(
       model::CashSnapshot& out) const noexcept = 0;
-  // Copies the equity position, with the same freshness rules as cash. Known
-  // omitted equity instruments return zero. Disabled/futures service or an
-  // unknown instrument returns false without modifying out.
+  // Copies the latest account position, with the same freshness rules as cash.
+  // Known omitted instruments return zero. An uninitialized service or unknown
+  // instrument returns false without modifying out.
   [[nodiscard]] virtual bool TryGetPosition(
       model::InstrumentId id, model::PositionSnapshot& out) const noexcept = 0;
   // Futures-only owned account/position copies. Cash accounts return false;

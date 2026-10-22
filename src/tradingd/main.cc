@@ -3,10 +3,10 @@
 #include <string_view>
 #include <thread>
 
-#include "strategyd/monotonic_clock.h"
-#include "strategyd/termination_signals.h"
 #include "tradingd/config.h"
 #include "tradingd/server.h"
+#include "yquant/base/monotonic_clock.h"
+#include "yquant/base/termination_signals.h"
 
 namespace {
 
@@ -65,13 +65,13 @@ int main(int argc, char* argv[]) {
     std::fputs("yquant-tradingd: configuration valid\n", stdout);
     return 0;
   }
-  yquant::strategyd::TerminationSignals signals;
+  yquant::base::TerminationSignals signals;
   status = signals.Prepare();
   if (!status.ok()) {
     Failure("signal_setup", status, "cannot prepare termination signals");
     return 1;
   }
-  yquant::strategyd::SteadyMonotonicClock clock;
+  yquant::base::SteadyMonotonicClock clock;
   yquant::tradingd::Server server(clock);
   auto config = loader.config();
   config.persistence.initialize = initialize;
@@ -80,8 +80,8 @@ int main(int argc, char* argv[]) {
     Failure("initialize", status, server.error_detail());
     return 1;
   }
-  std::fprintf(stderr, "yquant-tradingd: Running port=%u\n", server.port());
-  std::fflush(stderr);
+  std::fprintf(stdout, "yquant-tradingd: Running port=%u\n", server.port());
+  std::fflush(stdout);
   bool stopping = false;
   for (;;) {
     bool stop = false;
@@ -110,6 +110,6 @@ int main(int argc, char* argv[]) {
     Failure("finalize", status, server.error_detail());
     return 1;
   }
-  std::fputs("yquant-tradingd: Stopped\n", stderr);
+  std::fputs("yquant-tradingd: Stopped\n", stdout);
   return 0;
 }

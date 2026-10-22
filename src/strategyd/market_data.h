@@ -4,63 +4,44 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <span>
 #include <string_view>
 
-#include "strategyd/market_data_config.h"
-#include "strategyd/monotonic_clock.h"
+#include "yquant/base/monotonic_clock.h"
+#include "yquant/md/instrument_scope.h"
+#include "yquant/md/market_data_config.h"
+#include "yquant/strategy/callback_phase.h"
 #include "yquant/strategy/market_data.h"
 
 namespace yquant::strategyd {
 
-// Host-owned callback phase controls when subscription registration is legal.
-enum class CallbackPhase {
-  kNone,
-  kStart,
-  kTick,
-  kOrderUpdate,
-  kFill,
-  kTimer,
-  kStop
-};
-
-// Main-thread dictionary, subscriptions, and last dispatched snapshots. Stable
-// InstrumentIds map to private dense slots; no map or buffer grows at runtime.
+// Main-thread strategy subscriptions and last dispatched snapshots, indexed by
+// a fixed instrument scope. No map or buffer grows at runtime.
 class MarketDataImpl final : public strategy::MarketData {
  public:
   // Borrows clock for this object's entire lifetime; all access is serialized
   // by the owning strategy runner thread. Does not acquire other resources.
-  explicit MarketDataImpl(const MonotonicClock& clock) noexcept
+  explicit MarketDataImpl(const base::MonotonicClock& clock) noexcept
       : clock_(clock) {}
 
   // Binds the configured source and copies its validated instrument metadata
   // into an unconfigured object outside callbacks.
   // Borrows config only for this call. Failure preserves the current state;
   // successful configuration remains in place until Reset().
-  [[nodiscard]] base::Status Configure(const MarketDataConfig& config) noexcept;
+  [[nodiscard]] base::Status Configure(
+      const md::MarketDataConfig& config) noexcept;
   // Clears the source binding, cached snapshots, and registrations. Call only
   // outside callbacks.
   void Reset() noexcept;
 
   // Host-only, non-nested phase boundaries on the owning thread. Begin before
   // entering a strategy callback and End after it returns, including on error.
-  void BeginCallback(CallbackPhase phase) noexcept { phase_ = phase; }
-  void EndCallback() noexcept { phase_ = CallbackPhase::kNone; }
+  void BeginCallback(strategy::CallbackPhase phase) noexcept { phase_ = phase; }
+  void EndCallback() noexcept { phase_ = strategy::CallbackPhase::kNone; }
 
-  // Checks the shared immutable dictionary without requiring a subscription.
-  bool HasInstrument(model::InstrumentId id) const noexcept {
-    return FindIndex(id).has_value();
-  }
-
-  // Copies shared metadata for host accounting, independently of subscription.
-  // Unknown IDs leave out unchanged.
-  bool TryGetInstrument(model::InstrumentId id,
-                        model::InstrumentDefinition& out) const noexcept {
-    const auto index = FindIndex(id);
-    if (!index) return false;
-    out = instruments_[*index].definition;
-    return true;
+  // Borrows the configured scope for host services until Reset().
+  const md::InstrumentScope& instruments() const noexcept {
+    return instruments_;
   }
 
   [[nodiscard]] base::ErrorCode FindInstrument(
@@ -86,33 +67,17 @@ class MarketDataImpl final : public strategy::MarketData {
  private:
   // latest is readable only once has_quote is true for this subscribed slot.
   struct InstrumentSlot {
-    model::InstrumentDefinition definition;
     model::QuoteTick latest;
     bool subscribed = false;
     bool has_quote = false;
   };
-  // Zero is empty; index_plus_one maps a stable identity to a dense array slot.
-  struct LookupSlot {
-    model::InstrumentId id;
-    std::uint8_t index_plus_one = 0;
-  };
-
-  static constexpr std::size_t kLookupCapacity = 128;
-  // Hashes an identity to the fixed lookup table; never persists this hash.
-  static std::size_t Hash(model::InstrumentId id) noexcept;
-  // Returns no index for unknown IDs; reads only the initialization-time table.
-  std::optional<std::size_t> FindIndex(model::InstrumentId id) const noexcept;
-
-  const MonotonicClock& clock_;
-  // Set by Configure and fixed until Reset; zero means no source is bound.
-  model::SourceId source_id_;
-  std::size_t instrument_count_ = 0;
-  std::array<InstrumentSlot, kMaxMarketDataInstruments> instruments_ = {};
-  std::array<LookupSlot, kLookupCapacity> lookup_ = {};
-  std::array<model::InstrumentId, kMaxMarketDataInstruments> subscriptions_ =
-      {};
+  const base::MonotonicClock& clock_;
+  md::InstrumentScope instruments_;
+  std::array<InstrumentSlot, md::kMaxMarketDataInstruments> snapshots_ = {};
+  std::array<model::InstrumentId, md::kMaxMarketDataInstruments>
+      subscriptions_ = {};
   std::size_t subscription_count_ = 0;
-  CallbackPhase phase_ = CallbackPhase::kNone;
+  strategy::CallbackPhase phase_ = strategy::CallbackPhase::kNone;
 };
 
 }  // namespace yquant::strategyd

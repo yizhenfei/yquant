@@ -7,34 +7,35 @@
 
 #include "../marketd/test_support.h"
 #include "gtest/gtest.h"
-#include "strategyd/mock_trading_adapter.h"
+#include "trading_engine_harness.h"
 #include "tradingd/state_codec.h"
+#include "yquant/trading/mock_trading_adapter.h"
 
 namespace yquant::tradingd {
 namespace {
 using base::ErrorCode;
 
-class ArchiveClock final : public strategyd::MonotonicClock {
+class ArchiveClock final : public base::MonotonicClock {
  public:
   std::uint64_t Now() const noexcept override { return now; }
   std::uint64_t now = 1000;
 };
 
 // Captures the same owned facts that gateway WAL carries.
-class FactSink final : public strategyd::TradingMutationSink {
+class FactSink final : public trading::TradingMutationSink {
  public:
   base::Status BeforeCommit(
-      const strategyd::TradingMutation& mutation) noexcept override {
+      const trading::TradingMutation& mutation) noexcept override {
     facts.push_back(mutation);
     return {};
   }
-  std::vector<strategyd::TradingMutation> facts;
+  std::vector<trading::TradingMutation> facts;
 };
 
 class ArchiveProjectionTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    config.market_data = marketd::testing::MockConfig();
+    config.market_data = marketd::testing::ScopeConfig();
     config.trading.initial_account.cash_balance = 1000000000;
     std::snprintf(config.persistence.directory,
                   sizeof(config.persistence.directory), "/unused");
@@ -77,7 +78,7 @@ class ArchiveProjectionTest : public ::testing::Test {
     }
     out.U64(static_cast<unsigned>(config.trading.mode));
     out.U64(config.trading.report_interval_ns);
-    for (std::size_t i = 0; i < kMaxClients; ++i) {
+    for (std::size_t i = 0; i < trading::kMaxClients; ++i) {
       const bool present = i == 0 || (second && i == 1);
       out.U64(present ? (i == 0 ? first_client : 42) : 0);
       out.U64(present ? (i == 0 ? 2 : 4) : 0);
@@ -103,7 +104,7 @@ class ArchiveProjectionTest : public ::testing::Test {
     out.U64(1);
     out.U64(64);
     out.U64(clock.Now());
-    for (std::size_t i = 0; i < kMaxClients; ++i) {
+    for (std::size_t i = 0; i < trading::kMaxClients; ++i) {
       out.U64(i == 0 ? 41 : 0);
       out.U64(i == 0 ? 2 : 0);
       out.U64(i == 0 && has_order ? 1 : 0);
@@ -116,7 +117,7 @@ class ArchiveProjectionTest : public ::testing::Test {
         out.U64(0);
       }
     }
-    std::vector<std::byte> ledger(strategyd::kMaxTradingCheckpointBytes);
+    std::vector<std::byte> ledger(trading::kMaxTradingCheckpointBytes);
     std::size_t size = 0;
     EXPECT_TRUE(source.ExportCheckpoint(ledger, size).ok());
     out.U64(size);
@@ -142,7 +143,7 @@ class ArchiveProjectionTest : public ::testing::Test {
   }
 
   void SubmitAndFill() {
-    source.BeginCallback(strategyd::CallbackPhase::kTick);
+    source.BeginCallback(strategy::CallbackPhase::kTick);
     model::ClientOrderId id;
     ASSERT_EQ(
         source.SubmitOrder({config.market_data.instruments[0].instrument.id,
@@ -153,11 +154,11 @@ class ArchiveProjectionTest : public ::testing::Test {
     ASSERT_TRUE(mock.Prepare(config.trading).ok());
     ASSERT_TRUE(mock.Start(clock.Now()).ok());
     ASSERT_TRUE(source.ProcessRequests(mock, clock.Now()).ok());
-    strategyd::TradingEvent accepted;
+    trading::TradingEvent accepted;
     clock.now += config.trading.report_interval_ns;
     ASSERT_EQ(mock.Poll(clock.Now(), accepted).state,
-              strategyd::TradingPollState::kEvent);
-    strategyd::TradingDispatch dispatch;
+              trading::TradingPollState::kEvent);
+    trading::TradingDispatch dispatch;
     ASSERT_EQ(source.ApplyEvent(accepted, dispatch), ErrorCode::kOk);
     auto fill = accepted;
     fill.report_sequence = 2;
@@ -174,9 +175,10 @@ class ArchiveProjectionTest : public ::testing::Test {
     ASSERT_EQ(source.ApplyEvent(fill, dispatch), ErrorCode::kOk);
   }
 
-  std::vector<std::byte> LedgerRecord(
-      const strategyd::TradingMutation& mutation, std::size_t slot = 0,
-      std::size_t local = 0, std::uint64_t cancel = 0) {
+  std::vector<std::byte> LedgerRecord(const trading::TradingMutation& mutation,
+                                      std::size_t slot = 0,
+                                      std::size_t local = 0,
+                                      std::uint64_t cancel = 0) {
     std::vector<std::byte> bytes(2048);
     StateWriter writer(bytes);
     writer.U64(slot);
@@ -184,21 +186,21 @@ class ArchiveProjectionTest : public ::testing::Test {
     writer.U64(cancel);
     std::size_t size = 0;
     EXPECT_TRUE(
-        strategyd::EncodeTradingMutation(mutation, writer.tail(), size).ok());
+        trading::EncodeTradingMutation(mutation, writer.tail(), size).ok());
     writer.Advance(size);
     bytes.resize(writer.size());
     return bytes;
   }
 
-  std::vector<std::byte> RejectionRecord(const Message& message,
+  std::vector<std::byte> RejectionRecord(const trading::Message& message,
                                          std::size_t local = 0) {
     std::vector<std::byte> bytes(8192);
     StateWriter writer(bytes);
     writer.U64(0);
     writer.U64(local);
-    std::array<std::byte, kMaxFrameSize> encoded{};
+    std::array<std::byte, trading::kMaxFrameSize> encoded{};
     std::size_t size = 0;
-    EXPECT_TRUE(EncodeMessage(message, encoded, size).ok());
+    EXPECT_TRUE(trading::EncodeMessage(message, encoded, size).ok());
     writer.U64(size);
     writer.Bytes(std::span(encoded).first(size));
     bytes.resize(writer.size());
@@ -207,9 +209,9 @@ class ArchiveProjectionTest : public ::testing::Test {
 
   ArchiveClock clock;
   ServerConfig config;
-  strategyd::MarketDataImpl market{clock};
-  strategyd::TradingImpl source{clock, market};
-  strategyd::MockTradingAdapter mock;
+  md::InstrumentScope market;
+  testing::TradingEngineHarness source{clock, market};
+  trading::MockTradingAdapter mock;
   FactSink sink;
   ArchiveProjection projection{clock};
 };
@@ -238,13 +240,13 @@ TEST_F(ArchiveProjectionTest, ReplaysAccountingOnceAndRetainsSourceIdentity) {
   EXPECT_TRUE(projection.last_update().has_fill);
   EXPECT_EQ(projection.last_update().fill.client_order_id.value, 1);
 
-  strategyd::MockTradingMutation mutation;
+  trading::MockTradingMutation mutation;
   mutation.client_order_id = {1};
   mutation.request = sink.facts.front().request;
   mutation.now = 2000;
-  std::array<std::byte, strategyd::kMaxMockTradingMutationBytes> bytes{};
+  std::array<std::byte, trading::kMaxMockTradingMutationBytes> bytes{};
   std::size_t size = 0;
-  ASSERT_TRUE(strategyd::EncodeMockTradingMutation(mutation, bytes, size).ok());
+  ASSERT_TRUE(trading::EncodeMockTradingMutation(mutation, bytes, size).ok());
   ASSERT_TRUE(projection.Replay(2, ++lsn, std::span(bytes).first(size)).ok());
   EXPECT_FALSE(projection.has_update());
   EXPECT_EQ(projection.trading().fill_count(), 1);
@@ -273,7 +275,7 @@ TEST_F(ArchiveProjectionTest, ReplayDrainsRequestsBeyondTheQueueCapacity) {
   std::uint64_t lsn = 0;
   std::size_t fact_index = 0;
   for (std::size_t i = 0; i < 300; ++i) {
-    source.BeginCallback(strategyd::CallbackPhase::kTick);
+    source.BeginCallback(strategy::CallbackPhase::kTick);
     model::ClientOrderId id;
     ASSERT_EQ(
         source.SubmitOrder({config.market_data.instruments[0].instrument.id,
@@ -294,7 +296,7 @@ TEST_F(ArchiveProjectionTest, ReplayDrainsRequestsBeyondTheQueueCapacity) {
 
 TEST_F(ArchiveProjectionTest, ReplayPreservesStoppingLocalCancellations) {
   ASSERT_TRUE(projection.Restore(Baseline()).ok());
-  source.BeginCallback(strategyd::CallbackPhase::kTick);
+  source.BeginCallback(strategy::CallbackPhase::kTick);
   model::ClientOrderId id;
   ASSERT_EQ(source.SubmitOrder({config.market_data.instruments[0].instrument.id,
                                 model::OrderSide::kBuy, 1000, 10},
@@ -303,7 +305,7 @@ TEST_F(ArchiveProjectionTest, ReplayPreservesStoppingLocalCancellations) {
   source.EndCallback();
   source.BeginStopping();
   ASSERT_TRUE(source.ProcessRequests(mock, clock.Now()).ok());
-  strategyd::TradingDispatch dispatch;
+  trading::TradingDispatch dispatch;
   ASSERT_EQ(source.ApplyLocalUpdate(dispatch), ErrorCode::kOk);
   std::uint64_t lsn = 0;
   for (const auto& fact : sink.facts)
@@ -322,13 +324,13 @@ TEST_F(ArchiveProjectionTest, ReplayPreservesStoppingLocalCancellations) {
 TEST_F(ArchiveProjectionTest, CancelReportsTranslateCoreToLocalIdentity) {
   ASSERT_TRUE(projection.Restore(Baseline()).ok());
   SubmitAndFill();
-  source.BeginCallback(strategyd::CallbackPhase::kTick);
+  source.BeginCallback(strategy::CallbackPhase::kTick);
   ASSERT_EQ(source.CancelOrder({1}), ErrorCode::kOk);
   source.EndCallback();
   ASSERT_TRUE(source.ProcessRequests(mock, clock.Now()).ok());
   model::OrderSnapshot snapshot;
   ASSERT_TRUE(source.TryGetOrder({1}, snapshot));
-  strategyd::TradingEvent canceled;
+  trading::TradingEvent canceled;
   canceled.client_order_id = {1};
   canceled.broker_order_id = snapshot.broker_order_id;
   canceled.report_sequence = 3;
@@ -336,7 +338,7 @@ TEST_F(ArchiveProjectionTest, CancelReportsTranslateCoreToLocalIdentity) {
   canceled.cumulative_filled_qty = 4;
   canceled.receive_time_ns = clock.Now();
   canceled.cancel_request_id = snapshot.cancel_request_id;
-  strategyd::TradingDispatch dispatch;
+  trading::TradingDispatch dispatch;
   ASSERT_EQ(source.ApplyEvent(canceled, dispatch), ErrorCode::kOk);
   std::uint64_t lsn = 0;
   for (const auto& fact : sink.facts)
@@ -350,7 +352,7 @@ TEST_F(ArchiveProjectionTest, CancelReportsTranslateCoreToLocalIdentity) {
 TEST_F(ArchiveProjectionTest, MetadataCanAddSessionsButCannotRewriteIdentity) {
   ASSERT_TRUE(projection.Restore(Baseline()).ok());
   ASSERT_TRUE(projection.LoadIdentity(Identity(true)).ok());
-  ASSERT_EQ(projection.sessions().size(), kMaxClients);
+  ASSERT_EQ(projection.sessions().size(), trading::kMaxClients);
   EXPECT_EQ(projection.sessions()[1].client_id, 42);
   EXPECT_EQ(projection.sessions()[1].session_id, 4);
   EXPECT_EQ(projection.LoadIdentity(Identity(true, 99)).code,
@@ -374,8 +376,8 @@ TEST_F(ArchiveProjectionTest, RejectsGapsAndWrongOwnerBeforeApplyingLedger) {
 
 TEST_F(ArchiveProjectionTest, LocalRejectionsRetainClientSequenceAndReason) {
   ASSERT_TRUE(projection.Restore(Baseline()).ok());
-  Message message;
-  message.type = MessageType::kOrderUpdate;
+  trading::Message message;
+  message.type = trading::MessageType::kOrderUpdate;
   message.sequence = 1;
   message.update.kind = model::OrderUpdateKind::kRejected;
   message.update.order.client_order_id = {1};

@@ -18,9 +18,7 @@
 }
 ```
 
-配置文件使用 UTF-8 编码和标准 JSON 语法。根对象只允许已定义的公共字段，所有层级的 JSON 对象均按解码后的键名拒绝重复键，例如 `a` 与 `\u0061` 视为同一键，避免宿主与策略对同一配置作出不同解释。
-
-配置文件最大为 1 MiB，JSON 容器嵌套最多 64 层，根对象计为第一层；超过上限时拒绝配置。加载时检查全部字符串、标量及容器，参数数值只校验 JSON 语法，具体数值范围交给派生配置处理。
+配置文件遵循[通用 JSON 输入规则](engineering.md#json-配置文档)，根对象只允许已定义的公共字段。参数数值的具体范围由派生配置处理。
 
 | 字段 | 类型与约束 | 校验归属 |
 | --- | --- | --- |
@@ -154,13 +152,15 @@ class MarketMakingStrategy final : public Strategy {
 
 ### 命令与处理顺序
 
-启动命令同时提供动态库路径和配置文件路径：
+启动命令同时提供动态库、策略配置和行情配置路径：
 
 ```sh
-yquant-strategyd --strategy ./market_making.so --config ./market_making.json
+yquant-strategyd --strategy ./market_making.so --config ./market_making.json \
+  --market-data-config ./market_data.json \
+  --trading-config examples/tradingd/client_1.json
 ```
 
-`--config <path>` 为必填参数，只出现一次。路径按启动工作目录解释，文件读取与内容校验在运行时处理 `LoadAndStart` 时执行。命令同时携带动态库路径及可选的宿主接入配置路径；省略接入配置时，仍可运行仅使用生命周期的策略。
+`--config <path>` 为必填参数，只出现一次。路径按启动工作目录解释，装配层在创建 runner 前读取并校验文件，再通过 `LoadAndStart` 传入已加载的配置。行情和网关客户端配置同样必填。组件选择与生命周期见[组件装配](strategyd.md#组件装配)。
 
 ```mermaid
 flowchart TD
@@ -194,9 +194,9 @@ flowchart TD
 
 ### 校验失败与诊断
 
-宿主提供固定容量的 `ConfigError`，保存字段路径和原因。`Initialize()` 和 `LoadParameters()` 通过 `ConfigError&` 接收这个必须提供的输出对象，仅在当前调用期间借用，配置对象不得保存其引用或地址。首次初始化尝试先清空诊断，再执行校验。派生配置类报告相对于 `parameters` 的字段路径，宿主添加前缀后输出，例如 `parameters.quote_qty: 必须大于 0`。
+宿主提供固定容量的 `ConfigError`，它是 `base::ConfigError` 的别名，诊断存储规则见[通用配置文档](engineering.md#json-配置文档)。`Initialize()` 和 `LoadParameters()` 通过 `ConfigError&` 接收这个必须提供的输出对象，仅在当前调用期间借用，配置对象不得保存其引用或地址。首次初始化尝试先清空诊断，再执行校验。派生配置类报告相对于 `parameters` 的字段路径，宿主添加前缀后输出，例如 `parameters.quote_qty: 必须大于 0`。
 
-错误内容复制到宿主持有的存储，不借用文件缓冲或动态库中的字符串。需要在销毁实例后输出的 ID 和诊断也先复制，再执行收尾。错误描述超出容量时标记截断，保留错误码。
+需要在销毁实例后输出的 ID 和诊断先复制到宿主持有的存储，再执行收尾。
 
 | 失败阶段 | 处理行为 |
 | --- | --- |
@@ -213,11 +213,11 @@ flowchart TD
 
 跨动态库只传递公共 SDK 类型和 JSON 文本视图。第三方 JSON DOM、解析器及其分配器留在各自模块内部；宿主解析公共结构，策略在初始化时解析自身参数。
 
-`StrategyConfig` 的初始化、公共字段访问和空参数默认处理通过头文件实现，保持 `yquant::strategy_api` 为 `INTERFACE` target，不依赖宿主额外导出的 C++ 函数。公共类型放入 `include/yquant/strategy/strategy_config.h`。策略进程内部的 `JsonConfigDocument` 统一负责配置文档的文件读取、UTF-8、完整语法、重复键及容量校验，策略、行情与交易配置加载器分别解析各自的字段与取值。
+`StrategyConfig` 的初始化、公共字段访问和空参数默认处理通过头文件实现，保持 `yquant::strategy_api` 为 `INTERFACE` target，不依赖宿主额外导出的 C++ 函数。策略配置类型放入 `include/yquant/strategy/strategy_config.h`，其中 `strategy::ConfigError` 是基础诊断类型的别名。各进程的配置加载器共同使用 `base::JsonConfigDocument`，基础库不依赖策略 SDK。
 
 宿主和策略均使用支持显式错误返回的 JSON 解析路径，遵守无异常约定。必要的读取、解码和配置存储分配在初始化阶段完成，检查失败；运行期不扩容配置存储，也不持有原始 JSON 的借用。
 
-JSON 解析使用固定版本的 simdjson `5.0.4`，关闭异常接口及线程支持，宿主和示例策略分别私有链接其静态实现。依赖版本与归档哈希由 `cmake/Dependencies.cmake` 固定。`JsonConfigDocument` 位于 `src/strategyd/json_config_document.h/.cc`，完整遍历并验证输入后释放解析器和重复键检查临时存储；策略加载器保留原始 `parameters` 片段，直至配置初始化完成。
+JSON 依赖的构建方式见[构建与依赖](engineering.md#构建与依赖)。策略加载器通过持有 `base::JsonConfigDocument` 保留原始 `parameters` 片段，直至配置初始化完成。
 
 公共接口的签名或布局变化时更新 `kStrategyPluginAbiVersion`，宿主和所有策略按最新 SDK 同步重新编译。加载器在创建实例和调用配置访问器之前校验版本一致性，不提供旧 ABI 的兼容路径。工厂通过 `Strategy*&` 接收必须提供的输出变量，创建与销毁协议见[动态库入口与对象所有权](strategyd.md#动态库入口与对象所有权)。
 

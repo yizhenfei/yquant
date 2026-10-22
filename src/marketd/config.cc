@@ -12,15 +12,23 @@
 #include <string_view>
 #include <utility>
 
-#include "strategyd/json_config_document.h"
+#include "base/internal/json_config_parser.h"
+#include "yquant/base/json_config_document.h"
+#include "yquant/base/path.h"
 #include "yquant/md/quote_codec.h"
+#include "yquant/md/shm_broadcast.h"
 
 namespace yquant::marketd {
 namespace {
 
+using base::InvalidConfig;
+using base::internal::JsonError;
+using base::internal::ParseConfigObject;
+using base::internal::ReadConfigText;
+
 // Owns a bounded diagnostic path for one adapter field.
 struct FieldPath {
-  char text[256] = {};
+  char text[sizeof(base::ConfigError::field_path)] = {};
   FieldPath(bool source, std::size_t index, std::string_view field) noexcept {
     if (source) {
       std::snprintf(text, sizeof(text), "source.%.*s",
@@ -32,46 +40,15 @@ struct FieldPath {
   }
 };
 
-// Stores an owned schema error; no parser or input references survive.
-base::Status Invalid(std::string_view path, std::string_view reason,
-                     strategy::ConfigError& error) noexcept {
-  error.Set(path, reason);
-  return {base::ErrorCode::kInvalidArgument, {}};
-}
-
-// Preserves allocation failures instead of reporting them as malformed JSON.
-base::Status JsonError(simdjson::error_code code, std::string_view path,
-                       strategy::ConfigError& error) noexcept {
-  error.Set(path, simdjson::error_message(code));
-  return {code == simdjson::MEMALLOC ? base::ErrorCode::kResourceExhausted
-                                     : base::ErrorCode::kInvalidArgument,
-          {}};
-}
-
-// Copies a nonempty decoded string without truncation or embedded NUL.
-base::Status ReadText(simdjson::ondemand::value value, char* out,
-                      std::size_t capacity, std::string_view path,
-                      strategy::ConfigError& error) noexcept {
-  std::string_view text;
-  const auto code = value.get_string().get(text);
-  if (code) return JsonError(code, path, error);
-  if (text.empty() || text.size() >= capacity ||
-      text.find('\0') != std::string_view::npos) {
-    return Invalid(path, "empty, overlong or NUL-containing string", error);
-  }
-  std::memcpy(out, text.data(), text.size());
-  out[text.size()] = '\0';
-  return {};
-}
-
 // Reads unsigned integers exactly and checks the destination width.
 base::Status ReadSize(simdjson::ondemand::value value, std::size_t& out,
                       std::string_view path,
-                      strategy::ConfigError& error) noexcept {
+                      base::ConfigError& error) noexcept {
   std::uint64_t number = 0;
   const auto code = value.get_uint64().get(number);
   if (code) return JsonError(code, path, error);
-  if (number > SIZE_MAX) return Invalid(path, "integer is too large", error);
+  if (number > SIZE_MAX)
+    return InvalidConfig(path, "integer is too large", error);
   out = number;
   return {};
 }
@@ -81,7 +58,7 @@ base::Status ReadSize(simdjson::ondemand::value value, std::size_t& out,
 base::Status ParseAdapter(simdjson::ondemand::value value, bool source,
                           std::size_t index, SourceConfig& input,
                           PublisherConfig& output, char* mock_path,
-                          strategy::ConfigError& error) noexcept {
+                          base::ConfigError& error) noexcept {
   constexpr std::string_view kFields[] = {
       "adapter",        "config",        "runtime_directory",
       "stream",         "capacity",      "max_payload_size",
@@ -110,25 +87,26 @@ base::Status ParseAdapter(simdjson::ondemand::value value, bool source,
     while (position < std::size(kFields) && key != kFields[position])
       ++position;
     if (position == std::size(kFields))
-      return Invalid(path.text, "unknown adapter field", error);
+      return InvalidConfig(path.text, "unknown adapter field", error);
     seen |= 1U << position;
     base::Status status;
     switch (position) {
       case 0:
-        status =
-            ReadText(field.value(), adapter, sizeof(adapter), path.text, error);
+        status = ReadConfigText(field.value(), adapter, path.text, error);
         break;
       case 1:
-        status = ReadText(field.value(), mock_path, kMaxRuntimePathBytes + 1,
-                          path.text, error);
+        status =
+            ReadConfigText(field.value(), {mock_path, kMaxRuntimePathBytes + 1},
+                           path.text, error);
         break;
       case 2:
-        status = ReadText(field.value(), runtime, kMaxRuntimePathBytes + 1,
-                          path.text, error);
+        status =
+            ReadConfigText(field.value(), {runtime, kMaxRuntimePathBytes + 1},
+                           path.text, error);
         break;
       case 3:
-        status = ReadText(field.value(), stream, kMaxStreamBytes + 1, path.text,
-                          error);
+        status = ReadConfigText(field.value(), {stream, kMaxStreamBytes + 1},
+                                path.text, error);
         break;
       case 4:
         status = ReadSize(field.value(), output.capacity, path.text, error);
@@ -138,14 +116,14 @@ base::Status ParseAdapter(simdjson::ondemand::value value, bool source,
             ReadSize(field.value(), output.max_payload_size, path.text, error);
         break;
       case 6:
-        status = ReadText(field.value(), tcp.address, sizeof(tcp.address),
-                          path.text, error);
+        status = ReadConfigText(field.value(), tcp.address, path.text, error);
         break;
       case 7: {
         std::size_t port = 0;
         status = ReadSize(field.value(), port, path.text, error);
         if (status.ok() && (port == 0 || port > UINT16_MAX))
-          status = Invalid(path.text, "port must be from 1 to 65535", error);
+          status =
+              InvalidConfig(path.text, "port must be from 1 to 65535", error);
         if (status.ok()) tcp.port = port;
         break;
       }
@@ -153,13 +131,14 @@ base::Status ParseAdapter(simdjson::ondemand::value value, bool source,
         status = ReadSize(field.value(), output.max_clients, path.text, error);
         break;
       case 9:
-        status = ReadText(field.value(),
-                          source ? input.replay.path : output.record.path,
-                          kMaxDataPathBytes + 1, path.text, error);
+        status =
+            ReadConfigText(field.value(),
+                           {source ? input.replay.path : output.record.path,
+                            kMaxDataPathBytes + 1},
+                           path.text, error);
         break;
       case 10:
-        status =
-            ReadText(field.value(), format, sizeof(format), path.text, error);
+        status = ReadConfigText(field.value(), format, path.text, error);
         break;
       case 11: {
         const auto number_error =
@@ -175,14 +154,14 @@ base::Status ParseAdapter(simdjson::ondemand::value value, bool source,
         std::size_t id = 0;
         status = ReadSize(field.value(), id, path.text, error);
         if (status.ok() && (id == 0 || id > UINT32_MAX))
-          status = Invalid(path.text, "must be from 1 to 4294967295", error);
+          status =
+              InvalidConfig(path.text, "must be from 1 to 4294967295", error);
         if (status.ok()) input.replay.source_id.value = id;
         break;
       }
       case 14:
-        status =
-            ReadText(field.value(), input.replay.instrument_catalog,
-                     sizeof(input.replay.instrument_catalog), path.text, error);
+        status = ReadConfigText(field.value(), input.replay.instrument_catalog,
+                                path.text, error);
         break;
       case 15:
         status = ReadSize(field.value(), output.record.queue_capacity,
@@ -192,7 +171,8 @@ base::Status ParseAdapter(simdjson::ondemand::value value, bool source,
         std::size_t delay = 0;
         status = ReadSize(field.value(), delay, path.text, error);
         if (status.ok() && delay > 60000)
-          status = Invalid(path.text, "must be from 0 to 60000 ms", error);
+          status =
+              InvalidConfig(path.text, "must be from 0 to 60000 ms", error);
         if (status.ok()) input.replay.start_delay_ns = delay * 1000000ULL;
         break;
       }
@@ -224,24 +204,24 @@ base::Status ParseAdapter(simdjson::ondemand::value value, bool source,
     } else if (std::strcmp(format, "recording") == 0) {
       input.replay.format = ReplayFormat::kRecording;
     } else {
-      return Invalid("source.format", "unsupported or missing replay format",
-                     error);
+      return InvalidConfig("source.format",
+                           "unsupported or missing replay format", error);
     }
   } else if (std::strcmp(adapter, "record") == 0 && !source) {
     selected = Adapter::kRecord;
     required = (1U << 0) | (1U << 9);
     allowed = required | (1U << 15);
   } else {
-    return Invalid(FieldPath(source, index, "adapter").text,
-                   "unsupported or missing adapter", error);
+    return InvalidConfig(FieldPath(source, index, "adapter").text,
+                         "unsupported or missing adapter", error);
   }
   for (std::size_t i = 0; i < std::size(kFields); ++i) {
     if ((required & (1U << i)) != 0 && (seen & (1U << i)) == 0)
-      return Invalid(FieldPath(source, index, kFields[i]).text,
-                     "required field is missing", error);
+      return InvalidConfig(FieldPath(source, index, kFields[i]).text,
+                           "required field is missing", error);
     if ((seen & (1U << i)) != 0 && (allowed & (1U << i)) == 0)
-      return Invalid(FieldPath(source, index, kFields[i]).text,
-                     "field is not supported by this adapter", error);
+      return InvalidConfig(FieldPath(source, index, kFields[i]).text,
+                           "field is not supported by this adapter", error);
   }
   if (source)
     input.adapter = selected;
@@ -251,19 +231,15 @@ base::Status ParseAdapter(simdjson::ondemand::value value, bool source,
 }
 
 // Applies the daemon schema to already validated UTF-8 JSON.
-base::Status Parse(const strategyd::JsonConfigDocument& source,
-                   MarketdConfig& out, char* mock_path,
-                   strategy::ConfigError& error) noexcept {
+base::Status Parse(const base::JsonConfigDocument& source, MarketdConfig& out,
+                   char* mock_path, base::ConfigError& error) noexcept {
   simdjson::ondemand::parser parser;
-  auto code =
-      parser.allocate(source.source().size(), strategyd::kMaxConfigDepth + 4);
-  if (code) return JsonError(code, "$", error);
   simdjson::ondemand::document document;
-  code = parser.iterate(source.source(), source.capacity()).get(document);
-  if (code) return JsonError(code, "$", error);
   simdjson::ondemand::object root;
-  code = document.get_object().get(root);
-  if (code) return JsonError(code, "$", error);
+  const auto parse_status =
+      ParseConfigObject(source, parser, document, root, error);
+  if (!parse_status.ok()) return parse_status;
+  simdjson::error_code code;
   bool has_source = false;
   bool has_publishers = false;
   for (auto result : root) {
@@ -285,7 +261,7 @@ base::Status Parse(const strategyd::JsonConfigDocument& source,
       if (code) return JsonError(code, key, error);
       for (auto entry : array) {
         if (out.publisher_count == kMaxPublishers)
-          return Invalid(key, "at most 8 publishers are allowed", error);
+          return InvalidConfig(key, "at most 8 publishers are allowed", error);
         simdjson::ondemand::value item;
         code = std::move(entry).get(item);
         if (code) return JsonError(code, key, error);
@@ -299,66 +275,67 @@ base::Status Parse(const strategyd::JsonConfigDocument& source,
       }
       has_publishers = true;
     } else {
-      return Invalid(key, "unknown root field", error);
+      return InvalidConfig(key, "unknown root field", error);
     }
   }
-  if (!has_source) return Invalid("source", "required field is missing", error);
+  if (!has_source)
+    return InvalidConfig("source", "required field is missing", error);
   if (!has_publishers)
-    return Invalid("publishers", "required field is missing", error);
+    return InvalidConfig("publishers", "required field is missing", error);
   return {};
 }
 
 // Checks fixed strings before any filesystem or socket API sees them.
 base::Status ValidateShm(const char* directory, const char* stream, bool source,
-                         std::size_t index,
-                         strategy::ConfigError& error) noexcept {
+                         std::size_t index, base::ConfigError& error) noexcept {
   if (strnlen(directory, kMaxRuntimePathBytes + 1) > kMaxRuntimePathBytes ||
       directory[0] != '/') {
-    return Invalid(FieldPath(source, index, "runtime_directory").text,
-                   "must be a bounded absolute path", error);
+    return InvalidConfig(FieldPath(source, index, "runtime_directory").text,
+                         "must be a bounded absolute path", error);
   }
   const auto length = strnlen(stream, kMaxStreamBytes + 1);
   if (length == 0 || length > kMaxStreamBytes ||
       std::strcmp(stream, ".") == 0 || std::strcmp(stream, "..") == 0) {
-    return Invalid(FieldPath(source, index, "stream").text,
-                   "invalid stream name", error);
+    return InvalidConfig(FieldPath(source, index, "stream").text,
+                         "invalid stream name", error);
   }
   for (std::size_t i = 0; i < length; ++i) {
     const char c = stream[i];
     if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
           (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.')) {
-      return Invalid(FieldPath(source, index, "stream").text,
-                     "stream uses unsupported characters", error);
+      return InvalidConfig(FieldPath(source, index, "stream").text,
+                           "stream uses unsupported characters", error);
     }
   }
   const char first = stream[0];
   if (!((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') ||
         (first >= '0' && first <= '9'))) {
-    return Invalid(FieldPath(source, index, "stream").text,
-                   "stream must start with an ASCII letter or digit", error);
+    return InvalidConfig(FieldPath(source, index, "stream").text,
+                         "stream must start with an ASCII letter or digit",
+                         error);
   }
   const auto validated =
       md::ValidatePublishConfig({{directory, stream}, 2, md::kQuoteFrameSize});
   if (!validated.ok()) {
-    return Invalid(FieldPath(source, index, "runtime_directory").text,
-                   "unsupported shared-memory endpoint", error);
+    return InvalidConfig(FieldPath(source, index, "runtime_directory").text,
+                         "unsupported shared-memory endpoint", error);
   }
   return {};
 }
 
 // Numeric IPv4 only: DNS resolution cannot enter initialization or polling.
 base::Status ValidateTcp(const TcpEndpoint& tcp, bool source, std::size_t index,
-                         strategy::ConfigError& error) noexcept {
+                         base::ConfigError& error) noexcept {
   in_addr address = {};
   if (strnlen(tcp.address, sizeof(tcp.address)) >= sizeof(tcp.address) ||
       inet_pton(AF_INET, tcp.address, &address) != 1 ||
       (source && address.s_addr == htonl(INADDR_ANY))) {
-    return Invalid(FieldPath(source, index, "address").text,
-                   "must be a numeric IPv4 address", error);
+    return InvalidConfig(FieldPath(source, index, "address").text,
+                         "must be a numeric IPv4 address", error);
   }
   if (tcp.port == 0)
-    return Invalid(FieldPath(source, index, "port").text,
-                   "port must be from 1 to 65535", error);
+    return InvalidConfig(FieldPath(source, index, "port").text,
+                         "port must be from 1 to 65535", error);
   return {};
 }
 
@@ -372,39 +349,29 @@ std::filesystem::path Normalized(const char* path) noexcept {
 // File paths are resolved by the JSON loader; typed callers provide absolute
 // paths. Existence and read/write access are checked only by adapter Init.
 base::Status ValidateFilePath(const char* path, bool source, std::size_t index,
-                              strategy::ConfigError& error) noexcept {
+                              base::ConfigError& error) noexcept {
   if (strnlen(path, kMaxDataPathBytes + 1) > kMaxDataPathBytes ||
       path[0] != '/')
-    return Invalid(FieldPath(source, index, "path").text,
-                   "must be a bounded absolute file path", error);
+    return InvalidConfig(FieldPath(source, index, "path").text,
+                         "must be a bounded absolute file path", error);
   const auto name = std::filesystem::path(path).filename();
   if (name.empty() || name == "." || name == "..")
-    return Invalid(FieldPath(source, index, "path").text, "must name a file",
-                   error);
+    return InvalidConfig(FieldPath(source, index, "path").text,
+                         "must name a file", error);
   return {};
 }
 
-// Resolves file adapters without opening their data files.
-base::Status ResolveFilePath(char* value, const char* config_path, bool source,
-                             std::size_t index,
-                             strategy::ConfigError& error) noexcept {
-  auto resolved = std::filesystem::path(value);
-  if (resolved.is_relative()) {
-    std::error_code filesystem_error;
-    resolved = std::filesystem::absolute(
-        std::filesystem::path(config_path).parent_path() / resolved,
-        filesystem_error);
-    if (filesystem_error) {
-      error.Set(FieldPath(source, index, "path").text,
-                "cannot resolve relative path");
-      return {base::ErrorCode::kIoError, filesystem_error};
-    }
-  }
-  if (resolved.native().size() > kMaxDataPathBytes)
-    return Invalid(FieldPath(source, index, "path").text,
-                   "resolved path is too long", error);
-  std::snprintf(value, kMaxDataPathBytes + 1, "%s", resolved.c_str());
-  return {};
+// Resolves a bounded file reference against cwd without opening the target.
+base::Status ResolveConfigPath(std::string_view value, std::span<char> out,
+                               std::string_view field,
+                               base::ConfigError& error) noexcept {
+  const auto status = base::ResolvePath(value, out);
+  if (!status.ok())
+    error.Set(field,
+              status.code == base::ErrorCode::kIoError
+                  ? "cannot resolve path from working directory"
+                  : "path is empty, contains NUL or exceeds output capacity");
+  return status;
 }
 
 // Tests one logical SHM endpoint, independent of pathname spelling.
@@ -455,16 +422,15 @@ bool TcpFeedback(const TcpEndpoint& input, const TcpEndpoint& output) noexcept {
 }  // namespace
 
 base::Status ValidateConfig(const MarketdConfig& config,
-                            strategy::ConfigError& error) noexcept {
+                            base::ConfigError& error) noexcept {
   error.Clear();
   if (config.publisher_count == 0 || config.publisher_count > kMaxPublishers)
-    return Invalid("publishers", "must contain from 1 to 8 publishers", error);
+    return InvalidConfig("publishers", "must contain from 1 to 8 publishers",
+                         error);
   base::Status status;
   switch (config.source.adapter) {
     case Adapter::kMock:
-      if (config.source.mock.adapter != strategyd::MarketDataAdapter::kMock)
-        return Invalid("source.config.adapter", "must be mock", error);
-      status = strategyd::ValidateMarketDataConfig(config.source.mock, error);
+      status = md::ValidateMockQuoteConfig(config.source.mock, error);
       break;
     case Adapter::kShm:
       status = ValidateShm(config.source.runtime_directory,
@@ -479,28 +445,31 @@ base::Status ValidateConfig(const MarketdConfig& config,
       if (!status.ok()) return status;
       if (replay.format != ReplayFormat::kRecording &&
           replay.format != ReplayFormat::kDolphinDbCsv)
-        return Invalid("source.format", "unsupported replay format", error);
+        return InvalidConfig("source.format", "unsupported replay format",
+                             error);
       if (!std::isfinite(replay.speed) || replay.speed < 0)
-        return Invalid("source.speed", "must be finite and nonnegative", error);
+        return InvalidConfig("source.speed", "must be finite and nonnegative",
+                             error);
       if (replay.start_delay_ns > 60000000000ULL)
-        return Invalid("source.start_delay_ms", "must be from 0 to 60000 ms",
-                       error);
+        return InvalidConfig("source.start_delay_ms",
+                             "must be from 0 to 60000 ms", error);
       if (replay.max_records == 0 || replay.max_records > kMaxReplayRecords)
-        return Invalid("source.max_records", "must be from 1 to 2000000",
-                       error);
+        return InvalidConfig("source.max_records", "must be from 1 to 2000000",
+                             error);
       if (replay.format == ReplayFormat::kDolphinDbCsv) {
         if (replay.source_id.value == 0)
-          return Invalid("source.source_id", "must be nonzero", error);
+          return InvalidConfig("source.source_id", "must be nonzero", error);
         if (replay.instrument_catalog[0] != '/' ||
             std::memchr(replay.instrument_catalog, '\0',
                         sizeof(replay.instrument_catalog)) == nullptr)
-          return Invalid("source.instrument_catalog",
-                         "must be a bounded absolute catalog path", error);
+          return InvalidConfig("source.instrument_catalog",
+                               "must be a bounded absolute catalog path",
+                               error);
       }
       break;
     }
     default:
-      return Invalid("source.adapter", "unsupported adapter", error);
+      return InvalidConfig("source.adapter", "unsupported adapter", error);
   }
   if (!status.ok()) return status;
   for (std::size_t i = 0; i < config.publisher_count; ++i) {
@@ -512,39 +481,42 @@ base::Status ValidateConfig(const MarketdConfig& config,
       if (output.capacity < 2 ||
           (output.capacity & (output.capacity - 1)) != 0 ||
           output.capacity > (1U << 24)) {
-        return Invalid(FieldPath(false, i, "capacity").text,
-                       "must be a power of two from 2 to 16777216", error);
+        return InvalidConfig(FieldPath(false, i, "capacity").text,
+                             "must be a power of two from 2 to 16777216",
+                             error);
       }
       if (output.max_payload_size < md::kQuoteFrameSize ||
           output.max_payload_size > md::kMaxEventPayloadSize) {
-        return Invalid(FieldPath(false, i, "max_payload_size").text,
-                       "must be from 80 to 4096 bytes", error);
+        return InvalidConfig(FieldPath(false, i, "max_payload_size").text,
+                             "must be from 80 to 4096 bytes", error);
       }
       const auto layout_status =
           md::ValidatePublishConfig({{output.runtime_directory, output.stream},
                                      output.capacity,
                                      output.max_payload_size});
       if (!layout_status.ok()) {
-        return Invalid(FieldPath(false, i, "capacity").text,
-                       "shared-memory layout exceeds platform limits", error);
+        return InvalidConfig(FieldPath(false, i, "capacity").text,
+                             "shared-memory layout exceeds platform limits",
+                             error);
       }
       if (config.source.adapter == Adapter::kShm &&
           SameShm(config.source.runtime_directory, config.source.stream,
                   output.runtime_directory, output.stream)) {
-        return Invalid(FieldPath(false, i, "stream").text,
-                       "source and publisher cannot be the same stream", error);
+        return InvalidConfig(FieldPath(false, i, "stream").text,
+                             "source and publisher cannot be the same stream",
+                             error);
       }
     } else if (output.adapter == Adapter::kTcp) {
       status = ValidateTcp(output.tcp, false, i, error);
       if (!status.ok()) return status;
       if (output.max_clients == 0 || output.max_clients > kMaxTcpClients)
-        return Invalid(FieldPath(false, i, "max_clients").text,
-                       "must be from 1 to 16", error);
+        return InvalidConfig(FieldPath(false, i, "max_clients").text,
+                             "must be from 1 to 16", error);
       if (config.source.adapter == Adapter::kTcp &&
           TcpFeedback(config.source.tcp, output.tcp)) {
-        return Invalid(FieldPath(false, i, "port").text,
-                       "source and publisher cannot be the same endpoint",
-                       error);
+        return InvalidConfig(FieldPath(false, i, "port").text,
+                             "source and publisher cannot be the same endpoint",
+                             error);
       }
     } else if (output.adapter == Adapter::kRecord) {
       status = ValidateFilePath(output.record.path, false, i, error);
@@ -552,17 +524,18 @@ base::Status ValidateConfig(const MarketdConfig& config,
       const auto capacity = output.record.queue_capacity;
       if (capacity < 256 || capacity > kMaxRecordingQueueBytes ||
           (capacity & (capacity - 1)) != 0)
-        return Invalid(FieldPath(false, i, "queue_capacity").text,
-                       "must be a power of two from 256 to 67108864 bytes",
-                       error);
+        return InvalidConfig(
+            FieldPath(false, i, "queue_capacity").text,
+            "must be a power of two from 256 to 67108864 bytes", error);
       if (config.source.adapter == Adapter::kReplay &&
           Normalized(config.source.replay.path) ==
               Normalized(output.record.path))
-        return Invalid(FieldPath(false, i, "path").text,
-                       "source and recording cannot be the same file", error);
+        return InvalidConfig(FieldPath(false, i, "path").text,
+                             "source and recording cannot be the same file",
+                             error);
     } else {
-      return Invalid(FieldPath(false, i, "adapter").text,
-                     "unsupported publisher adapter", error);
+      return InvalidConfig(FieldPath(false, i, "adapter").text,
+                           "unsupported publisher adapter", error);
     }
     for (std::size_t j = 0; j < i; ++j) {
       const auto& other = config.publishers[j];
@@ -577,8 +550,8 @@ base::Status ValidateConfig(const MarketdConfig& config,
         duplicate =
             Normalized(output.record.path) == Normalized(other.record.path);
       if (duplicate)
-        return Invalid(FieldPath(false, i, "adapter").text,
-                       "duplicate publisher endpoint", error);
+        return InvalidConfig(FieldPath(false, i, "adapter").text,
+                             "duplicate publisher endpoint", error);
     }
   }
   return {};
@@ -587,7 +560,7 @@ base::Status ValidateConfig(const MarketdConfig& config,
 base::Status ConfigLoader::Load(const char* path) noexcept {
   config_ = {};
   error_.Clear();
-  strategyd::JsonConfigDocument document;
+  base::JsonConfigDocument document;
   auto status = document.Load(path);
   if (!status.ok()) {
     error_ = document.error();
@@ -598,13 +571,11 @@ base::Status ConfigLoader::Load(const char* path) noexcept {
   status = Parse(document, parsed, mock_path, error_);
   if (!status.ok()) return status;
   if (parsed.source.adapter == Adapter::kMock) {
-    std::filesystem::path resolved(mock_path);
-    if (resolved.is_relative())
-      resolved = std::filesystem::path(path).parent_path() / resolved;
-    if (resolved.native().size() > kMaxRuntimePathBytes)
-      return Invalid("source.config", "resolved path is too long", error_);
-    strategyd::MarketDataConfigLoader loader;
-    status = loader.Load(resolved.c_str());
+    status = ResolveConfigPath(mock_path, std::span(mock_path), "source.config",
+                               error_);
+    if (!status.ok()) return status;
+    md::MockQuoteConfigLoader loader;
+    status = loader.Load(mock_path);
     if (!status.ok()) {
       char field[256];
       std::snprintf(field, sizeof(field), "source.config.%.230s",
@@ -615,24 +586,23 @@ base::Status ConfigLoader::Load(const char* path) noexcept {
     }
     parsed.source.mock = loader.config();
   } else if (parsed.source.adapter == Adapter::kReplay) {
-    status = ResolveFilePath(parsed.source.replay.path, path, true, 0, error_);
+    status = ResolveConfigPath(parsed.source.replay.path,
+                               std::span(parsed.source.replay.path),
+                               "source.path", error_);
     if (!status.ok()) return status;
     if (parsed.source.replay.format == ReplayFormat::kDolphinDbCsv) {
-      strategy::ConfigError catalog_error;
-      status = strategyd::ResolveInstrumentCatalogPath(
-          path, parsed.source.replay.instrument_catalog,
-          std::span(parsed.source.replay.instrument_catalog), catalog_error);
-      if (!status.ok()) {
-        error_.Set("source.instrument_catalog", catalog_error.message);
-        error_.truncated |= catalog_error.truncated;
-        return status;
-      }
+      status =
+          ResolveConfigPath(parsed.source.replay.instrument_catalog,
+                            std::span(parsed.source.replay.instrument_catalog),
+                            "source.instrument_catalog", error_);
+      if (!status.ok()) return status;
     }
   }
   for (std::size_t i = 0; i < parsed.publisher_count; ++i) {
     if (parsed.publishers[i].adapter != Adapter::kRecord) continue;
-    status = ResolveFilePath(parsed.publishers[i].record.path, path, false, i,
-                             error_);
+    status = ResolveConfigPath(parsed.publishers[i].record.path,
+                               std::span(parsed.publishers[i].record.path),
+                               FieldPath(false, i, "path").text, error_);
     if (!status.ok()) return status;
   }
   status = ValidateConfig(parsed, error_);

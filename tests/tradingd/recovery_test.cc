@@ -11,14 +11,16 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "strategyd/trading.h"
+#include "trading_engine_harness.h"
 #include "tradingd/journal.h"
+#include "yquant/trading/trading_engine.h"
 
 namespace yquant::tradingd {
 namespace {
 
 constexpr model::InstrumentId kInstrument{(1ULL << 32) | 600000};
-constexpr std::array<InstrumentSpec, 1> kInstruments = {{{kInstrument, 2}}};
+constexpr std::array<trading::InstrumentSpec, 1> kInstruments = {
+    {{kInstrument, 2}}};
 constexpr std::array<DurableStrategyIdentity, 1> kIdentities = {{{42, 7}}};
 constexpr BrokerRecoveryRequirements kRequirements{"mock/account-A/CNY", 10};
 
@@ -80,10 +82,10 @@ class IndependentFakeBroker {
   }
   std::vector<BrokerRecoveryOrder> orders;
   std::vector<BrokerRecoveryFill> fills;
-  AccountView account;
+  trading::AccountView account;
 };
 
-class Clock final : public strategyd::MonotonicClock {
+class Clock final : public base::MonotonicClock {
  public:
   std::uint64_t Now() const noexcept override { return 1000; }
 };
@@ -197,24 +199,20 @@ TEST(BrokerRecoveryTest, RecoversFilledTerminalOrderAfterEntireWalDisappears) {
     fill.receive_time_ns = 1000;
   }
   Clock clock;
-  strategyd::MarketDataConfig config;
+  md::MarketDataConfig config;
   config.source_id = {1};
-  config.interval_ns = 1000000;
+
   config.instrument_count = 1;
   auto& instrument = config.instruments[0].instrument;
   instrument.id = kInstrument;
   instrument.venue = model::Venue::kSse;
   std::memcpy(instrument.symbol, "600000", model::kSymbolLength);
   instrument.price_decimals = 2;
-  config.instruments[0].bid_price = 1000;
-  config.instruments[0].ask_price = 1001;
-  config.instruments[0].bid_qty = 100;
-  config.instruments[0].ask_qty = 100;
-  config.instruments[0].price_step = 1;
-  strategyd::MarketDataImpl market(clock);
+
+  md::InstrumentScope market;
   ASSERT_TRUE(market.Configure(config).ok());
-  strategyd::TradingImpl ledger(clock, market);
-  strategyd::TradingAccountSnapshot baseline;
+  testing::TradingEngineHarness ledger(clock, market);
+  trading::TradingAccountSnapshot baseline;
   baseline.cash_balance = output->account.cash.balance;
   baseline.position_count = output->account.position_count;
   baseline.positions[0] = output->account.positions[0];
@@ -227,7 +225,7 @@ TEST(BrokerRecoveryTest, RecoversFilledTerminalOrderAfterEntireWalDisappears) {
   EXPECT_EQ(ledger.order_count(), 1U);
   EXPECT_TRUE(ledger.is_drained());
   // An overlapping old callback must retain the imported account baseline.
-  strategyd::TradingEvent duplicate;
+  trading::TradingEvent duplicate;
   duplicate.client_order_id = kLeasedCoreId;
   duplicate.broker_order_id = order.broker_order_id;
   duplicate.kind = model::OrderUpdateKind::kFill;
@@ -235,7 +233,7 @@ TEST(BrokerRecoveryTest, RecoversFilledTerminalOrderAfterEntireWalDisappears) {
   duplicate.cumulative_filled_qty = 10;
   duplicate.receive_time_ns = 1000;
   duplicate.fill = fills[0];
-  strategyd::TradingDispatch dispatch;
+  trading::TradingDispatch dispatch;
   EXPECT_EQ(ledger.ApplyEvent(duplicate, dispatch), base::ErrorCode::kOk);
   EXPECT_FALSE(dispatch.has_fill);
   EXPECT_FALSE(dispatch.notify_order);
@@ -426,7 +424,7 @@ TEST(BrokerRecoveryTest, RejectsFuturesDictionaryBeforeReadingFacts) {
   model::InstrumentId futures;
   ASSERT_EQ(model::MakeInstrumentId("CFFEX", "IF2612", futures),
             base::ErrorCode::kOk);
-  const std::array<InstrumentSpec, 1> instruments = {{{futures, 2}}};
+  const std::array<trading::InstrumentSpec, 1> instruments = {{{futures, 2}}};
   auto output = std::make_unique<RecoveredBrokerState>();
   output->order_count = 17;
   BrokerRecoveryError error;

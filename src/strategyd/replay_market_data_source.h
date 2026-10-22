@@ -23,7 +23,7 @@ class ReplayMarketDataSource final : public MarketDataSource {
   // Requires adapter=replay and an absolute path. Failure leaves an untouched
   // source unprepared, retains diagnostics, and frees all temporary storage.
   [[nodiscard]] base::Status Prepare(
-      const MarketDataConfig& config) noexcept override;
+      const md::MarketDataConfig& config) noexcept override;
   // Accepts no subscriptions or the single configured instrument. Schedules
   // relative to now with integer elapsed/speed truncation. Failure preserves
   // prepared state. Even without subscribers, EOF/tail still finish normally.
@@ -53,7 +53,7 @@ class ReplayMarketDataSource final : public MarketDataSource {
   base::Status Error(base::ErrorCode code, const char* detail) noexcept;
   // Reads/validates into temporary owned storage, committing only on success.
   [[nodiscard]] base::Status ReadFrames(
-      const MarketDataConfig& config) noexcept;
+      const md::MarketDataConfig& config) noexcept;
 
   State state_ = State::kUnprepared;
   std::unique_ptr<Frame[]> frames_;

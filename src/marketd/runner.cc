@@ -27,7 +27,7 @@ base::Status MarketdRunner::Init(const MarketdConfig& config,
   if (source_)
     return Fail({base::ErrorCode::kInvalidState, {}}, "initialize",
                 "pipeline is already initialized");
-  strategy::ConfigError error;
+  base::ConfigError error;
   auto status = ValidateConfig(config, error);
   if (!status.ok()) {
     char detail[768];
@@ -102,8 +102,8 @@ base::Status MarketdRunner::Init(const MarketdConfig& config,
   return {};
 }
 
-base::Status MarketdRunner::Run(const strategyd::MonotonicClock& clock,
-                                strategyd::EventLoopEnvironment& environment,
+base::Status MarketdRunner::Run(const base::MonotonicClock& clock,
+                                base::EventLoopEnvironment& environment,
                                 std::uint64_t max_events) noexcept {
   if (!source_)
     return Fail({base::ErrorCode::kInvalidState, {}}, "run",

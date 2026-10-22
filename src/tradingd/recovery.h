@@ -7,16 +7,16 @@
 #include <span>
 #include <string_view>
 
-#include "strategyd/trading_limits.h"
-#include "tradingd/protocol.h"
+#include "yquant/trading/protocol.h"
+#include "yquant/trading/trading_limits.h"
 
 namespace yquant::tradingd {
 
 inline constexpr std::size_t kExternalRequestKeyBytes = 28;
 inline constexpr std::size_t kMaxRecoveredBrokerOrders =
-    strategyd::kMaxTradingOrders;
+    trading::kMaxTradingOrders;
 inline constexpr std::size_t kMaxRecoveredBrokerFills =
-    strategyd::kMaxTradingFills;
+    trading::kMaxTradingFills;
 inline constexpr std::size_t kMaxRecoveryIdentities = 1024;
 // Queries may overlap once at page boundaries or between history and live data.
 inline constexpr std::size_t kMaxRecoveryOrderFacts =
@@ -92,7 +92,7 @@ struct BrokerRecoveryView {
   std::string_view account_key;
   std::span<const BrokerRecoveryOrder> orders;
   std::span<const BrokerRecoveryFill> fills;
-  AccountView account;
+  trading::AccountView account;
   std::uint64_t history_lower_bound = 0;
   std::uint64_t consistent_cut = 0;
   bool old_sender_fenced = false;
@@ -125,7 +125,7 @@ struct RecoveredBrokerFill {
 // account again. Old strategy sessions remain invalid and callbacks are not
 // resumed. Active orders still require a separate risk-reducing cleanup phase.
 struct RecoveredBrokerState {
-  AccountView account;
+  trading::AccountView account;
   std::uint64_t history_lower_bound = 0;
   std::uint64_t consistent_cut = 0;
   std::array<RecoveredBrokerOrder, kMaxRecoveredBrokerOrders> orders;
@@ -159,7 +159,8 @@ enum class BrokerRecoveryError {
     const BrokerRecoveryView& view,
     const BrokerRecoveryRequirements& requirements,
     std::span<const DurableStrategyIdentity> identities,
-    std::span<const InstrumentSpec> instruments, RecoveredBrokerState& output,
+    std::span<const trading::InstrumentSpec> instruments,
+    RecoveredBrokerState& output,
     BrokerRecoveryError* error = nullptr) noexcept;
 
 }  // namespace yquant::tradingd

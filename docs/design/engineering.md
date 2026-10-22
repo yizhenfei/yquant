@@ -52,11 +52,21 @@ fmt 内部格式错误属于程序契约违例，不作为可恢复的格式化�
 
 ## 目录与模块
 
+构建对象分为公共库和可执行程序。被多个程序使用的实现归入公共库；`src/strategyd/`、`src/marketd/`、`src/tradingd/` 只保存对应程序专用的代码。程序通过库的公开头文件复用功能，不包含其他程序目录的头文件或链接其私有实现。
+
 ```text
-include/yquant/base/        公开头文件
-src/base/                  组件实现
-src/base/internal/         内部辅助实现及平台适配
-tests/base/                单元与集成测试
+include/yquant/base/        基础库公开接口
+include/yquant/model/       公共领域类型
+include/yquant/md/          行情库公开接口
+include/yquant/trading/     交易库公开接口
+include/yquant/strategy/    策略 SDK
+src/base/                  基础库实现及内部平台适配
+src/md/                    行情库实现
+src/trading/               交易库实现
+src/strategyd/             策略程序专用实现
+src/marketd/               行情程序专用实现
+src/tradingd/              交易网关程序专用实现
+tests/                     各库和程序的单元与集成测试
 tests/cmake/               构建与测试数据准备流程验证
 test_data/                 外部测试数据与下载缓存，不纳入 Git
 cmake/                     依赖、编译选项与工具链配置
@@ -65,17 +75,68 @@ CMakeLists.txt
 CMakePresets.json
 ```
 
-公开组件使用命名空间 `yquant::base`，内部辅助代码使用 `yquant::base::internal` 或实现文件内的匿名命名空间。公开头文件可独立编译，只包含公开依赖。
+库的公开头文件位于 `include/yquant/<library>/`，实现位于 `src/<library>/`，命名空间与库名一致。内部辅助代码使用库内的 `internal` 命名空间或实现文件内的匿名命名空间。公开头文件可独立编译，只包含公开依赖。
 
-日志、SPSC 队列及通用状态类型统一由 `yquant_base` 静态库提供，并提供 CMake 别名 `yquant::base`。依赖方向为上层业务到基础库；队列不依赖日志或 fmt。平台实现由 CMake 选择对应源文件。
+| 模块 | CMake target | 职责与依赖 |
+| --- | --- | --- |
+| `yquant::base` | `yquant_base`，别名 `yquant::base` | 日志、队列、共享内存、路径、JSON 文档、单调时钟及进程等待和退出信号；队列不依赖日志或 fmt |
+| `yquant::model` | `yquant_model`，别名 `yquant::model`，`INTERFACE` 目标 | 标识、标的、行情、委托和账户等领域类型 |
+| `yquant::md` | `yquant_md`，别名 `yquant::md` | 标的字典、运行标的范围、接收配置、模拟报价、编解码及行情广播适配；依赖 `base` 和 `model` |
+| `yquant::trading` | `yquant_trading`，别名 `yquant::trading` | 网关交易引擎、账本、客户端服务接口、配置、模拟柜台、协议及连接；依赖 `base`、`md`、`model` 和策略服务接口 |
+| `yquant::strategy` | `yquant_strategy_api`，别名 `yquant::strategy_api` | 策略 SDK 的 `INTERFACE` 目标，提供公开头文件和编译要求；宿主回调阶段枚举位于 `callback_phase.h` |
+
+库不依赖程序私有实现。`MarketDataImpl` 保留在 `strategyd` 中，负责策略订阅、缓存与回调阶段；网关引擎借用 `md::InstrumentScope` 查询标的，策略侧只持有网关客户端。程序私有对象目标与可执行目标的组织见[构建与依赖](#构建与依赖)。
+
+## 进程基础设施
+
+[base::MonotonicClock](../../include/yquant/base/monotonic_clock.h) 提供可注入的纳秒时钟接口；`base::SteadyMonotonicClock` 以自身构造时的 `std::chrono::steady_clock` 读数为原点。`Now()` 不分配内存且不递减，同一时间域中的时间戳和期限共用一个时钟实例，跨实例、进程或机器不比较相对读数。时钟由使用方持有，存活时间覆盖全部借用者。
+
+[base::EventLoopEnvironment](../../include/yquant/base/event_loop_environment.h) 提供主线程的 `CheckStop()`，便于事件循环注入停止请求。[base::TerminationSignals](../../include/yquant/base/termination_signals.h) 实现 SIGINT、SIGTERM 的屏蔽和显式检查，由三个程序复用；信号处置与屏蔽掩码保留到进程退出，实现位于 `src/base/termination_signals.cc`。等待由各程序的主循环负责，策略程序的期限等待及信号协议见[主循环与信号](strategyd.md#主循环与信号)。
+
+## 标准输出与诊断
+
+进程和示例策略按消息语义选择控制台流，便于独立重定向正常输出与异常诊断。
+
+| 消息 | 标准流 |
+| --- | --- |
+| `Running`、正常 `Stopped` 等运行状态，业务事件与统计汇总 | `stdout` |
+| `--help` 的帮助文本、配置校验成功消息 | `stdout` |
+| 参数错误及其用法提示，启动、运行或收尾失败 | `stderr` |
+| 警告、未确认订单或撤单等需要关注的异常诊断 | `stderr` |
+
+委托受理、拒绝、成交和撤单结果属于正常业务回报；仅因回报中出现 `rejected` 不改变输出通道。业务回报的校验失败或处理失败则作为异常诊断。
+
+外部监督者通过管道读取 `Running` 等就绪标记时，进程写入 `stdout` 后显式调用 `fflush(stdout)`，交互消息同样按即时可见的要求刷新。换行不保证管道中的标准输出立即可见；普通业务事件和统计不要求逐条强制刷新。
+
+文件日志的去向由日志 sink 配置决定，日志库的后端与故障行为见[日志选型与设计](logging.md)。
+
+## JSON 配置文档
+
+`base::JsonConfigDocument` 负责配置文件读取、完整输入校验和源码所有权管理，供 `strategyd`、`marketd`、`tradingd` 及共享标的字典复用。公开接口位于 `include/yquant/base/json_config_document.h`，实现位于 `src/base/json_config_document.cc`；公开头文件不暴露 simdjson 类型。
+
+配置文件使用 UTF-8 编码和标准 JSON 语法，根节点必须为对象。文件最大为 1 MiB，容器嵌套最多 64 层，根对象计为第一层。加载时完整检查所有字符串、标量及容器，并在所有对象中按解码后的键名拒绝重复键，例如 `a` 与 `\u0061` 视为同一键。数值在这一层只校验 JSON 语法，取值范围由各配置加载器检查。
+
+文档持有带解析所需 padding 的原始源码，完整校验的解析器和重复键临时存储在 `Load()` 返回前释放。源码视图持续有效到下次 `Load()`、`Reset()` 或文档析构；加载失败后源码为空。各加载器复用基础库的根对象解析和解析错误转换，负责自身的字段、类型、必填项和组合约束，不向文档类加入业务 schema。
+
+`base::ConfigError` 位于 `include/yquant/base/config_error.h`，用固定容量存储字段路径、原因和截断标志，复制诊断文本，不借用源码或动态库字符串。文档与 schema 解析共用该类型；JSON 解析器的分配失败保留为 `kResourceExhausted`，其他解析错误返回 `kInvalidArgument`，文件错误保留系统错误。需要长期保留的配置值由加载器或配置对象持有，运行期不保留文档借用。
 
 ## 构建与依赖
 
 构建使用 CMake 3.21 或更高版本，生成器使用 Ninja。仓库维护 configure、build、test presets；本机路径及个人工具链放入不提交的 `CMakeUserPresets.json`。构建产物统一位于 `build/<preset>/`。[CMake Presets](https://cmake.org/cmake/help/v3.21/manual/cmake-presets.7.html)
 
+公共实现由 `yquant_base`、`yquant_md`、`yquant_trading` 三个 `STATIC` 库提供。程序专用实现按下表编译为 `OBJECT` 目标，只供对应可执行程序及其单元测试使用；各程序对象目标之间不相互链接。测试访问程序内部接口不构成跨程序公共接口。
+
+| 私有对象目标 | 可执行目标 | 输出程序 |
+| --- | --- | --- |
+| `yquant_strategyd_objects` | `yquant_strategyd` | `yquant-strategyd` |
+| `yquant_marketd_objects` | `yquant_marketd` | `yquant-marketd` |
+| `yquant_tradingd_objects` | `yquant_tradingd` | `yquant-tradingd` |
+
 编译选项按 target 配置：C++20、公开 include 路径和日志编译级别向调用方传播；项目警告选项设为私有，不强加给依赖。日志公开模板使用 fmt，因此 `fmt::fmt` 为公开依赖。异常开关和 fmt 配置同时应用于依赖自身及相关调用方，避免不同编译单元采用不同配置。
 
-第三方依赖由 `cmake/` 中的 `FetchContent` 声明集中管理，固定完整 Git commit 或归档 URL 与 SHA256。fmt 为生产依赖，GoogleTest 仅由测试程序使用。依赖不跟随浮动分支，不自动切换到未固定版本的系统安装。[FetchContent](https://cmake.org/cmake/help/latest/module/FetchContent.html)
+第三方依赖由 `cmake/` 中的 `FetchContent` 声明集中管理，固定完整 Git commit 或归档 URL 与 SHA256。fmt 和 simdjson 为生产依赖，GoogleTest 仅由测试程序使用。依赖不跟随浮动分支，不自动切换到未固定版本的系统安装。[FetchContent](https://cmake.org/cmake/help/latest/module/FetchContent.html)
+
+JSON 解析使用 simdjson `5.0.4`，关闭异常接口及线程支持。`yquant_base`、业务 schema 加载器和示例策略按需私有链接其静态实现，依赖不进入公开配置文档接口。版本与归档哈希由 `cmake/Dependencies.cmake` 固定。
 
 构建提供以下 presets：
 

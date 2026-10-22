@@ -20,9 +20,11 @@
 #include "gtest/gtest.h"
 #include "marketd/csv_replay.h"
 #include "marketd/recording.h"
+#include "scoped_working_directory.h"
 #include "test_support.h"
+#include "trading_gateway.h"
 #include "yquant/md/quote_codec.h"
-#include "yquant/md/shm_pubsub.h"
+#include "yquant/md/shm_broadcast.h"
 
 extern char** environ;
 
@@ -49,10 +51,15 @@ class ChildProcess {
   ChildProcess& operator=(const ChildProcess&) = delete;
 
   int Start(const char* executable, const std::vector<std::string>& arguments) {
+    auto adapted = arguments;
+    if (std::string_view(executable) == YQUANT_TEST_STRATEGYD_PATH) {
+      const int error = gateway_.Prepare(adapted);
+      if (error) return error;
+    }
     int output[2];
     if (pipe(output) != 0) return errno;
     std::vector<std::string> storage{executable};
-    storage.insert(storage.end(), arguments.begin(), arguments.end());
+    storage.insert(storage.end(), adapted.begin(), adapted.end());
     std::vector<char*> argv;
     for (auto& argument : storage) argv.push_back(argument.data());
     argv.push_back(nullptr);
@@ -142,6 +149,7 @@ class ChildProcess {
     }
   }
 
+  ::yquant::testing::TradingGateway gateway_;
   pid_t pid_ = -1;
   int output_fd_ = -1;
   int status_ = 0;
@@ -150,15 +158,14 @@ class ChildProcess {
 };
 
 // Reads a live IPC stream without silently skipping gaps or malformed events.
-bool ReadQuote(md::ShmSubscriber& subscriber, model::QuoteTick& out) {
+bool ReadQuote(md::ShmReader& reader, model::QuoteTick& out) {
   const auto deadline = std::chrono::steady_clock::now() + kProcessTimeout;
   md::EventBuffer buffer;
   for (;;) {
-    const auto result = subscriber.TryNext(buffer);
+    const auto result = reader.TryNext(buffer);
     if (result.status == md::ReadStatus::kEvent)
       return md::DecodeQuoteEvent(buffer.view(), out).ok();
     if (result.status != md::ReadStatus::kEmpty &&
-        result.status != md::ReadStatus::kYield &&
         result.status != md::ReadStatus::kRetry)
       return false;
     if (std::chrono::steady_clock::now() >= deadline) return false;
@@ -186,6 +193,7 @@ class MarketdIntegrationTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ASSERT_TRUE(directory_.valid());
+    ASSERT_TRUE(working_directory_.valid());
     ASSERT_TRUE(directory_.Write("mock.json", testing::kMockJson));
     ASSERT_TRUE(directory_.Write("local.json", LocalJson()));
     ASSERT_TRUE(directory_.Write(
@@ -222,7 +230,8 @@ class MarketdIntegrationTest : public ::testing::Test {
         YQUANT_TEST_STRATEGYD_PATH,
         {"--strategy", YQUANT_TEST_QUOTE_EXAMPLE_PATH, "--config",
          directory_.File("strategy.json"), "--market-data-config",
-         directory_.File("strategy_host.json")});
+         directory_.File("strategy_host.json"), "--trading-config",
+         YQUANT_TEST_TRADING_CONFIG_PATH});
   }
   void Stop(ChildProcess& child) const {
     ASSERT_TRUE(child.Signal(SIGTERM)) << child.output();
@@ -231,17 +240,19 @@ class MarketdIntegrationTest : public ::testing::Test {
   }
 
   testing::RuntimeDirectory directory_;
+  ::yquant::testing::ScopedWorkingDirectory working_directory_{
+      directory_.path()};
 };
 
 TEST_F(MarketdIntegrationTest, TwoStrategiesAndRawReadersObserveBroadcast) {
   ChildProcess marketd;
   ASSERT_EQ(StartMarketd(marketd), 0);
   ASSERT_TRUE(marketd.WaitForOutput("Running")) << marketd.output();
-  md::ShmSubscriber first_reader;
-  md::ShmSubscriber second_reader;
+  md::ShmReader first_reader;
+  md::ShmReader second_reader;
   const md::Endpoint endpoint{directory_.path(), "quotes"};
-  ASSERT_TRUE(first_reader.Open(endpoint, {}, md::StartPosition::At(1)).ok());
-  ASSERT_TRUE(second_reader.Open(endpoint, {}, md::StartPosition::At(1)).ok());
+  ASSERT_TRUE(first_reader.Open(endpoint, md::StartPosition::At(1)).ok());
+  ASSERT_TRUE(second_reader.Open(endpoint, md::StartPosition::At(1)).ok());
   ChildProcess first_strategy;
   ChildProcess second_strategy;
   ASSERT_EQ(StartStrategy(first_strategy), 0);
@@ -265,7 +276,7 @@ TEST_F(MarketdIntegrationTest, TwoStrategiesAndRawReadersObserveBroadcast) {
   EXPECT_NE(first_strategy.output().find("ticks="), std::string::npos);
   EXPECT_NE(second_strategy.output().find("ticks="), std::string::npos);
   Stop(marketd);
-  md::ShmSubscriber later;
+  md::ShmReader later;
   EXPECT_FALSE(later.Open(endpoint).ok());
 }
 
@@ -335,10 +346,10 @@ TEST_F(MarketdIntegrationTest, DuplicatePublisherFailsWhileOriginalStaysLive) {
   ASSERT_TRUE(second.Wait()) << second.output();
   EXPECT_NE(second.exit_code(), 0) << second.output();
   EXPECT_NE(second.output().find("publisher_init"), std::string::npos);
-  md::ShmSubscriber subscriber;
-  ASSERT_TRUE(subscriber.Open({directory_.path(), "quotes"}).ok());
+  md::ShmReader reader;
+  ASSERT_TRUE(reader.Open({directory_.path(), "quotes"}).ok());
   model::QuoteTick quote;
-  EXPECT_TRUE(ReadQuote(subscriber, quote));
+  EXPECT_TRUE(ReadQuote(reader, quote));
   Stop(first);
 }
 
@@ -367,7 +378,7 @@ TEST_F(MarketdIntegrationTest, CrashRestartChangesGenerationAndReleasesLock) {
   ChildProcess first;
   ASSERT_EQ(StartMarketd(first), 0);
   ASSERT_TRUE(first.WaitForOutput("Running")) << first.output();
-  md::ShmSubscriber old_reader;
+  md::ShmReader old_reader;
   ASSERT_TRUE(old_reader.Open({directory_.path(), "quotes"}).ok());
   const auto generation = old_reader.generation();
   ASSERT_TRUE(first.Signal(SIGKILL));
@@ -375,7 +386,7 @@ TEST_F(MarketdIntegrationTest, CrashRestartChangesGenerationAndReleasesLock) {
   ChildProcess replacement;
   ASSERT_EQ(StartMarketd(replacement), 0);
   ASSERT_TRUE(replacement.WaitForOutput("Running")) << replacement.output();
-  md::ShmSubscriber new_reader;
+  md::ShmReader new_reader;
   ASSERT_TRUE(new_reader.Open({directory_.path(), "quotes"}).ok());
   EXPECT_NE(new_reader.generation(), generation);
   md::RefreshResult result;
@@ -407,23 +418,22 @@ TEST_F(MarketdIntegrationTest,
   ChildProcess relay;
   ASSERT_EQ(StartMarketd(relay, "relay.json"), 0);
   ASSERT_TRUE(relay.WaitForOutput("Running")) << relay.output();
-  md::ShmSubscriber subscriber;
+  md::ShmReader reader;
   ASSERT_TRUE(
-      subscriber
-          .Open({directory_.path(), "quotes"}, {}, md::StartPosition::At(1))
+      reader.Open({directory_.path(), "quotes"}, md::StartPosition::At(1))
           .ok());
   ChildProcess strategy;
   ASSERT_EQ(StartStrategy(strategy), 0);
   ASSERT_TRUE(strategy.WaitForOutput("first quote received"))
       << strategy.output();
   model::QuoteTick previous;
-  ASSERT_TRUE(ReadQuote(subscriber, previous));
+  ASSERT_TRUE(ReadQuote(reader, previous));
   EXPECT_EQ(previous.source_id.value, 42U);
   EXPECT_GT(previous.event_time_ns, 0U);
   EXPECT_EQ(previous.receive_time_ns, 0U);
   for (int i = 0; i < 15; ++i) {
     model::QuoteTick current;
-    ASSERT_TRUE(ReadQuote(subscriber, current));
+    ASSERT_TRUE(ReadQuote(reader, current));
     EXPECT_EQ(current.source_id, previous.source_id);
     EXPECT_EQ(current.instrument_id, previous.instrument_id);
     EXPECT_EQ(current.sequence, previous.sequence + 1);
@@ -528,7 +538,7 @@ TEST_F(MarketdIntegrationTest, ReplayFeedsSharedMemoryWhileRecording) {
   ChildProcess marketd;
   ASSERT_EQ(StartMarketd(marketd, "replay.json"), 0);
   ASSERT_TRUE(marketd.WaitForOutput("Running")) << marketd.output();
-  md::ShmSubscriber reader;
+  md::ShmReader reader;
   ASSERT_TRUE(reader.Open({directory_.path(), "quotes"}).ok());
   model::QuoteTick quote;
   for (std::uint64_t sequence = 1; sequence <= 2; ++sequence) {

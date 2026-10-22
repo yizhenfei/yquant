@@ -1,20 +1,18 @@
-#include "strategyd/remote_trading.h"
-
 #include <chrono>
 #include <cstring>
 #include <functional>
 #include <thread>
 
 #include "gtest/gtest.h"
-#include "strategyd/mock_trading_adapter.h"
+#include "strategyd/trading_service_impl.h"
 
 namespace yquant::strategyd {
 namespace {
 using base::ErrorCode;
-using tradingd::Message;
-using tradingd::MessageType;
+using trading::Message;
+using trading::MessageType;
 
-class RemoteClock final : public MonotonicClock {
+class RemoteClock final : public base::MonotonicClock {
  public:
   std::uint64_t Now() const noexcept override { return now; }
   std::uint64_t now = 1000;
@@ -22,11 +20,11 @@ class RemoteClock final : public MonotonicClock {
 
 // A real loopback stream whose handshake is served on a temporary thread;
 // subsequent messages are driven synchronously by each test.
-class RemoteTradingTest : public ::testing::Test {
+class TradingServiceImplTest : public ::testing::Test {
  protected:
   void SetUp() override {
     dictionary.source_id = {1};
-    dictionary.interval_ns = 1000000;
+
     dictionary.instrument_count = 2;
     auto& item = dictionary.instruments[0];
     ASSERT_EQ(model::MakeInstrumentId("SSE", "600000", item.instrument.id),
@@ -35,11 +33,7 @@ class RemoteTradingTest : public ::testing::Test {
     item.instrument.venue = model::Venue::kSse;
     std::memcpy(item.instrument.symbol, "600000", model::kSymbolLength);
     item.instrument.price_decimals = 2;
-    item.bid_price = 1000;
-    item.ask_price = 1001;
-    item.bid_qty = 100;
-    item.ask_qty = 100;
-    item.price_step = 1;
+
     auto& future = dictionary.instruments[1];
     ASSERT_EQ(model::MakeInstrumentId("SHFE", "rb2701", future.instrument.id),
               ErrorCode::kOk);
@@ -49,19 +43,14 @@ class RemoteTradingTest : public ::testing::Test {
     future.instrument.type = model::InstrumentType::kFutures;
     future.instrument.contract_multiplier = 10;
     future.instrument.margin_rate_ppm = 100000;
-    future.bid_price = 3200;
-    future.ask_price = 3201;
-    future.bid_qty = 10;
-    future.ask_qty = 10;
-    future.price_step = 1;
+
     ASSERT_TRUE(market.Configure(dictionary).ok());
-    config.adapter = TradingAdapterKind::kTcp;
-    config.remote.client_id = 9;
-    std::memcpy(config.remote.token, "client-9", 9);
-    config.remote.connect_timeout_ns = 1000000000;
-    config.remote.endpoint.port = 0;
-    ASSERT_TRUE(listener.Open(config.remote.endpoint).ok());
-    config.remote.endpoint.port = listener.port();
+    config.client_id = 9;
+    std::memcpy(config.token, "client-9", 9);
+    config.connect_timeout_ns = 1000000000;
+    config.endpoint.port = 0;
+    ASSERT_TRUE(listener.Open(config.endpoint).ok());
+    config.endpoint.port = listener.port();
     account.revision = 1;
     account.cash = {1000000000, 0, 1000000000};
     std::thread handshake([this] {
@@ -73,16 +62,16 @@ class RemoteTradingTest : public ::testing::Test {
         std::this_thread::yield();
       }
       if (!accepted) return;
-      Message hello;
+      trading::Message hello;
       for (;;) {
         const auto polled = peer.Poll(hello);
-        if (polled.state == tradingd::ReceiveState::kMessage) break;
-        if (polled.state != tradingd::ReceiveState::kIdle ||
+        if (polled.state == trading::ReceiveState::kMessage) break;
+        if (polled.state != trading::ReceiveState::kIdle ||
             std::chrono::steady_clock::now() >= deadline)
           return;
         std::this_thread::yield();
       }
-      EXPECT_EQ(hello.instrument_count, 1U);
+      EXPECT_EQ(hello.instrument_count, 2U);
       EXPECT_EQ(hello.instruments[0].id, instrument);
       Message welcome;
       welcome.type = MessageType::kWelcome;
@@ -99,40 +88,39 @@ class RemoteTradingTest : public ::testing::Test {
     const auto initialized = remote.Init(config, dictionary);
     handshake.join();
     ASSERT_TRUE(initialized.ok()) << remote.error_detail();
-    remote.SetRunning(true);
   }
 
   model::ClientOrderId Submit(std::int64_t quantity = 10) {
     model::ClientOrderId id;
-    remote.BeginCallback(CallbackPhase::kTick);
+    remote.SetAcceptingRequests(true);
     EXPECT_EQ(remote.SubmitOrder(
                   {instrument, model::OrderSide::kBuy, 1001, quantity}, id),
               ErrorCode::kOk);
-    remote.EndCallback();
+    remote.SetAcceptingRequests(false);
     return id;
   }
 
-  Message Receive() {
-    Message message;
+  trading::Message Receive() {
+    trading::Message message;
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(1);
     while (std::chrono::steady_clock::now() < deadline) {
       const auto polled = peer.Poll(message);
-      if (polled.state == tradingd::ReceiveState::kMessage) return message;
-      if (polled.state != tradingd::ReceiveState::kIdle) break;
+      if (polled.state == trading::ReceiveState::kMessage) return message;
+      if (polled.state != trading::ReceiveState::kIdle) break;
       std::this_thread::yield();
     }
     ADD_FAILURE() << "peer received no complete message";
     return message;
   }
 
-  void Send(Message message) {
+  void Send(trading::Message message) {
     message.generation = generation;
     ASSERT_TRUE(peer.Queue(message).ok()) << peer.error_detail();
     ASSERT_TRUE(peer.Service().ok()) << peer.error_detail();
   }
 
-  base::Status Poll(TradingDispatch& dispatch, bool& event) {
+  base::Status Poll(trading::TradingDispatch& dispatch, bool& event) {
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(1);
     for (;;) {
@@ -145,7 +133,7 @@ class RemoteTradingTest : public ::testing::Test {
 
   // Account/heartbeat/drain messages intentionally have no callback, so a
   // committed-message deadline distinguishes them from an empty stream poll.
-  base::Status PollMessage(TradingDispatch& dispatch, bool& event) {
+  base::Status PollMessage(trading::TradingDispatch& dispatch, bool& event) {
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(1);
     for (;;) {
@@ -164,9 +152,9 @@ class RemoteTradingTest : public ::testing::Test {
     }
   }
 
-  Message Accepted(model::ClientOrderId id) {
-    Message result;
-    result.type = MessageType::kOrderUpdate;
+  trading::Message Accepted(model::ClientOrderId id) {
+    trading::Message result;
+    result.type = trading::MessageType::kOrderUpdate;
     result.account = account;
     result.account.revision = 2;
     result.account.cash = {1000000000, 100100000, 899900000};
@@ -180,10 +168,10 @@ class RemoteTradingTest : public ::testing::Test {
     return result;
   }
 
-  Message Accept(model::ClientOrderId id) {
+  trading::Message Accept(model::ClientOrderId id) {
     auto message = Accepted(id);
     Send(message);
-    TradingDispatch dispatch;
+    trading::TradingDispatch dispatch;
     bool event = false;
     EXPECT_TRUE(Poll(dispatch, event).ok()) << remote.error_detail();
     EXPECT_TRUE(event);
@@ -192,25 +180,24 @@ class RemoteTradingTest : public ::testing::Test {
   }
 
   void Transmit() {
-    ASSERT_TRUE(remote.ProcessRequests(adapter, clock.now).ok())
+    ASSERT_TRUE(remote.ProcessRequests(clock.now).ok())
         << remote.error_detail();
   }
 
   RemoteClock clock;
-  MarketDataConfig dictionary;
-  MarketDataImpl market{clock};
-  RemoteTrading remote{clock, market};
-  MockTradingAdapter adapter;
-  TradingConfig config;
-  tradingd::Listener listener;
-  tradingd::Connection peer;
-  tradingd::AccountView account;
+  md::MarketDataConfig dictionary;
+  md::InstrumentScope market;
+  TradingServiceImpl remote{clock, market};
+  trading::TradingClientConfig config;
+  trading::Listener listener;
+  trading::Connection peer;
+  trading::AccountView account;
   model::InstrumentId instrument;
   model::InstrumentId futures_instrument;
   static constexpr std::uint64_t generation = 77;
 };
 
-TEST_F(RemoteTradingTest, LocalQueueDoesNotReserveAuthoritativeAccount) {
+TEST_F(TradingServiceImplTest, LocalQueueDoesNotReserveAuthoritativeAccount) {
   model::CashSnapshot before;
   ASSERT_TRUE(remote.TryGetCash(before));
   // This is much larger than available account cash; final risk belongs to
@@ -222,16 +209,16 @@ TEST_F(RemoteTradingTest, LocalQueueDoesNotReserveAuthoritativeAccount) {
   EXPECT_EQ(before, after);
   Transmit();
   const auto message = Receive();
-  EXPECT_EQ(message.type, MessageType::kNewOrder);
+  EXPECT_EQ(message.type, trading::MessageType::kNewOrder);
   EXPECT_EQ(message.order_id, id);
   EXPECT_EQ(message.request.quantity, 1000);
   EXPECT_EQ(message.generation, 77U);
 }
 
-TEST_F(RemoteTradingTest, CommitsOrderFillAndAccountBeforeDispatch) {
+TEST_F(TradingServiceImplTest, CommitsOrderFillAndAccountBeforeDispatch) {
   const auto id = Submit();
   Transmit();
-  ASSERT_EQ(Receive().type, MessageType::kNewOrder);
+  ASSERT_EQ(Receive().type, trading::MessageType::kNewOrder);
   auto accepted = Accept(id);
   auto fill = accepted;
   fill.account.revision = 3;
@@ -253,7 +240,7 @@ TEST_F(RemoteTradingTest, CommitsOrderFillAndAccountBeforeDispatch) {
   fill.fill.quantity = 10;
   fill.fill.receive_time_ns = 999999999;
   Send(fill);
-  TradingDispatch dispatch;
+  trading::TradingDispatch dispatch;
   bool event = false;
   ASSERT_TRUE(Poll(dispatch, event).ok()) << remote.error_detail();
   ASSERT_TRUE(event);
@@ -272,19 +259,19 @@ TEST_F(RemoteTradingTest, CommitsOrderFillAndAccountBeforeDispatch) {
   EXPECT_EQ(order, dispatch.update.order);
 }
 
-TEST_F(RemoteTradingTest, StopsUnsentOrdersLocallyAndWaitsForGatewayAck) {
+TEST_F(TradingServiceImplTest, StopsUnsentOrdersLocallyAndWaitsForGatewayAck) {
   const auto id = Submit();
   remote.BeginStopping();
   Transmit();
-  EXPECT_EQ(Receive().type, MessageType::kStop);
+  EXPECT_EQ(Receive().type, trading::MessageType::kStop);
   ASSERT_TRUE(remote.has_local_updates());
-  TradingDispatch dispatch;
+  trading::TradingDispatch dispatch;
   ASSERT_EQ(remote.ApplyLocalUpdate(dispatch), ErrorCode::kOk);
   EXPECT_EQ(dispatch.update.kind, model::OrderUpdateKind::kCanceledBeforeSend);
   EXPECT_EQ(dispatch.update.order.client_order_id, id);
   EXPECT_FALSE(remote.is_drained());
-  Message drained;
-  drained.type = MessageType::kDrained;
+  trading::Message drained;
+  drained.type = trading::MessageType::kDrained;
   Send(drained);
   bool event = true;
   ASSERT_TRUE(PollMessage(dispatch, event).ok());
@@ -292,14 +279,15 @@ TEST_F(RemoteTradingTest, StopsUnsentOrdersLocallyAndWaitsForGatewayAck) {
   EXPECT_TRUE(remote.is_drained());
 }
 
-TEST_F(RemoteTradingTest, AcceptsGatewayCancellationWithZeroCancelIdOnStop) {
+TEST_F(TradingServiceImplTest,
+       AcceptsGatewayCancellationWithZeroCancelIdOnStop) {
   const auto id = Submit();
   Transmit();
   (void)Receive();
   auto accepted = Accept(id);
   remote.BeginStopping();
   Transmit();
-  EXPECT_EQ(Receive().type, MessageType::kStop);
+  EXPECT_EQ(Receive().type, trading::MessageType::kStop);
   auto canceled = accepted;
   canceled.update.kind = model::OrderUpdateKind::kCanceled;
   canceled.update.order.report_sequence = 2;
@@ -309,25 +297,25 @@ TEST_F(RemoteTradingTest, AcceptsGatewayCancellationWithZeroCancelIdOnStop) {
   canceled.account.revision = 3;
   canceled.account.cash = {1000000000, 0, 1000000000};
   Send(canceled);
-  TradingDispatch dispatch;
+  trading::TradingDispatch dispatch;
   bool event = false;
   ASSERT_TRUE(Poll(dispatch, event).ok()) << remote.error_detail();
   EXPECT_TRUE(event);
   EXPECT_EQ(dispatch.update.cancel_request_id.value, 0U);
   EXPECT_FALSE(remote.is_drained());
-  Message drained;
-  drained.type = MessageType::kDrained;
+  trading::Message drained;
+  drained.type = trading::MessageType::kDrained;
   Send(drained);
   ASSERT_TRUE(PollMessage(dispatch, event).ok());
   EXPECT_TRUE(remote.is_drained());
 }
 
-TEST_F(RemoteTradingTest, LostConnectionPreservesAttemptedOrderFacts) {
+TEST_F(TradingServiceImplTest, LostConnectionPreservesAttemptedOrderFacts) {
   const auto id = Submit();
   Transmit();
-  ASSERT_EQ(Receive().type, MessageType::kNewOrder);
+  ASSERT_EQ(Receive().type, trading::MessageType::kNewOrder);
   peer.Close();
-  TradingDispatch dispatch;
+  trading::TradingDispatch dispatch;
   bool event = false;
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(1);
@@ -340,12 +328,13 @@ TEST_F(RemoteTradingTest, LostConnectionPreservesAttemptedOrderFacts) {
   ASSERT_TRUE(remote.TryGetOrder(id, order));
   EXPECT_EQ(order.state, model::OrderState::kPendingNew);
   EXPECT_FALSE(remote.is_drained());
-  remote.BeginCallback(CallbackPhase::kTick);
+  remote.SetAcceptingRequests(true);
   EXPECT_FALSE(remote.accepting_orders());
-  remote.EndCallback();
+  remote.SetAcceptingRequests(false);
 }
 
-TEST_F(RemoteTradingTest, GatewayCanCancelRunningClientBeforeClosingStream) {
+TEST_F(TradingServiceImplTest,
+       GatewayCanCancelRunningClientBeforeClosingStream) {
   const auto id = Submit();
   Transmit();
   (void)Receive();
@@ -357,7 +346,7 @@ TEST_F(RemoteTradingTest, GatewayCanCancelRunningClientBeforeClosingStream) {
   canceled.account.revision = 3;
   canceled.account.cash = {1000000000, 0, 1000000000};
   Send(canceled);
-  TradingDispatch dispatch;
+  trading::TradingDispatch dispatch;
   bool event = false;
   ASSERT_TRUE(Poll(dispatch, event).ok()) << remote.error_detail();
   EXPECT_TRUE(event);
@@ -371,27 +360,48 @@ TEST_F(RemoteTradingTest, GatewayCanCancelRunningClientBeforeClosingStream) {
   EXPECT_EQ(retained.state, model::OrderState::kCanceled);
 }
 
-TEST_F(RemoteTradingTest, HeartbeatTimeoutEndsSessionAndIdleAdvancesDeadline) {
-  TradingDispatch dispatch;
+TEST_F(TradingServiceImplTest,
+       RequestPermissionBlocksTransportAndStoppingStaysClosed) {
+  const auto id = Submit();
+  remote.SetAcceptingRequests(true);
+  EXPECT_EQ(remote.ProcessRequests(clock.now).code, ErrorCode::kInvalidState);
+  trading::TradingDispatch dispatch;
+  dispatch.update.order.client_order_id = {99};
+  bool event = true;
+  EXPECT_EQ(remote.Poll(clock.now, dispatch, event).code,
+            ErrorCode::kInvalidState);
+  EXPECT_EQ(dispatch.update.order.client_order_id.value, 99U);
+  EXPECT_TRUE(event);
+  remote.SetAcceptingRequests(false);
+  remote.BeginStopping();
+  remote.SetAcceptingRequests(true);
+  EXPECT_FALSE(remote.accepting_orders());
+  EXPECT_EQ(remote.CancelOrder(id), ErrorCode::kInvalidState);
+}
+
+TEST_F(TradingServiceImplTest,
+       HeartbeatTimeoutEndsSessionAndIdleAdvancesDeadline) {
+  trading::TradingDispatch dispatch;
   bool event = true;
   ASSERT_TRUE(remote.Poll(clock.now, dispatch, event).ok());
   EXPECT_FALSE(event);
   ASSERT_TRUE(remote.next_deadline());
   EXPECT_GT(*remote.next_deadline(), clock.now);
-  clock.now += config.remote.heartbeat_timeout_ns;
-  EXPECT_FALSE(remote.ProcessRequests(adapter, clock.now).ok());
+  clock.now += config.heartbeat_timeout_ns;
+  EXPECT_FALSE(remote.ProcessRequests(clock.now).ok());
   EXPECT_NE(std::strstr(remote.error_detail(), "heartbeat"), nullptr);
 }
 
-TEST_F(RemoteTradingTest, AccountBroadcastCanContainOtherStrategyInstruments) {
-  Message message;
-  message.type = MessageType::kAccount;
+TEST_F(TradingServiceImplTest,
+       AccountBroadcastCanContainOtherStrategyInstruments) {
+  trading::Message message;
+  message.type = trading::MessageType::kAccount;
   message.account = account;
   message.account.revision = 2;
   message.account.position_count = 1;
   message.account.positions[0] = {{(2ULL << 32) | 1}, 100, 90, 10};
   Send(message);
-  TradingDispatch dispatch;
+  trading::TradingDispatch dispatch;
   bool event = true;
   ASSERT_TRUE(PollMessage(dispatch, event).ok());
   EXPECT_FALSE(event);
@@ -401,14 +411,14 @@ TEST_F(RemoteTradingTest, AccountBroadcastCanContainOtherStrategyInstruments) {
   EXPECT_FALSE(remote.TryGetPosition({(2ULL << 32) | 1}, position));
 }
 
-TEST_F(RemoteTradingTest, ExactDuplicateDoesNotRepeatCallbacksOrFill) {
+TEST_F(TradingServiceImplTest, ExactDuplicateDoesNotRepeatCallbacksOrFill) {
   const auto id = Submit();
   Transmit();
   (void)Receive();
   auto accepted = Accept(id);
   accepted.update.order.receive_time_ns = 123456;
   Send(accepted);
-  TradingDispatch dispatch;
+  trading::TradingDispatch dispatch;
   bool event = true;
   ASSERT_TRUE(PollMessage(dispatch, event).ok()) << remote.error_detail();
   EXPECT_FALSE(event);
@@ -416,13 +426,13 @@ TEST_F(RemoteTradingTest, ExactDuplicateDoesNotRepeatCallbacksOrFill) {
 
 struct InvalidRemoteUpdate {
   const char* name;
-  void (*mutate)(Message&);
+  void (*mutate)(trading::Message&);
 };
-class InvalidRemoteTradingUpdateTest
-    : public RemoteTradingTest,
+class InvalidTradingServiceImplUpdateTest
+    : public TradingServiceImplTest,
       public ::testing::WithParamInterface<InvalidRemoteUpdate> {};
 
-TEST_P(InvalidRemoteTradingUpdateTest,
+TEST_P(InvalidTradingServiceImplUpdateTest,
        PreservesOrderAccountAndOutputOnFailure) {
   const auto id = Submit();
   Transmit();
@@ -434,7 +444,7 @@ TEST_P(InvalidRemoteTradingUpdateTest,
   ASSERT_TRUE(remote.TryGetOrder(id, before));
   model::CashSnapshot cash_before;
   ASSERT_TRUE(remote.TryGetCash(cash_before));
-  TradingDispatch dispatch;
+  trading::TradingDispatch dispatch;
   dispatch.update.order.client_order_id = {999};
   bool event = true;
   auto status = PollMessage(dispatch, event);
@@ -450,39 +460,42 @@ TEST_P(InvalidRemoteTradingUpdateTest,
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    Validation, InvalidRemoteTradingUpdateTest,
+    Validation, InvalidTradingServiceImplUpdateTest,
     ::testing::Values(
-        InvalidRemoteUpdate{
-            "WrongOrder",
-            [](Message& value) { value.update.order.client_order_id = {2}; }},
+        InvalidRemoteUpdate{"WrongOrder",
+                            [](trading::Message& value) {
+                              value.update.order.client_order_id = {2};
+                            }},
         InvalidRemoteUpdate{
             "ChangedPrice",
-            [](Message& value) { ++value.update.order.limit_price; }},
-        InvalidRemoteUpdate{
-            "SequenceGap",
-            [](Message& value) { value.update.order.report_sequence = 2; }},
+            [](trading::Message& value) { ++value.update.order.limit_price; }},
+        InvalidRemoteUpdate{"SequenceGap",
+                            [](trading::Message& value) {
+                              value.update.order.report_sequence = 2;
+                            }},
         InvalidRemoteUpdate{"ChangedQuantity",
-                            [](Message& value) {
+                            [](trading::Message& value) {
                               ++value.update.order.original_qty;
                               ++value.update.order.leaves_qty;
                             }},
         InvalidRemoteUpdate{"WrongTransition",
-                            [](Message& value) {
+                            [](trading::Message& value) {
                               value.update.order.state =
                                   model::OrderState::kFilled;
                               value.update.order.cumulative_filled_qty = 10;
                               value.update.order.leaves_qty = 0;
                             }},
-        InvalidRemoteUpdate{"SuppressedAccept",
-                            [](Message& value) { value.notify_order = false; }},
+        InvalidRemoteUpdate{
+            "SuppressedAccept",
+            [](trading::Message& value) { value.notify_order = false; }},
         InvalidRemoteUpdate{
             "AccountMutation",
-            [](Message& value) { value.account.revision = 1; }}),
+            [](trading::Message& value) { value.account.revision = 1; }}),
     [](const ::testing::TestParamInfo<InvalidRemoteUpdate>& info) {
       return info.param.name;
     });
 
-TEST_F(RemoteTradingTest, FuturesQueriesPreserveOutputsWithMixedCatalog) {
+TEST_F(TradingServiceImplTest, FuturesQueriesPreserveOutputsWithMixedCatalog) {
   model::FuturesAccountSnapshot account_out;
   account_out.balance = 47;
   const auto account_before = account_out;
@@ -500,13 +513,14 @@ TEST_F(RemoteTradingTest, FuturesQueriesPreserveOutputsWithMixedCatalog) {
   EXPECT_EQ(equity_out, equity_before);
 }
 
-TEST_F(RemoteTradingTest, TimerRequestsRejectFuturesEffectsWithoutConsumingId) {
+TEST_F(TradingServiceImplTest,
+       TimerRequestsRejectFuturesEffectsWithoutConsumingId) {
   model::ClientOrderId id{77};
-  remote.BeginCallback(CallbackPhase::kTimer);
+  remote.SetAcceptingRequests(true);
   EXPECT_TRUE(remote.accepting_orders());
   model::OrderRequest request{instrument, model::OrderSide::kBuy, 1001, 10,
                               model::PositionEffect::kOpen};
-  EXPECT_EQ(remote.SubmitOrder(request, id), ErrorCode::kUnsupported);
+  EXPECT_EQ(remote.SubmitOrder(request, id), ErrorCode::kInvalidArgument);
   EXPECT_EQ(id.value, 77U);
   request.instrument_id = futures_instrument;
   request.limit_price = 3201;
@@ -517,9 +531,8 @@ TEST_F(RemoteTradingTest, TimerRequestsRejectFuturesEffectsWithoutConsumingId) {
   request.position_effect = model::PositionEffect::kNone;
   ASSERT_EQ(remote.SubmitOrder(request, id), ErrorCode::kOk);
   EXPECT_EQ(id.value, 1U);
-  remote.EndCallback();
-  MockTradingAdapter unused;
-  ASSERT_TRUE(remote.ProcessRequests(unused, clock.now).ok());
+  remote.SetAcceptingRequests(false);
+  ASSERT_TRUE(remote.ProcessRequests(clock.now).ok());
   const auto sent = Receive();
   EXPECT_EQ(sent.type, MessageType::kNewOrder);
   EXPECT_EQ(sent.request.position_effect, model::PositionEffect::kNone);

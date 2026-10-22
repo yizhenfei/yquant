@@ -4,14 +4,14 @@
 #include <cstring>
 #include <new>
 
-#include "strategyd/mock_trading_adapter.h"
 #include "tradingd/mysql_archive.h"
 #include "tradingd/state_codec.h"
+#include "yquant/trading/mock_trading_adapter.h"
 
 namespace yquant::tradingd {
 namespace {
 constexpr std::size_t kMaxArchiveOrders =
-    kMaxClients * strategyd::kMaxTradingOrders;
+    trading::kMaxClients * trading::kMaxTradingOrders;
 constexpr std::uint16_t kLedgerRecord = 1;
 constexpr std::uint16_t kMockRecord = 2;
 constexpr std::uint16_t kRejectedRecord = 3;
@@ -43,12 +43,13 @@ bool MatchInstrument(StateReader& reader,
          reader.ok();
 }
 
-base::Status ReadMessage(StateReader& reader, Message& message) noexcept {
+base::Status ReadMessage(StateReader& reader,
+                         trading::Message& message) noexcept {
   const auto size = reader.U64();
-  if (!reader.ok() || size > kMaxFrameSize) return Corrupt();
+  if (!reader.ok() || size > trading::kMaxFrameSize) return Corrupt();
   const auto bytes = reader.Bytes(size);
   if (!reader.ok()) return Corrupt();
-  return DecodeMessage(bytes, message);
+  return trading::DecodeMessage(bytes, message);
 }
 
 bool SameSession(const ArchiveSession& a, const ArchiveSession& b) noexcept {
@@ -72,15 +73,15 @@ bool HasInstrument(const ArchiveSession& session,
 
 struct ArchiveProjection::Storage {
   ServerConfig config;
-  std::array<InstrumentSpec, kMaxInstruments> instruments{};
-  std::array<ArchiveSession, kMaxClients> sessions{};
-  std::array<std::size_t, kMaxClients> local_counts{};
-  std::array<std::array<std::uint16_t, strategyd::kMaxTradingOrders>,
-             kMaxClients>
+  std::array<trading::InstrumentSpec, trading::kMaxInstruments> instruments{};
+  std::array<ArchiveSession, trading::kMaxClients> sessions{};
+  std::array<std::size_t, trading::kMaxClients> local_counts{};
+  std::array<std::array<std::uint16_t, trading::kMaxTradingOrders>,
+             trading::kMaxClients>
       local_lookup{};
   std::array<ArchiveOrder, kMaxArchiveOrders> orders{};
   std::size_t order_count = 0;
-  std::array<std::uint64_t, strategyd::kMaxTradingFills> fill_sources{};
+  std::array<std::uint64_t, trading::kMaxTradingFills> fill_sources{};
   std::uint64_t last_namespace = 0;
   ArchiveOrderUpdate update;
   bool has_update = false;
@@ -101,24 +102,23 @@ struct ArchiveProjection::Storage {
   }
 };
 
-ArchiveProjection::ArchiveProjection(
-    const strategyd::MonotonicClock& clock) noexcept
-    : market_data_(clock), trading_(clock, market_data_) {}
+ArchiveProjection::ArchiveProjection(const base::MonotonicClock& clock) noexcept
+    : trading_(clock, instruments_, replay_adapter_) {}
 ArchiveProjection::~ArchiveProjection() noexcept = default;
 
 base::Status ArchiveProjection::Configure(const ServerConfig& config) noexcept {
   if (storage_ != nullptr) return {base::ErrorCode::kInvalidState, {}};
-  if (config.max_clients == 0 || config.max_clients > kMaxClients ||
+  if (config.max_clients == 0 || config.max_clients > trading::kMaxClients ||
       !config.persistence.enabled() ||
       config.persistence.account_key[0] == '\0')
     return {base::ErrorCode::kInvalidArgument, {}};
   auto candidate = std::unique_ptr<Storage>(new (std::nothrow) Storage{});
   if (!candidate) return {base::ErrorCode::kResourceExhausted, {}};
-  auto status = market_data_.Configure(config.market_data);
+  auto status = instruments_.Configure(config.market_data);
   if (!status.ok()) return status;
-  status = trading_.Configure(config.trading.initial_account);
+  status = trading_.Init(config.trading, config.market_data);
   if (!status.ok()) {
-    market_data_.Reset();
+    instruments_.Reset();
     return status;
   }
   candidate->config = config;
@@ -126,7 +126,8 @@ base::Status ArchiveProjection::Configure(const ServerConfig& config) noexcept {
     const auto& definition = config.market_data.instruments[i].instrument;
     candidate->instruments[i] = {definition.id, definition.price_decimals};
   }
-  for (std::size_t i = 0; i < kMaxClients; ++i) candidate->sessions[i].slot = i;
+  for (std::size_t i = 0; i < trading::kMaxClients; ++i)
+    candidate->sessions[i].slot = i;
   std::memcpy(account_key_, config.persistence.account_key,
               sizeof(account_key_));
   storage_ = std::move(candidate);
@@ -159,14 +160,14 @@ base::Status ArchiveProjection::LoadIdentity(
   if (reader.U64() != static_cast<unsigned>(s.config.trading.mode) ||
       reader.U64() != s.config.trading.report_interval_ns)
     return Corrupt();
-  std::array<ArchiveSession, kMaxClients> sessions{};
+  std::array<ArchiveSession, trading::kMaxClients> sessions{};
   for (std::size_t i = 0; i < sessions.size(); ++i) {
     auto& session = sessions[i];
     session.slot = i;
     session.client_id = reader.U64();
     session.session_id = reader.U64();
     session.instrument_count = reader.U64();
-    if (session.instrument_count > kMaxInstruments ||
+    if (session.instrument_count > trading::kMaxInstruments ||
         ((session.client_id == 0) != (session.session_id == 0)) ||
         session.session_id > last_namespace ||
         (session.client_id != 0 && i >= s.config.max_clients) ||
@@ -176,7 +177,7 @@ base::Status ArchiveProjection::LoadIdentity(
       const auto id = reader.U64();
       const auto decimals = reader.U64();
       model::InstrumentDefinition known;
-      if (decimals > UINT8_MAX || !market_data_.TryGetInstrument({id}, known) ||
+      if (decimals > UINT8_MAX || !instruments_.TryGetInstrument({id}, known) ||
           known.price_decimals != decimals)
         return Corrupt();
       session.instruments[j] = {{id}, static_cast<std::uint8_t>(decimals)};
@@ -240,12 +241,12 @@ base::Status ArchiveProjection::RestoreGateway(
   (void)reader.U64();
   last_record_time_ = reader.U64();
   if (covered != 0) return Corrupt();
-  for (std::size_t slot = 0; slot < kMaxClients; ++slot) {
+  for (std::size_t slot = 0; slot < trading::kMaxClients; ++slot) {
     const auto id = reader.U64();
     const auto session = reader.U64();
     const auto count = reader.U64();
     (void)reader.U64();  // Last allocated local cancel ID.
-    if (!reader.ok() || count > strategyd::kMaxTradingOrders ||
+    if (!reader.ok() || count > trading::kMaxTradingOrders ||
         ((id == 0) != (session == 0)) || (id == 0 && count != 0) ||
         (id != 0 && (id != s.sessions[slot].client_id ||
                      session != s.sessions[slot].session_id)))
@@ -258,9 +259,10 @@ base::Status ArchiveProjection::RestoreGateway(
       order.local_cancel_id = {reader.U64()};
       (void)reader.U64();  // Gateway retry deadline has no archive semantics.
       if (order.core_id.value == 0) {
-        Message message;
+        trading::Message message;
         const auto status = ReadMessage(reader, message);
-        if (!status.ok() || message.type != MessageType::kOrderUpdate ||
+        if (!status.ok() ||
+            message.type != trading::MessageType::kOrderUpdate ||
             message.update.order.client_order_id.value != local + 1 ||
             message.update.order.state != model::OrderState::kRejected ||
             !HasInstrument(s.sessions[slot],
@@ -310,8 +312,8 @@ base::Status ArchiveProjection::Replay(
   s.has_update = false;
   if (last_lsn_ == UINT64_MAX || lsn != last_lsn_ + 1) return Corrupt();
   if (type == kMockRecord) {
-    strategyd::MockTradingMutation mutation;
-    auto status = strategyd::DecodeMockTradingMutation(payload, mutation);
+    trading::MockTradingMutation mutation;
+    auto status = trading::DecodeMockTradingMutation(payload, mutation);
     if (!status.ok()) return status;
     last_record_time_ = mutation.now;
     last_lsn_ = lsn;
@@ -322,15 +324,15 @@ base::Status ArchiveProjection::Replay(
   const auto slot = reader.U64();
   const auto local = reader.U64();
   if (!reader.ok() || slot >= s.config.max_clients ||
-      local >= strategyd::kMaxTradingOrders ||
-      s.sessions[slot].client_id == 0 || local > s.local_counts[slot])
+      local >= trading::kMaxTradingOrders || s.sessions[slot].client_id == 0 ||
+      local > s.local_counts[slot])
     return Corrupt();
   auto& key = s.local_lookup[slot][local];
   if (type == kRejectedRecord) {
-    Message message;
+    trading::Message message;
     auto status = ReadMessage(reader, message);
     if (!status.ok() || !reader.done() ||
-        message.type != MessageType::kOrderUpdate ||
+        message.type != trading::MessageType::kOrderUpdate ||
         message.update.order.client_order_id.value != local + 1 ||
         message.has_fill ||
         !HasInstrument(s.sessions[slot], message.update.order.instrument_id) ||
@@ -360,10 +362,10 @@ base::Status ArchiveProjection::Replay(
   if (!reader.ok() || payload.size() < 24) return Corrupt();
   const auto encoded = reader.Bytes(payload.size() - 24);
   if (!reader.done()) return Corrupt();
-  strategyd::TradingMutation mutation;
-  auto status = strategyd::DecodeTradingMutation(encoded, mutation);
+  trading::TradingMutation mutation;
+  auto status = trading::DecodeTradingMutation(encoded, mutation);
   if (!status.ok()) return status;
-  using Kind = strategyd::TradingMutationKind;
+  using Kind = trading::TradingMutationKind;
   if (mutation.kind == Kind::kNewOrder) {
     if (key != 0 || local != s.local_counts[slot] ||
         FindOrder(mutation.order_id) != nullptr ||
@@ -373,7 +375,7 @@ base::Status ArchiveProjection::Replay(
     return Corrupt();
   }
   const auto previous_fill_count = trading_.fill_count();
-  strategyd::TradingDispatch dispatch;
+  trading::TradingDispatch dispatch;
   status = trading_.ReplayMutation(mutation, &dispatch);
   if (!status.ok()) return status;
   auto& order = s.Insert(slot, local);
@@ -417,11 +419,12 @@ std::span<const ArchiveSession> ArchiveProjection::sessions() const noexcept {
   return storage_ ? std::span<const ArchiveSession>(storage_->sessions)
                   : std::span<const ArchiveSession>{};
 }
-std::span<const InstrumentSpec> ArchiveProjection::instruments()
+std::span<const trading::InstrumentSpec> ArchiveProjection::instruments()
     const noexcept {
-  return storage_ ? std::span<const InstrumentSpec>(storage_->instruments)
-                        .first(storage_->config.market_data.instrument_count)
-                  : std::span<const InstrumentSpec>{};
+  return storage_
+             ? std::span<const trading::InstrumentSpec>(storage_->instruments)
+                   .first(storage_->config.market_data.instrument_count)
+             : std::span<const trading::InstrumentSpec>{};
 }
 std::span<const ArchiveOrder> ArchiveProjection::orders() const noexcept {
   return storage_ ? std::span(storage_->orders).first(storage_->order_count)

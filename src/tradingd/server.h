@@ -3,8 +3,8 @@
 
 #include <memory>
 
-#include "strategyd/monotonic_clock.h"
 #include "tradingd/config.h"
+#include "yquant/base/monotonic_clock.h"
 
 namespace yquant::tradingd {
 
@@ -16,7 +16,7 @@ namespace yquant::tradingd {
 // remain retained across restarts, including after EOF.
 class Server {
  public:
-  explicit Server(const strategyd::MonotonicClock& clock) noexcept;
+  explicit Server(const base::MonotonicClock& clock) noexcept;
   ~Server() noexcept;
   Server(const Server&) = delete;
   Server& operator=(const Server&) = delete;
@@ -31,7 +31,7 @@ class Server {
   void BeginStopping(std::uint64_t now) noexcept;
   bool is_drained() const noexcept;
   std::uint16_t port() const noexcept;
-  const AccountView& account() const noexcept;
+  const trading::AccountView& account() const noexcept;
   const char* error_detail() const noexcept { return error_detail_; }
   // Writes retained nonterminal orders and unresolved cancels to stderr. This
   // cold diagnostic does not change account facts or confirm cancellation.
@@ -57,7 +57,8 @@ class Server {
   void BroadcastAccount() noexcept;
   // Protocol violations disconnect the requester; business rejections emit an
   // explicit OrderUpdate. Input is borrowed only during this call.
-  [[nodiscard]] base::Status Handle(std::size_t index, const Message& message,
+  [[nodiscard]] base::Status Handle(std::size_t index,
+                                    const trading::Message& message,
                                     std::uint64_t now) noexcept;
   // Commits a bounded broker batch, then routes reports and committed views.
   [[nodiscard]] base::Status Dispatch(std::uint64_t now) noexcept;
@@ -65,7 +66,7 @@ class Server {
   void ScheduleClientCancels(std::uint64_t now) noexcept;
   // Queues Drained once all client-owned orders and cancels are terminal.
   void NotifyDrained() noexcept;
-  const strategyd::MonotonicClock& clock_;
+  const base::MonotonicClock& clock_;
   std::unique_ptr<Storage> storage_;
   char error_detail_[768] = {};
 };

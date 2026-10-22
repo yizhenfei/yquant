@@ -6,8 +6,8 @@
 
 #include "marketd/file_config.h"
 #include "marketd/tcp_transport.h"
-#include "strategyd/market_data_config.h"
-#include "yquant/strategy/strategy_config.h"
+#include "yquant/base/config_error.h"
+#include "yquant/md/mock_quote_config.h"
 
 namespace yquant::marketd {
 
@@ -21,7 +21,7 @@ enum class Adapter { kMock, kShm, kTcp, kReplay, kRecord };
 // is loaded before any transport is opened. Paths and names are NUL-terminated.
 struct SourceConfig {
   Adapter adapter = Adapter::kMock;
-  strategyd::MarketDataConfig mock;
+  md::MockQuoteConfig mock;
   char runtime_directory[kMaxRuntimePathBytes + 1] = {};
   char stream[kMaxStreamBytes + 1] = {};
   TcpEndpoint tcp;
@@ -49,24 +49,24 @@ struct MarketdConfig {
 
 // Validates typed configuration without acquiring output resources. Rejects
 // immediate feedback and duplicate outputs. Failure preserves config.
-[[nodiscard]] base::Status ValidateConfig(
-    const MarketdConfig& config, strategy::ConfigError& error) noexcept;
+[[nodiscard]] base::Status ValidateConfig(const MarketdConfig& config,
+                                          base::ConfigError& error) noexcept;
 
 // Strict JSON loader: decoded duplicate/unknown fields, wrong types and
 // overlong strings fail. Relative mock, replay, catalog and recording paths
-// resolve beside their owning JSON file. Validation does not read replay data
-// or the CSV catalog and does not create files.
+// resolve against the process working directory. Validation does not read
+// replay data or the CSV catalog and does not create files.
 class ConfigLoader {
  public:
   // Replaces prior configuration. Failure empties config() and owns its
   // diagnostic until the next call. No transport or discovery is created.
   [[nodiscard]] base::Status Load(const char* path) noexcept;
   const MarketdConfig& config() const noexcept { return config_; }
-  const strategy::ConfigError& error() const noexcept { return error_; }
+  const base::ConfigError& error() const noexcept { return error_; }
 
  private:
   MarketdConfig config_;
-  strategy::ConfigError error_;
+  base::ConfigError error_;
 };
 
 }  // namespace yquant::marketd

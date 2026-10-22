@@ -1,6 +1,10 @@
 #ifndef YQUANT_TESTS_STRATEGYD_TEST_STRATEGY_RUNNER_H_
 #define YQUANT_TESTS_STRATEGYD_TEST_STRATEGY_RUNNER_H_
 
+// Test-only control of loop termination and simulated waiting. Production
+// EventLoopEnvironment provides only stop checks; TestStrategyRunner overrides
+// the runner's wait so fixtures can advance time without sleeping.
+
 #include <cstdint>
 #include <optional>
 
@@ -8,35 +12,32 @@
 
 namespace yquant::strategyd {
 
-// Runs the production loop with a test-controlled wait. Each environment's
-// CheckStop supplies termination; its separate Wait advances simulated time or
-// injects waiting failures. Neither operation sleeps in deterministic tests.
+// Shared test control used by RunnerTestHarness and its derived fixtures.
+class TestLoopEnvironment : public base::EventLoopEnvironment {
+ public:
+  // Advances simulated time or injects a wait error. An absent timeout models
+  // indefinite waiting, which fixtures must bound with a stop or failure.
+  [[nodiscard]] virtual base::Status Wait(
+      std::optional<std::uint64_t> timeout) noexcept = 0;
+};
+
+// Runs production scheduling with a fixture's controlled wait operation.
 class TestStrategyRunner final : public StrategyRunner {
  public:
-  using StrategyRunner::StrategyRunner;
-
-  // Borrows environment only for this call, including its Wait operation.
-  template <typename Environment>
-  [[nodiscard]] base::Status Run(Environment& environment) noexcept {
-    wait_context_ = &environment;
-    wait_ = [](void* context, std::optional<std::uint64_t> timeout) noexcept {
-      return static_cast<Environment*>(context)->Wait(timeout);
-    };
-    const auto result = StrategyRunner::Run(environment);
-    wait_ = nullptr;
-    wait_context_ = nullptr;
-    return result;
-  }
+  // Borrows all dependencies until destruction, including the test wait.
+  TestStrategyRunner(const base::MonotonicClock& clock,
+                     TestLoopEnvironment& environment, MarketDataSource& source,
+                     trading::TradingService& trading) noexcept
+      : StrategyRunner(clock, environment, source, trading),
+        environment_(environment) {}
 
  protected:
   base::Status Wait(std::optional<std::uint64_t> timeout) noexcept override {
-    return wait_(wait_context_, timeout);
+    return environment_.Wait(timeout);
   }
 
  private:
-  // Both are set only while Run() borrows the concrete test environment.
-  void* wait_context_ = nullptr;
-  base::Status (*wait_)(void*, std::optional<std::uint64_t>) noexcept = nullptr;
+  TestLoopEnvironment& environment_;
 };
 
 }  // namespace yquant::strategyd

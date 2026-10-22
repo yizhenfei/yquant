@@ -1,14 +1,14 @@
 # 行情驱动与策略事件循环
 
-`yquant-strategyd` 从模拟源、本机共享内存或历史回放文件读取行情，在更新最新行情后调用策略。行情传输由宿主配置选择，策略使用统一的订阅和回调接口。
+`yquant-strategyd` 从本机共享内存或有限历史回放读取行情，在更新最新行情后调用策略。行情生产由独立的 `marketd` 进程负责，策略使用统一的订阅和回调接口。
 
 ## 功能范围
 
-每个进程运行一个策略实例，连接一个行情源，最多配置 64 个标的。`mock` 在进程内按间隔生成一档报价，`shm` 从本机 `marketd` 发布的共享内存流逐条读取，`replay` 按文件时间逐条回放历史报价。策略在启动时声明订阅，运行期间通过回调接收行情，并查询最新快照。
+每个进程运行一个策略实例，连接一个行情源，最多配置 64 个标的。共享内存行情从 `marketd` 发布的流逐条读取，模拟输入由 `marketd` 提供；有限历史文件使用 `replay` 接收源。策略在启动时声明订阅，运行期间通过回调接收行情，并查询最新快照。
 
 组件提供 `QuoteTick`、行情查询、启动订阅及行情源接口。交易执行及委托、持仓与资金账本见[交易执行设计](trading.md)；策略时间唤醒见[策略定时事件](strategy-timer.md)，运行中变更订阅及断线重连另行扩展。
 
-行情接入及跨机中继见[行情进程设计](marketd.md)，本机分发见[共享内存订阅发布协议](shared-memory-pubsub.md)。动态库和配置的公共约定分别见[策略进程设计](strategyd.md)、[策略配置设计](strategy-config.md)。行情类型的分类依据见 [Tick 数据分类](../research/tick-data-model.md)；本阶段只实现一档报价，不引入该研究中全部事件头和载荷类型。
+行情接入及跨机中继见[行情进程设计](marketd.md)，本机分发见[共享内存广播协议](shared-memory-broadcast.md)。动态库和配置的公共约定分别见[策略进程设计](strategyd.md)、[策略配置设计](strategy-config.md)。行情类型的分类依据见 [Tick 数据分类](../research/tick-data-model.md)；本阶段只实现一档报价，不引入该研究中全部事件头和载荷类型。
 
 ## 单线程运行模型
 
@@ -44,7 +44,7 @@ flowchart LR
 
 ### 类型模块
 
-公共交易领域类型统一组织为 `yquant::model`，目录为 `include/yquant/model/`。标识、标的定义和行情事件分别放入 `identifiers.h`、`instrument.h`、`quote_tick.h`，避免让通用标的身份依附某一种行情事件。策略上下文仍属于 `yquant::strategy`，行情接入实现留在宿主内部。
+公共交易领域类型统一组织为 `yquant::model`，目录为 `include/yquant/model/`。标识、标的定义和行情事件分别放入 `identifiers.h`、`instrument.h`、`quote_tick.h`，避免让通用标的身份依附某一种行情事件。共享的配置、标的范围和行情组件属于 `yquant::md`；策略上下文属于 `yquant::strategy`，策略接收源与回调服务留在宿主内部。
 
 NautilusTrader 将这些类型放在 `nautilus_model` / `nautilus_trader.model`：`identifiers` 保存标识，`instruments` 保存标的定义，`data` 保存报价等行情。YQuant 按这些职责组织公共类型，委托与成交类型见[交易执行设计](trading.md#委托模型)。[Nautilus 模型模块](https://github.com/nautechsystems/nautilus_trader/blob/develop/crates/model/src/lib.rs)
 
@@ -67,7 +67,7 @@ NautilusTrader 将这些类型放在 `nautilus_model` / `nautilus_trader.model`�
 
 ### 行情来源身份
 
-`SourceId` 为包装 `uint32_t` 的强类型，`0` 无效，由宿主配置中的 `source_id` 指定，标识原始行情接入来源。`adapter` 指定宿主读取行情的实现类型：`mock`、`shm` 或 `replay`。中继及共享内存订阅保留原始来源 ID；读取同一来源的多个策略进程使用相同的 `source_id`，独立接入来源使用不同的 ID。
+`SourceId` 为包装 `uint32_t` 的强类型，`0` 无效，由宿主配置中的 `source_id` 指定，标识原始行情接入来源。`adapter` 指定宿主接收方式，接受 `shm` 或 `replay`。中继及共享内存订阅保留原始来源 ID；读取同一来源的多个策略进程使用相同的 `source_id`，独立接入来源使用不同的 ID。
 
 多个适配器可以提供同一个标的的行情，因此来源身份与标的身份分别保存。每个 `strategyd` 由宿主配置绑定唯一原始来源，策略在该绑定范围内按 `InstrumentId` 订阅和查询。`QuoteTick::source_id` 保留原始来源身份；订阅、缓存和序号均在该绑定范围内按标的维护，入站报价在更新状态前必须通过来源一致性校验。
 
@@ -110,13 +110,13 @@ Nautilus 的行情客户端在接入层持有 `ClientId`，其原生 `QuoteTick`
 
 ### 时间与顺序
 
-宿主以 `std::chrono::steady_clock` 建立进程内的单调时间基准，`Now()` 返回自该基准起经过的纳秒。模拟源和共享内存源均用本次 `Poll(now, out)` 的 `now` 填写 `receive_time_ns`，运行时不在回调前刷新它。
+宿主通过公共[单调时钟接口](engineering.md#进程基础设施)建立时间基准，上下文、接收源、交易服务与调度共用同一 `base::MonotonicClock`。共享内存接收端用本次 `Poll(now, out)` 的 `now` 填写 `receive_time_ns`，运行时不在回调前刷新它。
 
 进程相对时间不通过传输帧透传。共享内存报价解码后接收时间为零，由 `strategyd` 按本进程时钟赋值；来源、来源序号和 UTC 事件时间保持不变。策略计算的报价年龄只覆盖本进程接收到当前时刻的时间，不包含上游处理或传输延迟。
 
 市场事件时间不能与本地单调时间相减。行情过期判断使用 `Now() - receive_time_ns`。策略可用[定时事件](strategy-timer.md)在没有新行情时检查过期并撤单。
 
-运行时先校验报价属于宿主绑定的来源，再按 `instrument_id` 保存最后接受的序号。重复或旧序号不覆盖该标的的快照，也不触发 `OnTick()`，仅累计饱和的 `uint64_t` 诊断计数；停止后仍保留计数，非零时进程输出 `yquant-strategyd: ignored_quotes=N`。报价来源序号跳跃可以被接受，因为每条记录都是完整报价，且上游序号是否连续由适配器按供应商协议解释。共享内存流序号独立于报价来源序号，前者连续扫描并检测覆盖；报告 `Gap` 时停止策略，不用完整快照的规则静默跳过缺失记录。
+运行时先校验报价属于宿主绑定的来源，再按 `instrument_id` 保存最后接受的序号。重复或旧序号不覆盖该标的的快照，也不触发 `OnTick()`，仅累计饱和的 `uint64_t` 诊断计数；停止后仍保留计数，非零时进程向 `stdout` 输出 `yquant-strategyd: ignored_quotes=N`。报价来源序号跳跃可以被接受，因为每条记录都是完整报价，且上游序号是否连续由适配器按供应商协议解释。共享内存流序号独立于报价来源序号，前者连续扫描并检测覆盖；报告 `Gap` 时停止策略，不用完整快照的规则静默跳过缺失记录。
 
 适配器保留原生序号的解释责任，不直接把重连后清零的上游序号作为当前发布序号。本阶段发生断线或需要重建流状态时，以行情源错误停止运行；发布序号耗尽也停止运行。
 
@@ -154,11 +154,11 @@ bool TryGetLatestQuote(
 
 `FindInstrument()` 复制完整标的定义。输入视图只在调用期间借用；找不到标的时返回 `kInvalidArgument`，保持 `out` 不变。名称解析用于启动阶段；行情热路径通过固定容量哈希表将稳定 ID 映射到预分配槽位，不解析场所或代码字符串。
 
-`SubscribeQuotes()` 只允许在 `OnStart()` 中调用，在宿主绑定的来源中登记标的订阅。重复订阅同一标的成功返回且不增加名额；标的 ID 无效或不在配置字典中时返回 `kInvalidArgument`，没有行情源时返回 `kUnsupported`，在其他回调中调用返回 `kInvalidState`。失败不改变已有订阅。
+`SubscribeQuotes()` 只允许在 `OnStart()` 中调用，在宿主绑定的来源中登记标的订阅。重复订阅同一标的成功返回且不增加名额；标的 ID 无效或不在配置字典中时返回 `kInvalidArgument`，服务尚未配置时返回 `kUnsupported`，在其他回调中调用返回 `kInvalidState`。失败不改变已有订阅。
 
 订阅成功表示本地登记完成，不表示已收到行情。`OnStart()` 成功后冻结订阅表，再启动行情源；期间不重入 `OnTick()`。启动失败时撤销本次全部登记，运行中不提供增加或取消订阅的接口。
 
-`TryGetLatestQuote()` 将宿主绑定来源中指定标的的最新已分派快照复制到 `out`。没有行情源、标的 ID 无效或不在配置字典中、未订阅或尚无行情时返回 `false`，保持 `out` 不变。它不等待下一条行情，也不按时间自动删除旧快照；策略自行判断新鲜度。在 `OnTick()` 内按当前 `tick.instrument_id` 查询，结果必须与本次回调参数一致。
+`TryGetLatestQuote()` 将宿主绑定来源中指定标的的最新已分派快照复制到 `out`。服务尚未配置、标的 ID 无效或不在配置字典中、未订阅或尚无行情时返回 `false`，保持 `out` 不变。它不等待下一条行情，也不按时间自动删除旧快照；策略自行判断新鲜度。在 `OnTick()` 内按当前 `tick.instrument_id` 查询，结果必须与本次回调参数一致。
 
 ### 回调
 
@@ -220,64 +220,56 @@ Stop() -> Status
 
 `next_deadline()` 指定下一次允许调用 `Poll()` 的时间，不触发策略定时回调；同批或积压记录待取时可以立即就绪。`is_poll_driven()` 区分两种调度约束：
 
-- 模拟源与回放源返回 `false`。`Idle` 后的期限必须为空或晚于传入本次 `Poll()` 的 `now`，否则作为源协议错误处理。
+- 回放源与测试注入的定时源可返回 `false`。`Idle` 后的期限必须为空或晚于传入本次 `Poll()` 的 `now`，否则作为源协议错误处理。
 - 共享内存源返回 `true`。空读或预算耗尽后允许立即就绪，主循环先回到信号检查，再开始下一轮读取。
 
-`Service(now)` 在每批之间执行冷路径维护，允许有界的文件 I/O 和临时分配，不等待新行情、不调用策略。行情源自行检查维护期限，未到期时直接成功返回。`next_service_deadline()` 参与宿主等待，即使没有业务订阅也不能被忽略。默认实现无维护工作及维护期限，模拟源沿用该行为。维护只在 `Running` 的轮次边界执行；维护失败停止行情并进入[交易错误收尾](trading.md#错误与超时)，有活动委托时仍由宿主推进能够完成的排空。
+`Service(now)` 在每批之间执行冷路径维护，允许有界的文件 I/O 和临时分配，不等待新行情、不调用策略。行情源自行检查维护期限，未到期时直接成功返回。`next_service_deadline()` 参与宿主等待，即使没有业务订阅也不能被忽略。默认实现无维护工作及维护期限，测试源可复用该行为。维护只在 `Running` 的轮次边界执行；维护失败停止行情并进入[交易错误收尾](trading.md#错误与超时)，有活动委托时仍由宿主推进能够完成的排空。
 
 `Stop()` 幂等且同步，取消行情及维护期限，结束活动订阅并关闭持有的映射。未启动或已经停止时成功返回；已有源故障诊断在关闭后仍有效。关闭资源失败时保留诊断并完成能够安全执行的清理。
 
-### 模拟源
-
-模拟源按配置顺序保存订阅选择，不受策略登记顺序影响。没有订阅时保持空闲，不安排行情或维护期限。
-
-每隔 `interval_ms` 对每个订阅标的生成一次报价，按配置中的标的顺序通过多次 `Poll()` 返回。第一批在激活后经过一个间隔生成，此后持续运行，不设置自动结束条数。
-
-第 `n` 批的价格偏移为 `((n - 1) % 2) * price_step`，同时加到配置的买一和卖一价格上；数量保持不变。每个来源与标的组合的发布序号从 `1` 开始，事件时间填写生成时的 UTC 时间，接收时间使用本次 `Poll()` 的单调时间。价格变化始终有界，初始化时检查基础价格加步长不溢出。
-
-生成当前批最后一条记录时，以传入该次 `Poll()` 的 `now + interval` 安排下一批；该条记录的策略回调尚未执行，回调完成后不再推迟已定期限。调度落后时不补发一串已经过时的批次，系统日历时间的调整不改变发布间隔。
-
-### 历史回放源
-
-`ReplayMarketDataSource` 启动时载入并验证有界 CSV，按记录时间和配置速度发布完整一档报价。`finished()` 在最后记录及尾部等待结束后返回 `true`，宿主以正常停止流程撤单排空并退出；其余源默认返回 `false`。文件格式、容量、时间语义与配置集中见[行情回放](domestic-futures.md#行情回放)。
-
 ### 共享内存源
 
-`ShmMarketDataSource` 在 `Start()` 连接 `marketd` 当前发布代次，从 `StartPosition::Live()` 开始消费连接后的新事件。宿主此前已经从共享标的文件解析运行清单，读取过滤器根据冻结的策略订阅表选择品种和报价事件类型；多个 `strategyd` 的读取游标互相独立。
+`ShmMarketDataSource` 在 `Start()` 连接 `marketd` 当前发布代次，从 `StartPosition::Live()` 开始消费连接后的新事件。宿主此前已经从共享标的文件解析运行清单，接收方根据冻结的策略订阅表选择品种和报价事件类型；多个 `strategyd` 的读取游标互相独立。
 
-`Poll()` 通过 `ShmSubscriber::TryNext()` 有界扫描和重试，解码完整报价后验证来源并设置本地接收时间。共享内存组件的 `Empty`、`Yield`、`Retry` 映射为 `Idle`。`Gap`、`StreamChanged`、`EndOfGeneration`、意外关闭、损坏帧或来源不符均为终止错误，不自动恢复游标或重新连接。
+`Poll()` 通过 `ShmReader::TryNext()` 逐条取得广播事件，在接收侧过滤后解码完整报价、验证来源并设置本地接收时间。共享内存组件的 `Empty`、`Retry` 映射为 `Idle`。`Gap`、`StreamChanged`、`EndOfGeneration`、意外关闭、损坏帧或来源不符均为终止错误，不自动恢复游标或重新连接。
 
 `poll_interval_us` 默认为 `0`，空读后持续轮询。配置正值时，只有确认读空后才将下一读取期限设为 `now + interval`；有事件或扫描预算耗尽时立即继续，避免延迟积压数据。每轮仍经过信号检查，忙轮询不取消停止边界。
 
 `Service()` 每 250 ms 调用 `Refresh()` 检查发现入口及心跳。新代次立即停止旧代次交付；发布者心跳超过 3 秒未更新、发现入口消失或发布者停止时，先交付保留范围内仍完整的已提交事件，再报告故障。停止代次由组件在读尽后返回 `EndOfGeneration`；过期心跳或发现入口缺失在空读或无法取得一致副本时终止。发生覆盖仍优先报告 `Gap`。
 
-正常无订阅时不安排业务读取期限，但继续维护检查；检测到发布者异常后恢复状态读取，完成有界扫描并终止。源序号、代次、覆盖检测和 seqlock 协议的完整规则见[共享内存订阅发布组件](shared-memory-pubsub.md)。
+正常无订阅时不安排业务读取期限，但继续维护检查；检测到发布者异常后恢复状态读取，完成有界扫描并终止。源序号、代次、覆盖检测和 seqlock 协议的完整规则见[共享内存广播组件](shared-memory-broadcast.md)。
+
+#### 接收端事件过滤
+
+[EventFilter](../../include/yquant/md/event_filter.h) 独立于广播读取器，通过 `Matches(header)` 判断事件是否符合品种和事件类型条件。两个列表均为借用的只读 span，无固定容量要求，无须排序；调用方保证匹配期间存储有效且不修改。`all_instruments`、`all_event_types` 分别放开对应维度，受限的空列表不匹配任何值。流级状态始终通过，品种级状态按品种匹配并绕过事件类型过滤。
+
+`ShmMarketDataSource` 在 `Start()` 将策略选中的标的复制到自持数组，容量使用运行范围上限 `md::kMaxMarketDataInstruments`，报价事件类型由适配器指定。`Poll()` 对广播事件的一致副本执行过滤，每次最多检查 64 条事件、累计最多尝试读取槽位 128 次；预算耗尽时返回 `Idle` 并立即安排下一轮读取，让宿主检查停止信号。过滤丢弃的事件已推进读取游标，业务交付序号的跳跃不代表广播缺口。
 
 ## 主循环与收尾
 
-行情配置与共享标的字典在加载策略动态库前校验；字典读取失败、定义无效或运行清单引用未知标的时直接终止启动。宿主按 `adapter` 选择 `mock`、`shm` 或 `replay` 源，行情源 `Prepare` 与行情服务建立自持存储。柜台账户初始化见[交易启动流程](trading.md#启动与事件调度)。`OnStart()` 成功后冻结订阅表，宿主激活行情源；共享内存源此时连接发布者并从 Live 开始读取，全部成功后才进入运行态。
+行情配置与共享标的字典在加载策略动态库前校验；字典读取失败、定义无效或运行清单引用未知标的时直接终止启动。装配层选择共享内存或回放接收源，行情源 `Prepare` 与行情服务建立自持存储。柜台账户初始化见[交易启动流程](trading.md#启动与事件调度)。`OnStart()` 成功后冻结订阅表，宿主激活行情源；共享内存源此时连接发布者并从 Live 开始读取，全部成功后才进入运行态。
 
-`StrategyRunner::Run(environment)` 统一驱动请求与来源事件，行情读取及报价分派为私有实现。每次从行情源取得一条事件后完成校验、序号检查与缓存更新，再进入 `OnTick()`；旧或重复行情不回调，但仍占用共享事件额度。请求与三类事件的额度、公平轮换及等待期限见[启动与事件调度](trading.md#启动与事件调度)，退出信号协议见[主循环与信号](strategyd.md#主循环与信号)。
+`StrategyRunner::Run()` 使用构造时借用的事件环境，统一驱动请求与来源事件，行情读取及报价分派为私有实现。每次从行情源取得一条事件后完成校验、序号检查与缓存更新，再进入 `OnTick()`；旧或重复行情不回调，但仍占用共享事件额度。请求与三个来源的额度、公平轮换及等待期限见[启动与事件调度](trading.md#启动与事件调度)，退出信号协议见[主循环与信号](strategyd.md#主循环与信号)。
 
-每个运行轮次在信号检查后调用已激活行情源的 `Service(now)`，行情维护期限也参与最早等待期限的选择。共享内存源没有业务订阅时仍定期检查发布者；没有行情源，或模拟源没有订阅时，行情侧不安排期限。
+每个运行轮次在信号检查后调用已激活行情源的 `Service(now)`，行情维护期限也参与最早等待期限的选择。共享内存源没有业务订阅时仍定期检查发布者。
 
-共享内存源返回 `Idle` 后，本批次不再读取行情，已就绪的交易和策略定时事件可继续使用剩余额度；批次结束后回到循环入口检查信号，再开始下一轮读取。读取期限仍可已到期，忙轮询不会被误判为模拟源协议错误。
+共享内存源返回 `Idle` 后，本批次不再读取行情，已就绪的交易和定时事件可继续使用剩余额度；批次结束后回到循环入口检查信号，再开始下一轮读取。读取期限仍可已到期，忙轮询不会被误判为定时源协议错误。
 
 进入 `Stopping` 后不再调用行情源 `Service()`、`Poll()` 或 `OnTick()`，同步停止行情源并取消行情及维护期限，保留最后分派的缓存。交易回报继续按排空规则处理；正常排空期间仍可调用委托与成交回调，其中交易服务只允许查询，最终 `OnStop()` 仍可查询最后行情。委托收尾、回调失败及超时规则集中在[交易执行设计](trading.md#主循环与收尾)。
 
-发布者异常时先交付保留记录的规则只适用于尚未进入策略停止流程的源故障检测；停止请求后不继续消费行情来清空共享内存。没有交易接入或活动委托时，交易侧无需排空，已有行情观察与生命周期示例仍保持停止信号后的正常收尾。
+发布者异常时先交付保留记录的规则只适用于尚未进入策略停止流程的源故障检测；停止请求后不继续消费行情来清空共享内存。没有活动委托时，客户端仍与网关完成停止握手，行情观察与生命周期示例遵循相同的收尾协议。
 
 ## 配置与启动方式
 
-`--strategy` 和 `--config` 必填，`--market-data-config <path>` 可选且只允许出现一次。没有该参数时不建立行情源，标的字典为空，生命周期示例仍可以运行。
+`--strategy`、`--config`、`--market-data-config <path>` 和 `--trading-config <path>` 均必填且只允许出现一次。生命周期示例也须配置行情与网关连接，并启动对应的 marketd 和 tradingd。
 
 行情配置由宿主读取，绑定原始来源，引用共享标的文件并指定本进程的运行范围。策略在 `OnStart()` 中通过 `MarketData` 从该范围选择实际订阅的标的，宿主据此建立源订阅表。
 
 ### 通用校验
 
-`source_id` 为 `1..UINT32_MAX` 的整数，`adapter` 必填且接受 `mock`、`shm` 或 `replay`，`instrument_catalog` 必填且引用共享字典。`instruments` 为 `1..64` 项的运行清单，以 `venue`、`symbol` 引用字典中的标的，组合必须唯一且已存在；禁止在清单内填写 `price_decimals` 覆盖定义。回放源限定一个标的。不同适配器的专用字段不能混用。
+`source_id` 为 `1..UINT32_MAX` 的整数，`adapter` 必填且只接受 `shm`，`instrument_catalog` 必填且引用共享字典。`instruments` 为 `1..64` 项的运行清单，以 `venue`、`symbol` 引用字典中的标的，组合必须唯一且已存在；禁止在清单内填写 `price_decimals` 覆盖定义。模拟报价参数只属于生产端配置，不进入宿主配置。
 
-行情 JSON 复用 `JsonConfigDocument` 的[通用输入校验](strategy-config.md#配置格式)，行情加载器检查本节字段与取值。行情配置解析完成后释放源码与解析器，源只保留强类型配置。
+行情 JSON 复用 `base::JsonConfigDocument` 的[通用输入校验](engineering.md#json-配置文档)，公共 `md::MarketDataConfigLoader` 检查本节字段与取值，结果保存为自持的 `md::MarketDataConfig`。`ValidateMarketDataConfig()` 同时供类型化配置调用方使用；只使用来源和标的范围的消费者调用 `ValidateMarketDataScope()`。解析完成后释放源码与解析器，源只保留强类型配置。
 
 ### 共享标的字典
 
@@ -292,62 +284,25 @@ Stop() -> Status
 }
 ```
 
-字典包含 `1..16384` 个定义，与单进程最多 64 个运行标的分别校验。文件同时遵循[通用 JSON 输入校验](strategy-config.md#配置格式)，包括 1 MiB 大小、UTF-8 与嵌套深度限制。每个定义必须提供 `venue`、`symbol` 和 `price_decimals`。股票可省略 `instrument_type`，采用默认股票规格；期货显式提供 `instrument_type: "futures"` 及[期货合约规格](domestic-futures.md#合约与计量)。拒绝未知字段、重复键及重复的场所和代码组合；支持的身份编码及价格精度范围见[标的与计量单位](#标的与计量单位)。
+字典包含 `1..16384` 个定义，与单进程最多 64 个运行标的分别校验。文件遵循[通用 JSON 输入规则](engineering.md#json-配置文档)。每个定义的字段均必填，拒绝未知字段及重复的场所和代码组合；支持的身份编码及价格精度范围见[标的与计量单位](#标的与计量单位)。
 
-`instrument_catalog` 接受绝对路径，或相对于引用它的配置文件所在目录的路径，不依赖进程工作目录；路径非空、不包含 NUL，解析后最多 4095 字节，不含终止符。目录和文件错误通过配置加载错误返回。
+`instrument_catalog` 接受绝对路径或相对进程工作目录的路径，遵循[路径解析约定](../../README.md#路径解析)；路径非空、不包含 NUL，解析后最多 4095 字节，不含终止符。目录和文件错误通过配置加载错误返回。
 
-`InstrumentCatalogLoader` 在初始化阶段以有界连续存储加载完整字典，排序去重后按稳定 ID 查找；行情加载器将运行清单引用的定义复制到自持配置中。完整字典及其 JSON 解析存储随后释放，回调期间不加载文件、不解析名称或扩容。策略可查询和交易的标的范围仍由宿主运行清单限定，实际行情回调还需策略成功订阅。
+行情组件的 `md::InstrumentCatalog` 在初始化阶段以有界连续存储加载完整字典，排序去重后按稳定 ID 查找；行情加载器将运行清单引用的定义复制到自持配置中。完整字典及其 JSON 解析存储随后释放，回调期间不加载文件、不解析名称或扩容。策略可查询和交易的标的范围仍由宿主运行清单限定，实际行情回调还需策略成功订阅。
 
 发布端编码价格和消费端解释价格必须引用一致的定义。运行期间不热加载字典；更新定义后应同步重启使用它的生产端和消费端。共享内存、TCP 和录制报价保持原有帧格式，标的定义通过配套文件提供。
 
 共享示例为 [instruments.json](../../examples/instruments.json)，模拟源与策略宿主配置均引用该文件。CSV 回放也从字典按标的读取价格精度，具体规则见[行情回放](market-data-replay.md)。
 
-### 模拟行情配置
+### 宿主行情接收配置
 
-```sh
-./build/debug/bin/yquant-strategyd \
-  --strategy ./build/debug/strategies/quote_observer_strategy.so \
-  --config ./build/debug/strategies/quote_observer_strategy.json \
-  --market-data-config ./build/debug/strategies/mock_market_data.json
-```
-
-模拟源配置示例：
-
-```json
-{
-  "source_id": 1,
-  "adapter": "mock",
-  "instrument_catalog": "../instruments.json",
-  "interval_ms": 100,
-  "instruments": [
-    {
-      "venue": "SSE",
-      "symbol": "600000",
-      "bid_price": 1000,
-      "bid_qty": 100,
-      "ask_price": 1001,
-      "ask_qty": 200,
-      "price_step": 1
-    }
-  ]
-}
-```
-
-模拟配置的所有字段必填。`interval_ms` 为 `1..60000` 的整数；基础价格和数量为正整数，卖价高于买价，步长为非负整数，价格和数量均在 `int64_t` 范围内，基础价格加步长不得溢出。无效行情、重复序号和源故障由测试注入，模拟源的正常配置不制造协议错误。
-
-### 历史回放配置
-
-使用 `adapter: "replay"`，完整示例见 [futures_market_data.json](../../examples/strategies/futures_market_data.json)，字段和样本来源见[行情回放](domestic-futures.md#行情回放)。
-
-### 共享内存行情配置
-
-先启动发布对应共享内存流的 `marketd`，再将策略宿主配置中的 `adapter` 设为 `shm`：
+先启动发布对应共享内存流的 `marketd`，再启动策略进程。宿主配置仅描述接收端点和标的范围：
 
 ```json
 {
   "source_id": 1,
   "adapter": "shm",
-  "instrument_catalog": "../instruments.json",
+  "instrument_catalog": "examples/instruments.json",
   "runtime_directory": "/tmp/yquant-marketd",
   "stream": "quotes",
   "poll_interval_us": 0,
@@ -361,7 +316,11 @@ Stop() -> Status
 
 `poll_interval_us` 可选，默认 `0`，范围为 `0..60000000` 的整数。共享内存配置禁止 `interval_ms` 及标的中的模拟价格、数量和步长字段。标的定义从引用的字典加载，用于策略名称查询和订阅；配置来源必须与接收到的报价一致。
 
-启动时将 `--market-data-config` 指向 [shm_market_data.json](../../examples/strategies/shm_market_data.json)。本机及跨机 `marketd` 配置见[行情进程设计](marketd.md)。策略动态库及策略配置不因传输类型改变。
+启动时将 `--market-data-config` 指向 [market_data.json](../../examples/strategies/market_data.json)。本机及跨机 `marketd` 配置见[行情进程设计](marketd.md)。策略动态库及策略配置不因传输类型改变。
+
+### 有限历史回放接收
+
+`adapter: "replay"` 读取单个标的的历史 CSV，使用 `replay_path`、`replay_speed` 和 `replay_tail_ms`。文件路径遵循工作目录约定，禁止填写共享内存端点或模拟报价种子。格式、时间缩放和结束规则见[期货行情回放](domestic-futures.md#行情回放)。
 
 ### 策略配置
 
@@ -381,11 +340,11 @@ Stop() -> Status
 
 ## 内存与工程组织
 
-`StrategyRunner` 直接内嵌 `MarketDataImpl`，由它持有标的字典、订阅表、行情缓存、回调阶段和单调时钟引用。`StrategyContextImpl` 是薄视图，借用时钟、`MarketData`、`Trading` 与 `Timer` 服务；行情状态仍由 `MarketDataImpl` 持有。宿主按配置选择内嵌的模拟、共享内存或历史回放源；测试注入的源替代此选择，配置校验和字典建立规则不变。行情服务与上下文均由宿主管理，存活时间覆盖策略收尾。
+`StrategyRunner` 直接内嵌程序专用的 `strategyd::MarketDataImpl`，由它组合 `md::InstrumentScope`，持有策略订阅表、行情缓存、回调阶段和单调时钟引用。`InstrumentScope` 复制经过校验的来源与标的定义，提供只读查询；它可单独用于交易账本及网关，不依赖策略订阅或行情缓存。`StrategyContextImpl` 是薄视图，借用时钟、`MarketData`、`Timer` 与网关客户端提供的 `Trading` 服务。装配层持有选择的接收源，runner 通过必需的 `MarketDataSource&` 借用；测试显式提供测试源。行情服务与上下文的存活时间覆盖策略收尾，装配层持有的标的范围覆盖交易运行时的整个生命周期。
 
-本地字典、订阅表和缓存采用最多 64 项的连续存储，稳定标的 ID 通过固定 128 槽哈希表映射到内部数组索引。哈希只用于初始化后不扩容的内部查找，不作为公共 ID 或持久身份。宿主在绑定来源范围内按标的保存状态，入站报价须先通过来源校验。行情热路径中的读取、校验、快照复制和回调调度不动态申请或扩容；策略自身的行情回调也遵循这一约束。共享内存连接的映射与订阅端分配发生在 `Start()`，发现入口检查所需的临时分配和文件 I/O 留在 `Service()` 冷路径。
+本地字典、订阅表和缓存采用最多 64 项的连续存储，稳定标的 ID 通过固定 128 槽哈希表映射到内部数组索引。哈希只用于初始化后不扩容的内部查找，不作为公共 ID 或持久身份。宿主在绑定来源范围内按标的保存状态，入站报价须先通过来源校验。行情热路径中的读取、校验、快照复制和回调调度不动态申请或扩容；策略自身的行情回调也遵循这一约束。共享内存连接的映射与接收端分配发生在 `Start()`，发现入口检查所需的临时分配和文件 I/O 留在 `Service()` 冷路径。
 
-等待与信号设施在初始化阶段建立，资源失败通过显式结果返回。Linux 与 macOS 使用相同的 `pselect()` 和信号掩码协议；通过计时及信号测试验证目标平台行为，不通过额外线程驱动模拟行情。
+时钟、等待和退出信号由[公共进程基础设施](engineering.md#进程基础设施)提供；程序私有代码与公共库的构建边界见[目录与模块](engineering.md#目录与模块)。
 
 | 位置 | 职责 |
 | --- | --- |
@@ -395,22 +354,20 @@ Stop() -> Status
 | `include/yquant/strategy/market_data.h` | 策略可见的标的查询、订阅及快照接口 |
 | `include/yquant/strategy/strategy_context.h` | 单调时间及行情、交易服务访问器 |
 | `include/yquant/strategy/strategy.h` | 上下文生命周期与行情回调 |
-| `src/strategyd/market_data_source.h` | 宿主内部行情源与非阻塞读取接口 |
-| `src/strategyd/mock_market_data_source.h/.cc` | 模拟源的期限、批次和报价生成 |
-| `src/strategyd/replay_market_data_source.h/.cc` | 历史 CSV 冷加载、回放期限与正常结束 |
-| `src/strategyd/shm_market_data_source.h/.cc` | 共享内存订阅、报价解码、本地时间赋值及健康维护 |
+| `include/yquant/strategy/callback_phase.h` | 策略宿主的回调阶段，用于行情订阅与交易请求权限控制 |
+| `include/yquant/md/instrument_catalog.h`、`src/md/instrument_catalog.cc` | 生产与消费端复用的标的字典加载与查询 |
+| `include/yquant/md/instrument_scope.h`、`src/md/instrument_scope.cc` | 来源绑定、运行标的定义和固定容量查找表 |
+| `include/yquant/md/market_data_config.h`、`src/md/market_data_config.cc` | 接收配置加载与校验、独立的标的范围校验 |
 | `include/yquant/md/quote_codec.h` | 不携带进程相对时间的统一报价帧编解码 |
-| `src/strategyd/market_data_config.h/.cc` | 宿主行情配置的解析与校验 |
-| `src/strategyd/json_config_document.h/.cc` | 宿主配置共用的 JSON 文件读取、完整语法及重复键校验 |
+| `src/strategyd/market_data_source.h` | 宿主内部行情源与非阻塞读取接口 |
+| `src/strategyd/shm_market_data_source.h/.cc` | 共享内存广播接收、事件过滤、报价解码、本地时间赋值及健康维护 |
 | `src/strategyd/strategy_config_loader.h/.cc` | 策略公共字段及原始参数片段加载 |
-| `src/strategyd/market_data.h/.cc` | Runner 内嵌的行情服务实现，持有字典、订阅、缓存与回调阶段 |
+| `src/strategyd/market_data.h/.cc` | 组合运行标的范围，持有策略订阅、缓存与回调阶段 |
 | `src/strategyd/strategy_context.h` | 借用时钟和宿主服务的上下文薄视图 |
 | `src/strategyd/strategy_runner.h/.cc` | 行情读取、回调分派与生命周期收尾 |
-| `src/strategyd/monotonic_clock.h` | 源、上下文与调度共用的单调时间基准 |
-| `src/strategyd/event_loop_environment.h` | 主循环依赖的等待与停止检查环境，供系统信号及测试实现 |
-| `src/strategyd/termination_signals.h/.cc` | 退出信号屏蔽、显式检查和 `pselect` 等待 |
 | `src/strategyd/main.cc` | 命令行、启动、运行和退出结果 |
 | `examples/strategies/quote_observer_strategy.cc` | 动态库行情观察策略及配套配置 |
+| `tests/md/` | 标的字典、运行范围、行情配置及公共行情组件测试 |
 | `tests/strategyd/` | 数据、上下文、等待竞态和真实子进程测试 |
 
 行情源不新增动态插件协议。后续适配器实现相同的宿主内部读取与维护契约，策略只依赖公共 SDK。公共签名及布局变化时更新 `kStrategyPluginAbiVersion`，全部示例和测试插件同步重新编译。
@@ -419,7 +376,7 @@ Stop() -> Status
 
 | 场景 | 验收条件 |
 | --- | --- |
-| 行情接入 | 真实动态库可从模拟源或 `marketd` 共享内存持续收到行情；策略订阅和回调接口相同，收到停止信号后正常退出 |
+| 行情接入 | 真实动态库通过共享内存持续收到 `marketd` 的模拟或其他上游行情；策略订阅和回调接口相同，收到停止信号后正常退出 |
 | 单线程执行 | 行情源读取、维护与全部策略回调在主线程执行，不创建行情或信号等待线程；源不直接调用策略，不发生回调重入 |
 | 初始化与订阅 | 名称解析、重复订阅、无效或未知标的、无行情源及错误阶段调用符合约定；`OnStart()` 返回前不发生行情回调 |
 | 接口访问 | `StrategyContext` 的 const 与非 const 访问器返回同一宿主行情对象；查询通过 `MarketData` 的 const 方法执行，引用不跨回调保存 |
@@ -427,7 +384,7 @@ Stop() -> Status
 | 快照一致性 | 无行情源、无效或未知标的、未订阅及首条行情前查询均失败且输出不变；每次先更新缓存再回调，按当前标的查询得到本次回调的完整快照 |
 | 顺序与存在标志 | 旧、重复序号不分派，完整快照允许序号跳跃；单边缺失、锁盘和不可交易事件按原语义传给策略 |
 | 来源绑定与序号范围 | 订阅和查询使用宿主绑定的唯一来源，运行中不能切源；错误来源事件在序号比较前拒绝，不能改变已保存的快照及序号 |
-| 共享标的字典 | 多个配置从同一文件解析完整定义；相对路径不依赖工作目录；字典容量与运行范围独立，未知引用、重复定义及内联覆盖在策略创建前拒绝 |
+| 共享标的字典 | 多个配置从同一文件解析完整定义；相对路径基于工作目录，与配置文件位置无关；字典容量与运行范围独立，未知引用、重复定义及内联覆盖在策略创建前拒绝 |
 | 配置边界 | 64 个标的正常加载，65 个、重复标的、非法来源 ID、未知键、非法单位精度及数值溢出均在加载动态库前拒绝 |
 | 信号等待竞态 | 在检查停止与进入等待之间发送信号仍能退出；无行情时可停止，持续有行情时也不会使信号饥饿 |
 | 行情源故障 | 注入 `Start()`、`Poll()` 或 `Service()` 错误，停止行情并按交易收尾规则处理委托，最终配对停止回调且非零退出；`Idle` 和错误保持输出对象不变 |
@@ -440,6 +397,6 @@ Stop() -> Status
 | 长周期停止 | 将间隔设置为 60000 ms，通过握手确认主线程进入等待；信号能中断等待，不必等下一次发布时间 |
 | 收尾异常 | 等待的非 `EINTR` 错误及源关闭错误被记录；已有运行错误不被后续退出信号改成正常停止；继承了屏蔽或忽略信号的进程仍能正常接收停止请求 |
 | 内存与生命周期 | 读取和派发路径无动态分配；ASan/UBSan 检查快照、自定义配置及动态库的存储生命周期 |
-| 生命周期示例 | 无行情配置时两个既有示例仍能配置、启动、停止；按最新 ABI 验证版本不符的动态库被拒绝 |
+| 生命周期示例 | 配置有效行情源并启动发布者后，两个示例均能配置、启动、停止；按最新 ABI 验证版本不符的动态库被拒绝 |
 
 测试通过管道或测试钩子控制就绪与竞态，不依赖固定休眠推测状态。测试驱动程序可使用线程辅助注入事件，`strategyd` 的行情源及事件循环仍只使用主线程。单元测试注入时钟验证期限和批次；进程集成测试使用真实时间与真实动态库，验证持续运行、信号和同步收尾。Linux x86_64 与 macOS 均执行适用的构建和功能验证。

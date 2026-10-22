@@ -66,7 +66,7 @@ ErrorCode ParseError(simdjson::error_code result, std::string_view path,
 // failure can leave a prefix written; interrupted writes are retried.
 ErrorCode WriteMarker(std::string_view text) noexcept {
   while (!text.empty()) {
-    const auto written = write(STDERR_FILENO, text.data(), text.size());
+    const auto written = write(STDOUT_FILENO, text.data(), text.size());
     if (written > 0) {
       text.remove_prefix(static_cast<std::size_t>(written));
     } else if (written == -1 && errno == EINTR) {
@@ -259,9 +259,9 @@ class FuturesBboStrategy final : public Strategy {
     had_inventory_ = gross != 0;
     started_ = true;
     const int written = std::fprintf(
-        stderr, "futures_bbo: ready net=%" PRId64 " gross=%" PRId64 "\n",
+        stdout, "futures_bbo: ready net=%" PRId64 " gross=%" PRId64 "\n",
         position.net_qty(), gross);
-    return written < 0 || std::fflush(stderr) != 0 ? ErrorCode::kIoError
+    return written < 0 || std::fflush(stdout) != 0 ? ErrorCode::kIoError
                                                    : ErrorCode::kOk;
   }
   ErrorCode OnTick(StrategyContext& context,
@@ -330,7 +330,7 @@ class FuturesBboStrategy final : public Strategy {
         ++slots;
     }
     const int written = std::fprintf(
-        stderr,
+        stdout,
         "futures_bbo: stopped submitted=%" PRIu64 " cancel_requests=%" PRIu64
         " fills=%" PRIu64 " filled_qty=%" PRIu64 " net=%" PRId64
         " gross=%" PRId64 " long_today=%" PRId64 " long_yesterday=%" PRId64
@@ -349,7 +349,7 @@ class FuturesBboStrategy final : public Strategy {
             position.short_today.frozen_qty +
             position.short_yesterday.frozen_qty,
         slots, max_gross_seen_);
-    return written < 0 || std::fflush(stderr) != 0 ? ErrorCode::kIoError
+    return written < 0 || std::fflush(stdout) != 0 ? ErrorCode::kIoError
                                                    : ErrorCode::kOk;
   }
 
@@ -527,6 +527,11 @@ class FuturesBboStrategy final : public Strategy {
     auto& side = sides_[index];
     const bool occupied = side.id.value != 0;
     const auto& order = orders[index];
+    // A local PendingNew has no confirmed gateway reservation yet. Retain
+    // pending requests until their order/account report arrives.
+    if (occupied &&
+        (order.state != OrderState::kWorking || order.cancel_pending))
+      return ErrorCode::kOk;
     FuturesAccountSnapshot account;
     FuturesPositionSnapshot position;
     std::int64_t gross = 0;

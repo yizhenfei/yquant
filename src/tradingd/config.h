@@ -1,11 +1,12 @@
 #ifndef YQUANT_TRADINGD_CONFIG_H_
 #define YQUANT_TRADINGD_CONFIG_H_
 
-#include "strategyd/market_data_config.h"
-#include "strategyd/trading_config.h"
 #include "tradingd/journal.h"
 #include "tradingd/mysql_archive_store.h"
-#include "tradingd/protocol.h"
+#include "yquant/base/config_error.h"
+#include "yquant/md/market_data_config.h"
+#include "yquant/trading/protocol.h"
+#include "yquant/trading/trading_config.h"
 
 namespace yquant::tradingd {
 
@@ -42,33 +43,33 @@ struct PersistenceConfig {
 // Fixed owned startup values. All clients share this single account and its
 // instrument dictionary. No broker adapter other than mock is configured yet.
 struct ServerConfig {
-  Endpoint listen;
+  trading::Endpoint listen;
+  md::MarketDataConfig market_data;
+  trading::TradingConfig trading;
+  char token[trading::kMaxTokenBytes + 1] = {};
+  std::size_t max_clients = trading::kMaxClients;
   PersistenceConfig persistence;
   MysqlArchiveOptions mysql_archive;
-  strategyd::MarketDataConfig market_data;
-  strategyd::TradingConfig trading;
-  char token[kMaxTokenBytes + 1] = {};
-  std::size_t max_clients = kMaxClients;
   std::uint64_t heartbeat_timeout_ns = 5000000000;
   std::uint64_t shutdown_timeout_ns = 5000000000;
 };
 
 // Validates typed values without acquiring sockets. Port zero is accepted for
 // ephemeral test listeners; the JSON loader requires a nonzero port.
-[[nodiscard]] base::Status ValidateConfig(
-    const ServerConfig& config, strategy::ConfigError& error) noexcept;
+[[nodiscard]] base::Status ValidateConfig(const ServerConfig& config,
+                                          base::ConfigError& error) noexcept;
 
 class ConfigLoader {
  public:
-  // Strict JSON; referenced configuration paths resolve relative to path.
+  // Strict JSON; relative paths use the process working directory.
   // Failure resets config() and retains an owned diagnostic until next Load.
   [[nodiscard]] base::Status Load(const char* path) noexcept;
   const ServerConfig& config() const noexcept { return config_; }
-  const strategy::ConfigError& error() const noexcept { return error_; }
+  const base::ConfigError& error() const noexcept { return error_; }
 
  private:
   ServerConfig config_;
-  strategy::ConfigError error_;
+  base::ConfigError error_;
 };
 
 }  // namespace yquant::tradingd

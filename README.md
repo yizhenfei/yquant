@@ -6,7 +6,7 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 
 项目不使用 C++ 异常。
 
-日志等基础组件统一组织在 `yquant_base` 静态库中，供上层模块复用。
+公共实现按职责组织为 `yquant_base`、`yquant_md` 和 `yquant_trading` 静态库，供可执行程序复用。
 
 ## 程序命名
 
@@ -34,25 +34,31 @@ YQuant 是使用 C++ 编写的量化交易系统，采用 C++20，使用 CMake �
 
 - `include/yquant/base/`：基础组件公开头文件。
 - `include/yquant/model/`：交易领域公共类型。
-- `include/yquant/md/`：共享内存行情订阅发布与标准报价帧。
+- `include/yquant/md/`：标的字典与运行范围、行情配置、模拟报价、编解码与广播。
+- `include/yquant/trading/`：交易账本、柜台接入、交易配置与网关传输。
 - `include/yquant/strategy/`：策略开发接口与动态库协议。
-- `src/base/`：基础组件及内部实现。
+- `src/base/`：基础组件及内部实现，包括内存广播队列和共享内存封装。
+- `src/md/`：行情库实现。
+- `src/trading/`：交易库实现。
+- `src/strategyd/`：策略程序专用的动态库加载、行情服务、远端交易服务与调度。
+- `src/marketd/`：行情程序专用的配置、输入与输出适配及调度。
+- `src/tradingd/`：交易网关专用的配置、账户服务与请求路由。
 - `src/logd/`：独立日志进程。
-- `src/strategyd/`：策略进程与动态库加载实现。
-- `src/md/`：共享内存映射、seqlock 协议和报价编解码。
-- `src/marketd/`：行情进程、配置、输入与输出适配器。
-- `src/tradingd/`：共享账户交易网关、跨机协议与 TCP 连接。
 - `examples/tradingd/`：共享交易网关与策略客户端配置。
 - `examples/marketd/`：本机分发、TCP 中继、历史回放与录制配置。
 - `examples/strategies/`：用户策略动态库示例。
 - `examples/data/`：国内期货历史报价样本、来源与许可。
 - `scripts/`：本地运行辅助脚本。
 - `tests/base/`：基础组件测试。
+- `tests/trading/`：交易账本、配置、模拟柜台与网关传输组件测试。
 - `tests/strategyd/`：策略运行时与进程集成测试。
 - `tests/md/`、`tests/marketd/`：行情组件与多进程分发测试。
+- `tests/tradingd/`：交易网关服务与多进程共享账户测试。
 - `cmake/`：依赖与编译配置。
 - `docs/design/`：架构与组件设计。
 - `docs/research/`：系统研究资料与记录。
+
+库与程序的依赖边界、CMake 目标见[目录与模块](docs/design/engineering.md#目录与模块)。
 
 ## 构建与测试
 
@@ -78,13 +84,19 @@ cmake -P cmake/DownloadTestData.cmake
 
 日志接口位于 `yquant/base/logging.h`。Debug 默认编译保留 DEBUG 及以上级别，其他构建保留 INFO 及以上；可在配置时使用 `-DYQUANT_LOG_COMPILED_LEVEL=TRACE` 等选项调整。
 
+### 路径解析
+
+所有接受相对路径的命令行参数和配置字段，都以进程的当前工作目录为基准；绝对路径直接使用。嵌套配置中的引用沿用同一工作目录，不随配置文件所在目录改变。程序在初始化时解析引用，运行期间不改变工作目录。共享内存的 `runtime_directory` 仍要求显式填写绝对路径。
+
+文中的命令均在仓库根目录执行。示例配置使用 `examples/...` 引用配套文件；录制示例中的 `capture.yqr`、`live_capture.yqr` 写入工作目录。从其他目录启动时，需要调整配置中的相对路径或使用绝对路径。
+
 ### VS Code
 
-用 VS Code 打开仓库根目录，安装工作区推荐的 C/C++ 和 CMake Tools 扩展。本机需先安装上述构建工具，并确保 VS Code 能找到 CMake、Ninja 和编译器；扩展不包含这些工具。
+使用 VS Code 打开仓库根目录，安装推荐的 C/C++ 和 CMake Tools 扩展。工作区通过 CMake Tools 提供 IntelliSense 编译参数，同时指定 `build/debug/compile_commands.json`，以 C++20 和项目头文件目录作为后备配置。
 
-工作区设置让 C/C++ 从 CMake Tools 获取编译参数，默认标准为 C++20，并在打开项目时自动配置 CMake。新 checkout 或 worktree 首次打开时，通过 `CMake: Select Configure Preset` 选择 `debug`，等待配置成功；需要手动重试时执行 `CMake: Configure`。生成的构建目录不纳入 Git，每个新目录都需要完成配置，无须先编译整个项目。
+工作区在打开项目时自动配置 CMake。新 checkout 或 worktree 首次打开时，在命令面板执行 `CMake: Select Configure Preset` 选择 `debug`，等待配置成功；需要手动重试时执行 `CMake: Configure`，生成编译数据库，无须先编译整个项目。CMake 和 Ninja 需要在 VS Code 的运行环境中可用；个人工具路径放在用户设置中，不写入仓库配置。切换构建 preset 时，CMake Tools 提供对应构建的编译参数。
 
-若仍出现 `std` 没有成员 `optional` 等诊断，执行 `C/C++: Log Diagnostics`，检查当前文件的标准为 C++20、编译器路径有效且配置来自当前工作区。修正配置后可执行 `C/C++: Reset IntelliSense Database` 刷新索引。
+已有编译数据库时，重新加载窗口即可读取工作区配置。如果仍显示旧诊断，执行 `C/C++: Reset IntelliSense Database`。头文件的语言标准、系统 SDK、宏和第三方依赖路径应与 CMake 编译参数保持一致。
 
 ## 日志进程
 
@@ -105,62 +117,65 @@ cmake -P cmake/DownloadTestData.cmake
 
 `yquant-strategyd` 读取 JSON 配置并加载用户策略动态库，全部校验成功后调用 `OnStart(context)`。主线程驱动行情、交易请求、委托与成交回报及策略定时事件。收到停止信号后，宿主停止行情和策略新请求，自动撤单并处理回报；排空后调用 `OnStop(context)`、销毁实例并释放动态库句柄。
 
-构建后运行生命周期策略示例：
+先按[行情进程](#行情进程)启动 `marketd`，再在另一个终端启动交易网关：
+
+```sh
+./build/debug/bin/yquant-tradingd --config examples/tradingd/local.json
+```
+
+两个服务就绪后，运行生命周期策略示例：
 
 ```sh
 ./build/debug/bin/yquant-strategyd \
   --strategy ./build/debug/strategies/lifecycle_strategy.so \
-  --config ./build/debug/strategies/lifecycle_strategy.json
+  --config ./build/debug/strategies/lifecycle_strategy.json \
+  --market-data-config ./build/debug/strategies/market_data.json \
+  --trading-config examples/tradingd/client_1.json
 ```
 
-`--strategy` 和 `--config` 均为必填参数，顺序不限。启动成功后输出 `Running` 和策略 ID。使用 `Ctrl+C` 或向进程发送 `SIGTERM` 停止，使用 `--help` 查看参数。路径以启动工作目录为基准；动态库文件名后缀由 CMake 的本机 `MODULE` 配置决定。
+`--strategy`、`--config`、`--market-data-config` 和 `--trading-config` 均为必填参数，顺序不限。所有交易统一经 `tradingd` 执行；连接或握手失败时不加载策略。启动成功后向 `stdout` 输出 `Running` 和策略 ID。控制台流遵循[标准输出与诊断约定](docs/design/engineering.md#标准输出与诊断)。使用 `Ctrl+C` 或向进程发送 `SIGTERM` 停止，使用 `--help` 查看参数。路径以启动工作目录为基准；动态库文件名后缀由 CMake 的本机 `MODULE` 配置决定。
 
 生命周期示例的 `LifecycleConfig` 派生自 `StrategyConfig`，读取必填字符串 `parameters.startup_message`，将解码后 1 至 128 字节、无内嵌 NUL 的内容保存在自身定长存储中，拒绝未知参数。配套配置将消息设为 `lifecycle strategy started`，`OnStart` 读取该参数并输出 `lifecycle_strategy: startup_message=lifecycle strategy started`。
 
 用户策略继承 `yquant::strategy::Strategy`，导出 `YQuantGetStrategyPlugin()`，通过描述符提供创建和销毁函数。回调通过 `context.market_data()` 访问行情，通过 `context.trading()` 提交、撤销和查询委托，通过 `context.Now()` 查询单调时间，通过 `context.timer()` 登记一次性时间唤醒。接口及所有权约定见[策略进程与动态策略加载设计](docs/design/strategyd.md)。
 
-配置文件包含 `strategy_id` 和 `parameters`。框架校验公共字段，策略内嵌的 `StrategyConfig` 派生对象解析自定义参数；无自定义参数时使用基类并填写空对象。配置 ID 为 1 至 64 字节的 UTF-8 字符串，文件上限为 1 MiB，JSON 容器嵌套最多 64 层。
+配置文件包含 `strategy_id` 和 `parameters`。框架校验公共字段，策略内嵌的 `StrategyConfig` 派生对象解析自定义参数；无自定义参数时使用基类并填写空对象。配置 ID 为 1 至 64 字节的 UTF-8 字符串。各进程配置与共享标的字典统一遵循[通用 JSON 输入规则](docs/design/engineering.md#json-配置文档)。
 
 强类型参数示例见 [parameterized_strategy.cc](examples/strategies/parameterized_strategy.cc) 和[配套配置](examples/strategies/parameterized_strategy.json)。构建后将上述命令的动态库与配置文件名都换成 `parameterized_strategy` 即可运行；配置约定见[策略配置设计](docs/design/strategy-config.md)。
 
-使用模拟行情驱动观察策略：
+先按[行情进程](#行情进程)启动 `marketd` 的模拟输入，再在另一个终端启动观察策略：
 
 ```sh
 ./build/debug/bin/yquant-strategyd \
   --strategy ./build/debug/strategies/quote_observer_strategy.so \
   --config ./build/debug/strategies/quote_observer_strategy.json \
-  --market-data-config ./build/debug/strategies/mock_market_data.json
+  --market-data-config ./build/debug/strategies/market_data.json \
+  --trading-config examples/tradingd/client_1.json
 ```
 
-`--market-data-config` 为可选的宿主行情配置，可选择模拟源、共享内存源或历史回放源，并将行情服务绑定到配置中的唯一来源。配置通过 `instrument_catalog` 引用[共享标的文件](examples/instruments.json)，`instruments` 只列运行标的身份及模拟源所需的价量参数，价格精度统一从字典读取。示例使用来源 `1`，每 100 ms 生成 `SSE/600000` 的一档报价；观察策略只通过 `parameters.venue` 和 `parameters.symbol` 选择标的。首次行情输出 `quote_observer: first quote received`，停止时输出 `ticks`、`last_sequence` 和 `max_age_ns` 汇总。省略行情配置时，两个不订阅行情的示例仍可运行。路径规则与字典格式见[行情驱动设计](docs/design/market-data.md#共享标的字典)。
+`--market-data-config` 指定宿主行情接收配置，支持共享内存及有限历史回放，并绑定唯一来源。配置通过 `instrument_catalog` 引用[共享标的文件](examples/instruments.json)，`instruments` 只列接收范围内的标的身份。模拟报价的价量、步长和间隔配置在 `marketd` 生产端。观察策略首次行情输出 `quote_observer: first quote received`，停止时输出 `ticks`、`last_sequence` 和 `max_age_ns` 汇总。路径规则与字典格式见[行情驱动设计](docs/design/market-data.md#共享标的字典)。
 
-运行单笔限价委托示例：
+保持 `marketd` 运行，再启动单笔限价委托示例：
 
 ```sh
 ./build/debug/bin/yquant-strategyd \
   --strategy ./build/debug/strategies/order_lifecycle_strategy.so \
   --config ./build/debug/strategies/order_lifecycle_strategy.json \
-  --market-data-config ./build/debug/strategies/mock_market_data.json \
-  --trading-config ./build/debug/strategies/mock_trading.json
+  --market-data-config ./build/debug/strategies/market_data.json \
+  --trading-config ./build/debug/tradingd/client_1.json
 ```
 
-`--trading-config` 为可选的宿主交易配置，使用时必须同时提供行情配置，以运行清单和共享字典建立本地标的范围。示例在首次有效卖一报价提交 200 股买单，默认 `fill` 模式按 100 股、100 股两笔成交，输出 `order_lifecycle: terminal state=filled cumulative=200 leaves=0`。成交后进程继续运行，停止时输出 `order_lifecycle: stopped fills=2 filled_qty=200 state=filled`。
+`--trading-config` 指定网关连接、客户端身份和超时，不接受柜台或初始账户配置。柜台和账户由 `tradingd` 的配置决定。示例在首次有效卖一报价提交 200 股买单，网关的默认 `fill` 模式按 100 股、100 股两笔成交，输出 `order_lifecycle: terminal state=filled cumulative=200 leaves=0`。成交后进程继续运行，停止时输出 `order_lifecycle: stopped fills=2 filled_qty=200 state=filled`。
 
-将交易配置的 `mode` 改为 `working`，等到 `order_lifecycle: working` 后发送停止信号，可验证宿主自动撤单和排空。交易接口、配置及收尾规则见[交易执行与账户账本](docs/design/trading.md)。交易服务同时提供持仓与资金查询，买单预占资金，卖单预占可卖持仓。
+将网关柜台配置的 `mode` 改为 `working`，等到 `order_lifecycle: working` 后发送停止信号，可验证宿主自动撤单和排空。交易接口、配置及收尾规则见[交易执行与账户账本](docs/design/trading.md)。交易服务同时提供持仓与资金查询，买单预占资金，卖单预占可卖持仓。
 
-多个策略共享一个账户时，先启动网关：
-
-```sh
-./build/debug/bin/yquant-tradingd --config ./build/debug/tradingd/local.json
-```
-
-再启动策略客户端：
+多个策略共享同一个网关时，为每个客户端配置不同的 `client_id`。沿用前面的网关，启动共享账户策略：
 
 ```sh
 ./build/debug/bin/yquant-strategyd \
   --strategy ./build/debug/strategies/shared_account_strategy.so \
   --config ./build/debug/strategies/shared_account_strategy.json \
-  --market-data-config ./build/debug/strategies/mock_market_data.json \
+  --market-data-config ./build/debug/strategies/market_data.json \
   --trading-config ./build/debug/tradingd/client_1.json
 ```
 
@@ -191,7 +206,7 @@ cmake -P cmake/DownloadTestData.cmake
 ./scripts/run_futures_strategy.sh
 ```
 
-脚本回放大商所豆一期货 `a1805` 在 2017-12-27 的 744 条真实买卖一报价，以 100 倍速度运行，约 20 秒后自动撤单收尾。交易所由进程内模拟实现，支持买卖开仓、平今平昨、保证金预占、手续费与损益。启动时打印本次配置和日志目录，结束时查看 `futures_bbo: stopped` 汇总。数据来源、计量和撮合规则见[国内期货模拟交易](docs/design/domestic-futures.md)。
+脚本回放大商所豆一期货 `a1805` 在 2017-12-27 的 744 条真实买卖一报价，以 100 倍速度运行，约 20 秒后自动撤单收尾。交易所在独立的 `tradingd` 中模拟实现，支持买卖开仓、平今平昨、保证金预占、手续费与损益。启动时打印本次配置和日志目录，结束时查看 `futures_bbo: stopped` 汇总。数据来源、计量和撮合规则见[国内期货模拟交易](docs/design/domestic-futures.md)。
 
 ## 行情进程
 
@@ -209,7 +224,8 @@ cmake -P cmake/DownloadTestData.cmake
 ./build/debug/bin/yquant-strategyd \
   --strategy ./build/debug/strategies/quote_observer_strategy.so \
   --config ./build/debug/strategies/quote_observer_strategy.json \
-  --market-data-config ./build/debug/strategies/shm_market_data.json
+  --market-data-config ./build/debug/strategies/shm_market_data.json \
+  --trading-config examples/tradingd/client_1.json
 ```
 
 各策略进程通过私有游标读取同一份共享内存。槽位覆盖时报告缺口并停止策略，避免继续使用缺失事件后的状态。共享内存和网络中继均保留源标识、品种、报价序号与 UTC 事件时间，接收时间在策略进程本地赋值。
@@ -225,7 +241,7 @@ cmake --build --preset debug --target download_test_data
 ./build/debug/bin/yquant-marketd --config ./build/debug/marketd/replay_csv.json
 ```
 
-示例最快回放全部 367,171 条 DolphinDB 历史快照，将一档报价录制到 `build/debug/marketd/capture.yqr`。已有同名文件时失败，重新运行需更换文件名或移动已有文件。`replay_recording.json` 可将录制文件发到共享内存；原速、倍速、启动等待与策略接入见[行情回放与录制](docs/design/market-data-replay.md)。
+示例最快回放全部 367,171 条 DolphinDB 历史快照，将一档报价录制到工作目录的 `capture.yqr`。已有同名文件时失败，重新运行需更换文件名或移动已有文件。`replay_recording.json` 可将录制文件发到共享内存；原速、倍速、启动等待与策略接入见[行情回放与录制](docs/design/market-data-replay.md)。
 
 ## 工程方案
 
@@ -235,14 +251,15 @@ cmake --build --preset debug --target download_test_data
 
 - [日志选型与设计](docs/design/logging.md)：异步日志库对比、队列策略与验证标准。
 - [SPSC 队列设计](docs/design/spsc-queue.md)：低延迟内存消息队列设计。
+- [单写多读广播队列](docs/design/broadcast-queue.md)：外部内存、seqlock、独立游标和覆盖缺口。
 - [策略进程与动态策略加载设计](docs/design/strategyd.md)：生命周期接口、动态库协议与命令执行流程。
 - [策略配置设计](docs/design/strategy-config.md)：JSON 分层、强类型配置与启动校验。
 - [国内期货模拟交易](docs/design/domestic-futures.md)：开平仓、期货账本、模拟撮合与历史报价回放。
 - [策略定时事件](docs/design/strategy-timer.md)：主线程的一次性时间唤醒、调度与生命周期。
-- [行情驱动与策略事件循环](docs/design/market-data.md)：一档报价、策略上下文、模拟行情源与事件分派。
+- [行情驱动与策略事件循环](docs/design/market-data.md)：一档报价、策略上下文、共享内存接收与事件分派。
 - [行情进程设计](docs/design/marketd.md)：可配置行情管线、本机广播和跨机中继。
 - [行情回放与录制](docs/design/market-data-replay.md)：真实 CSV 转换、回放时序和异步录制格式。
-- [共享内存行情订阅发布组件](docs/design/shared-memory-pubsub.md)：seqlock、独立游标、覆盖缺口和重启隔离。
+- [共享内存行情广播组件](docs/design/shared-memory-broadcast.md)：映射、流注册、心跳、重启隔离和行情适配。
 - [交易执行与账户账本](docs/design/trading.md)：限价委托、撤单与异步回报的执行闭环。
 - [共享交易网关](docs/design/tradingd.md)：多机策略共享账户、订单归属、TCP 协议和断线收尾。
 - [交易网关持久化与恢复](docs/design/tradingd-persistence.md)：mmap 日志、后台同步、快照和柜台对账设计。

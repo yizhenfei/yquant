@@ -27,7 +27,7 @@ inline constexpr std::size_t kIdentityBufferBytes = kArchiveIdentityBytes;
 inline constexpr std::size_t kControlBufferBytes = 256;
 inline constexpr std::size_t kSnapshotNameBytes = 96;
 inline constexpr std::size_t kRecoveryStepBudget =
-    32 * strategyd::kMaxMockTradingReports;
+    32 * trading::kMaxMockTradingReports;
 
 base::Status CorruptState() noexcept { return {base::ErrorCode::kCorrupt, {}}; }
 
@@ -81,27 +81,28 @@ bool MatchesInstrumentIdentity(
 // The wire codec already validates all order/account fields and avoids native
 // layouts. Token-bearing Hello messages are never used in persistent records.
 base::Status WriteMessage(StateWriter& writer,
-                          const Message& message) noexcept {
-  std::array<std::byte, kMaxFrameSize> bytes{};
+                          const trading::Message& message) noexcept {
+  std::array<std::byte, trading::kMaxFrameSize> bytes{};
   std::size_t size = 0;
-  // Persistent copies do not traverse Connection::Queue, which normally
-  // assigns the transport sequence. Use a valid envelope for the shared codec;
-  // this sequence is never replayed to a client.
+  // Persistent copies do not traverse trading::Connection::Queue, which
+  // normally assigns the transport sequence. Use a valid envelope for the
+  // shared codec; this sequence is never replayed to a client.
   auto encoded = message;
   if (encoded.sequence == 0) encoded.sequence = 1;
-  auto status = EncodeMessage(encoded, bytes, size);
+  auto status = trading::EncodeMessage(encoded, bytes, size);
   if (!status.ok()) return status;
   writer.U64(size);
   writer.Bytes(std::span(bytes).first(size));
   return writer.ok() ? base::Status{}
                      : base::Status{base::ErrorCode::kResourceExhausted, {}};
 }
-base::Status ReadMessage(StateReader& reader, Message& message) noexcept {
+base::Status ReadMessage(StateReader& reader,
+                         trading::Message& message) noexcept {
   const auto size = reader.U64();
-  if (!reader.ok() || size > kMaxFrameSize) return CorruptState();
+  if (!reader.ok() || size > trading::kMaxFrameSize) return CorruptState();
   const auto bytes = reader.Bytes(size);
   if (!reader.ok()) return CorruptState();
-  return DecodeMessage(bytes, message);
+  return trading::DecodeMessage(bytes, message);
 }
 }  // namespace
 
@@ -136,6 +137,9 @@ void Server::Storage::BindOwner(std::size_t slot,
 base::Status Server::Storage::Adapter::SendOrder(
     model::ClientOrderId id, const model::OrderRequest& request,
     std::uint64_t now) noexcept {
+  if (storage.config.trading.adapter ==
+      trading::TradingAdapterKind::kSimulatedFutures)
+    return storage.futures.SendOrder(id, request, now);
   if (!storage.config.persistence.enabled())
     return storage.mock.SendOrder(id, request, now);
   const auto index = storage.OwnerIndex(id);
@@ -169,13 +173,14 @@ base::Status Server::Storage::Append(std::uint16_t type,
 }
 
 base::Status Server::Storage::BeforeCommit(
-    const strategyd::TradingMutation& mutation) noexcept {
+    const trading::TradingMutation& mutation) noexcept {
   if (!config.persistence.enabled() || replaying) return {};
-  using Kind = strategyd::TradingMutationKind;
+  using Kind = trading::TradingMutationKind;
   std::size_t client_index = context_client;
   std::size_t local_index = context_local;
   auto cancel = context_cancel;
-  if (mutation.kind != Kind::kNewOrder && context_client == kMaxClients) {
+  if (mutation.kind != Kind::kNewOrder &&
+      context_client == trading::kMaxClients) {
     const auto index = OwnerIndex(mutation.order_id);
     if (index == owners.size()) return CorruptState();
     client_index = owners[index].client;
@@ -183,16 +188,16 @@ base::Status Server::Storage::BeforeCommit(
     cancel = clients[client_index].orders[local_index].local_cancel;
   }
   if (client_index >= config.max_clients ||
-      local_index >= strategyd::kMaxTradingOrders)
+      local_index >= trading::kMaxTradingOrders)
     return CorruptState();
   std::array<std::byte, kJournalMaxPayloadBytes> bytes{};
   StateWriter writer(bytes);
   writer.U64(client_index);
   writer.U64(local_index);
   writer.U64(cancel.value);
-  std::array<std::byte, strategyd::kMaxEncodedTradingMutation> fact{};
+  std::array<std::byte, trading::kMaxEncodedTradingMutation> fact{};
   std::size_t size = 0;
-  auto status = strategyd::EncodeTradingMutation(mutation, fact, size);
+  auto status = trading::EncodeTradingMutation(mutation, fact, size);
   if (!status.ok()) return status;
   writer.Bytes(std::span(fact).first(size));
   status = Append(
@@ -203,21 +208,22 @@ base::Status Server::Storage::BeforeCommit(
 }
 
 base::Status Server::Storage::ObserveMock(
-    void* context, const strategyd::MockTradingMutation& mutation) noexcept {
+    void* context, const trading::MockTradingMutation& mutation) noexcept {
   auto& s = *static_cast<Storage*>(context);
-  std::array<std::byte, strategyd::kMaxMockTradingMutationBytes> bytes{};
+  std::array<std::byte, trading::kMaxMockTradingMutationBytes> bytes{};
   std::size_t size = 0;
-  auto status = strategyd::EncodeMockTradingMutation(mutation, bytes, size);
+  auto status = trading::EncodeMockTradingMutation(mutation, bytes, size);
   if (!status.ok()) return status;
   status =
       s.Append(kMockRecord, std::span(bytes).first(size),
-               mutation.kind == strategyd::MockTradingMutationKind::kSendOrder);
+               mutation.kind == trading::MockTradingMutationKind::kSendOrder);
   if (status.ok()) s.last_record_time = mutation.now;
   return status;
 }
 
 base::Status Server::Storage::PersistRejection(
-    std::size_t client, std::size_t local, const Message& message) noexcept {
+    std::size_t client, std::size_t local,
+    const trading::Message& message) noexcept {
   if (!config.persistence.enabled()) return {};
   std::array<std::byte, kJournalMaxPayloadBytes> bytes{};
   StateWriter writer(bytes);
@@ -233,8 +239,8 @@ base::Status Server::Storage::ReplayRecord(
     std::span<const std::byte> payload) noexcept {
   auto& s = *static_cast<Storage*>(context);
   if (type == kMockRecord) {
-    strategyd::MockTradingMutation mutation;
-    auto status = strategyd::DecodeMockTradingMutation(payload, mutation);
+    trading::MockTradingMutation mutation;
+    auto status = trading::DecodeMockTradingMutation(payload, mutation);
     if (status.ok()) status = s.mock.ReplayMutation(mutation);
     if (status.ok()) s.last_record_time = mutation.now;
     return status;
@@ -243,7 +249,7 @@ base::Status Server::Storage::ReplayRecord(
   const auto client_index = reader.U64();
   const auto local_index = reader.U64();
   if (!reader.ok() || client_index >= s.config.max_clients ||
-      local_index >= strategyd::kMaxTradingOrders ||
+      local_index >= trading::kMaxTradingOrders ||
       s.clients[client_index].id == 0)
     return CorruptState();
   auto& client = s.clients[client_index];
@@ -251,10 +257,10 @@ base::Status Server::Storage::ReplayRecord(
   client.order_count =
       std::max(client.order_count, static_cast<std::size_t>(local_index + 1));
   if (type == kRejectedRecord) {
-    Message message;
+    trading::Message message;
     auto status = ReadMessage(reader, message);
     if (!status.ok() || !reader.done() ||
-        message.type != MessageType::kOrderUpdate ||
+        message.type != trading::MessageType::kOrderUpdate ||
         message.update.order.client_order_id.value != local_index + 1)
       return CorruptState();
     if (local.core_id.value == 0) local.rejected = message.update.order;
@@ -266,15 +272,15 @@ base::Status Server::Storage::ReplayRecord(
   }
   if (type != kLedgerRecord) return CorruptState();
   const auto local_cancel = reader.U64();
-  strategyd::TradingMutation mutation;
+  trading::TradingMutation mutation;
   const auto encoded = reader.Bytes(payload.size() - 24);
   if (!reader.done()) return CorruptState();
-  auto status = strategyd::DecodeTradingMutation(encoded, mutation);
+  auto status = trading::DecodeTradingMutation(encoded, mutation);
   if (!status.ok()) return status;
-  strategyd::TradingDispatch dispatch;
+  trading::TradingDispatch dispatch;
   status = s.trading.ReplayMutation(mutation, &dispatch);
   if (!status.ok()) return status;
-  using Kind = strategyd::TradingMutationKind;
+  using Kind = trading::TradingMutationKind;
   if (mutation.kind == Kind::kNewOrder) {
     const auto index = s.trading.order_count() - 1;
     s.BindOwner(index,
@@ -358,7 +364,7 @@ base::Status Server::Storage::LoadIdentity() noexcept {
     client.id = reader.U64();
     client.session_id = reader.U64();
     client.instrument_count = reader.U64();
-    if (client.instrument_count > kMaxInstruments ||
+    if (client.instrument_count > trading::kMaxInstruments ||
         ((client.id == 0) != (client.session_id == 0)) ||
         client.session_id > last_namespace ||
         (client.id != 0 && i >= config.max_clients))
@@ -369,7 +375,7 @@ base::Status Server::Storage::LoadIdentity() noexcept {
       if (decimals > UINT8_MAX) return CorruptState();
       client.instruments[j] = {{id}, static_cast<std::uint8_t>(decimals)};
       model::InstrumentDefinition known;
-      if (!market_data.TryGetInstrument(client.instruments[j].id, known) ||
+      if (!instruments.TryGetInstrument(client.instruments[j].id, known) ||
           known.price_decimals != decimals)
         return CorruptState();
     }
@@ -426,8 +432,8 @@ base::Status Server::Storage::CaptureCheckpoint(std::uint64_t now) noexcept {
       writer.U64(local.local_cancel.value);
       writer.U64(local.retry_at);
       if (local.core_id.value == 0) {
-        Message message;
-        message.type = MessageType::kOrderUpdate;
+        trading::Message message;
+        message.type = trading::MessageType::kOrderUpdate;
         message.update.kind = model::OrderUpdateKind::kRejected;
         message.update.order = local.rejected;
         message.account = account;
@@ -528,9 +534,10 @@ base::Status Server::Storage::LoadCheckpoint(std::uint64_t& stream,
       local.local_cancel = {reader.U64()};
       local.retry_at = reader.U64();
       if (local.core_id.value == 0) {
-        Message message;
+        trading::Message message;
         status = ReadMessage(reader, message);
-        if (!status.ok() || message.type != MessageType::kOrderUpdate ||
+        if (!status.ok() ||
+            message.type != trading::MessageType::kOrderUpdate ||
             message.update.order.client_order_id.value != i + 1)
           return CorruptState();
         local.rejected = message.update.order;
@@ -568,12 +575,12 @@ base::Status Server::Storage::RecoverMock() noexcept {
   // evidence only; a real adapter must use independent complete broker history.
   trading.AbandonRecoveredRequests();
   while (trading.has_local_updates()) {
-    strategyd::TradingDispatch dispatch;
+    trading::TradingDispatch dispatch;
     const auto code = trading.ApplyLocalUpdate(dispatch);
     if (code != base::ErrorCode::kOk) return {code, {}};
   }
   for (std::size_t i = 0; i < mock.recovery_event_count(); ++i) {
-    strategyd::TradingEvent event;
+    trading::TradingEvent event;
     auto status = mock.ReadRecoveryEvent(i, event);
     if (!status.ok()) return status;
     model::OrderSnapshot order;
@@ -583,7 +590,7 @@ base::Status Server::Storage::RecoverMock() noexcept {
     event.receive_time_ns = clock_.Now();
     if (event.kind == model::OrderUpdateKind::kFill)
       event.fill.receive_time_ns = event.receive_time_ns;
-    strategyd::TradingDispatch dispatch;
+    trading::TradingDispatch dispatch;
     const auto code = trading.ApplyEvent(event, dispatch);
     if (code != base::ErrorCode::kOk) return {code, {}};
   }
@@ -603,18 +610,18 @@ base::Status Server::Storage::RecoverMock() noexcept {
     if (!found && !model::IsTerminalOrderState(order.state)) {
       // A journaled send intent without a mock Send record has no external
       // simulation side effect. Do not send it for the first time on restart.
-      strategyd::TradingEvent rejected;
+      trading::TradingEvent rejected;
       rejected.client_order_id = order.client_order_id;
       rejected.report_sequence = order.report_sequence + 1;
       rejected.kind = model::OrderUpdateKind::kRejected;
       rejected.receive_time_ns = now;
       rejected.reason.Set(0, "mock request absent from recovered prefix");
-      strategyd::TradingDispatch dispatch;
+      trading::TradingDispatch dispatch;
       const auto code = trading.ApplyEvent(rejected, dispatch);
       if (code != base::ErrorCode::kOk) return {code, {}};
     }
   }
-  trading.SetRunning(true);
+
   std::uint64_t recovery_now = now;
   for (std::size_t step = 0; step < kRecoveryStepBudget; ++step) {
     for (std::size_t i = 0; i < trading.order_count(); ++i) {
@@ -640,16 +647,16 @@ base::Status Server::Storage::RecoverMock() noexcept {
         }
         if (!matched) return CorruptState();
       } else if (order.state == model::OrderState::kWorking) {
-        trading.BeginCallback(strategyd::CallbackPhase::kTick);
+        trading.SetAcceptingRequests(true);
         const auto code = trading.CancelOrder(order.client_order_id);
-        trading.EndCallback();
+        trading.SetAcceptingRequests(false);
         if (code != base::ErrorCode::kOk) return {code, {}};
       }
     }
-    status = trading.ProcessRequests(adapter, recovery_now);
+    status = trading.ProcessRequests(recovery_now);
     if (!status.ok()) return status;
     if (trading.has_local_updates()) {
-      strategyd::TradingDispatch dispatch;
+      trading::TradingDispatch dispatch;
       const auto code = trading.ApplyLocalUpdate(dispatch);
       if (code != base::ErrorCode::kOk) return {code, {}};
       continue;
@@ -662,11 +669,11 @@ base::Status Server::Storage::RecoverMock() noexcept {
     recovery_now = clock_.Now();
     status = mock.RebaseDeadlines(*deadline, recovery_now);
     if (!status.ok()) return status;
-    strategyd::TradingEvent event;
+    trading::TradingEvent event;
     const auto polled = mock.Poll(recovery_now, event);
-    if (polled.state != strategyd::TradingPollState::kEvent)
+    if (polled.state != trading::TradingPollState::kEvent)
       return CorruptState();
-    strategyd::TradingDispatch dispatch;
+    trading::TradingDispatch dispatch;
     const auto code = trading.ApplyEvent(event, dispatch);
     if (code != base::ErrorCode::kOk) return {code, {}};
   }
@@ -717,17 +724,17 @@ base::Status Server::Storage::StartPersistence() noexcept {
     // A snapshot may cover records beyond a physically surviving WAL prefix.
   }
   if (last_namespace == UINT64_MAX ||
-      order_id_highwater > UINT64_MAX - strategyd::kMaxTradingOrders ||
-      cancel_id_highwater > UINT64_MAX - strategyd::kMaxMockTradingReports)
+      order_id_highwater > UINT64_MAX - trading::kMaxTradingOrders ||
+      cancel_id_highwater > UINT64_MAX - trading::kMaxMockTradingReports)
     return {base::ErrorCode::kResourceExhausted, {}};
   run_id = ++last_namespace;
   const auto next_order = order_id_highwater + 1;
-  order_id_highwater += strategyd::kMaxTradingOrders;
+  order_id_highwater += trading::kMaxTradingOrders;
   const auto next_cancel = cancel_id_highwater + 1;
-  cancel_id_highwater += strategyd::kMaxMockTradingReports;
+  cancel_id_highwater += trading::kMaxMockTradingReports;
   status = SaveIdentity();
   if (!status.ok()) return status;
-  trading.SetRunning(false);
+  trading.SetAcceptingRequests(false);
   status = trading.SetNextOrderIdAtLeast(next_order);
   if (status.ok()) status = trading.SetNextCancelIdAtLeast(next_cancel);
   if (!status.ok()) return status;

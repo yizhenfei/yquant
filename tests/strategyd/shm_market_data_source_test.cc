@@ -6,8 +6,10 @@
 #include <filesystem>
 #include <string>
 
+#include "base/internal/shared_memory_mapping.h"
+#include "base/internal/shm_broadcast_layout.h"
+#include "base/internal/shm_stream_registry.h"
 #include "gtest/gtest.h"
-#include "md/internal/shm_segment.h"
 #include "yquant/md/quote_codec.h"
 
 namespace yquant::strategyd {
@@ -18,7 +20,7 @@ class ShmMarketDataSourceTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ASSERT_NE(mkdtemp(directory_), nullptr);
-    config_.adapter = MarketDataAdapter::kShm;
+    config_.adapter = md::MarketDataAdapter::kShm;
     config_.source_id = {1};
     std::strcpy(config_.runtime_directory, directory_);
     std::strcpy(config_.stream, "quotes");
@@ -54,7 +56,7 @@ class ShmMarketDataSourceTest : public ::testing::Test {
     quote.instrument_id = config_.instruments[instrument].instrument.id;
     quote.sequence = sequence;
     quote.event_time_ns = 123456789;
-    // This must never cross into the subscriber process's monotonic domain.
+    // This must never cross into the receiver process's monotonic domain.
     quote.receive_time_ns = UINT64_MAX;
     quote.bid_price = 1000;
     quote.bid_qty = 100;
@@ -71,7 +73,7 @@ class ShmMarketDataSourceTest : public ::testing::Test {
   }
 
   char directory_[64] = "/tmp/yquant-shm-source-XXXXXX";
-  MarketDataConfig config_;
+  md::MarketDataConfig config_;
   md::ShmPublisher publisher_;
 };
 
@@ -120,6 +122,28 @@ TEST_F(ShmMarketDataSourceTest, ReadersFilterTheirIndependentSubscriptions) {
   EXPECT_EQ(output.instrument_id, second_id);
   EXPECT_EQ(first.Poll(30, output).state, MarketDataPollState::kIdle);
   EXPECT_EQ(second.Poll(30, output).state, MarketDataPollState::kIdle);
+}
+
+TEST_F(ShmMarketDataSourceTest, FiltersEventTypesBeforeDecodingQuotes) {
+  StartPublisher();
+  ShmMarketDataSource source;
+  ASSERT_TRUE(source.Prepare(config_).ok());
+  auto id = config_.instruments[0].instrument.id;
+  ASSERT_TRUE(source.Start(std::span(&id, 1), 0).ok());
+  // Start owns its selection after the borrowed input is changed.
+  id = config_.instruments[1].instrument.id;
+  md::EventHeader header;
+  header.instrument_id = config_.instruments[0].instrument.id.value;
+  header.type = 99;
+  ASSERT_TRUE(publisher_.Publish({header, {}}).ok());
+  model::QuoteTick output = Quote(0, 999);
+  const auto unchanged = output;
+  EXPECT_EQ(source.Poll(10, output).state, MarketDataPollState::kIdle);
+  EXPECT_EQ(output, unchanged);
+  Publish(Quote(0, 2));
+  ASSERT_EQ(source.Poll(20, output).state, MarketDataPollState::kEvent);
+  EXPECT_EQ(output.sequence, 2U);
+  EXPECT_EQ(output.instrument_id, config_.instruments[0].instrument.id);
 }
 
 TEST_F(ShmMarketDataSourceTest, ReportsGapWithoutSkippingOrChangingOutput) {
@@ -242,9 +266,13 @@ TEST_F(ShmMarketDataSourceTest,
   const auto id = config_.instruments[0].instrument.id;
   ASSERT_TRUE(source.Start(std::span(&id, 1), 0).ok());
   Publish(Quote());
-  auto mapping = md::internal::Segment::Attach({directory_, "quotes"});
-  ASSERT_TRUE(mapping);
-  (*mapping)->header().heartbeat_ns.store(0, std::memory_order_release);
+  auto manifest = base::internal::Discover({directory_, "quotes"});
+  ASSERT_TRUE(manifest);
+  base::internal::SharedMemoryMapping mapping;
+  ASSERT_TRUE(mapping.Open(manifest->shm_name).ok());
+  auto* control = reinterpret_cast<base::internal::ShmBroadcastControl*>(
+      mapping.memory().data());
+  control->heartbeat_ns.store(0, std::memory_order_release);
   EXPECT_EQ(source.next_service_deadline(), kShmHealthCheckIntervalNs);
   ASSERT_TRUE(source.Service(kShmHealthCheckIntervalNs - 1).ok());
   ASSERT_TRUE(source.Service(kShmHealthCheckIntervalNs).ok());

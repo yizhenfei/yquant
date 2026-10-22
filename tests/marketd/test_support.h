@@ -12,6 +12,7 @@
 
 #include "gtest/gtest.h"
 #include "marketd/config.h"
+#include "yquant/md/market_data_config.h"
 #include "yquant/model/identifiers.h"
 #include "yquant/model/instrument.h"
 #include "yquant/model/quote_tick.h"
@@ -59,8 +60,8 @@ class RuntimeDirectory {
   bool valid_ = false;
 };
 
-inline strategyd::MarketDataConfig MockConfig(std::size_t count = 1) {
-  strategyd::MarketDataConfig config;
+inline md::MockQuoteConfig MockConfig(std::size_t count = 1) {
+  md::MockQuoteConfig config;
   config.source_id = {42};
   config.interval_ns = 1000000;
   config.instrument_count = count;
@@ -82,6 +83,16 @@ inline strategyd::MarketDataConfig MockConfig(std::size_t count = 1) {
     item.price_step = 1;
   }
   return config;
+}
+// Dictionary-only view for gateway tests; quote seeds stay producer-owned.
+inline md::MarketDataConfig ScopeConfig() {
+  const auto mock = MockConfig();
+  md::MarketDataConfig scope;
+  scope.source_id = mock.source_id;
+  scope.instrument_count = mock.instrument_count;
+  for (std::size_t i = 0; i < scope.instrument_count; ++i)
+    scope.instruments[i].instrument = mock.instruments[i].instrument;
+  return scope;
 }
 
 inline model::QuoteTick Quote(std::uint64_t sequence = 1) {

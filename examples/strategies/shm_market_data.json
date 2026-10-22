@@ -1,7 +1,7 @@
 {
   "source_id": 1,
   "adapter": "shm",
-  "instrument_catalog": "../instruments.json",
+  "instrument_catalog": "examples/instruments.json",
   "runtime_directory": "/tmp/yquant-marketd",
   "stream": "quotes",
   "poll_interval_us": 0,

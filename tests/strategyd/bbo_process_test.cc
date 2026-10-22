@@ -103,10 +103,8 @@ TEST(BboProcessTest, MissingTradingAccountFailsBeforeRunningOrStopCallback) {
   Process child;
   ASSERT_EQ(child.Start(arguments), 0);
   ASSERT_TRUE(child.Wait()) << child.output();
-  EXPECT_EQ(child.exit_code(), 1) << child.output();
-  EXPECT_NE(child.output().find("stage=start"), std::string::npos);
-  EXPECT_NE(child.output().find("strategy OnStart returned an error"),
-            std::string::npos);
+  EXPECT_EQ(child.exit_code(), 2) << child.output();
+  EXPECT_NE(child.output().find("Usage:"), std::string::npos);
   EXPECT_EQ(child.output().find("Running"), std::string::npos);
   EXPECT_EQ(child.output().find("bbo_market_making: ready"), std::string::npos);
   EXPECT_EQ(child.output().find("bbo_market_making: first quotes submitted"),

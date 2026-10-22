@@ -63,7 +63,7 @@ ErrorCode ParseError(simdjson::error_code result, std::string_view path,
 // failure can leave a prefix written; interrupted writes are retried.
 ErrorCode WriteMarker(std::string_view text) noexcept {
   while (!text.empty()) {
-    const auto written = write(STDERR_FILENO, text.data(), text.size());
+    const auto written = write(STDOUT_FILENO, text.data(), text.size());
     if (written > 0) {
       text.remove_prefix(static_cast<std::size_t>(written));
     } else if (written == -1 && errno == EINTR) {
@@ -249,11 +249,11 @@ class BboMarketMakingStrategy final : public Strategy {
         context.market_data().SubscribeQuotes(instrument_.id);
     if (subscribed != ErrorCode::kOk) return subscribed;
     const int written =
-        std::fprintf(stderr,
+        std::fprintf(stdout,
                      "bbo_market_making: ready cash_balance=%" PRId64
                      " total_qty=%" PRId64 " available_qty=%" PRId64 "\n",
                      cash.balance, position.total_qty, position.available_qty);
-    if (written < 0 || std::fflush(stderr) != 0) return ErrorCode::kIoError;
+    if (written < 0 || std::fflush(stdout) != 0) return ErrorCode::kIoError;
     started_ = true;
     return ErrorCode::kOk;
   }
@@ -337,7 +337,7 @@ class BboMarketMakingStrategy final : public Strategy {
       }
     }
     const int written = std::fprintf(
-        stderr,
+        stdout,
         "bbo_market_making: stopped submitted=%" PRIu64
         " cancel_requests=%" PRIu64 " fills=%" PRIu64 " filled_qty=%" PRIu64
         " cash_balance=%" PRId64 " cash_reserved=%" PRId64 " total_qty=%" PRId64
@@ -345,7 +345,7 @@ class BboMarketMakingStrategy final : public Strategy {
         submitted_, cancel_requests_, fills_, filled_qty_, cash.balance,
         cash.reserved, position.total_qty, position.available_qty,
         position.reserved_qty, active_slots);
-    return written < 0 || std::fflush(stderr) != 0 ? ErrorCode::kIoError
+    return written < 0 || std::fflush(stdout) != 0 ? ErrorCode::kIoError
                                                    : ErrorCode::kOk;
   }
 

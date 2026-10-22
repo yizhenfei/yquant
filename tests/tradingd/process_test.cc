@@ -10,7 +10,8 @@
 #include "../marketd/test_support.h"
 #include "gtest/gtest.h"
 #include "process_support.h"
-#include "tradingd/connection.h"
+#include "scoped_working_directory.h"
+#include "yquant/trading/connection.h"
 
 namespace yquant::tradingd {
 namespace {
@@ -36,14 +37,20 @@ class TradingdProcessTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ASSERT_TRUE(directory_.valid());
+    ASSERT_TRUE(working_directory_.valid());
     port_ = AvailablePort();
     ASSERT_NE(port_, 0);
     ASSERT_TRUE(directory_.Write(
-        "market.json",
+        "mock.json",
         R"({"adapter":"mock","source_id":1,"interval_ms":10,)"
         R"("instrument_catalog":"instruments.json","instruments":[)"
         R"({"venue":"SSE","symbol":"600000",)"
         R"("bid_price":1000,"bid_qty":100,"ask_price":1001,"ask_qty":200,"price_step":0}]})"));
+    ASSERT_TRUE(
+        directory_.Write("market.json", R"({"adapter":"shm","source_id":1,
+"instrument_catalog":"instruments.json","runtime_directory":"/tmp/yquant-test-feed",
+"stream":"quotes","poll_interval_us":1000,
+"instruments":[{"venue":"SSE","symbol":"600000"}]})"));
     ASSERT_TRUE(directory_.Write(
         "strategy.json",
         R"({"strategy_id":"shared-account","parameters":{)"
@@ -91,13 +98,13 @@ class TradingdProcessTest : public ::testing::Test {
   }
   // Opens an observer as another authenticated strategy identity. It receives
   // the same account view, but submits no orders or cancellations.
-  void Observe(Connection& connection, Message& welcome) {
-    Endpoint endpoint;
+  void Observe(trading::Connection& connection, trading::Message& welcome) {
+    trading::Endpoint endpoint;
     endpoint.port = port_;
     ASSERT_TRUE(connection.Connect(endpoint, 2000000000ULL).ok())
         << connection.error_detail();
-    Message hello;
-    hello.type = MessageType::kHello;
+    trading::Message hello;
+    hello.type = trading::MessageType::kHello;
     hello.client_id = 99;
     std::snprintf(hello.token, sizeof(hello.token), "test-secret");
     hello.instrument_count = 1;
@@ -106,20 +113,22 @@ class TradingdProcessTest : public ::testing::Test {
     hello.instruments[0].price_decimals = 2;
     ASSERT_TRUE(connection.Queue(hello).ok());
     ASSERT_TRUE(Read(connection, welcome));
-    ASSERT_EQ(welcome.type, MessageType::kWelcome);
+    ASSERT_EQ(welcome.type, trading::MessageType::kWelcome);
   }
-  bool Read(Connection& connection, Message& message) {
+  bool Read(trading::Connection& connection, trading::Message& message) {
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (std::chrono::steady_clock::now() < deadline) {
       const auto result = connection.Poll(message);
-      if (result.state == ReceiveState::kMessage) return true;
-      if (result.state != ReceiveState::kIdle) return false;
+      if (result.state == trading::ReceiveState::kMessage) return true;
+      if (result.state != trading::ReceiveState::kIdle) return false;
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     return false;
   }
   RuntimeDirectory directory_;
+  ::yquant::testing::ScopedWorkingDirectory working_directory_{
+      directory_.path()};
   std::uint16_t port_ = 0;
 };
 
@@ -131,7 +140,7 @@ TEST_F(TradingdProcessTest, TwoStrategiesFillAgainstOneAccount) {
   ASSERT_TRUE(server.WaitForOutput("Running")) << server.output();
   ASSERT_TRUE(directory_.Write(
       "marketd.json",
-      R"({"source":{"adapter":"mock","config":"market.json"},)"
+      R"({"source":{"adapter":"mock","config":"mock.json"},)"
       R"("publishers":[{"adapter":"shm","runtime_directory":")" +
           std::string(directory_.path()) +
           R"(","stream":"quotes","capacity":16384,"max_payload_size":80}]})"));
@@ -155,8 +164,8 @@ TEST_F(TradingdProcessTest, TwoStrategiesFillAgainstOneAccount) {
       << first.output();
   ASSERT_TRUE(second.WaitForOutput("order state=filled cumulative=200"))
       << second.output();
-  Connection observer;
-  Message welcome;
+  trading::Connection observer;
+  trading::Message welcome;
   Observe(observer, welcome);
   ASSERT_FALSE(::testing::Test::HasFatalFailure());
   EXPECT_EQ(welcome.account.cash.balance, kCash - 4004000000LL);
@@ -190,8 +199,8 @@ TEST_F(TradingdProcessTest,
   ASSERT_TRUE(second.WaitForOutput("order state=rejected")) << second.output();
   ASSERT_TRUE(first.Signal(SIGKILL));
   ASSERT_TRUE(first.Wait());
-  Connection observer;
-  Message message;
+  trading::Connection observer;
+  trading::Message message;
   Observe(observer, message);
   ASSERT_FALSE(::testing::Test::HasFatalFailure());
   for (unsigned count = 0;

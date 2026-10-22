@@ -5,8 +5,9 @@
 #include <limits>
 
 #include "gtest/gtest.h"
+#include "mock_trading_service.h"
 #include "strategyd/strategy_context.h"
-#include "strategyd/trading.h"
+#include "yquant/trading/trading_engine.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -19,7 +20,7 @@ TEST(TimerTest, StartupArmingReplacesTheDeadlineButCannotDispatch) {
   TimerEvent event{7, 8};
   EXPECT_FALSE(timer.deadline());
   EXPECT_EQ(timer.Arm(10), ErrorCode::kInvalidState);
-  timer.BeginCallback(CallbackPhase::kStart);
+  timer.BeginCallback(strategy::CallbackPhase::kStart);
   ASSERT_EQ(timer.Arm(10), ErrorCode::kOk);
   ASSERT_EQ(timer.Arm(20), ErrorCode::kOk);
   EXPECT_FALSE(timer.TryTakeDue(100, event));
@@ -42,7 +43,7 @@ TEST(TimerTest, StartupArmingReplacesTheDeadlineButCannotDispatch) {
 
 TEST(TimerTest, CancelIsIdempotentAndReplacementHasNoStaleNotification) {
   TimerImpl timer;
-  timer.BeginCallback(CallbackPhase::kStart);
+  timer.BeginCallback(strategy::CallbackPhase::kStart);
   ASSERT_EQ(timer.Cancel(), ErrorCode::kOk);
   ASSERT_EQ(timer.Arm(10), ErrorCode::kOk);
   ASSERT_EQ(timer.Arm(30), ErrorCode::kOk);
@@ -51,7 +52,7 @@ TEST(TimerTest, CancelIsIdempotentAndReplacementHasNoStaleNotification) {
   TimerEvent event{1, 2};
   EXPECT_FALSE(timer.TryTakeDue(10, event));
   EXPECT_EQ(event.deadline_ns, 1U);
-  timer.BeginCallback(CallbackPhase::kTick);
+  timer.BeginCallback(strategy::CallbackPhase::kTick);
   ASSERT_EQ(timer.Cancel(), ErrorCode::kOk);
   ASSERT_EQ(timer.Cancel(), ErrorCode::kOk);
   timer.EndCallback();
@@ -66,7 +67,7 @@ TEST(TimerTest, ImmediateAndMaximumDeadlinesUseTheExactMonotonicValue) {
   TimerEvent event;
   for (const std::uint64_t deadline :
        {std::uint64_t{0}, std::uint64_t{5}, kMaximum}) {
-    timer.BeginCallback(CallbackPhase::kTick);
+    timer.BeginCallback(strategy::CallbackPhase::kTick);
     ASSERT_EQ(timer.Arm(deadline), ErrorCode::kOk);
     timer.EndCallback();
     ASSERT_TRUE(timer.TryTakeDue(kMaximum, event));
@@ -79,7 +80,7 @@ TEST(TimerTest, ImmediateAndMaximumDeadlinesUseTheExactMonotonicValue) {
 TEST(TimerTest, RearmingInsideCallbackNeverConsumesRecursively) {
   TimerImpl timer;
   timer.SetRunning(true);
-  timer.BeginCallback(CallbackPhase::kTick);
+  timer.BeginCallback(strategy::CallbackPhase::kTick);
   ASSERT_EQ(timer.Arm(0), ErrorCode::kOk);
   TimerEvent event{1, 2};
   EXPECT_FALSE(timer.TryTakeDue(10, event));
@@ -87,7 +88,7 @@ TEST(TimerTest, RearmingInsideCallbackNeverConsumesRecursively) {
   timer.EndCallback();
   ASSERT_TRUE(timer.TryTakeDue(10, event));
   EXPECT_FALSE(timer.deadline());
-  timer.BeginCallback(CallbackPhase::kTimer);
+  timer.BeginCallback(strategy::CallbackPhase::kTimer);
   ASSERT_EQ(timer.Arm(0), ErrorCode::kOk);
   EXPECT_FALSE(timer.TryTakeDue(11, event));
   EXPECT_EQ(event.fire_time_ns, 10U);
@@ -100,10 +101,10 @@ TEST(TimerTest, RearmingInsideCallbackNeverConsumesRecursively) {
 
 TEST(TimerTest, MutationPhaseFailuresPreserveAnArmedDeadline) {
   constexpr std::array kBusinessPhases = {
-      CallbackPhase::kTick, CallbackPhase::kOrderUpdate, CallbackPhase::kFill,
-      CallbackPhase::kTimer};
+      strategy::CallbackPhase::kTick, strategy::CallbackPhase::kOrderUpdate,
+      strategy::CallbackPhase::kFill, strategy::CallbackPhase::kTimer};
   TimerImpl timer;
-  timer.BeginCallback(CallbackPhase::kStart);
+  timer.BeginCallback(strategy::CallbackPhase::kStart);
   ASSERT_EQ(timer.Arm(100), ErrorCode::kOk);
   timer.EndCallback();
   for (const auto phase : kBusinessPhases) {
@@ -120,7 +121,8 @@ TEST(TimerTest, MutationPhaseFailuresPreserveAnArmedDeadline) {
     ASSERT_EQ(timer.Arm(100), ErrorCode::kOk);
     timer.EndCallback();
   }
-  for (const auto phase : {CallbackPhase::kNone, CallbackPhase::kStop}) {
+  for (const auto phase :
+       {strategy::CallbackPhase::kNone, strategy::CallbackPhase::kStop}) {
     timer.BeginCallback(phase);
     EXPECT_EQ(timer.Arm(200), ErrorCode::kInvalidState);
     EXPECT_EQ(timer.Cancel(), ErrorCode::kInvalidState);
@@ -131,7 +133,7 @@ TEST(TimerTest, MutationPhaseFailuresPreserveAnArmedDeadline) {
 
 TEST(TimerTest, StoppingDiscardsTheDeadlineAndResetStartsAFreshLifecycle) {
   TimerImpl timer;
-  timer.BeginCallback(CallbackPhase::kStart);
+  timer.BeginCallback(strategy::CallbackPhase::kStart);
   ASSERT_EQ(timer.Arm(0), ErrorCode::kOk);
   timer.EndCallback();
   timer.SetRunning(true);
@@ -139,7 +141,8 @@ TEST(TimerTest, StoppingDiscardsTheDeadlineAndResetStartsAFreshLifecycle) {
   timer.BeginStopping();
   EXPECT_FALSE(timer.deadline());
   for (const auto phase :
-       {CallbackPhase::kStart, CallbackPhase::kTimer, CallbackPhase::kStop}) {
+       {strategy::CallbackPhase::kStart, strategy::CallbackPhase::kTimer,
+        strategy::CallbackPhase::kStop}) {
     timer.BeginCallback(phase);
     EXPECT_EQ(timer.Arm(0), ErrorCode::kInvalidState);
     EXPECT_EQ(timer.Cancel(), ErrorCode::kInvalidState);
@@ -150,7 +153,7 @@ TEST(TimerTest, StoppingDiscardsTheDeadlineAndResetStartsAFreshLifecycle) {
   EXPECT_EQ(event.deadline_ns, 1U);
   timer.Reset();
   EXPECT_FALSE(timer.deadline());
-  timer.BeginCallback(CallbackPhase::kStart);
+  timer.BeginCallback(strategy::CallbackPhase::kStart);
   ASSERT_EQ(timer.Arm(10), ErrorCode::kOk);
   timer.EndCallback();
   EXPECT_FALSE(timer.TryTakeDue(100, event));
@@ -160,14 +163,14 @@ TEST(TimerTest, StoppingDiscardsTheDeadlineAndResetStartsAFreshLifecycle) {
 }
 
 TEST(TimerTest, ContextReturnsTheSameOwnedTimerThroughBothAccessors) {
-  SteadyMonotonicClock clock;
+  base::SteadyMonotonicClock clock;
   MarketDataImpl market_data(clock);
-  TradingImpl trading(clock, market_data);
+  testing::MockTradingService trading;
   TimerImpl timer;
   StrategyContextImpl context(clock, market_data, trading, timer);
   const strategy::StrategyContext& read_only = context;
   EXPECT_EQ(&context.timer(), &read_only.timer());
-  timer.BeginCallback(CallbackPhase::kStart);
+  timer.BeginCallback(strategy::CallbackPhase::kStart);
   ASSERT_EQ(context.timer().Arm(1234), ErrorCode::kOk);
   EXPECT_EQ(read_only.timer().deadline(), 1234U);
   timer.EndCallback();
