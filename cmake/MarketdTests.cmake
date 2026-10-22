@@ -51,15 +51,17 @@ gtest_discover_tests(yquant_marketd_test
   PROPERTIES ${yquant_test_properties})
 
 # Isolate replacement global new/delete from all other test executables.
-add_executable(marketd_allocation_test tests/marketd/allocation_test.cc)
-target_include_directories(marketd_allocation_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(marketd_allocation_test PRIVATE
-  yquant_marketd_objects GTest::gtest_main Threads::Threads)
-target_compile_options(marketd_allocation_test PRIVATE -Wall -Wextra -Wpedantic)
-target_compile_definitions(marketd_allocation_test PRIVATE
-  YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json")
-gtest_discover_tests(marketd_allocation_test
-  WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
-  DISCOVERY_MODE PRE_TEST
-  DISCOVERY_TIMEOUT 30
-  PROPERTIES ${yquant_test_properties})
+if(NOT YQUANT_SANITIZER STREQUAL "thread")
+  add_executable(marketd_allocation_test tests/marketd/allocation_test.cc)
+  target_include_directories(marketd_allocation_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+  target_link_libraries(marketd_allocation_test PRIVATE
+    yquant_marketd_objects GTest::gtest_main Threads::Threads)
+  target_compile_options(marketd_allocation_test PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_definitions(marketd_allocation_test PRIVATE
+    YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json")
+  gtest_discover_tests(marketd_allocation_test
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    DISCOVERY_MODE PRE_TEST
+    DISCOVERY_TIMEOUT 30
+    PROPERTIES ${yquant_test_properties})
+endif()

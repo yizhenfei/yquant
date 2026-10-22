@@ -68,14 +68,13 @@ struct OrderOwner {
 struct Server::Storage final : trading::TradingMutationSink {
   explicit Storage(const base::MonotonicClock& clock) noexcept
       : clock_(clock),
-        trading(clock, instruments, adapter),
         ctp(instruments),
-        adapter(*this) {}
+        adapter(*this),
+        trading(clock, instruments, adapter) {}
   const base::MonotonicClock& clock_;
   ServerConfig config;
   trading::Listener listener;
   md::InstrumentScope instruments;
-  trading::TradingEngine trading;
   trading::MockTradingAdapter mock;
   trading::SimulatedFuturesExchange futures;
   trading::CtpTradingAdapter ctp;
@@ -137,6 +136,10 @@ struct Server::Storage final : trading::TradingMutationSink {
     }
     Storage& storage;
   } adapter;
+  // The engine borrows the wrapper, which borrows the concrete adapters.
+  // Declaration order keeps every adapter alive through engine destruction,
+  // including teardown after partial initialization.
+  trading::TradingEngine trading;
   std::array<Client, trading::kMaxClients> clients;
   std::array<OrderOwner, trading::kMaxTradingOrders> owners = {};
   std::array<std::uint16_t, kOwnerLookupCapacity> owner_lookup{};

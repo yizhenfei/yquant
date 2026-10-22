@@ -271,6 +271,9 @@ include(cmake/ProjectBoundaries.cmake)
 if(BUILD_TESTING)
   include(GoogleTest)
 
+  # TSan defines global new/delete too. Replacement C++ heap counter targets
+  # are built and discovered only in the other configurations.
+
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
     add_test(NAME Futures.CtpScripts
@@ -358,17 +361,19 @@ if(BUILD_TESTING)
     DISCOVERY_TIMEOUT 30
     PROPERTIES ${yquant_test_properties})
 
-  add_executable(broadcast_queue_allocation_test
-    tests/base/broadcast_queue_allocation_test.cc)
-  target_link_libraries(broadcast_queue_allocation_test PRIVATE
-    yquant::base GTest::gtest_main)
-  target_compile_options(broadcast_queue_allocation_test PRIVATE
-    -Wall -Wextra -Wpedantic)
-  gtest_discover_tests(broadcast_queue_allocation_test
-    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
-    DISCOVERY_MODE PRE_TEST
-    DISCOVERY_TIMEOUT 30
-    PROPERTIES ${yquant_test_properties})
+  if(NOT YQUANT_SANITIZER STREQUAL "thread")
+    add_executable(broadcast_queue_allocation_test
+      tests/base/broadcast_queue_allocation_test.cc)
+    target_link_libraries(broadcast_queue_allocation_test PRIVATE
+      yquant::base GTest::gtest_main)
+    target_compile_options(broadcast_queue_allocation_test PRIVATE
+      -Wall -Wextra -Wpedantic)
+    gtest_discover_tests(broadcast_queue_allocation_test
+      WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+      DISCOVERY_MODE PRE_TEST
+      DISCOVERY_TIMEOUT 30
+      PROPERTIES ${yquant_test_properties})
+  endif()
 
   add_executable(spsc_queue_test
     tests/base/spsc_queue_test.cc
@@ -387,17 +392,19 @@ if(BUILD_TESTING)
     PROPERTIES ${yquant_test_properties})
 
   # Isolate replacement global new/delete from the other test executable.
-  add_executable(spsc_queue_allocation_test
-    tests/base/spsc_queue_allocation_test.cc)
-  target_link_libraries(spsc_queue_allocation_test PRIVATE
-    yquant::base GTest::gtest_main Threads::Threads)
-  target_compile_options(spsc_queue_allocation_test PRIVATE
-    -Wall -Wextra -Wpedantic)
-  gtest_discover_tests(spsc_queue_allocation_test
-    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
-    DISCOVERY_MODE PRE_TEST
-    DISCOVERY_TIMEOUT 30
-    PROPERTIES ${yquant_test_properties})
+  if(NOT YQUANT_SANITIZER STREQUAL "thread")
+    add_executable(spsc_queue_allocation_test
+      tests/base/spsc_queue_allocation_test.cc)
+    target_link_libraries(spsc_queue_allocation_test PRIVATE
+      yquant::base GTest::gtest_main Threads::Threads)
+    target_compile_options(spsc_queue_allocation_test PRIVATE
+      -Wall -Wextra -Wpedantic)
+    gtest_discover_tests(spsc_queue_allocation_test
+      WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+      DISCOVERY_MODE PRE_TEST
+      DISCOVERY_TIMEOUT 30
+      PROPERTIES ${yquant_test_properties})
+  endif()
 
   add_executable(logging_test tests/base/logging_test.cc
     tests/base/logging_process_test.cc)
@@ -413,16 +420,18 @@ if(BUILD_TESTING)
     DISCOVERY_TIMEOUT 30
     PROPERTIES ${yquant_test_properties})
 
-  add_executable(logging_allocation_test tests/base/logging_allocation_test.cc)
-  target_link_libraries(logging_allocation_test PRIVATE
-    yquant::base GTest::gtest_main)
-  target_compile_options(logging_allocation_test PRIVATE
-    -Wall -Wextra -Wpedantic)
-  gtest_discover_tests(logging_allocation_test
-    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
-    DISCOVERY_MODE PRE_TEST
-    DISCOVERY_TIMEOUT 30
-    PROPERTIES ${yquant_test_properties})
+  if(NOT YQUANT_SANITIZER STREQUAL "thread")
+    add_executable(logging_allocation_test tests/base/logging_allocation_test.cc)
+    target_link_libraries(logging_allocation_test PRIVATE
+      yquant::base GTest::gtest_main)
+    target_compile_options(logging_allocation_test PRIVATE
+      -Wall -Wextra -Wpedantic)
+    gtest_discover_tests(logging_allocation_test
+      WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+      DISCOVERY_MODE PRE_TEST
+      DISCOVERY_TIMEOUT 30
+      PROPERTIES ${yquant_test_properties})
+  endif()
 
   include(cmake/LoggingCompileTests.cmake)
   include(cmake/StrategydTests.cmake)
@@ -435,33 +444,37 @@ if(BUILD_TESTING)
   endforeach()
 
   # Keep replacement global allocation functions isolated from other tests.
-  add_executable(market_data_allocation_test
-    tests/strategyd/market_data_allocation_test.cc)
-  target_include_directories(market_data_allocation_test PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/tests")
-  target_link_libraries(market_data_allocation_test PRIVATE
-    yquant_strategyd_objects GTest::gtest_main yquant_compile_options)
-  target_compile_definitions(market_data_allocation_test PRIVATE
-    YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json")
-  target_compile_options(market_data_allocation_test PRIVATE
-    -Wall -Wextra -Wpedantic)
-  gtest_discover_tests(market_data_allocation_test
-    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
-    DISCOVERY_MODE PRE_TEST
-    DISCOVERY_TIMEOUT 30
-    PROPERTIES ${yquant_test_properties})
+  if(NOT YQUANT_SANITIZER STREQUAL "thread")
+    add_executable(market_data_allocation_test
+      tests/strategyd/market_data_allocation_test.cc)
+    target_include_directories(market_data_allocation_test PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/tests")
+    target_link_libraries(market_data_allocation_test PRIVATE
+      yquant_strategyd_objects GTest::gtest_main yquant_compile_options)
+    target_compile_definitions(market_data_allocation_test PRIVATE
+      YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json")
+    target_compile_options(market_data_allocation_test PRIVATE
+      -Wall -Wextra -Wpedantic)
+    gtest_discover_tests(market_data_allocation_test
+      WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+      DISCOVERY_MODE PRE_TEST
+      DISCOVERY_TIMEOUT 30
+      PROPERTIES ${yquant_test_properties})
+  endif()
 
-  add_executable(trading_allocation_test
-    tests/trading/trading_allocation_test.cc)
-  target_include_directories(trading_allocation_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
-  target_link_libraries(trading_allocation_test PRIVATE
-    yquant::trading GTest::gtest_main yquant_compile_options)
-  target_compile_definitions(trading_allocation_test PRIVATE
-    YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json")
-  target_compile_options(trading_allocation_test PRIVATE
-    -Wall -Wextra -Wpedantic)
-  gtest_discover_tests(trading_allocation_test
-    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
-    DISCOVERY_MODE PRE_TEST
-    DISCOVERY_TIMEOUT 30
-    PROPERTIES ${yquant_test_properties})
+  if(NOT YQUANT_SANITIZER STREQUAL "thread")
+    add_executable(trading_allocation_test
+      tests/trading/trading_allocation_test.cc)
+    target_include_directories(trading_allocation_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_link_libraries(trading_allocation_test PRIVATE
+      yquant::trading GTest::gtest_main yquant_compile_options)
+    target_compile_definitions(trading_allocation_test PRIVATE
+      YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json")
+    target_compile_options(trading_allocation_test PRIVATE
+      -Wall -Wextra -Wpedantic)
+    gtest_discover_tests(trading_allocation_test
+      WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+      DISCOVERY_MODE PRE_TEST
+      DISCOVERY_TIMEOUT 30
+      PROPERTIES ${yquant_test_properties})
+  endif()
 endif()

@@ -695,7 +695,9 @@ void Server::Close() noexcept {
   storage_->mock.SetMutationObserver(nullptr, nullptr);
   storage_->mysql_archive.Stop(false);
   storage_->StopCheckpoint();
-  (void)storage_->adapter.Stop();
+  // Close the engine while its borrowed adapter and journal are still alive.
+  // This also clears its prepared state, making subsequent destruction inert.
+  (void)storage_->trading.Stop();
   (void)storage_->journal.Close();
   storage_.reset();
 }

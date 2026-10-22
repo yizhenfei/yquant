@@ -32,6 +32,9 @@ namespace yquant::marketd {
 namespace {
 
 constexpr auto kProcessTimeout = std::chrono::seconds(10);
+// Parsing and recording 367171 quotes needs a larger bounded budget under
+// sanitizers and on shared CI hosts; small process tests retain their limit.
+constexpr auto kLargeHistoryProcessTimeout = std::chrono::seconds(60);
 
 // Owns one real daemon and a nonblocking combined output pipe. Failed tests
 // kill and reap their children, so no failure leaves a feed or writer lock
@@ -96,8 +99,8 @@ class ChildProcess {
     return ObserveUntil(
         [&] { return output_.find(text) != std::string::npos; });
   }
-  bool Wait() {
-    return ObserveUntil([&] { return pid_ < 0; });
+  bool Wait(std::chrono::milliseconds timeout = kProcessTimeout) {
+    return ObserveUntil([&] { return pid_ < 0; }, timeout);
   }
   bool Signal(int signal) const { return pid_ > 0 && kill(pid_, signal) == 0; }
   int exit_code() const {
@@ -122,8 +125,9 @@ class ChildProcess {
 
   // Observes process exit and output under a single deadline per expectation.
   template <typename Predicate>
-  bool ObserveUntil(Predicate done) {
-    const auto deadline = std::chrono::steady_clock::now() + kProcessTimeout;
+  bool ObserveUntil(Predicate done,
+                    std::chrono::milliseconds timeout = kProcessTimeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
     for (;;) {
       Drain();
       if (pid_ > 0) {
@@ -475,7 +479,7 @@ TEST_F(MarketdIntegrationTest, RealHistoryRecordsAndReplaysEveryQuote) {
           R"({"adapter":"record","path":"first.yqr","queue_capacity":67108864}]})"));
   ChildProcess first;
   ASSERT_EQ(StartMarketd(first, "history.json"), 0);
-  ASSERT_TRUE(first.Wait()) << first.output();
+  ASSERT_TRUE(first.Wait(kLargeHistoryProcessTimeout)) << first.output();
   ASSERT_EQ(first.exit_code(), 0) << first.output();
   EXPECT_NE(first.output().find("Stopped events=367171"), std::string::npos);
 
@@ -487,7 +491,7 @@ TEST_F(MarketdIntegrationTest, RealHistoryRecordsAndReplaysEveryQuote) {
       R"("queue_capacity":67108864}]})"));
   ChildProcess second;
   ASSERT_EQ(StartMarketd(second, "recording.json"), 0);
-  ASSERT_TRUE(second.Wait()) << second.output();
+  ASSERT_TRUE(second.Wait(kLargeHistoryProcessTimeout)) << second.output();
   ASSERT_EQ(second.exit_code(), 0) << second.output();
   EXPECT_NE(second.output().find("Stopped events=367171"), std::string::npos);
 

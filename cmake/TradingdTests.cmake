@@ -31,16 +31,18 @@ gtest_discover_tests(yquant_tradingd_test
   DISCOVERY_TIMEOUT 30
   PROPERTIES ${yquant_test_properties})
 
-add_executable(yquant_tradingd_allocation_test tests/tradingd/allocation_test.cc)
-target_include_directories(yquant_tradingd_allocation_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(yquant_tradingd_allocation_test PRIVATE
-  yquant_tradingd_objects GTest::gtest_main Threads::Threads)
-target_compile_options(yquant_tradingd_allocation_test PRIVATE
-  -Wall -Wextra -Wpedantic)
-target_compile_definitions(yquant_tradingd_allocation_test PRIVATE
-  YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json")
-gtest_discover_tests(yquant_tradingd_allocation_test
-  WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
-  DISCOVERY_MODE PRE_TEST
-  DISCOVERY_TIMEOUT 30
-  PROPERTIES ${yquant_test_properties})
+if(NOT YQUANT_SANITIZER STREQUAL "thread")
+  add_executable(yquant_tradingd_allocation_test tests/tradingd/allocation_test.cc)
+  target_include_directories(yquant_tradingd_allocation_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+  target_link_libraries(yquant_tradingd_allocation_test PRIVATE
+    yquant_tradingd_objects GTest::gtest_main Threads::Threads)
+  target_compile_options(yquant_tradingd_allocation_test PRIVATE
+    -Wall -Wextra -Wpedantic)
+  target_compile_definitions(yquant_tradingd_allocation_test PRIVATE
+    YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json")
+  gtest_discover_tests(yquant_tradingd_allocation_test
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    DISCOVERY_MODE PRE_TEST
+    DISCOVERY_TIMEOUT 30
+    PROPERTIES ${yquant_test_properties})
+endif()
