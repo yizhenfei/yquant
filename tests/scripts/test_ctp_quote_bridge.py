@@ -2,6 +2,7 @@
 
 import contextlib
 import datetime as dt
+import errno
 import importlib.util
 import io
 import json
@@ -419,6 +420,114 @@ class TransportTest(unittest.TestCase):
                         ([], [consumer], []), ([consumer], [], [])]):
                 self.assertEqual(bridge.pump(consumer, state, callbacks, 0, 0, 1,
                                              lambda: False, stop_request_file=marker), 1)
+
+    def test_receive_reset_requires_an_explicit_run_owned_stop_marker(self):
+        class ResetConsumer:
+            def recv(self, *_args):
+                raise ConnectionResetError(errno.ECONNRESET, "consumer reset")
+
+            def send(self, frame):
+                return len(frame)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            regular = root / "stop_requested"
+            regular.touch()
+            not_file = root / "directory"
+            not_file.mkdir()
+            for marker in (None, root / "missing", not_file, regular):
+                with self.subTest(marker=marker):
+                    state, _ = session()
+                    state.logged_in = state.subscribed = True
+                    callbacks = bridge.CallbackQueue()
+                    callbacks.push("quote", raw_quote())
+                    consumer = ResetConsumer()
+                    with contextlib.redirect_stdout(io.StringIO()) as output, \
+                            mock.patch.object(bridge.time, "time_ns", return_value=1792760462321000000), \
+                            mock.patch.object(bridge.select, "select", side_effect=[
+                                ([], [consumer], []), ([consumer], [], [])]):
+                        if marker == regular:
+                            count = bridge.pump(consumer, state, callbacks, 0, 0, 1,
+                                                lambda: False, stop_request_file=marker)
+                            self.assertEqual(count, 1)
+                            self.assertIn("stopped: quotes=1 fresh_quotes=1", output.getvalue())
+                        else:
+                            with self.assertRaises(ConnectionResetError):
+                                bridge.pump(consumer, state, callbacks, 0, 0, 1,
+                                            lambda: False, stop_request_file=marker)
+
+    def test_send_reset_only_allows_requested_stop_and_never_counts_partial_frame(self):
+        cases = ((ConnectionResetError, False, False),
+                 (ConnectionResetError, True, False),
+                 (BrokenPipeError, False, False),
+                 (BrokenPipeError, True, False),
+                 (OSError, True, False),
+                 (ConnectionResetError, True, True))
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "stop_requested"
+            for error_type, requested, upstream_error in cases:
+                with self.subTest(error=error_type, requested=requested, upstream=upstream_error):
+                    if marker.exists():
+                        marker.unlink()
+                    if requested:
+                        marker.touch()
+                    state, _ = session()
+                    state.logged_in = state.subscribed = True
+                    callbacks = bridge.CallbackQueue()
+                    callbacks.push("quote", raw_quote())
+                    callbacks.push("quote", raw_quote())
+
+                    class ResetWriter:
+                        def __init__(self):
+                            self.written = bytearray()
+
+                        def send(self, frame):
+                            if not self.written:
+                                self.written.extend(frame)
+                                return len(frame)
+                            if len(self.written) == 80:
+                                self.written.extend(frame[:3])
+                                return 3
+                            if upstream_error:
+                                callbacks.fail("upstream disconnected")
+                            raise error_type("consumer write failed")
+
+                    writer = ResetWriter()
+                    with contextlib.redirect_stdout(io.StringIO()) as output, \
+                            mock.patch.object(bridge.time, "time_ns", return_value=1792760462321000000), \
+                            mock.patch.object(bridge.select, "select", return_value=([], [writer], [])):
+                        if requested and error_type is not OSError and not upstream_error:
+                            count = bridge.pump(writer, state, callbacks, 0, 0, 1,
+                                                lambda: False, stop_request_file=marker)
+                            self.assertEqual(count, 1)
+                            self.assertIn("stopped: quotes=1 fresh_quotes=1", output.getvalue())
+                        else:
+                            expected = bridge.BridgeError if upstream_error else error_type
+                            with self.assertRaises(expected):
+                                bridge.pump(writer, state, callbacks, 0, 0, 1,
+                                            lambda: False, stop_request_file=marker)
+                    self.assertEqual(len(writer.written), 83)
+                    self.assertEqual(state.sequence, 2)
+
+    def test_requested_reset_does_not_hide_empty_capture_or_other_receive_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "stop_requested"
+            marker.touch()
+            consumer = mock.Mock()
+            consumer.recv.side_effect = ConnectionResetError(errno.ECONNRESET, "consumer reset")
+            state, _ = session()
+            state.logged_in = state.subscribed = True
+            with mock.patch.object(bridge.select, "select", return_value=([consumer], [], [])):
+                with self.assertRaisesRegex(bridge.BridgeError, "fresh two-sided"):
+                    bridge.pump(consumer, state, bridge.CallbackQueue(), 0, 0, 1,
+                                lambda: False, stop_request_file=marker)
+            consumer.recv.side_effect = OSError(errno.EIO, "I/O failure")
+            with self.assertRaises(OSError):
+                bridge._peer_state(consumer, marker)
+            consumer.recv.side_effect = None
+            consumer.recv.return_value = b"unexpected"
+            with self.assertRaisesRegex(bridge.BridgeError, "sent data"):
+                bridge._peer_state(consumer, marker)
 
     def test_help_works_without_importing_native_sdk(self):
         result = subprocess.run([sys.executable, str(PROJECT / "scripts/ctp_quote_bridge.py"),

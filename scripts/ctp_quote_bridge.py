@@ -370,8 +370,13 @@ class Session:
         return None
 
 
+def _consumer_stop_requested(stop_request_file):
+    """Recognize the orchestrator's run-owned authorization to close TCP."""
+    return stop_request_file is not None and Path(stop_request_file).is_file()
+
+
 def _peer_state(connection, stop_request_file):
-    """Return true only for explicitly requested consumer EOF; fail otherwise.
+    """Return true only for explicitly requested consumer EOF/reset.
 
     The orchestrator creates its run-owned stop marker before stopping marketd.
     This handshake does not depend on how long recording flush/fsync takes.
@@ -380,8 +385,12 @@ def _peer_state(connection, stop_request_file):
         data = connection.recv(1, socket.MSG_PEEK)
     except BlockingIOError:
         return False
+    except ConnectionResetError:
+        if _consumer_stop_requested(stop_request_file):
+            return True
+        raise
     if not data:
-        if stop_request_file is not None and Path(stop_request_file).is_file():
+        if _consumer_stop_requested(stop_request_file):
             return True
         raise BridgeError("marketd consumer disconnected")
     raise BridgeError("marketd consumer sent data on a receive-only connection")
@@ -446,6 +455,12 @@ def pump(connection, session, callbacks, duration_seconds, max_quotes,
                 count = connection.send(pending)
             except BlockingIOError:
                 count = 0
+            except (ConnectionResetError, BrokenPipeError):
+                # marketd can close with unread quote bytes during shutdown,
+                # producing RST or EPIPE instead of a zero-byte read.
+                if _consumer_stop_requested(stop_request_file):
+                    break
+                raise
             if count:
                 pending = pending[count:]
                 if not pending:
