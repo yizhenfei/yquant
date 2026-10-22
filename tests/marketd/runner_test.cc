@@ -33,6 +33,10 @@ class Environment final : public base::EventLoopEnvironment {
     out = checks >= stop_after;
     return {};
   }
+  // Marketd polls in bounded batches; a wait here would be unexpected.
+  base::Status Wait(std::optional<std::uint64_t>) noexcept override {
+    return {base::ErrorCode::kInternalError, {}};
+  }
   std::size_t checks = 0;
   std::size_t stop_after = std::numeric_limits<std::size_t>::max();
   bool fail = false;
@@ -118,7 +122,7 @@ TEST(MarketdRunnerTest, PartialOutputInitializationUnwindsAndReleasesLocks) {
   EXPECT_TRUE(replacement.Create({{directory.path(), "quotes"}, 16, 80}).ok());
 }
 
-TEST(MarketdRunnerTest, SignalCheckFailureClosesOutputsAndPreservesReason) {
+TEST(MarketdRunnerTest, StopCheckFailureClosesOutputsAndPreservesReason) {
   testing::RuntimeDirectory directory;
   ASSERT_TRUE(directory.valid());
   MarketdRunner runner;
@@ -128,7 +132,7 @@ TEST(MarketdRunnerTest, SignalCheckFailureClosesOutputsAndPreservesReason) {
   environment.fail = true;
   EXPECT_FALSE(runner.Run(clock, environment).ok());
   EXPECT_STREQ(runner.error_stage(), "termination");
-  EXPECT_NE(std::strstr(runner.error_detail(), "termination"), nullptr);
+  EXPECT_NE(std::strstr(runner.error_detail(), "stop requests"), nullptr);
   runner.Close();
   EXPECT_STREQ(runner.error_stage(), "termination");
   md::ShmPublisher replacement;

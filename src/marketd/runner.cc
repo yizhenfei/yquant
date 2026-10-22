@@ -112,7 +112,7 @@ base::Status MarketdRunner::Run(const base::MonotonicClock& clock,
     bool stop = false;
     auto status = environment.CheckStop(stop);
     if (!status.ok())
-      return Fail(status, "termination", "cannot check termination signals");
+      return Fail(status, "termination", "cannot check stop requests");
     if (stop || (max_events != 0 && event_count_ >= max_events)) {
       return Finish();
     }

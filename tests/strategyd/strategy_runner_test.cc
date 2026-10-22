@@ -1,8 +1,5 @@
 #include <dlfcn.h>
 #include <fcntl.h>
-#include <pthread.h>
-#include <signal.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #include <cerrno>
@@ -14,55 +11,9 @@
 #include "runner_test_harness.h"
 #include "test_config_file.h"
 #include "yquant/base/status.h"
-#include "yquant/base/termination_signals.h"
 
 namespace yquant::strategyd {
 namespace {
-
-// Exposes the production wait to verify the OS signal protocol in a child.
-class WaitProbe final : public StrategyRunner {
- public:
-  using StrategyRunner::StrategyRunner;
-  using StrategyRunner::Wait;
-};
-
-TEST(StrategyRunnerWaitTest, PendingStopInterruptsWaitAndRestoresSignalMask) {
-  const pid_t child = fork();
-  ASSERT_GE(child, 0);
-  if (child == 0) {
-    // Bound a lost-wakeup regression without relying on sleeps for readiness.
-    alarm(3);
-    base::TerminationSignals signals;
-    if (!signals.Prepare().ok()) _exit(1);
-    sigset_t unrelated;
-    if (sigemptyset(&unrelated) != 0 || sigaddset(&unrelated, SIGUSR1) != 0 ||
-        pthread_sigmask(SIG_BLOCK, &unrelated, nullptr) != 0)
-      _exit(2);
-    if (raise(SIGTERM) != 0) _exit(3);
-    base::SteadyMonotonicClock clock;
-    IdleTestSource source;
-    testing::MockTradingService service;
-    WaitProbe runner(clock, signals, source, service);
-    if (!runner.Wait(std::nullopt).ok()) _exit(4);
-    sigset_t restored;
-    if (pthread_sigmask(SIG_SETMASK, nullptr, &restored) != 0 ||
-        sigismember(&restored, SIGINT) != 1 ||
-        sigismember(&restored, SIGTERM) != 1 ||
-        sigismember(&restored, SIGUSR1) != 1)
-      _exit(5);
-    bool stop = false;
-    if (!signals.CheckStop(stop).ok() || !stop) _exit(6);
-    _exit(0);
-  }
-  int status = 0;
-  pid_t result;
-  do {
-    result = waitpid(child, &status, 0);
-  } while (result < 0 && errno == EINTR);
-  ASSERT_EQ(result, child);
-  ASSERT_TRUE(WIFEXITED(status)) << "child status=" << status;
-  EXPECT_EQ(WEXITSTATUS(status), 0);
-}
 
 static_assert(!std::is_default_constructible_v<StrategyRunner>);
 static_assert(
@@ -215,6 +166,30 @@ TEST(StrategyRunnerTest, EnvironmentStopBeforeLoadCancelsWithoutLoading) {
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   EXPECT_EQ(runner.Run().code, base::ErrorCode::kInvalidState);
   EXPECT_TRUE(events.Read().empty());
+}
+
+TEST(StrategyRunnerTest, LoadAndStartDefersPendingStopUntilRun) {
+  EventPipe events;
+  ASSERT_TRUE(events.valid());
+  base::SteadyMonotonicClock clock;
+  IdleTestEnvironment environment;
+  StrategyAssembly assembly(clock);
+  ASSERT_TRUE(assembly
+                  .Load({YQUANT_TEST_PLUGIN_GOOD_PATH, YQUANT_TEST_CONFIG_PATH,
+                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                         YQUANT_TEST_TRADING_CLIENT_CONFIG_PATH},
+                        environment)
+                  .ok());
+  environment.RequestStop();
+  IdleTestSource source;
+  testing::MockTradingService service;
+  StrategyRunner runner(clock, environment, source, service);
+  ASSERT_TRUE(runner.LoadAndStart(assembly.start_options()).ok());
+  EXPECT_EQ(runner.state(), RunnerState::kRunning);
+  EXPECT_EQ(events.Read(), "CPS");
+  ASSERT_TRUE(runner.Run().ok());
+  EXPECT_EQ(runner.state(), RunnerState::kFinished);
+  ExpectLifecycle(events.Read(), "TD");
 }
 
 TEST(StrategyRunnerTest, DestructorStopsAnActiveStrategy) {

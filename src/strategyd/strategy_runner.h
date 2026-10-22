@@ -29,7 +29,7 @@ namespace yquant::strategyd {
 inline constexpr std::size_t kMaxStrategyBatchSize = 64;
 
 // Lifecycle of a single load attempt. Finished is terminal, including after
-// startup failure or cancellation; a new attempt requires a new runner.
+// startup failure; a new attempt requires a new runner.
 enum class RunnerState { kIdle, kStarting, kRunning, kStopping, kFinished };
 
 // Supplies assembly-validated inputs to LoadAndStart, compatible with the
@@ -47,17 +47,17 @@ struct StrategyStartOptions {
 // to it. Owns the plugin instance, library handle, and callback context; uses
 // injected components for market-data ingestion and trading.
 //
-// Call LoadAndStart once, then Run if state() is kRunning. Run drives events
+// Call LoadAndStart once, then Run if it succeeds. Run drives events
 // until the environment requests stopping, the source finishes, or an error
 // occurs, then completes shutdown. Destruction releases remaining resources
 // without running an order-draining loop.
 //
 // All calls and destruction must be serialized on the owning thread. Strategy
 // callbacks run on that thread and must not reenter mutating runner operations.
-class StrategyRunner {
+class StrategyRunner final {
  public:
-  // Borrows all four dependencies until destruction. Uses environment to check
-  // for cancellation during startup and to check for stops while running.
+  // Borrows all four dependencies until destruction. Run uses environment to
+  // check for stop requests; loading and startup do not inspect it.
   StrategyRunner(const base::MonotonicClock& clock,
                  base::EventLoopEnvironment& environment,
                  MarketDataSource& source,
@@ -65,7 +65,7 @@ class StrategyRunner {
   // Calls OnStop if OnStart succeeded, destroys the instance, and releases
   // remaining resources. Does not wait for outstanding orders to drain; use
   // Run to complete orderly shutdown before destruction.
-  virtual ~StrategyRunner() noexcept;
+  ~StrategyRunner() noexcept;
 
   StrategyRunner(const StrategyRunner&) = delete;
   StrategyRunner& operator=(const StrategyRunner&) = delete;
@@ -76,9 +76,9 @@ class StrategyRunner {
   // `options.config` after attempting plugin configuration initialization, even
   // if that step fails; earlier failures leave the loader unchanged.
   //
-  // Enters kRunning on complete startup. Startup failure or cancellation cleans
-  // up and enters kFinished; cancellation succeeds unless an error occurs.
-  // Check state() before calling Run even when the returned status is OK.
+  // An OK result always enters kRunning and permits Run. Does not inspect
+  // environment or process stop requests; Run handles them before dispatch.
+  // Startup failure cleans up and enters kFinished.
   // Calls OnStop during cleanup only if OnStart succeeded.
   // Outside kIdle, returns kInvalidState and replaces diagnostics, preserving
   // the existing lifecycle state and component resources.
@@ -118,17 +118,6 @@ class StrategyRunner {
   [[nodiscard]] const char* error_detail() const noexcept {
     return error_detail_;
   }
-
- protected:
-  // Waits for a signal or the relative timeout in nanoseconds; nullopt permits
-  // indefinite waiting. Called by Run when no work is immediately due.
-  // The default implementation temporarily unblocks SIGINT/SIGTERM and restores
-  // the calling signal mask on return. The host must block those signals and
-  // install termination handlers before startup. Signal interruption succeeds;
-  // other wait errors are returned to Run for shutdown.
-  // Tests may override this operation to advance time or inject a wait error.
-  [[nodiscard]] virtual base::Status Wait(
-      std::optional<std::uint64_t> timeout_ns) noexcept;
 
  private:
   // Updates market and trading views before OnTick while kRunning. Borrows tick
@@ -194,24 +183,23 @@ class StrategyRunner {
   // Clears the operation result and diagnostics without changing lifecycle
   // state, resources, or counters.
   void ResetError() noexcept;
-  // Records status only if it is the first failure since ResetError. Requires
-  // non-null, null-terminated stage and detail. Borrows stage until diagnostics
-  // are reset; copies detail into bounded storage, truncating if necessary.
-  void SetError(base::Status status, const char* stage,
-                const char* detail) noexcept;
-  // Adds tick's source, instrument, and sequence to detail and records the
-  // failure through SetError. Borrows tick and detail only during this call;
-  // stage follows SetError's lifetime requirement.
+  // Ignores OK statuses and preserves any failure recorded since ResetError.
+  // Requires non-null C strings. For the first failure, borrows stage until
+  // diagnostics are reset and copies detail, truncating if necessary.
+  void SetErrorIfNotOK(base::Status status, const char* stage,
+                       const char* detail) noexcept;
+  // Records the first failure with tick's source, instrument, and sequence.
+  // Ignores OK statuses and later failures without formatting. Borrows tick
+  // and non-null C-string detail only for this call; detail must not overlap
+  // error_detail_. stage follows SetErrorIfNotOK's lifetime requirement.
   void SetQuoteError(base::Status status, const char* stage, const char* detail,
                      const model::QuoteTick& tick) noexcept;
-  // Adds the client order ID and report sequence to detail and records the
-  // failure through SetError. Borrows detail only during this call; stage
-  // follows SetError's lifetime requirement.
+  // Records the first failure with the client order ID and report sequence.
+  // Ignores OK statuses and later failures without formatting. Borrows non-null
+  // C-string detail only for this call; it must not overlap error_detail_.
+  // stage follows SetErrorIfNotOK's lifetime requirement.
   void SetOrderError(base::Status status, const char* stage, const char* detail,
                      model::ClientOrderId id, std::uint64_t sequence) noexcept;
-  // Checks for a stop or environment error between startup stages. Finalizes
-  // and returns true if cancelled or failed; otherwise returns false.
-  bool CancelStartupIfRequested() noexcept;
   // Writes outstanding order/cancel diagnostics and available account/position
   // snapshots to stderr. Requires the trading view to remain available.
   void ReportUnconfirmed() const noexcept;

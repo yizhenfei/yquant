@@ -171,7 +171,7 @@ class TradingQuoteSource final : public MarketDataSource {
 };
 
 // Drives only the host clock and stop condition; the service supplies reports.
-class TradingLoopEnvironment final : public TestLoopEnvironment {
+class TradingLoopEnvironment final : public base::EventLoopEnvironment {
  public:
   explicit TradingLoopEnvironment(TradingClock& clock) : clock_(clock) {}
   testing::MockTradingService* service = nullptr;
@@ -293,6 +293,7 @@ struct CallbackFailure {
   const char* name;
   const char* plugin;
   const char* stage;
+  const char* detail;
   const char* trace;
 };
 class TradingServiceCallbackTest
@@ -310,18 +311,23 @@ TEST_P(TradingServiceCallbackTest, SuppressesCallbacksWhileServiceDrains) {
   ASSERT_TRUE(runner.LoadAndStart(Options(GetParam().plugin)).ok());
   EXPECT_EQ(runner.Run().code, ErrorCode::kInvalidArgument);
   EXPECT_STREQ(runner.error_stage(), GetParam().stage);
+  EXPECT_STREQ(runner.error_detail(), GetParam().detail);
   EXPECT_EQ(events.Read(), GetParam().trace);
   EXPECT_EQ(service.delivered, 3);
   EXPECT_EQ(service.stop_calls, 1);
 }
 INSTANTIATE_TEST_SUITE_P(
     CallbackFailures, TradingServiceCallbackTest,
-    ::testing::Values(CallbackFailure{"OrderUpdate",
-                                      YQUANT_TEST_TRADING_UPDATE_FAIL_PATH,
-                                      "order_update", "CPSQNAfTD"},
-                      CallbackFailure{"Fill",
-                                      YQUANT_TEST_TRADING_FILL_FAIL_PATH,
-                                      "fill", "CPSQNAVFHfTD"}),
+    ::testing::Values(
+        CallbackFailure{"OrderUpdate", YQUANT_TEST_TRADING_UPDATE_FAIL_PATH,
+                        "order_update",
+                        "client_order_id=1 sequence=1: strategy "
+                        "OnOrderUpdate returned an error",
+                        "CPSQNAfTD"},
+        CallbackFailure{"Fill", YQUANT_TEST_TRADING_FILL_FAIL_PATH, "fill",
+                        "client_order_id=1 sequence=2: strategy "
+                        "OnFill returned an error",
+                        "CPSQNAVFHfTD"}),
     [](const auto& info) { return info.param.name; });
 
 TEST(TradingRunnerTest, UncertainServiceSendIsNotRetried) {

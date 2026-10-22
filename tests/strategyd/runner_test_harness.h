@@ -5,7 +5,7 @@
 
 #include "mock_trading_service.h"
 #include "strategyd/strategy_assembly.h"
-#include "test_strategy_runner.h"
+#include "strategyd/strategy_runner.h"
 
 namespace yquant::strategyd {
 
@@ -32,7 +32,7 @@ class IdleTestSource final : public MarketDataSource {
 };
 
 // Reports controlled stop requests; unexpected waits fail instead of blocking.
-class IdleTestEnvironment final : public TestLoopEnvironment {
+class IdleTestEnvironment final : public base::EventLoopEnvironment {
  public:
   // Makes subsequent CheckStop calls report a stop request.
   void RequestStop() noexcept { stop_requested_ = true; }
@@ -58,7 +58,7 @@ class RunnerTestHarness {
         source_(idle_source_),
         service_(default_service_),
         assembly_(clock_) {}
-  RunnerTestHarness(TestLoopEnvironment& environment,
+  RunnerTestHarness(base::EventLoopEnvironment& environment,
                     MarketDataSource& source) noexcept
       : clock_(default_clock_),
         environment_(environment),
@@ -66,7 +66,7 @@ class RunnerTestHarness {
         service_(default_service_),
         assembly_(clock_) {}
   RunnerTestHarness(const base::MonotonicClock& clock,
-                    TestLoopEnvironment& environment,
+                    base::EventLoopEnvironment& environment,
                     MarketDataSource& source) noexcept
       : clock_(clock),
         environment_(environment),
@@ -74,7 +74,8 @@ class RunnerTestHarness {
         service_(default_service_),
         assembly_(clock_) {}
   RunnerTestHarness(const base::MonotonicClock& clock,
-                    TestLoopEnvironment& environment, MarketDataSource& source,
+                    base::EventLoopEnvironment& environment,
+                    MarketDataSource& source,
                     trading::TradingService& service) noexcept
       : clock_(clock),
         environment_(environment),
@@ -95,8 +96,8 @@ class RunnerTestHarness {
       finished_ = true;
       return loaded;
     }
-    runner_ = std::make_unique<TestStrategyRunner>(clock_, environment_,
-                                                   source_, service_);
+    runner_ = std::make_unique<StrategyRunner>(clock_, environment_, source_,
+                                               service_);
     return runner_->LoadAndStart(assembly_.start_options());
   }
   base::Status Run() noexcept {
@@ -131,7 +132,7 @@ class RunnerTestHarness {
   IdleTestSource idle_source_;
   testing::MockTradingService default_service_;
   const base::MonotonicClock& clock_;
-  TestLoopEnvironment& environment_;
+  base::EventLoopEnvironment& environment_;
   MarketDataSource& source_;
   trading::TradingService& service_;
   StrategyAssembly assembly_;

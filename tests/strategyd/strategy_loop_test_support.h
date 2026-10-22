@@ -599,7 +599,7 @@ class Broker final : public trading::TradingService {
 
 // Wait simulates either the earliest host deadline or a scheduled stop signal.
 // Calls are bounded; an unscheduled infinite wait fails instead of hanging.
-class Environment final : public TestLoopEnvironment {
+class Environment final : public base::EventLoopEnvironment {
  public:
   explicit Environment(Clock& clock) : clock_(clock) {}
   std::optional<std::uint64_t> stop_at;

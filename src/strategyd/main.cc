@@ -15,7 +15,6 @@ namespace {
 using yquant::base::ErrorCode;
 using yquant::base::Status;
 using yquant::base::TerminationSignals;
-using yquant::strategyd::RunnerState;
 using yquant::strategyd::StrategyAssembly;
 using yquant::strategyd::StrategyOptions;
 using yquant::strategyd::StrategyRunner;
@@ -115,13 +114,13 @@ int main(int argc, char* argv[]) {
     PrintUsage(stderr);
     return 2;
   }
-  // Establish signal handling before loading plugin code. Stop flags are then
-  // inspected at startup-stage and event-loop boundaries outside callbacks.
-  TerminationSignals termination_signals;
-  const auto signal_status = termination_signals.Prepare();
+  // Prepare the runtime environment before loading plugin code. Stop requests
+  // are checked at configuration-load and event-loop boundaries.
+  TerminationSignals environment;
+  const auto signal_status = environment.Prepare();
   if (!signal_status.ok()) {
-    PrintFailure("signal_setup", signal_status.code,
-                 "could not prepare termination signals",
+    PrintFailure("environment_setup", signal_status.code,
+                 "could not prepare event-loop environment",
                  signal_status.system_error.value());
     return 1;
   }
@@ -131,7 +130,7 @@ int main(int argc, char* argv[]) {
   const auto loaded =
       assembly.Load(StrategyOptions{library_path, config_path, market_data_path,
                                     trading_path},
-                    termination_signals);
+                    environment);
   if (!loaded.ok()) {
     PrintFailure(assembly.error_stage(), loaded.code, assembly.error_detail(),
                  loaded.system_error.value(), library_path, config_path,
@@ -139,16 +138,13 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   if (assembly.cancelled()) return 0;
-  StrategyRunner runner(clock, termination_signals, assembly.source(),
+  StrategyRunner runner(clock, environment, assembly.source(),
                         assembly.trading());
   const Status start_status = runner.LoadAndStart(assembly.start_options());
   if (!start_status.ok()) {
     PrintRunnerFailure(runner, start_status, library_path, config_path,
                        market_data_path, trading_path);
     return 1;
-  }
-  if (runner.state() == RunnerState::kFinished) {
-    return 0;
   }
 
   const auto strategy_id = runner.strategy_id();

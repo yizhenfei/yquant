@@ -196,7 +196,7 @@ class ControlledSource final : public MarketDataSource {
 
 // Test environment never sleeps: it stops at a selected source boundary or
 // exposes a deterministic wait/check failure to the runner's cleanup path.
-class TestEventLoopEnvironment final : public TestLoopEnvironment {
+class TestEventLoopEnvironment final : public base::EventLoopEnvironment {
  public:
   const ControlledSource* source = nullptr;
   bool fail_check = false;
@@ -358,6 +358,7 @@ TEST(MarketRunnerTest, TickFailurePreservesDiagnosticAndPairsStop) {
   ASSERT_TRUE(events.valid());
   const std::array quotes = {Quote(42), Quote(43)};
   ControlledSource source;
+  source.fail_stop = true;
   source.SetQuotes(quotes);
   TestEventLoopEnvironment loop;
   loop.source = &source;
@@ -374,7 +375,10 @@ TEST(MarketRunnerTest, TickFailurePreservesDiagnosticAndPairsStop) {
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   EXPECT_STREQ(runner.error_stage(), "tick");
   EXPECT_EQ(runner.strategy_id(), "test-quotes");
-  EXPECT_NE(std::string(runner.error_detail()).find("42"), std::string::npos);
+  EXPECT_EQ(std::string(runner.error_detail()),
+            "source_id=1 instrument_id=" +
+                std::to_string(quotes[0].instrument_id.value) +
+                " sequence=42: strategy OnTick returned an error");
   ExpectQuoteTrace(events.Read(), "CPSQTD");
   EXPECT_EQ(runner.Run().code, ErrorCode::kInvalidState);
   EXPECT_TRUE(events.Read().empty());
@@ -590,7 +594,7 @@ TEST(MarketRunnerTest, UsesTheInjectedEnvironmentBeforeLoadingAnyPlugin) {
                                YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
                 .code,
             ErrorCode::kIoError);
-  EXPECT_STREQ(runner.error_stage(), "signal");
+  EXPECT_STREQ(runner.error_stage(), "stop_check");
   EXPECT_EQ(source.prepare_calls, 0);
   EXPECT_EQ(source.start_calls, 0);
   EXPECT_EQ(loop.check_calls, 1);
@@ -598,7 +602,7 @@ TEST(MarketRunnerTest, UsesTheInjectedEnvironmentBeforeLoadingAnyPlugin) {
   EXPECT_TRUE(events.Read().empty());
 }
 
-TEST(MarketRunnerTest, StopAfterSourceActivationDoesNotBeginPolling) {
+TEST(MarketRunnerTest, RunHandlesPendingStopBeforePolling) {
   QuoteEventPipe events;
   ASSERT_TRUE(events.valid());
   ControlledSource source;
@@ -612,11 +616,15 @@ TEST(MarketRunnerTest, StopAfterSourceActivationDoesNotBeginPolling) {
                                         YQUANT_TEST_QUOTE_CONFIG_PATH,
                                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
           .ok());
+  EXPECT_EQ(runner.state(), RunnerState::kRunning);
+  EXPECT_EQ(source.stop_calls, 0);
+  EXPECT_EQ(events.Read(), "CPS");
+  ASSERT_TRUE(runner.Run().ok());
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   EXPECT_EQ(source.start_calls, 1);
   EXPECT_EQ(source.poll_calls, 0);
   EXPECT_EQ(source.stop_calls, 1);
-  ExpectQuoteTrace(events.Read(), "CPSTD");
+  ExpectQuoteTrace(events.Read(), "TD");
 }
 
 // Maintenance deadlines must wake a waiting host even when no quote is due.
@@ -662,7 +670,7 @@ class MaintenanceClock final : public base::MonotonicClock {
   std::uint64_t Now() const noexcept override { return now; }
 };
 
-class MaintenanceEnvironment final : public TestLoopEnvironment {
+class MaintenanceEnvironment final : public base::EventLoopEnvironment {
  public:
   explicit MaintenanceEnvironment(MaintenanceClock& clock) : clock_(clock) {}
   base::Status CheckStop(bool& out) noexcept override {

@@ -22,7 +22,7 @@ constexpr std::int64_t kInitialCash = 1000000000;
 
 // Stops only after the peer has acknowledged cancellation. The wall deadline
 // bounds failure paths; yielding lets the real socket peer make progress.
-class RemoteTimerEnvironment final : public TestLoopEnvironment {
+class RemoteTimerEnvironment final : public base::EventLoopEnvironment {
  public:
   explicit RemoteTimerEnvironment(const std::atomic<bool>& canceled) noexcept
       : canceled_(canceled),
@@ -186,7 +186,7 @@ TEST(RemoteTimerRunnerTest, TimerSubmitsCancelsAndDrainsThroughTcpRuntime) {
                 environment)
           .ok());
   IdleTestSource source;
-  TestStrategyRunner runner(clock, environment, source, assembly.trading());
+  StrategyRunner runner(clock, environment, source, assembly.trading());
   std::thread worker([&peer] { peer.Serve(); });
   const auto loaded = runner.LoadAndStart(assembly.start_options());
   const auto result = loaded.ok() ? runner.Run() : loaded;

@@ -275,7 +275,8 @@ if(BUILD_TESTING)
       -P "${PROJECT_SOURCE_DIR}/tests/cmake/library_boundaries_test.cmake")
 
 
-  add_executable(process_services_test tests/base/monotonic_clock_test.cc)
+  add_executable(process_services_test tests/base/monotonic_clock_test.cc
+    tests/base/termination_signals_test.cc)
   target_link_libraries(process_services_test PRIVATE yquant::base GTest::gtest_main)
   target_compile_options(process_services_test PRIVATE -Wall -Wextra -Wpedantic)
   gtest_discover_tests(process_services_test
