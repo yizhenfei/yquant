@@ -48,8 +48,9 @@ struct StrategyStartOptions {
 // injected components for market-data ingestion and trading.
 //
 // Call LoadAndStart once, then Run if state() is kRunning. Run drives events
-// until shutdown completes. Stop requests shutdown; destruction
-// releases remaining resources without running an order-draining loop.
+// until the environment requests stopping, the source finishes, or an error
+// occurs, then completes shutdown. Destruction releases remaining resources
+// without running an order-draining loop.
 //
 // All calls and destruction must be serialized on the owning thread. Strategy
 // callbacks run on that thread and must not reenter mutating runner operations.
@@ -84,32 +85,14 @@ class StrategyRunner {
   [[nodiscard]] base::Status LoadAndStart(
       StrategyStartOptions options) noexcept;
 
-  // Requests shutdown and disarms the timer while kRunning, without invoking
-  // strategy callbacks or leaving kRunning. Run must then drain and finalize.
-  // Finishes immediately from kIdle; repeated stops in kStopping or kFinished
-  // succeed without repeating cleanup. Returns kInvalidState during startup
-  // or a callback without changing state or diagnostics.
-  [[nodiscard]] base::Status Stop() noexcept;
-
   // Drives requests and events until shutdown completes and enters kFinished.
-  // Stops on an explicit request, source completion, or an error. Closes new
+  // Stops on an environment request, source completion, or an error. Closes new
   // strategy requests and drains outstanding trading work while the channel is
   // usable, bounded by the configured shutdown timeout, before final cleanup.
   // Returns the first error, including cleanup errors, or OK on normal exit.
   // Returns kInvalidState outside kRunning or during a callback, leaving state,
   // resources, and diagnostics unchanged.
   [[nodiscard]] base::Status Run() noexcept;
-
-  // Dispatches at most one due timer, disarming it before OnTimer so the
-  // callback can rearm it. Call only while kRunning and outside callbacks.
-  // Returns true if no timer is due or the callback succeeds. On callback
-  // failure, records the error, begins stopping, and returns false.
-  bool DispatchTimer() noexcept;
-
-  // Returns the earliest work or shutdown deadline in clock's absolute
-  // monotonic nanoseconds. A pending stop returns zero for immediate work;
-  // nullopt means no deadline, including outside kRunning and kStopping.
-  std::optional<std::uint64_t> next_deadline() const noexcept;
 
   // Returns the number of valid old or duplicate quotes ignored by this runner,
   // saturated at UINT64_MAX and retained after shutdown.
@@ -126,7 +109,7 @@ class StrategyRunner {
   }
   // Returns the stage of the first failure in the current operation, or an
   // empty string. Cleanup preserves that failure. Diagnostic contents may be
-  // replaced by subsequent LoadAndStart, Stop, Run, or DispatchTimer calls.
+  // replaced by subsequent LoadAndStart or Run calls.
   [[nodiscard]] const char* error_stage() const noexcept {
     return error_stage_;
   }
@@ -159,6 +142,11 @@ class StrategyRunner {
   // failure disables further business callbacks, begins stopping, and returns
   // false. Committed trading facts are preserved.
   bool DispatchTrading(const trading::TradingDispatch& dispatch) noexcept;
+  // Dispatches at most one due timer, disarming it before OnTimer so the
+  // callback can rearm it. Requires kRunning and no active callback.
+  // Returns true if no timer is due or the callback succeeds. On callback
+  // failure, records the error, begins stopping, and returns false.
+  bool DispatchTimer() noexcept;
   // Distinguishes an accepted or ignored quote from a source yield or failure.
   enum class QuotePollResult { kEvent, kIdle, kError };
   // Polls the active market source once and dispatches a returned quote.
@@ -175,6 +163,10 @@ class StrategyRunner {
   // an error ends the batch. Preserves rotation across calls to avoid starving
   // a ready source.
   void ProcessBatch() noexcept;
+  // Returns the earliest work or shutdown deadline in clock's absolute
+  // monotonic nanoseconds. nullopt means no deadline, including outside
+  // kRunning and kStopping; environment stop requests are checked separately.
+  std::optional<std::uint64_t> next_deadline() const noexcept;
   // Enters a callback phase and enables trading requests only for business
   // callbacks while kRunning. Requires that no callback is already active;
   // each call must be paired with EndCallback.
@@ -182,7 +174,7 @@ class StrategyRunner {
   // Leaves the callback phase and closes trading requests until the next
   // eligible callback. Requires a matching BeginCallback.
   void EndCallback() noexcept;
-  // Checks stop requests from environment and Stop, beginning shutdown.
+  // Checks environment stop requests and begins shutdown when requested.
   // Records environment errors and disables further trading drain work.
   void CheckStop() noexcept;
   // Begins stopping, closes new requests, disarms timers, stops market data,
@@ -254,7 +246,6 @@ class StrategyRunner {
   bool trading_prepared_ = false;
   bool trading_started_ = false;
   bool callback_active_ = false;
-  bool stop_requested_ = false;    // Deferred until Run reaches a stop check.
   bool callbacks_enabled_ = true;  // Business callbacks only; excludes OnStop.
   bool drain_viable_ = true;  // False permits finalization without draining.
   // 0=market, 1=trading, 2=timer. Retained across batches so a continually

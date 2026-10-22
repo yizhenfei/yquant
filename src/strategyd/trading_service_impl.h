@@ -89,7 +89,6 @@ class TradingServiceImpl final : public trading::TradingService {
   // Returns an absolute host-monotonic deadline: zero for queued work or an
   // unsent Stop, the next poll time otherwise, or nullopt without storage.
   std::optional<std::uint64_t> next_deadline() const noexcept override;
-  bool has_local_updates() const noexcept;
   bool has_ready_event(std::uint64_t now) const noexcept override;
   // Requires the gateway's Drained acknowledgement, empty local/transport
   // queues, and terminal orders with no pending cancels. Without session
@@ -100,10 +99,6 @@ class TradingServiceImpl final : public trading::TradingService {
   // detail or stage; Stop preserves both and Reset clears only detail.
   const char* error_detail() const noexcept override { return error_detail_; }
   const char* error_stage() const noexcept override { return error_stage_; }
-  // Commits one cancellation of an order never attempted on transport and
-  // overwrites out. Failure preserves cached facts, the local queue, and out.
-  [[nodiscard]] base::ErrorCode ApplyLocalUpdate(
-      trading::TradingDispatch& out) noexcept;
   // Alternates ready local cancellations with gateway messages, committing
   // each accepted message's complete view before returning. A notification
   // sets event=true. Consumed messages overwrite out even without notification;
@@ -123,6 +118,14 @@ class TradingServiceImpl final : public trading::TradingService {
  private:
   // Owns bounded session queues, order/fill history, and the gateway account.
   struct Storage;
+  // Returns whether the session has queued before-send cancellations. Poll
+  // combines this with transport readiness to choose the next event fairly.
+  bool has_local_updates() const noexcept;
+  // Commits one cancellation of an order never attempted on transport and
+  // overwrites out. Called by Poll with request entry closed. Failure preserves
+  // cached facts, the local queue, and out.
+  [[nodiscard]] base::ErrorCode ApplyLocalUpdate(
+      trading::TradingDispatch& out) noexcept;
   // Checks a nonzero revision and, unless initial, stable account type and
   // nonregressing revision. Equal revisions require identical account contents.
   // Failure records detail without replacing the cached account.

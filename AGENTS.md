@@ -14,6 +14,7 @@
 - C++ 代码以 [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html) 为基础；本文件及组件设计中的明确约定优先。
 - C++ 标准版本遵循 Google C++ Style Guide，当前采用 C++20。
 - 不使用 C++ 异常；项目代码和所用第三方依赖关闭异常支持，错误通过显式返回值处理。
+- 类成员函数默认放在 `private`。公开接口必须对应明确的外部使用场景，并具有合法的调用时机。
 - 输出参数和输入输出参数，如果要求调用方必须提供，通常使用引用；如果允许调用方不提供，使用非 `const` 指针，并以 `nullptr` 表示不提供。
 - 类型使用 `SpscQueue` 形式，普通函数使用 `TryReserve()` 形式；访问器可使用 `capacity()`、`max_payload_size()` 形式。
 - 变量、参数和命名空间使用 `snake_case`；class 数据成员使用尾缀 `_`，struct 数据成员不加尾缀。

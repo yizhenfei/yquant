@@ -40,7 +40,7 @@
 | 接口 | 含义 |
 | --- | --- |
 | `LoadAndStart(StrategyStartOptions)` | 使用已校验配置准备组件，连接网关，加载并配置策略，调用启动回调后激活行情 |
-| `Stop()` | 运行期登记停止请求，由 `Run()` 推进排空与最终释放 |
+| `Run()` | 阻塞驱动事件，检查环境停止请求，在停止、行情结束或错误后完成排空与最终释放 |
 
 命令行解析生成启动选项，装配层加载配置并选择组件，再由 runner 的 `LoadAndStart()` 启动策略。`StrategyStartOptions` 包含动态库路径、策略配置加载器、行情配置与交易客户端配置。信号处理函数只记录停止请求，主线程检查停止标志并完成回调与收尾。
 
@@ -139,10 +139,7 @@ StrategyRunner(const base::MonotonicClock& clock,
 | 空闲态调用 `LoadAndStart()` 并成功启动 | `Idle → Starting → Running` |
 | 启动任一阶段失败 | `Starting → 失败收尾 → Finished`，保留失败结果 |
 | 启动阶段处理停止请求 | `Starting → Stopping → Finished`，仅在 `OnStart` 已成功时调用 `OnStop`；无其他错误时成功退出 |
-| 运行态调用 `Stop()` | 保持 `Running`，登记停止并清除定时器，不调用策略 |
-| `Run()` 处理停止请求 | `Running → Stopping → Finished`，推进委托排空后最终释放；无法排空时失败收尾 |
-| 空闲态调用 `Stop()` | `Idle → Finished` |
-| 结束态重复调用 `Stop()` | 保持 `Finished`，不重复回调或释放 |
+| `Run()` 检测到环境停止请求 | `Running → Stopping → Finished`，推进委托排空后最终释放；无法排空时失败收尾 |
 | 非空闲态调用 `LoadAndStart()` | 返回 `kInvalidState`，保持现有状态和实例 |
 
 ```mermaid
@@ -199,7 +196,7 @@ flowchart TD
 
 `pselect` 期间临时解除退出信号屏蔽，返回后恢复屏蔽并立即检查停止。事件批次与启动同步阶段的边界通过 `pthread_sigmask()` 临时设置 `wait_mask`，立即恢复 `blocked_mask`，再读取停止标志；检查窗口不调用策略或 SDK。信号和时间期限的等待采用同一主线程协议。[pselect](https://man7.org/linux/man-pages/man2/select.2.html)、[信号掩码](https://man7.org/linux/man-pages/man3/pthread_sigmask.3p.html)
 
-运行态的 `Stop()` 登记请求并立即清除策略定时器，不执行策略回调或交易资源释放。调用方在 `Run()` 完成收尾后再销毁 `StrategyRunner`；析构不另建排空事件循环。
+`Run()` 通过构造时注入的 `EventLoopEnvironment::CheckStop()` 接收停止请求，随后关闭策略请求入口、清除定时器并推进排空。重复检查到停止请求不延长排空期限。调用方在 `Run()` 完成收尾后再销毁 `StrategyRunner`；析构不另建排空事件循环。
 
 ```text
 Main(args):

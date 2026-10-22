@@ -250,16 +250,13 @@ TEST(MarketRunnerTest, UpdatesSnapshotBeforeCallbackAndDropsOldSequences) {
           .ok())
       << runner.error_detail();
   EXPECT_EQ(events.Read(), "CPS");
-  EXPECT_TRUE(runner.next_deadline().has_value());
   ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   EXPECT_EQ(source.poll_calls, 4);
   EXPECT_EQ(loop.wait_calls, 0);
   EXPECT_EQ(runner.ignored_quote_count(), 2U);
   ExpectQuoteTrace(events.Read(), "QQTD");
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
-  EXPECT_TRUE(runner.Stop().ok());
   EXPECT_EQ(runner.ignored_quote_count(), 2U);
-  EXPECT_FALSE(runner.next_deadline().has_value());
   EXPECT_EQ(runner.Run().code, ErrorCode::kInvalidState);
   EXPECT_TRUE(events.Read().empty());
 }
@@ -327,7 +324,7 @@ TEST_P(InvalidQuoteTest, RejectsBeforeDispatchAndStopsTheStartedStrategy) {
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   EXPECT_STREQ(runner.error_stage(), "quote");
   ExpectQuoteTrace(events.Read(), "CPSQTD");
-  EXPECT_TRUE(runner.Stop().ok());
+  EXPECT_EQ(runner.Run().code, ErrorCode::kInvalidState);
   EXPECT_TRUE(events.Read().empty());
 }
 
@@ -402,7 +399,6 @@ TEST(MarketRunnerTest, StartFailureNeverActivatesOrDispatchesTheSource) {
   ExpectQuoteTrace(events.Read(), "CPSD");
   EXPECT_EQ(source.start_calls, 0);
   EXPECT_EQ(source.poll_calls, 0);
-  EXPECT_FALSE(runner.next_deadline().has_value());
   EXPECT_EQ(runner.Run().code, ErrorCode::kInvalidState);
   EXPECT_TRUE(events.Read().empty());
 }
@@ -493,7 +489,7 @@ TEST_P(SourceFailureTest, RetainsErrorAndPairsLifecycleCallbacks) {
     EXPECT_EQ(source.stop_calls, 1);
     ExpectQuoteTrace(events.Read(), "CPSTD");
   }
-  EXPECT_TRUE(runner.Stop().ok());
+  EXPECT_EQ(runner.Run().code, ErrorCode::kInvalidState);
   EXPECT_TRUE(events.Read().empty());
 }
 
@@ -708,7 +704,6 @@ TEST_P(MaintenanceDeadlineTest, ServicesBeforeQuoteDeadlineOrIndefiniteWait) {
                                         YQUANT_TEST_QUOTE_CONFIG_PATH,
                                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
           .ok());
-  EXPECT_EQ(runner.next_deadline(), 100U);
   EXPECT_EQ(runner.Run().code, ErrorCode::kIoError);
   EXPECT_STREQ(runner.error_stage(), "market_data_service");
   EXPECT_STREQ(runner.error_detail(), "injected maintenance failure");

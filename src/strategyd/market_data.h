@@ -42,12 +42,6 @@ class MarketDataImpl final : public strategy::MarketData {
   // Ends the current callback phase, closing startup subscription registration.
   void EndCallback() noexcept { phase_ = strategy::CallbackPhase::kNone; }
 
-  // Returns the owned scope. Its configuration remains stable until Reset;
-  // references to the scope object must not outlive this view.
-  const md::InstrumentScope& instruments() const noexcept {
-    return instruments_;
-  }
-
   // Resolves canonical venue/symbol pairs within the configured scope,
   // including futures symbols. Failure leaves out unchanged.
   [[nodiscard]] base::ErrorCode FindInstrument(

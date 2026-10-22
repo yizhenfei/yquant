@@ -211,23 +211,6 @@ base::Status StrategyRunner::LoadAndStart(
   return result_;
 }
 
-base::Status StrategyRunner::Stop() noexcept {
-  if (callback_active_ || state_ == RunnerState::kStarting) {
-    return {base::ErrorCode::kInvalidState, {}};
-  }
-  if (state_ == RunnerState::kStopping) {
-    return {};
-  }
-  ResetError();
-  if (state_ == RunnerState::kIdle) {
-    Finalize();
-  } else if (state_ == RunnerState::kRunning) {
-    stop_requested_ = true;
-    timer_.BeginStopping();
-  }
-  return result_;
-}
-
 namespace {
 
 // Returns whether an optional absolute deadline is due in host-monotonic time.
@@ -251,9 +234,6 @@ std::optional<std::uint64_t> StrategyRunner::next_deadline() const noexcept {
     return std::nullopt;
   }
   std::optional<std::uint64_t> deadline;
-  if (stop_requested_) {
-    deadline = 0;
-  }
   if (state_ == RunnerState::kRunning && source_started_) {
     IncludeDeadline(deadline, source_.next_deadline());
     IncludeDeadline(deadline, source_.next_service_deadline());
@@ -303,7 +283,6 @@ void StrategyRunner::EnterStopping() noexcept {
     return;
   }
   state_ = RunnerState::kStopping;
-  stop_requested_ = false;
   trading_service_.BeginStopping();
   timer_.BeginStopping();
   const auto now = clock_.Now();
@@ -366,7 +345,7 @@ void StrategyRunner::CheckStop() noexcept {
   if (!status.ok()) {
     SetError(status, "signal", "could not inspect termination signals");
     StopAfterError(false);
-  } else if (stop || stop_requested_) {
+  } else if (stop) {
     EnterStopping();
   }
 }
