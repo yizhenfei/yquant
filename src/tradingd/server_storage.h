@@ -13,6 +13,7 @@
 #include "tradingd/server.h"
 #include "yquant/md/instrument_scope.h"
 #include "yquant/trading/connection.h"
+#include "yquant/trading/ctp_trading_adapter.h"
 #include "yquant/trading/mock_trading_adapter.h"
 #include "yquant/trading/simulated_futures_exchange.h"
 #include "yquant/trading/trading_engine.h"
@@ -66,7 +67,10 @@ struct OrderOwner {
 // Journal watermarks are shared; the checkpoint payload is immutable in flight.
 struct Server::Storage final : trading::TradingMutationSink {
   explicit Storage(const base::MonotonicClock& clock) noexcept
-      : clock_(clock), trading(clock, instruments, adapter), adapter(*this) {}
+      : clock_(clock),
+        trading(clock, instruments, adapter),
+        ctp(instruments),
+        adapter(*this) {}
   const base::MonotonicClock& clock_;
   ServerConfig config;
   trading::Listener listener;
@@ -74,6 +78,7 @@ struct Server::Storage final : trading::TradingMutationSink {
   trading::TradingEngine trading;
   trading::MockTradingAdapter mock;
   trading::SimulatedFuturesExchange futures;
+  trading::CtpTradingAdapter ctp;
   trading::TradingAdapter* selected_adapter = &mock;
   // One client publishes simulator input for the gateway generation.
   std::uint64_t simulation_client_id = 0;
@@ -84,7 +89,9 @@ struct Server::Storage final : trading::TradingMutationSink {
     explicit Adapter(Storage& storage) noexcept : storage(storage) {}
     base::Status Prepare(const trading::TradingConfig& c) noexcept override {
       storage.selected_adapter =
-          c.adapter == trading::TradingAdapterKind::kSimulatedFutures
+          c.adapter == trading::TradingAdapterKind::kCtp
+              ? static_cast<trading::TradingAdapter*>(&storage.ctp)
+          : c.adapter == trading::TradingAdapterKind::kSimulatedFutures
               ? static_cast<trading::TradingAdapter*>(&storage.futures)
               : static_cast<trading::TradingAdapter*>(&storage.mock);
       return storage.selected_adapter->Prepare(c);
@@ -92,9 +99,16 @@ struct Server::Storage final : trading::TradingMutationSink {
     base::Status Start(std::uint64_t now) noexcept override {
       return storage.selected_adapter->Start(now);
     }
+    void BeginStopping() noexcept override {
+      storage.selected_adapter->BeginStopping();
+    }
     base::Status ReadAccountSnapshot(
         trading::TradingAccountSnapshot& out) noexcept override {
       return storage.selected_adapter->ReadAccountSnapshot(out);
+    }
+    base::Status ReadBrokerAccountSnapshot(
+        trading::BrokerAccountSnapshot& out) noexcept override {
+      return storage.selected_adapter->ReadBrokerAccountSnapshot(out);
     }
     base::Status SendOrder(model::ClientOrderId id,
                            const model::OrderRequest& request,

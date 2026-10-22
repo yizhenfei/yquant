@@ -53,6 +53,7 @@ YQuant 是一个支持多策略运行的低延迟量化交易系统，使用 C++
 - `examples/tradingd/`：共享交易网关与策略客户端配置。
 - `examples/marketd/`：本机分发、TCP 中继、历史回放与录制配置。
 - `examples/strategies/`：用户策略动态库示例。
+- `examples/ctp/`：CTP 行情与 SimNow 交易共用的合约规格示例。
 - `examples/data/`：国内期货历史报价样本、来源与许可。
 - `scripts/`：本地运行辅助脚本。
 - `tests/base/`：基础组件测试。
@@ -60,6 +61,7 @@ YQuant 是一个支持多策略运行的低延迟量化交易系统，使用 C++
 - `tests/strategyd/`：策略运行时与进程集成测试。
 - `tests/md/`、`tests/marketd/`：行情组件与多进程分发测试。
 - `tests/tradingd/`：交易网关服务与多进程共享账户测试。
+- `tests/scripts/`：CTP 字段、协议、录制转换及运行脚本的离线与进程测试。
 - `cmake/`：依赖与编译配置。
 - `docs/design/`：架构与组件设计。
 - `docs/research/`：系统研究资料与记录。
@@ -185,7 +187,7 @@ cmake -P cmake/DownloadTestData.cmake
   --trading-config ./build/debug/tradingd/client_1.json
 ```
 
-另一个策略使用 `client_2.json`。跨机时修改服务端监听地址和客户端目标地址，各客户端保持不同身份。`tradingd` 统一检查与预占账户资源，向所属策略回送委托与成交，并推送共享账户快照。首版使用模拟柜台，协议、停止与故障边界见[共享交易网关](docs/design/tradingd.md)。
+另一个策略使用 `client_2.json`。跨机时修改服务端监听地址和客户端目标地址，各客户端保持不同身份。`tradingd` 统一管理账户资源，向所属策略回送委托与成交，并推送共享账户快照；本地模拟柜台由网关预占资源，CTP 模式使用柜台查询的冻结口径。协议、停止与故障边界见[共享交易网关](docs/design/tradingd.md)。
 
 需要跨重启保留交易状态时使用 `tradingd/persistent.json`。首次运行加 `--initialize-state`，后续启动省略该标志；默认每 10 ms 或累计 1 MiB 在后台同步，逐笔请求不等待真实落盘。配置与恢复边界见[交易网关持久化与恢复](docs/design/tradingd-persistence.md)。
 
@@ -213,6 +215,24 @@ cmake -P cmake/DownloadTestData.cmake
 ```
 
 脚本回放大商所豆一期货 `a1805` 在 2017-12-27 的 744 条真实买卖一报价，以 100 倍速度运行，约 20 秒后自动撤单收尾。交易所在独立的 `tradingd` 中模拟实现，支持买卖开仓、平今平昨、保证金预占、手续费与损益。启动时打印本次配置和日志目录，结束时查看 `futures_bbo: stopped` 汇总。数据来源、计量和撮合规则见[国内期货模拟交易](docs/design/domestic-futures.md)。
+
+接入实时国内期货行情时，使用 [CTP 行情桥](docs/design/ctp-market-data.md)。
+它通过只读行情 API 向 `marketd` 发布买卖一报价，保留双边策略并同步录制；
+同一录制可在无账户的环境中驱动模拟交易回放。
+实时接入支持账户登录，也支持前置允许时显式使用 `--anonymous` 空登录。
+
+使用 SimNow 的模拟交易柜台时，运行
+[SimNow 报撤单入口](docs/design/simnow-trading.md#运行)：
+
+```sh
+python3 scripts/run_simnow_strategy.py live \
+  --run-dir /tmp/yquant-simnow-run \
+  --catalog examples/ctp/treasury_instruments.json \
+  --venue CFFEX --symbol TF2612 --anonymous-md
+```
+
+交易使用注册的 SimNow 账户，通过环境变量配置；`--anonymous-md` 只用于行情登录。
+此入口将订单交给 SimNow 柜台，资金、持仓及手续费保留柜台查询口径。
 
 ## 行情进程
 
@@ -262,6 +282,8 @@ cmake --build --preset debug --target download_test_data
 - [策略进程与动态策略加载设计](docs/design/strategyd.md)：生命周期接口、动态库协议与命令执行流程。
 - [策略配置设计](docs/design/strategy-config.md)：JSON 分层、强类型配置与启动校验。
 - [国内期货模拟交易](docs/design/domestic-futures.md)：开平仓、期货账本、模拟撮合与历史报价回放。
+- [CTP 行情接入与同源回放](docs/design/ctp-market-data.md)：只读实时行情、录制和离线策略运行。
+- [SimNow 模拟柜台接入](docs/design/simnow-trading.md)：交易登录、报撤单、成交与柜台账户。
 - [策略定时事件](docs/design/strategy-timer.md)：主线程的一次性时间唤醒、调度与生命周期。
 - [行情驱动与策略事件循环](docs/design/market-data.md)：一档报价、策略上下文、共享内存接收与事件分派。
 - [行情进程设计](docs/design/marketd.md)：可配置行情管线、本机广播和跨机中继。
@@ -278,3 +300,4 @@ cmake --build --preset debug --target download_test_data
 - [交易系统参考资料](docs/research/trading-systems.md)：长期维护设计与开发参考的系统及其官方资料入口。
 - [100 个 GitHub 参考系统](docs/research/github-trading-systems-100.md)：按 Stars、Forks 和仓库历史初筛，按研究／回测／实盘覆盖定位分组，各组按 Stars 排序，附指标快照与排除记录。
 - [Tick 数据分类与固定 Slot 存储](docs/research/tick-data-model.md)：对照六个参考系统的行情载荷，整理市场差异、变长字段及定长槽容量边界。
+- [国内期货 Tick 数据渠道](docs/research/domestic-futures-data-sources.md)：实时行情、历史数据与账户权限。

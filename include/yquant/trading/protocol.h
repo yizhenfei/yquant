@@ -34,6 +34,9 @@ struct AccountView {
   std::uint64_t revision = 0;
   model::CashSnapshot cash;
   model::AccountType type = model::AccountType::kCash;
+  // True only for futures financially managed by an external broker. Such
+  // views must not receive simulator quotes or local FIFO/fee recalculations.
+  bool broker_managed = false;
   model::FuturesAccountSnapshot futures;
   std::array<model::FuturesPositionSnapshot, kMaxInstruments>
       futures_positions = {};
@@ -97,7 +100,8 @@ struct Message {
   model::OrderReason reason;
 };
 
-// Wire version 2 carries equity and futures account/order state. Simulation
+// Wire version 3 adds broker-managed futures identity; readers retain v1/v2
+// support for stored cash/simulated-futures frames. Simulation
 // quote frames reuse the market-data quote codec; live gateways reject them.
 // Explicit little-endian, versioned framing. Encoding/decoding are bounded,
 // allocation-free, reject noncanonical data and preserve outputs on failure.

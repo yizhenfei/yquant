@@ -31,7 +31,7 @@ bool SameAccount(const trading::AccountView& lhs,
                  const trading::AccountView& rhs) noexcept {
   if (lhs.revision != rhs.revision || lhs.cash != rhs.cash ||
       lhs.position_count != rhs.position_count || lhs.type != rhs.type ||
-      lhs.futures != rhs.futures ||
+      lhs.broker_managed != rhs.broker_managed || lhs.futures != rhs.futures ||
       lhs.futures_position_count != rhs.futures_position_count)
     return false;
   for (std::size_t index = 0; index < lhs.position_count; ++index) {
@@ -244,6 +244,10 @@ bool TradingServiceImpl::accepting_orders() const noexcept {
          !stopping_;
 }
 
+bool TradingServiceImpl::supports_generic_close() const noexcept {
+  return storage_ != nullptr && storage_->account.broker_managed;
+}
+
 ErrorCode TradingServiceImpl::SubmitOrder(const model::OrderRequest& request,
                                           model::ClientOrderId& out) noexcept {
   if (!accepting_orders())
@@ -259,10 +263,18 @@ ErrorCode TradingServiceImpl::SubmitOrder(const model::OrderRequest& request,
   if (futures != (storage_->account.type == model::AccountType::kFutures))
     return Fail(ErrorCode::kUnsupported,
                 "instrument does not match gateway account type");
-  if (futures
-          ? request.position_effect < model::PositionEffect::kOpen ||
-                request.position_effect > model::PositionEffect::kCloseYesterday
-          : request.position_effect != model::PositionEffect::kNone)
+  if (futures ? request.position_effect < model::PositionEffect::kOpen ||
+                    request.position_effect > model::PositionEffect::kClose ||
+                    (request.position_effect == model::PositionEffect::kClose &&
+                     (!supports_generic_close() ||
+                      definition.venue == model::Venue::kShfe ||
+                      definition.venue == model::Venue::kIne)) ||
+                    (supports_generic_close() &&
+                     definition.venue != model::Venue::kShfe &&
+                     definition.venue != model::Venue::kIne &&
+                     request.position_effect != model::PositionEffect::kOpen &&
+                     request.position_effect != model::PositionEffect::kClose)
+              : request.position_effect != model::PositionEffect::kNone)
     return Fail(ErrorCode::kInvalidArgument, "invalid position effect");
   if (definition.price_tick <= 0 || definition.quantity_step <= 0 ||
       request.limit_price % definition.price_tick != 0 ||
@@ -380,7 +392,8 @@ bool TradingServiceImpl::TryGetFuturesPosition(
 }
 base::Status TradingServiceImpl::OnQuote(
     const model::QuoteTick& quote) noexcept {
-  if (!storage_ || storage_->account.type != model::AccountType::kFutures)
+  if (!storage_ || storage_->account.type != model::AccountType::kFutures ||
+      storage_->account.broker_managed)
     return {};
   model::InstrumentDefinition definition;
   if (!instruments_.TryGetInstrument(quote.instrument_id, definition) ||
@@ -530,7 +543,9 @@ ErrorCode TradingServiceImpl::ApplyLocalUpdate(
 ErrorCode TradingServiceImpl::ValidateAccount(
     const trading::AccountView& account, bool initial) noexcept {
   if (account.revision == 0 ||
-      (!initial && account.type != storage_->account.type))
+      (!initial &&
+       (account.type != storage_->account.type ||
+        account.broker_managed != storage_->account.broker_managed)))
     return Fail(ErrorCode::kCorrupt,
                 "invalid authoritative account or revision");
   if (!initial && (account.revision < storage_->account.revision ||
@@ -626,7 +641,10 @@ ErrorCode TradingServiceImpl::ApplyUpdate(
                                  : OrderState::kWorking);
       break;
     case OrderUpdateKind::kCanceled:
-      valid = old.state == OrderState::kWorking &&
+      valid = (old.state == OrderState::kWorking ||
+               (s.account.broker_managed && !old.cancel_pending &&
+                wire.cancel_request_id.value == 0 &&
+                old.state == OrderState::kPendingNew)) &&
               next.state == OrderState::kCanceled;
       break;
     case OrderUpdateKind::kCancelRejected:

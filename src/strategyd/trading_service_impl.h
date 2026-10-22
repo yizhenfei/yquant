@@ -38,6 +38,7 @@ class TradingServiceImpl final : public trading::TradingService {
   }
   void BeginStopping() noexcept override;
   bool accepting_orders() const noexcept override;
+  bool supports_generic_close() const noexcept override;
   // Success only commits a local request; tradingd may subsequently reject it.
   // Local acceptance does not reserve the cached authoritative account view.
   [[nodiscard]] base::ErrorCode SubmitOrder(

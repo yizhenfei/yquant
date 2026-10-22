@@ -48,6 +48,42 @@ TEST(TradingConfigTest, LoadsEveryModeAndExactDurationUnits) {
   }
 }
 
+TEST(TradingConfigTest, LoadsLocalCtpBridgeWithoutSyntheticAccount) {
+  ConfigFile file(
+      R"({"adapter":"ctp","address":"127.0.0.1","port":19001,)"
+      R"("token":"local-session","connect_timeout_ms":60000,)"
+      R"("heartbeat_timeout_ms":5000,"shutdown_timeout_ms":10000})");
+  ASSERT_TRUE(file.valid());
+  TradingConfigLoader loader;
+  ASSERT_TRUE(loader.Load(file.path()).ok()) << loader.error().message;
+  EXPECT_EQ(loader.config().adapter, TradingAdapterKind::kCtp);
+  EXPECT_EQ(loader.config().initial_account.type, model::AccountType::kFutures);
+  EXPECT_EQ(loader.config().initial_account.cash_balance, 0);
+  EXPECT_EQ(loader.config().ctp.port, 19001);
+  EXPECT_STREQ(loader.config().ctp.token, "local-session");
+  EXPECT_EQ(loader.config().ctp.connect_timeout_ns, 60000000000ULL);
+}
+
+TEST(TradingConfigTest, CtpRejectsRemoteBridgeAndSyntheticBalances) {
+  const std::string valid =
+      R"({"adapter":"ctp","address":"127.0.0.1","port":19001,)"
+      R"("token":"local-session","connect_timeout_ms":60000,)"
+      R"("heartbeat_timeout_ms":5000,"shutdown_timeout_ms":10000})";
+  for (const auto& extra : {std::string(",\"initial_cash\":1000"),
+                            std::string(",\"initial_futures_positions\":[]")}) {
+    ConfigFile file(valid.substr(0, valid.size() - 1) + extra + "}");
+    ASSERT_TRUE(file.valid());
+    TradingConfigLoader loader;
+    EXPECT_FALSE(loader.Load(file.path()).ok());
+  }
+  auto remote = valid;
+  remote.replace(remote.find("127.0.0.1"), 9, "192.0.2.1");
+  ConfigFile file(remote);
+  TradingConfigLoader loader;
+  EXPECT_FALSE(loader.Load(file.path()).ok());
+  EXPECT_STREQ(loader.error().field_path, "address");
+}
+
 struct BadField {
   const char* name;
   const char* before;

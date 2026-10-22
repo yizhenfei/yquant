@@ -95,8 +95,9 @@ base::Status Server::Init(const ServerConfig& config) noexcept {
     std::snprintf(
         detail, sizeof(detail),
         "cannot initialize account/state/listener: %s%s",
-        s.persistence_detail[0] != '\0' ? s.persistence_detail
-                                        : s.journal.error_detail(),
+        s.persistence_detail[0] != '\0'       ? s.persistence_detail
+        : s.trading.error_detail()[0] != '\0' ? s.trading.error_detail()
+                                              : s.journal.error_detail(),
         status.system_error ? status.system_error.message().c_str() : "");
     Close();
     return Fail(status.code, detail);
@@ -119,6 +120,8 @@ void Server::Disconnect(std::size_t index) noexcept {
 void Server::RefreshAccount() noexcept {
   auto& s = *storage_;
   s.account.type = s.config.trading.initial_account.type;
+  s.account.broker_managed = s.trading.broker_managed();
+  if (s.account.broker_managed) s.account.type = model::AccountType::kFutures;
   s.account.futures_position_count = 0;
   if (s.account.type == model::AccountType::kFutures) {
     (void)s.trading.TryGetFuturesAccount(s.account.futures);
@@ -383,7 +386,14 @@ base::Status Server::Dispatch(std::uint64_t now) noexcept {
     const auto polled = s.trading.Poll(now, dispatch, event);
     if (!polled.ok()) return Fail(polled.code, s.trading.error_detail());
     if (!event) break;
-    if (dispatch.update.order.client_order_id.value == 0) continue;
+    if (dispatch.update.order.client_order_id.value == 0) {
+      if (s.trading.broker_managed()) {
+        ++s.account.revision;
+        RefreshAccount();
+        s.account_dirty = true;
+      }
+      continue;
+    }
     const auto core_id = dispatch.update.order.client_order_id.value;
     const auto owner_index = s.OwnerIndex({core_id});
     if (owner_index == s.owners.size())
@@ -430,6 +440,9 @@ base::Status Server::Dispatch(std::uint64_t now) noexcept {
 
 void Server::ScheduleClientCancels(std::uint64_t now) noexcept {
   auto& s = *storage_;
+  // Global stopping closes the engine's request window permanently; its own
+  // bounded scan then owns all cancellation attempts and retry scheduling.
+  if (s.stopping) return;
   const auto count = s.trading.order_count();
   for (std::size_t scanned = 0; scanned < kCancelScanPerService && count != 0;
        ++scanned) {
@@ -538,6 +551,12 @@ base::Status Server::Service(std::uint64_t now) noexcept {
     s.trading.BeginStopping();
   }
   ScheduleClientCancels(now);
+  if (s.stopping) {
+    const auto scheduled =
+        s.trading.ScheduleStopping(now, kCancelScanPerService);
+    if (!scheduled.ok() && !s.degraded)
+      return Fail(scheduled.code, s.trading.error_detail());
+  }
   auto status = s.trading.ProcessRequests(now);
   if (!status.ok() && !s.degraded)
     return Fail(status.code, s.trading.error_detail());
@@ -580,6 +599,7 @@ void Server::BeginStopping(std::uint64_t now) noexcept {
   auto& s = *storage_;
   s.stopping = true;
   s.stop_time = now;
+  s.trading.BeginStopping();
   s.listener.Close();
   for (std::size_t i = 0; i < s.config.max_clients; ++i) {
     auto& client = s.clients[i];

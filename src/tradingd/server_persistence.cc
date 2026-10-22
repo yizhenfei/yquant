@@ -137,6 +137,8 @@ void Server::Storage::BindOwner(std::size_t slot,
 base::Status Server::Storage::Adapter::SendOrder(
     model::ClientOrderId id, const model::OrderRequest& request,
     std::uint64_t now) noexcept {
+  if (storage.config.trading.adapter == trading::TradingAdapterKind::kCtp)
+    return storage.ctp.SendOrder(id, request, now);
   if (storage.config.trading.adapter ==
       trading::TradingAdapterKind::kSimulatedFutures)
     return storage.futures.SendOrder(id, request, now);

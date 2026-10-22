@@ -32,6 +32,7 @@ class MockTradingService final : public trading::TradingService {
   base::Status stop_result;
   base::ErrorCode submit_result = base::ErrorCode::kOk;
   bool never_drained = false;
+  bool broker_managed = false;
   int init_calls = 0;
   int send_calls = 0;
   int poll_calls = 0;
@@ -80,6 +81,9 @@ class MockTradingService final : public trading::TradingService {
   }
   bool accepting_orders() const noexcept override {
     return initialized_ && accepting_ && !stopping_;
+  }
+  bool supports_generic_close() const noexcept override {
+    return broker_managed;
   }
   base::ErrorCode SubmitOrder(const model::OrderRequest& request,
                               model::ClientOrderId& out) noexcept override {

@@ -1,0 +1,17 @@
+{
+  "instruments": [
+    {
+      "venue": "CFFEX",
+      "symbol": "TF2612",
+      "instrument_type": "futures",
+      "price_decimals": 3,
+      "price_tick": 5,
+      "quantity_step": 1,
+      "contract_multiplier": 10000,
+      "margin_rate_ppm": 20000,
+      "open_fee_per_lot": 2000000,
+      "close_today_fee_per_lot": 2000000,
+      "close_yesterday_fee_per_lot": 2000000
+    }
+  ]
+}

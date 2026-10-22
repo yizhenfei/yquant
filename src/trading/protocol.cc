@@ -12,7 +12,7 @@ namespace {
 
 // The byte spelling is YQTR. All integer fields use little-endian order.
 constexpr std::uint32_t kMagic = 0x52545159;
-constexpr std::uint16_t kVersion = 2;
+constexpr std::uint16_t kVersion = 3;
 constexpr std::size_t kMaxReasonBytes = sizeof(model::OrderReason{}.text) - 1;
 constexpr std::uint8_t kMaxPriceDecimals = 6;
 
@@ -29,7 +29,12 @@ bool ValidEffect(model::InstrumentId id,
   const bool futures =
       model::IsFuturesVenue(static_cast<model::Venue>(id.value >> 32));
   return futures ? effect >= model::PositionEffect::kOpen &&
-                       effect <= model::PositionEffect::kCloseYesterday
+                       effect <= model::PositionEffect::kClose &&
+                       (effect != model::PositionEffect::kClose ||
+                        (id.value >> 32 !=
+                             static_cast<unsigned>(model::Venue::kShfe) &&
+                         id.value >> 32 !=
+                             static_cast<unsigned>(model::Venue::kIne)))
                  : effect == model::PositionEffect::kNone;
 }
 
@@ -83,7 +88,8 @@ bool ValidAccount(const AccountView& account) noexcept {
     const auto& a = account.futures;
     const __int128 equity = static_cast<__int128>(a.balance) + a.unrealized_pnl;
     if (a.margin < 0 || a.reserved < 0 || a.commission < 0 ||
-        equity != a.equity || equity - a.margin - a.reserved != a.available)
+        (!account.broker_managed &&
+         (equity != a.equity || equity - a.margin - a.reserved != a.available)))
       return false;
     for (std::size_t i = 0; i < account.futures_position_count; ++i) {
       const auto& p = account.futures_positions[i];
@@ -101,13 +107,27 @@ bool ValidAccount(const AccountView& account) noexcept {
         gross += b->quantity;
       }
       if (gross > INT64_MAX) return false;
+      const __int128 long_room = static_cast<__int128>(p.long_today.quantity) +
+                                 p.long_yesterday.quantity -
+                                 p.long_today.frozen_qty -
+                                 p.long_yesterday.frozen_qty;
+      const __int128 short_room =
+          static_cast<__int128>(p.short_today.quantity) +
+          p.short_yesterday.quantity - p.short_today.frozen_qty -
+          p.short_yesterday.frozen_qty;
+      if (p.unallocated_long_frozen < 0 || p.unallocated_short_frozen < 0 ||
+          p.unallocated_long_frozen > long_room ||
+          p.unallocated_short_frozen > short_room ||
+          (!account.broker_managed &&
+           (p.unallocated_long_frozen || p.unallocated_short_frozen)))
+        return false;
       for (std::size_t j = 0; j < i; ++j)
         if (account.futures_positions[j].instrument_id == p.instrument_id)
           return false;
     }
     return true;
   }
-  if (account.type != model::AccountType::kCash ||
+  if (account.type != model::AccountType::kCash || account.broker_managed ||
       account.futures_position_count != 0)
     return false;
   if (account.position_count > kMaxInstruments || account.cash.balance < 0 ||
@@ -288,6 +308,8 @@ void WriteFutures(Writer& w, const AccountView& a) noexcept {
     }
     w.Signed(p.margin);
     w.Signed(p.unrealized_pnl);
+    w.Signed(p.unallocated_long_frozen);
+    w.Signed(p.unallocated_short_frozen);
   }
 }
 void ReadFutures(Reader& r, AccountView& a) noexcept {
@@ -311,11 +333,16 @@ void ReadFutures(Reader& r, AccountView& a) noexcept {
     }
     p.margin = r.Signed();
     p.unrealized_pnl = r.Signed();
+    if (r.version() >= 3) {
+      p.unallocated_long_frozen = r.Signed();
+      p.unallocated_short_frozen = r.Signed();
+    }
   }
 }
 void WriteAccount(Writer& writer, const AccountView& account) noexcept {
   writer.Uint(account.revision, 8);
   writer.Uint(static_cast<std::uint8_t>(account.type), 1);
+  writer.Uint(account.broker_managed, 1);
   if (account.type == model::AccountType::kFutures) {
     WriteFutures(writer, account);
     return;
@@ -337,6 +364,7 @@ void ReadAccount(Reader& reader, AccountView& account) noexcept {
   account.revision = reader.Uint(8);
   if (reader.version() >= 2)
     account.type = static_cast<model::AccountType>(reader.Uint(1));
+  if (reader.version() >= 3) account.broker_managed = reader.Boolean();
   if (account.type == model::AccountType::kFutures) {
     ReadFutures(reader, account);
     if (!ValidAccount(account)) reader.Reject();
@@ -654,7 +682,7 @@ std::size_t FrameSize(std::span<const std::byte> header) noexcept {
   Reader reader(header);
   if (reader.Uint(4) != kMagic) return 0;
   const auto version = reader.Uint(2);
-  if (version != 1 && version != kVersion) return 0;
+  if (version != 1 && version != 2 && version != kVersion) return 0;
   const auto type = static_cast<MessageType>(reader.Uint(2));
   if (!ValidType(type) || (version == 1 && type > MessageType::kError))
     return 0;

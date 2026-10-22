@@ -44,6 +44,8 @@ class TradingEngine final {
   void BeginStopping() noexcept;
 
   bool accepting_orders() const noexcept;
+  // Broker-managed futures bypass the simulated financial ledger entirely.
+  bool broker_managed() const noexcept;
   [[nodiscard]] base::ErrorCode SubmitOrder(const model::OrderRequest& request,
                                             model::ClientOrderId& out) noexcept;
   [[nodiscard]] base::ErrorCode CancelOrder(model::ClientOrderId id) noexcept;
@@ -155,6 +157,10 @@ class TradingEngine final {
   // the account unavailable and preserves caller input.
   [[nodiscard]] base::Status ConfigureAccount(
       const TradingAccountSnapshot& account) noexcept;
+  // Validates the complete broker view and monotonic revision without changing
+  // retained orders/account or caller input. Financial values remain verbatim.
+  [[nodiscard]] base::ErrorCode ValidateBrokerAccount(
+      const BrokerAccountSnapshot& account) noexcept;
   // Finds a retained order; cold-leased IDs may be sparse and are never reused.
   std::optional<std::size_t> FindIndex(model::ClientOrderId id) const noexcept;
   // Finds a retained position; a known untouched instrument has no slot yet.

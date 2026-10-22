@@ -1,4 +1,5 @@
 add_executable(trading_test
+  tests/trading/ctp_trading_adapter_test.cc
   tests/trading/futures_exchange_test.cc
   tests/trading/futures_ledger_test.cc
   tests/trading/trading_persistence_test.cc

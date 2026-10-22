@@ -318,8 +318,12 @@ base::Status Parse(const base::JsonConfigDocument& source,
         else if (value == "simulated_futures") {
           config.adapter = TradingAdapterKind::kSimulatedFutures;
           config.initial_account.type = model::AccountType::kFutures;
+        } else if (value == "ctp") {
+          config.adapter = TradingAdapterKind::kCtp;
+          config.initial_account.type = model::AccountType::kFutures;
         } else
-          return InvalidConfig(key, "must be mock or simulated_futures", error);
+          return InvalidConfig(key, "must be mock, simulated_futures or ctp",
+                               error);
       } else if (position == 1) {
         if (value == "fill")
           config.mode = MockTradingMode::kFill;
@@ -353,6 +357,39 @@ base::Status Parse(const base::JsonConfigDocument& source,
               : ParseFuturesPositions(field.value(), config.initial_account,
                                       error);
       if (!status.ok()) return status;
+    } else if (position == 6 || position == 9) {
+      std::string_view value;
+      json_error = field.value().get_string().get(value);
+      if (json_error) return JsonError(json_error, key, error);
+      auto* destination = position == 6 ? config.ctp.address : config.ctp.token;
+      const auto capacity =
+          position == 6 ? sizeof(config.ctp.address) : sizeof(config.ctp.token);
+      if (value.empty() || value.size() >= capacity ||
+          value.find('\0') != value.npos)
+        return InvalidConfig(key, "string is empty, too long or contains NUL",
+                             error);
+      std::memcpy(destination, value.data(), value.size());
+      destination[value.size()] = '\0';
+    } else if (position == 7) {
+      std::uint64_t port;
+      json_error = field.value().get_uint64().get(port);
+      if (json_error) return JsonError(json_error, key, error);
+      if (port == 0 || port > UINT16_MAX)
+        return InvalidConfig(key, "must be an integer from 1 to 65535", error);
+      config.ctp.port = static_cast<std::uint16_t>(port);
+    } else if (position == 10 || position == 11) {
+      std::uint64_t milliseconds;
+      json_error = field.value().get_uint64().get(milliseconds);
+      if (json_error) return JsonError(json_error, key, error);
+      if (milliseconds < kMinimumTradingDurationMs ||
+          milliseconds > kMaximumTradingDurationMs)
+        return InvalidConfig(key, "must be an integer from 1 to 60000", error);
+      if (position == 10)
+        config.ctp.connect_timeout_ns =
+            milliseconds * kTradingNanosecondsPerMillisecond;
+      else
+        config.ctp.heartbeat_timeout_ns =
+            milliseconds * kTradingNanosecondsPerMillisecond;
     } else {
       return InvalidConfig(key, "field belongs to trading client configuration",
                            error);
@@ -361,8 +398,13 @@ base::Status Parse(const base::JsonConfigDocument& source,
   constexpr std::uint32_t kMockFields = (1U << 6) - 1;
   constexpr std::uint32_t kFuturesFields =
       (1U << 0) | (1U << 2) | (1U << 3) | (1U << 4) | (1U << 12);
+  constexpr std::uint32_t kCtpFields = (1U << 0) | (1U << 3) | (1U << 6) |
+                                       (1U << 7) | (1U << 9) | (1U << 10) |
+                                       (1U << 11);
   const bool futures = config.adapter == TradingAdapterKind::kSimulatedFutures;
-  const auto required = futures ? kFuturesFields : kMockFields;
+  const auto required = config.adapter == TradingAdapterKind::kCtp
+                            ? kCtpFields
+                            : (futures ? kFuturesFields : kMockFields);
   const auto allowed = required;
   for (std::size_t position = 0; position < kFields.size(); ++position) {
     const auto bit = 1U << position;
@@ -386,9 +428,12 @@ base::Status ValidateTradingConfig(const TradingConfig& config,
   constexpr std::uint64_t kMaximum =
       kMaximumTradingDurationMs * kTradingNanosecondsPerMillisecond;
   if (config.adapter != TradingAdapterKind::kMock &&
-      config.adapter != TradingAdapterKind::kSimulatedFutures)
-    return InvalidConfig("adapter", "must be mock or simulated_futures", error);
-  const bool futures = config.adapter == TradingAdapterKind::kSimulatedFutures;
+      config.adapter != TradingAdapterKind::kSimulatedFutures &&
+      config.adapter != TradingAdapterKind::kCtp)
+    return InvalidConfig("adapter", "must be mock, simulated_futures or ctp",
+                         error);
+  const bool ctp = config.adapter == TradingAdapterKind::kCtp;
+  const bool futures = config.adapter != TradingAdapterKind::kMock;
   if (config.initial_account.type !=
       (futures ? model::AccountType::kFutures : model::AccountType::kCash))
     return InvalidConfig("adapter", "adapter and account type must agree",
@@ -397,6 +442,33 @@ base::Status ValidateTradingConfig(const TradingConfig& config,
       config.shutdown_timeout_ns > kMaximum)
     return InvalidConfig("shutdown_timeout_ms",
                          "must be from 1 to 60000 milliseconds", error);
+  if (ctp) {
+    if (std::memchr(config.ctp.address, '\0', sizeof(config.ctp.address)) ==
+            nullptr ||
+        std::strcmp(config.ctp.address, "127.0.0.1") != 0)
+      return InvalidConfig("address", "CTP SDK bridge must use 127.0.0.1",
+                           error);
+    if (config.ctp.port == 0)
+      return InvalidConfig("port", "must be from 1 to 65535", error);
+    if (config.ctp.token[0] == '\0' ||
+        std::memchr(config.ctp.token, '\0', sizeof(config.ctp.token)) ==
+            nullptr)
+      return InvalidConfig("token", "requires 1..64 bytes", error);
+    if (config.ctp.connect_timeout_ns < kMinimum ||
+        config.ctp.connect_timeout_ns > kMaximum)
+      return InvalidConfig("connect_timeout_ms", "must be from 1 to 60000",
+                           error);
+    if (config.ctp.heartbeat_timeout_ns < kMinimum ||
+        config.ctp.heartbeat_timeout_ns > kMaximum)
+      return InvalidConfig("heartbeat_timeout_ms", "must be from 1 to 60000",
+                           error);
+    if (config.initial_account.cash_balance != 0 ||
+        config.initial_account.position_count != 0 ||
+        config.initial_account.futures_position_count != 0)
+      return InvalidConfig("initial_cash",
+                           "CTP account must come from broker queries", error);
+    return {};
+  }
   if (config.mode != MockTradingMode::kFill &&
       config.mode != MockTradingMode::kWorking &&
       config.mode != MockTradingMode::kReject)
