@@ -18,7 +18,8 @@ base::Status StrategyAssembly::Load(
     StrategyOptions options, base::EventLoopEnvironment& environment) noexcept {
   if (loaded_) return {base::ErrorCode::kInvalidState, {}};
   loaded_ = true;
-  // Cancellation is distinct from successful loading: no runner is created.
+  // A clean stop can return OK before configuration is complete. Preserve a
+  // separate cancellation flag so the caller does not construct a runner.
   const auto check_stop = [&]() noexcept {
     bool stop = false;
     const auto status = environment.CheckStop(stop);

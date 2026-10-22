@@ -26,7 +26,9 @@ StrategyRunner::StrategyRunner(const base::MonotonicClock& clock,
       context_(clock, market_data_, trading, timer_) {}
 
 StrategyRunner::~StrategyRunner() noexcept {
-  // Explicit Stop reports errors; this is the ownership safety net.
+  // Run performs orderly drain and exposes cleanup errors. Destruction still
+  // releases resources if the caller exits early, without starting another
+  // loop.
   Finalize();
 }
 
@@ -86,7 +88,8 @@ base::Status StrategyRunner::LoadAndStart(
   }
   auto& config_loader = options.config;
   strategy_id_ = config_loader.strategy_id();
-  // A source may acquire resources before a failed Prepare; always stop it.
+  // Mark cleanup due before calling Prepare because even a failed attempt may
+  // own partial resources that require Stop.
   source_prepared_ = true;
   const auto prepared = source_.Prepare(options.market_data);
   if (!prepared.ok()) {
@@ -149,8 +152,8 @@ base::Status StrategyRunner::LoadAndStart(
       config.Initialize(config_loader.strategy_id(),
                         config_loader.parameters_json(), config_error);
   if (initialize_result != base::ErrorCode::kOk) {
-    // Plugins report paths relative to parameters. Copy both parts before
-    // destroying the instance or releasing its library.
+    // Prefix the plugin's parameter-relative path and copy its diagnostic
+    // before destroying plugin-owned storage or unloading the library.
     char detail[kErrorDetailSize];
     const char* separator = config_error.field_path[0] == '\0' ? "" : ".";
     std::snprintf(detail, sizeof(detail), "parameters%s%s: %s%s", separator,
@@ -171,7 +174,8 @@ base::Status StrategyRunner::LoadAndStart(
     Finalize();
     return result_;
   }
-  // JSON views are initialization-only. OnStart must use owned typed fields.
+  // End the JSON borrow before OnStart so callbacks can rely only on the
+  // plugin's owned typed fields, independent of parser/source storage.
   config_loader.Reset();
 
   if (CancelStartupIfRequested()) {
@@ -226,12 +230,13 @@ base::Status StrategyRunner::Stop() noexcept {
 
 namespace {
 
-// Both sources use the host's monotonic time domain.
+// Returns whether an optional absolute deadline is due in host-monotonic time.
 bool IsDue(std::optional<std::uint64_t> deadline, std::uint64_t now) noexcept {
   return deadline && *deadline <= now;
 }
 
-// Keeps the earliest absolute deadline; absent inputs do not schedule work.
+// Lowers earliest to a present candidate, or initializes it if absent. An
+// absent candidate leaves the accumulated deadline unchanged.
 void IncludeDeadline(std::optional<std::uint64_t>& earliest,
                      std::optional<std::uint64_t> candidate) noexcept {
   if (candidate && (!earliest || *candidate < *earliest)) {
@@ -456,8 +461,8 @@ StrategyRunner::QuotePollResult StrategyRunner::PollQuote() noexcept {
       EnterStopping();
       return QuotePollResult::kIdle;
     }
-    // SHM already bounded its scan internally. Retry only in the next Run
-    // iteration, so a transport yield does not multiply its scan budget here.
+    // Return the yield to ProcessBatch so it skips this source until the next
+    // batch. Retrying here would multiply a transport's bounded scan allowance.
     return QuotePollResult::kIdle;
   }
   if (polled.state != MarketDataPollState::kEvent) {
@@ -548,15 +553,16 @@ base::Status StrategyRunner::Wait(
   if (mask_error != 0) {
     return {base::ErrorCode::kIoError, {mask_error, std::generic_category()}};
   }
-  // Preserve unrelated signal blocking. pselect atomically opens the exit
-  // signal window with the wait, so a pending stop cannot be lost before sleep.
+  // Change only termination-signal masking. pselect opens that signal window
+  // atomically with sleeping so a stop cannot arrive between check and wait.
   if (sigdelset(&wait_mask, SIGINT) != 0 ||
       sigdelset(&wait_mask, SIGTERM) != 0) {
     return {base::ErrorCode::kIoError, {errno, std::generic_category()}};
   }
   struct timespec timeout{};
   if (timeout_ns) {
-    // Nanoseconds stored in uint64 fit in the supported 64-bit time_t seconds.
+    // The converted seconds fit the supported 64-bit time_t even when the
+    // input nanoseconds span uint64_t's full range.
     constexpr std::uint64_t kNanosecondsPerSecond = 1000000000;
     timeout.tv_sec = static_cast<time_t>(*timeout_ns / kNanosecondsPerSecond);
     timeout.tv_nsec = static_cast<long>(*timeout_ns % kNanosecondsPerSecond);
@@ -580,8 +586,8 @@ base::Status StrategyRunner::Run() noexcept {
       return result_;
     }
     if (state_ == RunnerState::kRunning && source_started_) {
-      // Discovery/heartbeat work is deliberately outside the hot polling
-      // batch. A failed market source must not prevent broker-order draining.
+      // Keep discovery/health maintenance outside event batches. Source failure
+      // stops quote delivery while a usable trading channel continues draining.
       const auto serviced = source_.Service(clock_.Now());
       if (!serviced.ok()) {
         SetError(serviced, "market_data_service", source_.error_detail());
@@ -722,6 +728,8 @@ void StrategyRunner::Finalize() noexcept {
     const auto status = source_.Stop();
     SetError(status, "market_data_stop", source_.error_detail());
   }
+  // Keep callback services alive through OnStop and plugin destruction; tear
+  // down transport only after unconfirmed facts have been reported.
   if (started_) {
     started_ = false;
     BeginCallback(strategy::CallbackPhase::kStop);

@@ -32,9 +32,9 @@ inline constexpr std::size_t kMaxStrategyBatchSize = 64;
 // startup failure or cancellation; a new attempt requires a new runner.
 enum class RunnerState { kIdle, kStarting, kRunning, kStopping, kFinished };
 
-// Starts a strategy using assembly-validated configuration compatible with the
-// injected market-data source and trading service. All inputs are borrowed only
-// until LoadAndStart returns; config may be reset during initialization.
+// Supplies assembly-validated inputs to LoadAndStart, compatible with the
+// injected source and trading service. References are borrowed for that call;
+// the configuration loader may be reset after plugin initialization.
 struct StrategyStartOptions {
   // Null-terminated plugin path. Null and empty paths are invalid.
   const char* library_path;
@@ -47,8 +47,8 @@ struct StrategyStartOptions {
 // to it. Owns the plugin instance, library handle, and callback context; uses
 // injected components for market-data ingestion and trading.
 //
-// Call LoadAndStart once, then Run if state() is kRunning. Run drives
-// events until shutdown completes. Stop requests shutdown; destruction
+// Call LoadAndStart once, then Run if state() is kRunning. Run drives events
+// until shutdown completes. Stop requests shutdown; destruction
 // releases remaining resources without running an order-draining loop.
 //
 // All calls and destruction must be serialized on the owning thread. Strategy
@@ -72,7 +72,7 @@ class StrategyRunner {
   StrategyRunner& operator=(StrategyRunner&&) = delete;
 
   // Loads, configures, and starts the strategy from kIdle. Resets
-  // options.config after attempting plugin configuration initialization, even
+  // `options.config` after attempting plugin configuration initialization, even
   // if that step fails; earlier failures leave the loader unchanged.
   //
   // Enters kRunning on complete startup. Startup failure or cancellation cleans
@@ -247,10 +247,10 @@ class StrategyRunner {
   strategy::Strategy* instance_ = nullptr;
   RunnerState state_ = RunnerState::kIdle;
   bool started_ = false;  // OnStart succeeded and OnStop is still owed.
-  // Requires Stop after any Prepare attempt, including failure.
+  // Requires source_.Stop after any Prepare attempt, including failure.
   bool source_prepared_ = false;
   bool source_started_ = false;
-  // Requires Stop after any Init attempt, including failure.
+  // Requires trading_service_.Stop after any Init attempt, including failure.
   bool trading_prepared_ = false;
   bool trading_started_ = false;
   bool callback_active_ = false;

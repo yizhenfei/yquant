@@ -10,7 +10,7 @@
 namespace yquant::strategyd {
 namespace {
 
-// Saturating deadlines never wrap a future maintenance/read time into the past.
+// Adds a scheduling interval, saturating instead of wrapping into the past.
 std::uint64_t After(std::uint64_t now, std::uint64_t interval) noexcept {
   return now > std::numeric_limits<std::uint64_t>::max() - interval
              ? std::numeric_limits<std::uint64_t>::max()
@@ -124,8 +124,8 @@ base::Status ShmMarketDataSource::Service(std::uint64_t now) noexcept {
   if (health_.status == md::RefreshStatus::kMissing ||
       health_.health == md::PublisherHealth::kStale ||
       health_.health == md::PublisherHealth::kStopped) {
-    // Poll remains responsible for delivery order: retain queued events and
-    // only report cached publisher failure after the retained data is drained.
+    // Poll can still deliver retained quotes; it reports cached health failure
+    // only when a read yields no event. Maintenance must not consume events.
     deadline_ = now;
   }
   return {};
@@ -141,8 +141,8 @@ MarketDataPollResult ShmMarketDataSource::Poll(std::uint64_t now,
                   "source must be active when polling")};
   }
   if (!deadline_ || now < *deadline_) return {};
-  // Bound receiver-side filtering so a busy unrelated stream yields to the
-  // host's stop check. The broadcast reader itself returns every event.
+  // Bound filtering independently of reader retries so unrelated events cannot
+  // keep the host from checking stop requests and servicing other sources.
   constexpr std::size_t kMaxEventsPerPoll = 64;
   constexpr std::uint32_t kEventTypes[] = {md::kQuoteEventType};
   const md::EventFilter filter{std::span(instruments_).first(instrument_count_),
@@ -224,7 +224,8 @@ MarketDataPollResult ShmMarketDataSource::Poll(std::uint64_t now,
     return PollError({base::ErrorCode::kCorrupt, {}},
                      "shm reader returned an unknown read status");
   }
-  // Exhausted receiver scan/attempt budget: yield to the host before retrying.
+  // Stay ready after exhausting either budget, but let the host end this
+  // source's batch before retrying so an active stream cannot monopolize it.
   deadline_ = now;
   return {};
 }

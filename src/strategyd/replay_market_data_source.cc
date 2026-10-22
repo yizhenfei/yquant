@@ -20,10 +20,12 @@
 namespace yquant::strategyd {
 namespace {
 
+// Exact replay schema; column order is part of the input format.
 constexpr std::string_view kCsvHeader =
     "elapsed_ns,event_time_ns,bid_price,bid_qty,ask_price,ask_qty,flags";
 
-// Owns a cold-path descriptor, including every early validation exit.
+// Closes the owned descriptor on early read/validation exits. -1 denotes no
+// descriptor, including after an explicit close whose error is reported.
 struct FileDescriptor {
   int value = -1;
   ~FileDescriptor() {
@@ -31,8 +33,9 @@ struct FileDescriptor {
   }
 };
 
-// The CSV intentionally has no quoting or whitespace coercion. CRLF is
-// accepted, and a final line terminator does not create an extra data record.
+// Removes the next line from remaining and writes a view into the same input.
+// Strips a trailing CR for CRLF; a final newline creates no extra line. False
+// means remaining was empty and leaves line unchanged. Views borrow input.
 bool NextLine(std::string_view& remaining, std::string_view& line) noexcept {
   if (remaining.empty()) return false;
   const auto end = remaining.find('\n');
@@ -45,7 +48,9 @@ bool NextLine(std::string_view& remaining, std::string_view& line) noexcept {
   return true;
 }
 
-// Exact base-10 parsing rejects overflow, spaces, plus signs and fractions.
+// Parses a complete base-10 integer, rejecting overflow, spaces, leading plus,
+// and fractions. On failure out may already contain a parsed prefix; callers
+// must discard it. Retains no reference to text.
 template <typename Integer>
 bool ParseInteger(std::string_view text, Integer& out) noexcept {
   if (text.empty()) return false;
@@ -54,7 +59,8 @@ bool ParseInteger(std::string_view text, Integer& out) noexcept {
   return result.ec == std::errc{} && result.ptr == text.data() + text.size();
 }
 
-// Splits exactly seven nonempty unescaped columns without allocation.
+// Splits seven nonempty comma-separated fields without quoting or unescaping.
+// Success writes views borrowing line; failure may leave fields partly filled.
 bool SplitFields(std::string_view line,
                  std::array<std::string_view, 7>& fields) noexcept {
   for (std::size_t index = 0; index < fields.size(); ++index) {
@@ -67,8 +73,10 @@ bool SplitFields(std::string_view line,
   return true;
 }
 
-// No file/parser bytes are borrowed by a parsed quote. Metadata adds tick/lot
-// constraints to the canonical wire quote validation.
+// Parses one quote's fields and elapsed time, checking wire validity and the
+// instrument's tick/quantity steps. Requires initialized quote identity and
+// positive definition steps. Outputs own their values; failure may partially
+// overwrite them, so callers must discard failed records.
 bool ParseRecord(std::string_view line,
                  const model::InstrumentDefinition& definition,
                  std::uint64_t& elapsed_ns, model::QuoteTick& quote) noexcept {
@@ -161,6 +169,8 @@ base::Status ReplayMarketDataSource::ReadFrames(
   if (!NextLine(remaining, line) || line != kCsvHeader)
     return Error(base::ErrorCode::kInvalidArgument,
                  "replay CSV has an invalid header");
+  // Count records first to allocate the final frame array once; decoded values
+  // then remain independent of this temporary CSV buffer.
   const auto records = remaining;
   std::size_t count = 0;
   while (NextLine(remaining, line)) {
@@ -196,6 +206,8 @@ base::Status ReplayMarketDataSource::ReadFrames(
     previous_elapsed = elapsed;
     frame.elapsed_ns = elapsed / config.replay_speed;
   }
+  // Publish decoded storage only after every row passes validation, preserving
+  // the previous storage if any row fails.
   frames_ = std::move(frames);
   frame_count_ = count;
   return {};
@@ -235,6 +247,8 @@ base::Status ReplayMarketDataSource::Start(
       (!subscriptions.empty() && subscriptions[0] != instrument_id_))
     return Error(base::ErrorCode::kInvalidArgument,
                  "replay subscription is unknown or duplicated");
+  // Check the largest deadline before committing playback state so overflow
+  // leaves the prepared frames reusable with another origin.
   const auto last = frames_[frame_count_ - 1].elapsed_ns;
   constexpr auto kMaxTime = std::numeric_limits<std::uint64_t>::max();
   if (last > kMaxTime - now || tail_ns_ > kMaxTime - now - last)

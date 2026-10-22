@@ -9,18 +9,25 @@
 
 namespace yquant::strategyd {
 
-// Runner-owned, allocation-free one-shot state. Phase and lifecycle changes,
-// mutation, and consumption all occur on the same owning strategy thread.
+// Implements the strategy's replaceable one-shot timer. The runner enables
+// dispatch after startup, consumes due notifications before OnTimer, and
+// disarms on stopping. All access is serialized on the owning strategy thread;
+// timer operations allocate no memory and never invoke callbacks themselves.
 class TimerImpl final : public strategy::Timer {
  public:
-  // Enables dispatch after all startup stages succeed; preserves a deadline
-  // armed in OnStart. BeginStopping is the explicit closing/disarming boundary.
+  // Enables or suspends consumption without changing an armed deadline. The
+  // runner enables it after startup; BeginStopping permanently closes mutation
+  // and consumption until Reset.
   void SetRunning(bool running) noexcept { running_ = running; }
+  // Sets the current strategy callback phase. Calls must not nest and must be
+  // paired with EndCallback, including when a callback fails.
   void BeginCallback(strategy::CallbackPhase phase) noexcept { phase_ = phase; }
+  // Leaves the current callback phase, disabling strategy timer mutation.
   void EndCallback() noexcept { phase_ = strategy::CallbackPhase::kNone; }
-  // Idempotently closes mutation and discards any pending notification.
+  // Disarms the timer and rejects further mutation or consumption until Reset.
+  // Repeated calls preserve the stopping state.
   void BeginStopping() noexcept;
-  // Restores empty startup state outside callbacks; owns no external resource.
+  // Restores an unarmed pre-start state. Call only outside strategy callbacks.
   void Reset() noexcept;
 
   [[nodiscard]] base::ErrorCode Arm(
@@ -30,16 +37,17 @@ class TimerImpl final : public strategy::Timer {
     return deadline_;
   }
 
-  // Host-only consumption outside callbacks, enabled only while Running.
-  // A due deadline is disarmed before writing out; false preserves both out
-  // and state. The caller then invokes OnTimer without retaining any borrow.
+  // Consumes a due notification outside callbacks while running. Uses absolute
+  // monotonic now; success disarms the timer and overwrites out with its
+  // deadline and actual dispatch time. False preserves out and timer state.
   [[nodiscard]] bool TryTakeDue(std::uint64_t now,
                                 strategy::TimerEvent& out) noexcept;
 
  private:
+  // Returns whether the current lifecycle and callback phase allow mutation.
   bool CanChange() const noexcept;
 
-  std::optional<std::uint64_t> deadline_;
+  std::optional<std::uint64_t> deadline_;  // Absolute nanoseconds, or unarmed.
   bool running_ = false;
   bool stopping_ = false;
   strategy::CallbackPhase phase_ = strategy::CallbackPhase::kNone;
