@@ -210,12 +210,19 @@ void StrategyRunner::BeginCallback(strategy::CallbackPhase phase) noexcept {
   callback_active_ = true;
   market_data_.BeginCallback(phase);
   timer_.BeginCallback(phase);
-  const bool business = phase == strategy::CallbackPhase::kTick ||
-                        phase == strategy::CallbackPhase::kOrderUpdate ||
-                        phase == strategy::CallbackPhase::kFill ||
-                        phase == strategy::CallbackPhase::kTimer;
-  trading_service_.SetAcceptingRequests(state_ == RunnerState::kRunning &&
-                                        business);
+  switch (phase) {
+    case strategy::CallbackPhase::kNone:
+    case strategy::CallbackPhase::kStart:
+    case strategy::CallbackPhase::kStop:
+      trading_service_.SetAcceptingRequests(false);
+      break;
+    case strategy::CallbackPhase::kTick:
+    case strategy::CallbackPhase::kOrderUpdate:
+    case strategy::CallbackPhase::kFill:
+    case strategy::CallbackPhase::kTimer:
+      trading_service_.SetAcceptingRequests(state_ == RunnerState::kRunning);
+      break;
+  }
 }
 
 void StrategyRunner::EndCallback() noexcept {
