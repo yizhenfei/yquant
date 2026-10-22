@@ -1,7 +1,6 @@
 #include "strategyd/termination_signals.h"
 
 #include <pthread.h>
-#include <sys/select.h>
 
 #include <cerrno>
 #include <system_error>
@@ -69,28 +68,6 @@ base::Status TerminationSignals::CheckStop(bool& out) noexcept {
     return SignalError(unmask_error != 0 ? unmask_error : restore_error);
   }
   out = stop_signal != 0;
-  return {};
-}
-
-base::Status TerminationSignals::Wait(
-    std::optional<std::uint64_t> timeout_ns) noexcept {
-  if (!prepared_) {
-    return {base::ErrorCode::kInvalidState, {}};
-  }
-  if (timeout_ns && *timeout_ns == 0) {
-    bool ignored = false;
-    return CheckStop(ignored);
-  }
-  struct timespec timeout{};
-  if (timeout_ns) {
-    timeout.tv_sec = static_cast<time_t>(*timeout_ns / 1000000000);
-    timeout.tv_nsec = static_cast<long>(*timeout_ns % 1000000000);
-  }
-  const int result = pselect(0, nullptr, nullptr, nullptr,
-                             timeout_ns ? &timeout : nullptr, &wait_mask_);
-  if (result < 0 && errno != EINTR) {
-    return SignalError(errno);
-  }
   return {};
 }
 

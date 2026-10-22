@@ -1,7 +1,13 @@
 #include "strategyd/strategy_runner.h"
 
+#include <pthread.h>
+#include <signal.h>
+#include <sys/select.h>
+
+#include <cerrno>
 #include <cstdio>
 #include <limits>
+#include <system_error>
 
 #include "strategyd/strategy_config_loader.h"
 #include "strategyd/trading_config.h"
@@ -749,6 +755,34 @@ void StrategyRunner::ProcessBatch() noexcept {
   }
 }
 
+base::Status StrategyRunner::Wait(
+    std::optional<std::uint64_t> timeout_ns) noexcept {
+  sigset_t wait_mask;
+  const int mask_error = pthread_sigmask(SIG_SETMASK, nullptr, &wait_mask);
+  if (mask_error != 0) {
+    return {base::ErrorCode::kIoError, {mask_error, std::generic_category()}};
+  }
+  // Preserve unrelated signal blocking. pselect atomically opens the exit
+  // signal window with the wait, so a pending stop cannot be lost before sleep.
+  if (sigdelset(&wait_mask, SIGINT) != 0 ||
+      sigdelset(&wait_mask, SIGTERM) != 0) {
+    return {base::ErrorCode::kIoError, {errno, std::generic_category()}};
+  }
+  struct timespec timeout{};
+  if (timeout_ns) {
+    // Nanoseconds stored in uint64 fit in the supported 64-bit time_t seconds.
+    constexpr std::uint64_t kNanosecondsPerSecond = 1000000000;
+    timeout.tv_sec = static_cast<time_t>(*timeout_ns / kNanosecondsPerSecond);
+    timeout.tv_nsec = static_cast<long>(*timeout_ns % kNanosecondsPerSecond);
+  }
+  const int result = pselect(0, nullptr, nullptr, nullptr,
+                             timeout_ns ? &timeout : nullptr, &wait_mask);
+  if (result < 0 && errno != EINTR) {
+    return {base::ErrorCode::kIoError, {errno, std::generic_category()}};
+  }
+  return {};
+}
+
 base::Status StrategyRunner::Run(EventLoopEnvironment& environment) noexcept {
   if (state_ != RunnerState::kRunning || callback_active_) {
     return {base::ErrorCode::kInvalidState, {}};
@@ -802,7 +836,7 @@ base::Status StrategyRunner::Run(EventLoopEnvironment& environment) noexcept {
     }
     const auto timeout =
         deadline ? std::optional<std::uint64_t>{*deadline - now} : std::nullopt;
-    const auto waited = environment.Wait(timeout);
+    const auto waited = Wait(timeout);
     if (!waited.ok()) {
       SetError(waited, "wait", "could not wait for data or termination");
       StopAfterError(false);

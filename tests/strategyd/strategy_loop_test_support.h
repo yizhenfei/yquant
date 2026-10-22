@@ -412,7 +412,7 @@ class Environment final : public EventLoopEnvironment {
     out = stop_at && clock_.now >= *stop_at;
     return {};
   }
-  base::Status Wait(std::optional<std::uint64_t> timeout) noexcept override {
+  base::Status Wait(std::optional<std::uint64_t> timeout) noexcept {
     if (stop_at && clock_.now < *stop_at &&
         (!timeout || *timeout > *stop_at - clock_.now))
       timeout = *stop_at - clock_.now;

@@ -22,11 +22,6 @@ class TerminationSignals final : public EventLoopEnvironment {
   // zero-timeout pselect does not. Failure preserves out.
   [[nodiscard]] base::Status CheckStop(bool& out) noexcept override;
 
-  // Only the wait temporarily unmasks exit signals. On return ordinary code
-  // is blocked again; the event loop checks pending signals before dispatch.
-  [[nodiscard]] base::Status Wait(
-      std::optional<std::uint64_t> timeout_ns) noexcept override;
-
  private:
   sigset_t blocked_mask_ = {};
   sigset_t wait_mask_ = {};

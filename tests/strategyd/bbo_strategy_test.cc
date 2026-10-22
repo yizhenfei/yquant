@@ -3,8 +3,8 @@
 
 #include "gtest/gtest.h"
 #include "strategy_loop_test_support.h"
-#include "strategyd/strategy_runner.h"
 #include "test_config_file.h"
+#include "test_strategy_runner.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -57,7 +57,7 @@ class BboScenario {
     testing::ConfigFile trading(TradingJson(cash, total, available));
     if (!strategy.valid() || !trading.valid())
       return {base::ErrorCode::kIoError, {}};
-    StrategyRunner runner(&clock, &source, nullptr, &broker);
+    TestStrategyRunner runner(&clock, &source, nullptr, &broker);
     auto result = runner.Handle(
         LoadAndStart{YQUANT_TEST_BBO_EXAMPLE_PATH, strategy.path(),
                      YQUANT_TEST_MARKET_DATA_CONFIG_PATH, trading.path()});

@@ -3,8 +3,8 @@
 
 #include "gtest/gtest.h"
 #include "strategy_loop_test_support.h"
-#include "strategyd/strategy_runner.h"
 #include "test_config_file.h"
+#include "test_strategy_runner.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -32,7 +32,7 @@ TEST_P(TimerRunnerTest, DispatchesOneShotTimersWithoutMarketData) {
   Clock clock;
   Environment environment(clock);
   environment.stop_at = GetParam().stop_at;
-  StrategyRunner runner(&clock);
+  TestStrategyRunner runner(&clock);
   ASSERT_TRUE(
       runner.Handle(LoadAndStart{GetParam().plugin, YQUANT_TEST_CONFIG_PATH})
           .ok());
@@ -66,7 +66,7 @@ TEST(TimerIntegrationTest, StopDisarmsTheUnconsumedTimerBeforeOnStop) {
   Clock clock;
   Environment environment(clock);
   environment.stop_at = kMs;
-  StrategyRunner runner(&clock);
+  TestStrategyRunner runner(&clock);
   ASSERT_TRUE(runner
                   .Handle(LoadAndStart{YQUANT_TEST_TIMER_BASIC_PATH,
                                        YQUANT_TEST_CONFIG_PATH})
@@ -85,7 +85,7 @@ TEST(TimerIntegrationTest, TimerCallbacksCanSubmitAndCancelThroughTheLedger) {
   Broker broker;
   Environment environment(clock);
   environment.stop_at = 5 * kMs;
-  StrategyRunner runner(&clock, &source, nullptr, &broker);
+  TestStrategyRunner runner(&clock, &source, nullptr, &broker);
   ASSERT_TRUE(runner
                   .Handle(LoadAndStart{
                       YQUANT_TEST_TIMER_TRADING_PATH, YQUANT_TEST_CONFIG_PATH,
@@ -109,7 +109,7 @@ TEST(TimerIntegrationTest, CallbackFailureDisarmsAndDrainsTheWorkingOrder) {
   Broker broker;
   Environment environment(clock);
   environment.stop_at = 5 * kMs;
-  StrategyRunner runner(&clock, &source, nullptr, &broker);
+  TestStrategyRunner runner(&clock, &source, nullptr, &broker);
   ASSERT_TRUE(runner
                   .Handle(LoadAndStart{
                       YQUANT_TEST_TIMER_FAIL_PATH, YQUANT_TEST_CONFIG_PATH,
@@ -136,7 +136,7 @@ TEST(TimerIntegrationTest, ImmediatelyRearmedTimerSharesThe64EventBudget) {
   Environment environment(clock);
   environment.advance_on_check = kMs;
   environment.stop_at = 2 * kMs;
-  StrategyRunner runner(&clock, &source, nullptr, &broker);
+  TestStrategyRunner runner(&clock, &source, nullptr, &broker);
   ASSERT_TRUE(runner
                   .Handle(LoadAndStart{
                       YQUANT_TEST_TIMER_FAIR_PATH, YQUANT_TEST_CONFIG_PATH,
@@ -170,7 +170,7 @@ TEST(TimerIntegrationTest,
   Environment environment(clock);
   environment.advance_on_check = kMs;
   environment.stop_at = 10 * kMs;
-  StrategyRunner runner(&clock, &source, nullptr, &broker);
+  TestStrategyRunner runner(&clock, &source, nullptr, &broker);
   ASSERT_TRUE(runner
                   .Handle(LoadAndStart{
                       YQUANT_TEST_TIMER_FAIR_PATH, YQUANT_TEST_CONFIG_PATH,

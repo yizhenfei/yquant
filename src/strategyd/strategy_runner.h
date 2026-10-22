@@ -27,6 +27,9 @@
 
 namespace yquant::strategyd {
 
+// Shared per-batch budget for market polls, trading events/local updates, and
+// timers. Bounds work before checking stop requests and drain deadlines again;
+// ignored or duplicate records also consume the budget.
 inline constexpr std::size_t kMaxStrategyBatchSize = 64;
 
 enum class RunnerState { kIdle, kStarting, kRunning, kStopping, kFinished };
@@ -56,7 +59,7 @@ class StrategyRunner {
                           MarketDataSource* source = nullptr,
                           EventLoopEnvironment* environment = nullptr,
                           TradingAdapter* trading_adapter = nullptr) noexcept;
-  ~StrategyRunner() noexcept;
+  virtual ~StrategyRunner() noexcept;
 
   StrategyRunner(const StrategyRunner&) = delete;
   StrategyRunner& operator=(const StrategyRunner&) = delete;
@@ -95,6 +98,15 @@ class StrategyRunner {
   [[nodiscard]] const char* error_detail() const noexcept {
     return error_detail_;
   }
+
+ protected:
+  // Waits on the owning thread for at most timeout_ns, indefinitely if absent.
+  // pselect temporarily unblocks SIGINT/SIGTERM and restores the calling mask
+  // on return. The host must prepare termination handlers before Run(). EINTR
+  // succeeds; Run() then checks stop requests and recomputes deadlines. Tests
+  // may override this operation to advance a simulated clock or inject errors.
+  [[nodiscard]] virtual base::Status Wait(
+      std::optional<std::uint64_t> timeout_ns) noexcept;
 
  private:
   // Applies one quote before its callback. False starts error draining; old

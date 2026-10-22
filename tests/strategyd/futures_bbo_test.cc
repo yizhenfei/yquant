@@ -9,8 +9,8 @@
 #include "gtest/gtest.h"
 #include "strategy_loop_test_support.h"
 #include "strategyd/simulated_futures_exchange.h"
-#include "strategyd/strategy_runner.h"
 #include "test_config_file.h"
+#include "test_strategy_runner.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -207,7 +207,7 @@ class FuturesEnvironment final : public EventLoopEnvironment {
                                     exchange_.longs + exchange_.shorts == 0);
     return {};
   }
-  base::Status Wait(std::optional<std::uint64_t> timeout) noexcept override {
+  base::Status Wait(std::optional<std::uint64_t> timeout) noexcept {
     if (clock_.now < stop_at && (!timeout || *timeout > stop_at - clock_.now))
       timeout = stop_at - clock_.now;
     if (!timeout || ++waits > 100) return {base::ErrorCode::kInternalError, {}};
@@ -246,7 +246,7 @@ class FuturesScenario {
     testing::ConfigFile trading(FuturesTradingJson(cash, positions));
     if (!market.valid() || !strategy.valid() || !trading.valid())
       return {base::ErrorCode::kIoError, {}};
-    StrategyRunner runner(&clock, &source, nullptr, &exchange);
+    TestStrategyRunner runner(&clock, &source, nullptr, &exchange);
     auto result = runner.Handle(LoadAndStart{YQUANT_TEST_FUTURES_BBO_PATH,
                                              strategy.path(), market.path(),
                                              trading.path()});

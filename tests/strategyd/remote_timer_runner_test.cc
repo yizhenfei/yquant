@@ -8,8 +8,8 @@
 
 #include "gtest/gtest.h"
 #include "strategy_loop_test_support.h"
-#include "strategyd/strategy_runner.h"
 #include "test_config_file.h"
+#include "test_strategy_runner.h"
 #include "tradingd/connection.h"
 
 namespace yquant::strategyd {
@@ -32,7 +32,7 @@ class RemoteTimerEnvironment final : public EventLoopEnvironment {
     out = canceled_.load() || std::chrono::steady_clock::now() >= deadline_;
     return {};
   }
-  base::Status Wait(std::optional<std::uint64_t>) noexcept override {
+  base::Status Wait(std::optional<std::uint64_t>) noexcept {
     std::this_thread::yield();
     return {};
   }
@@ -177,7 +177,7 @@ TEST(RemoteTimerRunnerTest, TimerSubmitsCancelsAndDrainsThroughTcpRuntime) {
   loop_testing::EventPipe events;
   ASSERT_TRUE(events.valid());
   RemoteTimerEnvironment environment(peer.canceled());
-  StrategyRunner runner;
+  TestStrategyRunner runner;
   std::thread worker([&peer] { peer.Serve(); });
   const auto loaded = runner.Handle(
       LoadAndStart{YQUANT_TEST_TIMER_TRADING_PATH, YQUANT_TEST_CONFIG_PATH,

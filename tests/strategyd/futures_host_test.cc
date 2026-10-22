@@ -5,8 +5,8 @@
 #include "gtest/gtest.h"
 #include "strategy_loop_test_support.h"
 #include "strategyd/mock_trading_adapter.h"
-#include "strategyd/strategy_runner.h"
 #include "test_config_file.h"
+#include "test_strategy_runner.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -32,7 +32,7 @@ TEST(FuturesHostTest, ZeroReplayTailDoesNotSkipTheLastOfTwoDueQuotes) {
   ASSERT_TRUE(captured.valid());
   loop_testing::Clock clock;
   loop_testing::Environment environment(clock);
-  StrategyRunner runner(&clock);
+  TestStrategyRunner runner(&clock);
   ASSERT_TRUE(runner
                   .Handle(LoadAndStart{YQUANT_TEST_QUOTE_EXAMPLE_PATH,
                                        YQUANT_TEST_QUOTE_EXAMPLE_CONFIG_PATH,
@@ -116,7 +116,7 @@ TEST(FuturesHostTest,
   loop_testing::Clock clock;
   loop_testing::Environment environment(clock);
   QuoteFailureAdapter adapter;
-  StrategyRunner runner(&clock, nullptr, nullptr, &adapter);
+  TestStrategyRunner runner(&clock, nullptr, nullptr, &adapter);
   ASSERT_TRUE(runner
                   .Handle(LoadAndStart{YQUANT_TEST_QUOTE_EXAMPLE_PATH,
                                        YQUANT_TEST_QUOTE_EXAMPLE_CONFIG_PATH,

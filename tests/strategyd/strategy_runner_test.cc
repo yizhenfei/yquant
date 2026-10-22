@@ -2,6 +2,9 @@
 
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <signal.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <cerrno>
@@ -9,11 +12,53 @@
 #include <string>
 
 #include "gtest/gtest.h"
+#include "strategyd/termination_signals.h"
 #include "test_config_file.h"
 #include "yquant/base/status.h"
 
 namespace yquant::strategyd {
 namespace {
+
+// Exposes the production wait to verify the OS signal protocol in a child.
+class WaitProbe final : public StrategyRunner {
+ public:
+  using StrategyRunner::Wait;
+};
+
+TEST(StrategyRunnerWaitTest, PendingStopInterruptsWaitAndRestoresSignalMask) {
+  const pid_t child = fork();
+  ASSERT_GE(child, 0);
+  if (child == 0) {
+    // Bound a lost-wakeup regression without relying on sleeps for readiness.
+    alarm(3);
+    TerminationSignals signals;
+    if (!signals.Prepare().ok()) _exit(1);
+    sigset_t unrelated;
+    if (sigemptyset(&unrelated) != 0 || sigaddset(&unrelated, SIGUSR1) != 0 ||
+        pthread_sigmask(SIG_BLOCK, &unrelated, nullptr) != 0)
+      _exit(2);
+    if (raise(SIGTERM) != 0) _exit(3);
+    WaitProbe runner;
+    if (!runner.Wait(std::nullopt).ok()) _exit(4);
+    sigset_t restored;
+    if (pthread_sigmask(SIG_SETMASK, nullptr, &restored) != 0 ||
+        sigismember(&restored, SIGINT) != 1 ||
+        sigismember(&restored, SIGTERM) != 1 ||
+        sigismember(&restored, SIGUSR1) != 1)
+      _exit(5);
+    bool stop = false;
+    if (!signals.CheckStop(stop).ok() || !stop) _exit(6);
+    _exit(0);
+  }
+  int status = 0;
+  pid_t result;
+  do {
+    result = waitpid(child, &status, 0);
+  } while (result < 0 && errno == EINTR);
+  ASSERT_EQ(result, child);
+  ASSERT_TRUE(WIFEXITED(status)) << "child status=" << status;
+  EXPECT_EQ(WEXITSTATUS(status), 0);
+}
 
 class EventPipe {
  public:
@@ -86,9 +131,6 @@ class ImmediateStopEnvironment final : public EventLoopEnvironment {
   base::Status CheckStop(bool& out) noexcept override {
     out = true;
     return {};
-  }
-  base::Status Wait(std::optional<std::uint64_t>) noexcept override {
-    return {base::ErrorCode::kInternalError, {}};
   }
 };
 

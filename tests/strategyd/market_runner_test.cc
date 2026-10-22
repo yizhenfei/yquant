@@ -10,7 +10,7 @@
 #include "gtest/gtest.h"
 #include "strategyd/event_loop_environment.h"
 #include "strategyd/market_data_source.h"
-#include "strategyd/strategy_runner.h"
+#include "test_strategy_runner.h"
 #include "yquant/model/identifiers.h"
 #include "yquant/model/quote_tick.h"
 
@@ -224,7 +224,7 @@ class TestEventLoopEnvironment final : public EventLoopEnvironment {
     return {};
   }
 
-  base::Status Wait(std::optional<std::uint64_t>) noexcept override {
+  base::Status Wait(std::optional<std::uint64_t>) noexcept {
     ++wait_calls;
     return {fail_wait ? ErrorCode::kIoError : ErrorCode::kInternalError, {}};
   }
@@ -241,7 +241,7 @@ TEST(MarketRunnerTest, UpdatesSnapshotBeforeCallbackAndDropsOldSequences) {
   TestEventLoopEnvironment loop;
   loop.source = &source;
   loop.stop_when_exhausted = true;
-  StrategyRunner runner(nullptr, &source);
+  TestStrategyRunner runner(nullptr, &source);
   ASSERT_TRUE(runner
                   .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_QUOTES_PATH,
                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
@@ -285,7 +285,7 @@ TEST(MarketRunnerTest, DeliversMissingSidesLockedCrossedAndNontradableQuotes) {
   TestEventLoopEnvironment loop;
   loop.source = &source;
   loop.stop_when_exhausted = true;
-  StrategyRunner runner(nullptr, &source);
+  TestStrategyRunner runner(nullptr, &source);
   ASSERT_TRUE(runner
                   .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_QUOTES_PATH,
                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
@@ -313,7 +313,7 @@ TEST_P(InvalidQuoteTest, RejectsBeforeDispatchAndStopsTheStartedStrategy) {
   TestEventLoopEnvironment loop;
   loop.source = &source;
   loop.stop_when_exhausted = true;
-  StrategyRunner runner(nullptr, &source);
+  TestStrategyRunner runner(nullptr, &source);
   ASSERT_TRUE(runner
                   .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_QUOTES_PATH,
                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
@@ -362,7 +362,7 @@ TEST(MarketRunnerTest, TickFailurePreservesDiagnosticAndPairsStop) {
   TestEventLoopEnvironment loop;
   loop.source = &source;
   loop.stop_when_exhausted = true;
-  StrategyRunner runner(nullptr, &source);
+  TestStrategyRunner runner(nullptr, &source);
   ASSERT_TRUE(runner
                   .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_TICK_FAIL_PATH,
                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
@@ -386,7 +386,7 @@ TEST(MarketRunnerTest, StartFailureNeverActivatesOrDispatchesTheSource) {
   TestEventLoopEnvironment loop;
   loop.source = &source;
   loop.stop_after_polls = 1;
-  StrategyRunner runner(nullptr, &source);
+  TestStrategyRunner runner(nullptr, &source);
   EXPECT_FALSE(
       runner
           .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_QUOTE_START_FAIL_PATH,
@@ -412,7 +412,7 @@ TEST(MarketRunnerTest, LimitsEachReadyBatchTo64Events) {
   // Requests are observed at a batch boundary, even if the first poll makes
   // a stop request ready in this environment.
   loop.stop_after_polls = 1;
-  StrategyRunner runner(nullptr, &source);
+  TestStrategyRunner runner(nullptr, &source);
   ASSERT_TRUE(runner
                   .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_QUOTES_PATH,
                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
@@ -434,7 +434,7 @@ TEST(MarketRunnerTest, RepeatedSequencesStillConsumeTheBatchBudget) {
   TestEventLoopEnvironment loop;
   loop.source = &source;
   loop.stop_after_polls = 128;
-  StrategyRunner runner(nullptr, &source);
+  TestStrategyRunner runner(nullptr, &source);
   ASSERT_TRUE(runner
                   .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_QUOTES_PATH,
                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
@@ -466,7 +466,7 @@ TEST_P(SourceFailureTest, RetainsErrorAndPairsLifecycleCallbacks) {
   TestEventLoopEnvironment loop;
   loop.source = &source;
   loop.stop_after_start = source.fail_stop;
-  StrategyRunner runner(nullptr, &source);
+  TestStrategyRunner runner(nullptr, &source);
   const auto start = runner.Handle(LoadAndStart{
       YQUANT_TEST_PLUGIN_QUOTES_PATH, YQUANT_TEST_QUOTE_CONFIG_PATH,
       YQUANT_TEST_MARKET_DATA_CONFIG_PATH});
@@ -514,7 +514,7 @@ TEST(MarketRunnerTest, PollErrorSurvivesSourceStopFailure) {
   source.fail_stop = true;
   TestEventLoopEnvironment loop;
   loop.source = &source;
-  StrategyRunner runner(nullptr, &source);
+  TestStrategyRunner runner(nullptr, &source);
   ASSERT_TRUE(runner
                   .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_QUOTES_PATH,
                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
@@ -534,7 +534,7 @@ TEST(MarketRunnerTest, ReadySourceChecksStopAfterOneBoundedBatch) {
   TestEventLoopEnvironment loop;
   loop.source = &source;
   loop.stop_after_polls = 64;
-  StrategyRunner runner(nullptr, &source);
+  TestStrategyRunner runner(nullptr, &source);
   ASSERT_TRUE(runner
                   .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_QUOTES_PATH,
                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
@@ -558,7 +558,7 @@ TEST(MarketRunnerTest, BusyPollingIdleChecksStopWithoutWaitingOrCorruption) {
   TestEventLoopEnvironment loop;
   loop.source = &source;
   loop.stop_after_polls = 3;
-  StrategyRunner runner(nullptr, &source);
+  TestStrategyRunner runner(nullptr, &source);
   ASSERT_TRUE(runner
                   .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_QUOTES_PATH,
                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
@@ -579,7 +579,7 @@ TEST(MarketRunnerTest, StopAfterSourceActivationDoesNotBeginPolling) {
   TestEventLoopEnvironment loop;
   loop.source = &source;
   loop.stop_after_start = true;
-  StrategyRunner runner(nullptr, &source, &loop);
+  TestStrategyRunner runner(nullptr, &source, &loop);
   ASSERT_TRUE(runner
                   .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_QUOTES_PATH,
                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
@@ -640,7 +640,7 @@ class MaintenanceEnvironment final : public EventLoopEnvironment {
     out = false;
     return {};
   }
-  base::Status Wait(std::optional<std::uint64_t> timeout) noexcept override {
+  base::Status Wait(std::optional<std::uint64_t> timeout) noexcept {
     if (!timeout || *timeout != 100 || wait_calls != 0)
       return {ErrorCode::kInternalError, {}};
     ++wait_calls;
@@ -668,7 +668,7 @@ TEST_P(MaintenanceDeadlineTest, ServicesBeforeQuoteDeadlineOrIndefiniteWait) {
   source.quote_deadline = GetParam().quote_deadline;
   MaintenanceClock clock;
   MaintenanceEnvironment environment(clock);
-  StrategyRunner runner(&clock, &source);
+  TestStrategyRunner runner(&clock, &source);
   ASSERT_TRUE(runner
                   .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_QUOTES_PATH,
                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
@@ -705,7 +705,7 @@ TEST_P(LoopFailureTest, StopsAndDestroysTheStartedStrategy) {
   TestEventLoopEnvironment loop;
   loop.fail_check = GetParam().check;
   loop.fail_wait = !GetParam().check;
-  StrategyRunner runner;
+  TestStrategyRunner runner;
   ASSERT_TRUE(runner
                   .Handle(LoadAndStart{YQUANT_TEST_PLUGIN_GOOD_PATH,
                                        YQUANT_TEST_CONFIG_PATH})

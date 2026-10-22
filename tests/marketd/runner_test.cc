@@ -23,7 +23,7 @@ class AdvancingClock final : public strategyd::MonotonicClock {
   mutable std::uint64_t now_ = 0;
 };
 
-// Requests stop at a selected batch boundary and records any unexpected waits.
+// Requests stop at a selected batch boundary.
 class Environment final : public strategyd::EventLoopEnvironment {
  public:
   base::Status CheckStop(bool& out) noexcept override {
@@ -32,12 +32,7 @@ class Environment final : public strategyd::EventLoopEnvironment {
     out = checks >= stop_after;
     return {};
   }
-  base::Status Wait(std::optional<std::uint64_t>) noexcept override {
-    ++waits;
-    return {};
-  }
   std::size_t checks = 0;
-  std::size_t waits = 0;
   std::size_t stop_after = std::numeric_limits<std::size_t>::max();
   bool fail = false;
 };
@@ -58,7 +53,6 @@ TEST(MarketdRunnerTest, PublishesExactlyLimitToEveryOutputAndClosesDiscovery) {
   Environment environment;
   ASSERT_TRUE(runner.Run(clock, environment, 5).ok()) << runner.error_detail();
   EXPECT_EQ(runner.event_count(), 5U);
-  EXPECT_EQ(environment.waits, 0U);
   for (std::uint64_t sequence = 1; sequence <= 5; ++sequence) {
     md::EventBuffer first_buffer;
     md::EventBuffer second_buffer;

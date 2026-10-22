@@ -174,6 +174,8 @@ flowchart TD
 
 `main()` 持有 `StrategyRunner`，通过 `Handle(LoadAndStart)` 启动策略，再调用 `Run(environment)` 驱动主循环。行情批次处理与单条报价分派是 `StrategyRunner` 的私有实现，外部不直接调用。
 
+`EventLoopEnvironment` 只提供停止请求检查，生产实现为 `TerminationSignals`。等待由 `StrategyRunner` 根据最早期限执行：读取当前线程信号掩码，仅在 `pselect` 期间解除 `SIGINT`、`SIGTERM` 的屏蔽，返回后恢复调用前的掩码。测试通过重写主循环的等待操作推进模拟时间或注入等待错误。
+
 主线程在动态库加载或策略代码执行前，通过 `pthread_sigmask()` 屏蔽 `SIGINT`、`SIGTERM`，使用 `sigaction()` 安装处理函数。处理函数只将 `volatile sig_atomic_t` 停止标志置位，不调用策略、记录日志或释放资源。普通代码、SDK 调用和全部策略回调执行时保持这两个信号被屏蔽。
 
 接入的 `Poll()` 非阻塞，每次至多返回一条事件；宿主校验并更新对应行情或交易账本后调用策略。行情、交易和策略定时事件按[事件调度规则](trading.md#启动与事件调度)公平推进，共享有界事件额度。无立即工作时，以最早期限通过 FD 集合全空的 `pselect(0, ...)` 等待；没有期限时传入空超时指针。
