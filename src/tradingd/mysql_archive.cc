@@ -76,7 +76,7 @@ base::Status ReadArchiveRun(const char* directory, std::uint64_t run,
   std::size_t size = 0;
   auto status = ReadJournalFile(directory, name, bytes, size);
   if (!status.ok()) return status;
-  StateReader reader(std::span(bytes).first(size));
+  StateReader reader{std::span(bytes).first(size)};
   if (reader.U64() != kArchiveFormatVersion) return Corrupt();
   ArchiveRun candidate;
   candidate.run = reader.U64();
@@ -218,7 +218,7 @@ struct MysqlArchive::Storage {
     auto status =
         ReadJournalFile(config.persistence.directory, name, bytes, size);
     if (!status.ok()) return status;
-    StateReader reader(std::span(bytes).first(size));
+    StateReader reader{std::span(bytes).first(size)};
     if (reader.U64() != kArchiveFormatVersion || reader.U64() != run.run)
       return Corrupt();
     out = reader.U64();

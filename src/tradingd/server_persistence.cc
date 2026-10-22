@@ -341,7 +341,7 @@ base::Status Server::Storage::LoadIdentity() noexcept {
   std::size_t size = 0;
   auto status = journal.LoadFile("IDENTITY", bytes, size);
   if (!status.ok()) return status;
-  StateReader reader(std::span(bytes).first(size));
+  StateReader reader{std::span(bytes).first(size)};
   if (reader.U64() != kIdentityVersion) return CorruptState();
   char key[kMaxAccountKeyBytes + 1];
   if (!reader.Text(key, sizeof(key)) ||
@@ -411,7 +411,7 @@ base::Status Server::Storage::RegisterClient(std::size_t index) noexcept {
 
 base::Status Server::Storage::CaptureCheckpoint(std::uint64_t now) noexcept {
   if (degraded) return persistence_failure;
-  StateWriter writer(std::span(checkpoint.get(), kJournalMaxSnapshotBytes));
+  StateWriter writer{std::span(checkpoint.get(), kJournalMaxSnapshotBytes)};
   writer.U64(kGatewayStateVersion);
   for (const auto id : ledger_id) writer.U64(id);
   writer.U64(run_id);
@@ -497,7 +497,7 @@ base::Status Server::Storage::LoadCheckpoint(std::uint64_t& stream,
   std::size_t size = 0;
   auto status = journal.LoadFile("CURRENT", bytes, size);
   if (!status.ok()) return status;
-  StateReader control(std::span(bytes).first(size));
+  StateReader control{std::span(bytes).first(size)};
   if (control.U64() != kGatewayStateVersion) return CorruptState();
   stream = control.U64();
   covered = control.U64();
@@ -509,7 +509,7 @@ base::Status Server::Storage::LoadCheckpoint(std::uint64_t& stream,
   status = journal.LoadFile(name, {checkpoint.get(), kJournalMaxSnapshotBytes},
                             size);
   if (!status.ok()) return status;
-  StateReader reader(std::span(checkpoint.get(), size));
+  StateReader reader{std::span(checkpoint.get(), size)};
   if (reader.U64() != kGatewayStateVersion) return CorruptState();
   for (const auto id : ledger_id)
     if (reader.U64() != id) return CorruptState();
