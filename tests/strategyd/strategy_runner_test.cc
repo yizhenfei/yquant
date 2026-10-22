@@ -1,8 +1,5 @@
 #include <dlfcn.h>
 #include <fcntl.h>
-#include <pthread.h>
-#include <signal.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #include <cerrno>
@@ -14,55 +11,9 @@
 #include "runner_test_harness.h"
 #include "test_config_file.h"
 #include "yquant/base/status.h"
-#include "yquant/base/termination_signals.h"
 
 namespace yquant::strategyd {
 namespace {
-
-// Exposes the production wait to verify the OS signal protocol in a child.
-class WaitProbe final : public StrategyRunner {
- public:
-  using StrategyRunner::StrategyRunner;
-  using StrategyRunner::Wait;
-};
-
-TEST(StrategyRunnerWaitTest, PendingStopInterruptsWaitAndRestoresSignalMask) {
-  const pid_t child = fork();
-  ASSERT_GE(child, 0);
-  if (child == 0) {
-    // Bound a lost-wakeup regression without relying on sleeps for readiness.
-    alarm(3);
-    base::TerminationSignals signals;
-    if (!signals.Prepare().ok()) _exit(1);
-    sigset_t unrelated;
-    if (sigemptyset(&unrelated) != 0 || sigaddset(&unrelated, SIGUSR1) != 0 ||
-        pthread_sigmask(SIG_BLOCK, &unrelated, nullptr) != 0)
-      _exit(2);
-    if (raise(SIGTERM) != 0) _exit(3);
-    base::SteadyMonotonicClock clock;
-    IdleTestSource source;
-    testing::MockTradingService service;
-    WaitProbe runner(clock, signals, source, service);
-    if (!runner.Wait(std::nullopt).ok()) _exit(4);
-    sigset_t restored;
-    if (pthread_sigmask(SIG_SETMASK, nullptr, &restored) != 0 ||
-        sigismember(&restored, SIGINT) != 1 ||
-        sigismember(&restored, SIGTERM) != 1 ||
-        sigismember(&restored, SIGUSR1) != 1)
-      _exit(5);
-    bool stop = false;
-    if (!signals.CheckStop(stop).ok() || !stop) _exit(6);
-    _exit(0);
-  }
-  int status = 0;
-  pid_t result;
-  do {
-    result = waitpid(child, &status, 0);
-  } while (result < 0 && errno == EINTR);
-  ASSERT_EQ(result, child);
-  ASSERT_TRUE(WIFEXITED(status)) << "child status=" << status;
-  EXPECT_EQ(WEXITSTATUS(status), 0);
-}
 
 static_assert(!std::is_default_constructible_v<StrategyRunner>);
 static_assert(
@@ -163,57 +114,82 @@ void ExpectLifecycle(const std::string& events, const std::string& expected) {
   }
 }
 
-// Requests stop and drives finalization without exposing internal dispatch.
-base::Status StopRunner(RunnerTestHarness& runner) noexcept {
-  const auto requested = runner.Handle(Stop{});
-  if (!requested.ok() || runner.state() == RunnerState::kFinished) {
-    return requested;
-  }
-  return runner.Run();
-}
-
-TEST(StrategyRunnerTest, StartsStopsAndRejectsASecondLoad) {
+TEST(StrategyRunnerTest, StopsOnEnvironmentRequestAndRejectsASecondLoad) {
   EventPipe events;
   ASSERT_TRUE(events.valid());
-  RunnerTestHarness runner;
+  IdleTestEnvironment environment;
+  IdleTestSource source;
+  RunnerTestHarness runner(environment, source);
   EXPECT_EQ(runner.state(), RunnerState::kIdle);
   ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_GOOD_PATH,
-                                          YQUANT_TEST_CONFIG_PATH})
+                  .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_GOOD_PATH,
+                                                YQUANT_TEST_CONFIG_PATH})
                   .ok());
   EXPECT_EQ(runner.state(), RunnerState::kRunning);
   EXPECT_EQ(runner.strategy_id(), "test-lifecycle");
   EXPECT_EQ(runner
-                .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_GOOD_PATH,
-                                        YQUANT_TEST_CONFIG_PATH})
+                .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_GOOD_PATH,
+                                              YQUANT_TEST_CONFIG_PATH})
                 .code,
             base::ErrorCode::kInvalidState);
   EXPECT_EQ(runner.state(), RunnerState::kRunning);
   EXPECT_EQ(events.Read(), "CPS");
 
-  ASSERT_TRUE(StopRunner(runner).ok());
+  environment.RequestStop();
+  EXPECT_EQ(runner.state(), RunnerState::kRunning);
+  EXPECT_TRUE(events.Read().empty());
+  ASSERT_TRUE(runner.Run().ok());
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   EXPECT_EQ(runner.strategy_id(), "test-lifecycle");
   ExpectLifecycle(events.Read(), "TD");
-  EXPECT_TRUE(StopRunner(runner).ok());
+  EXPECT_EQ(runner.Run().code, base::ErrorCode::kInvalidState);
   EXPECT_EQ(runner
-                .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_GOOD_PATH,
-                                        YQUANT_TEST_CONFIG_PATH})
+                .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_GOOD_PATH,
+                                              YQUANT_TEST_CONFIG_PATH})
                 .code,
             base::ErrorCode::kInvalidState);
   EXPECT_TRUE(events.Read().empty());
 }
 
-TEST(StrategyRunnerTest, StopBeforeLoadFinishesWithoutLoading) {
-  RunnerTestHarness runner;
-  ASSERT_TRUE(StopRunner(runner).ok());
+TEST(StrategyRunnerTest, EnvironmentStopBeforeLoadCancelsWithoutLoading) {
+  EventPipe events;
+  ASSERT_TRUE(events.valid());
+  IdleTestEnvironment environment;
+  environment.RequestStop();
+  IdleTestSource source;
+  RunnerTestHarness runner(environment, source);
+  EXPECT_EQ(runner.state(), RunnerState::kIdle);
+  ASSERT_TRUE(
+      runner
+          .LoadAndStart({YQUANT_TEST_PLUGIN_GOOD_PATH, YQUANT_TEST_CONFIG_PATH})
+          .ok());
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
-  EXPECT_TRUE(StopRunner(runner).ok());
-  EXPECT_EQ(runner
-                .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_GOOD_PATH,
-                                        YQUANT_TEST_CONFIG_PATH})
-                .code,
-            base::ErrorCode::kInvalidState);
+  EXPECT_EQ(runner.Run().code, base::ErrorCode::kInvalidState);
+  EXPECT_TRUE(events.Read().empty());
+}
+
+TEST(StrategyRunnerTest, LoadAndStartDefersPendingStopUntilRun) {
+  EventPipe events;
+  ASSERT_TRUE(events.valid());
+  base::SteadyMonotonicClock clock;
+  IdleTestEnvironment environment;
+  StrategyAssembly assembly(clock);
+  ASSERT_TRUE(assembly
+                  .Load({YQUANT_TEST_PLUGIN_GOOD_PATH, YQUANT_TEST_CONFIG_PATH,
+                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH,
+                         YQUANT_TEST_TRADING_CLIENT_CONFIG_PATH},
+                        environment)
+                  .ok());
+  environment.RequestStop();
+  IdleTestSource source;
+  testing::MockTradingService service;
+  StrategyRunner runner(clock, environment, source, service);
+  ASSERT_TRUE(runner.LoadAndStart(assembly.start_options()).ok());
+  EXPECT_EQ(runner.state(), RunnerState::kRunning);
+  EXPECT_EQ(events.Read(), "CPS");
+  ASSERT_TRUE(runner.Run().ok());
+  EXPECT_EQ(runner.state(), RunnerState::kFinished);
+  ExpectLifecycle(events.Read(), "TD");
 }
 
 TEST(StrategyRunnerTest, DestructorStopsAnActiveStrategy) {
@@ -222,8 +198,8 @@ TEST(StrategyRunnerTest, DestructorStopsAnActiveStrategy) {
   {
     RunnerTestHarness runner;
     ASSERT_TRUE(runner
-                    .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_GOOD_PATH,
-                                            YQUANT_TEST_CONFIG_PATH})
+                    .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_GOOD_PATH,
+                                                  YQUANT_TEST_CONFIG_PATH})
                     .ok());
   }
   ExpectLifecycle(events.Read(), "CPSTD");
@@ -240,12 +216,15 @@ TEST(StrategyRunnerTest, DestroysBeforeReleasingTheLibraryReference) {
   const std::string probe_events = events.Read();
   EXPECT_TRUE(probe_events.empty() || probe_events == "U");
 
-  RunnerTestHarness runner;
+  IdleTestEnvironment environment;
+  IdleTestSource source;
+  RunnerTestHarness runner(environment, source);
   ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_GOOD_PATH,
-                                          YQUANT_TEST_CONFIG_PATH})
+                  .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_GOOD_PATH,
+                                                YQUANT_TEST_CONFIG_PATH})
                   .ok());
-  ASSERT_TRUE(StopRunner(runner).ok());
+  environment.RequestStop();
+  ASSERT_TRUE(runner.Run().ok());
   const std::string lifecycle = events.Read();
   ExpectLifecycle(lifecycle, "CPSTD");
   if (probe_events == "U") {
@@ -258,11 +237,12 @@ TEST(StrategyRunnerTest, RejectsEmptyPathsAndFinishes) {
   for (const char* path : paths) {
     RunnerTestHarness runner;
     EXPECT_EQ(
-        runner.Handle(StrategyOptions{path, YQUANT_TEST_CONFIG_PATH}).code,
+        runner.LoadAndStart(StrategyOptions{path, YQUANT_TEST_CONFIG_PATH})
+            .code,
         base::ErrorCode::kInvalidArgument);
     EXPECT_EQ(runner.state(), RunnerState::kFinished);
     EXPECT_STREQ(runner.error_stage(), "path");
-    EXPECT_TRUE(StopRunner(runner).ok());
+    EXPECT_EQ(runner.Run().code, base::ErrorCode::kInvalidState);
   }
 }
 
@@ -278,12 +258,13 @@ TEST_P(InvalidPluginTest, FailsAndReleasesOwnedResources) {
   EventPipe events;
   ASSERT_TRUE(events.valid());
   RunnerTestHarness runner;
-  EXPECT_FALSE(
-      runner.Handle(StrategyOptions{GetParam().path, YQUANT_TEST_CONFIG_PATH})
-          .ok());
+  EXPECT_FALSE(runner
+                   .LoadAndStart(StrategyOptions{GetParam().path,
+                                                 YQUANT_TEST_CONFIG_PATH})
+                   .ok());
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   ExpectLifecycle(events.Read(), GetParam().events);
-  EXPECT_TRUE(StopRunner(runner).ok());
+  EXPECT_EQ(runner.Run().code, base::ErrorCode::kInvalidState);
   EXPECT_TRUE(events.Read().empty());
 }
 
@@ -313,16 +294,21 @@ INSTANTIATE_TEST_SUITE_P(
 TEST(StrategyRunnerTest, StopFailureStillDestroysAndCloses) {
   EventPipe events;
   ASSERT_TRUE(events.valid());
-  RunnerTestHarness runner;
-  ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_STOP_FAIL_PATH,
-                                          YQUANT_TEST_CONFIG_PATH})
-                  .ok());
-  EXPECT_EQ(StopRunner(runner).code, base::ErrorCode::kInvalidArgument);
+  IdleTestEnvironment environment;
+  IdleTestSource source;
+  RunnerTestHarness runner(environment, source);
+  ASSERT_TRUE(
+      runner
+          .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_STOP_FAIL_PATH,
+                                        YQUANT_TEST_CONFIG_PATH})
+          .ok());
+  environment.RequestStop();
+  EXPECT_EQ(runner.Run().code, base::ErrorCode::kInvalidArgument);
   EXPECT_STREQ(runner.error_stage(), "stop");
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   ExpectLifecycle(events.Read(), "CPSTD");
-  EXPECT_TRUE(StopRunner(runner).ok());
+  EXPECT_EQ(runner.Run().code, base::ErrorCode::kInvalidState);
+  EXPECT_STREQ(runner.error_stage(), "stop");
   EXPECT_TRUE(events.Read().empty());
 }
 
@@ -332,14 +318,14 @@ TEST(StrategyRunnerTest, RejectsConfigurationBeforeLoadingTheLibrary) {
   testing::ConfigFile config(R"({"strategy_id":"x","parameters":[]})");
   ASSERT_TRUE(config.valid());
   RunnerTestHarness runner;
-  EXPECT_FALSE(
-      runner
-          .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_GOOD_PATH, config.path()})
-          .ok());
+  EXPECT_FALSE(runner
+                   .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_GOOD_PATH,
+                                                 config.path()})
+                   .ok());
   EXPECT_STREQ(runner.error_stage(), "config");
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   EXPECT_TRUE(events.Read().empty());
-  EXPECT_TRUE(StopRunner(runner).ok());
+  EXPECT_EQ(runner.Run().code, base::ErrorCode::kInvalidState);
 }
 
 TEST(StrategyRunnerTest, MissingConfigPathsNeverCreateTheStrategy) {
@@ -349,7 +335,7 @@ TEST(StrategyRunnerTest, MissingConfigPathsNeverCreateTheStrategy) {
        {static_cast<const char*>(nullptr), "", "/yquant-no-such-config.json"}) {
     RunnerTestHarness runner;
     EXPECT_FALSE(
-        runner.Handle(StrategyOptions{YQUANT_TEST_PLUGIN_GOOD_PATH, path})
+        runner.LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_GOOD_PATH, path})
             .ok());
     EXPECT_EQ(runner.state(), RunnerState::kFinished);
     EXPECT_TRUE(events.Read().empty());
@@ -363,15 +349,18 @@ TEST(StrategyRunnerTest, InitializesTypedParametersBeforeStartAndOwnsValues) {
       R"({"strategy_id":"typed","parameters":{"quote_qty":7,)"
       R"("label":"owned \u006cabel","large_value":9007199254740993}})");
   ASSERT_TRUE(config.valid());
-  RunnerTestHarness runner;
-  ASSERT_TRUE(
-      runner
-          .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_TYPED_PATH, config.path()})
-          .ok())
+  IdleTestEnvironment environment;
+  IdleTestSource source;
+  RunnerTestHarness runner(environment, source);
+  ASSERT_TRUE(runner
+                  .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_TYPED_PATH,
+                                                config.path()})
+                  .ok())
       << runner.error_detail();
   EXPECT_EQ(events.Read(), "CPS");
   EXPECT_EQ(runner.state(), RunnerState::kRunning);
-  ASSERT_TRUE(StopRunner(runner).ok());
+  environment.RequestStop();
+  ASSERT_TRUE(runner.Run().ok());
   ExpectLifecycle(events.Read(), "TD");
 }
 
@@ -395,11 +384,11 @@ TEST_P(InvalidParametersTest, DestroysWithoutStartOrStop) {
   testing::ConfigFile config(json);
   ASSERT_TRUE(config.valid());
   RunnerTestHarness runner;
-  EXPECT_EQ(
-      runner
-          .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_TYPED_PATH, config.path()})
-          .code,
-      base::ErrorCode::kInvalidArgument);
+  EXPECT_EQ(runner
+                .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_TYPED_PATH,
+                                              config.path()})
+                .code,
+            base::ErrorCode::kInvalidArgument);
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   EXPECT_STREQ(runner.error_stage(), "initialize");
   EXPECT_EQ(runner.strategy_id(), "typed");
@@ -407,7 +396,7 @@ TEST_P(InvalidParametersTest, DestroysWithoutStartOrStop) {
                 .find(std::string("parameters.") + test_case.error_field),
             std::string::npos);
   ExpectLifecycle(events.Read(), "CPD");
-  EXPECT_TRUE(StopRunner(runner).ok());
+  EXPECT_EQ(runner.Run().code, base::ErrorCode::kInvalidState);
   EXPECT_EQ(runner.strategy_id(), "typed");
   EXPECT_TRUE(events.Read().empty());
 }
@@ -464,10 +453,10 @@ TEST(StrategyRunnerTest, DefaultConfigRejectsUnexpectedParameters) {
       R"({"strategy_id":"plain","parameters":{"unexpected":1}})");
   ASSERT_TRUE(config.valid());
   RunnerTestHarness runner;
-  EXPECT_FALSE(
-      runner
-          .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_GOOD_PATH, config.path()})
-          .ok());
+  EXPECT_FALSE(runner
+                   .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_GOOD_PATH,
+                                                 config.path()})
+                   .ok());
   EXPECT_STREQ(runner.error_stage(), "initialize");
   ExpectLifecycle(events.Read(), "CPD");
 }

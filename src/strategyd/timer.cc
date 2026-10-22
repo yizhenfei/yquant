@@ -42,6 +42,8 @@ bool TimerImpl::TryTakeDue(std::uint64_t now,
       !deadline_ || *deadline_ > now) {
     return false;
   }
+  // Consume before dispatch so a callback can rearm without the old one-shot
+  // overwriting its replacement deadline.
   const strategy::TimerEvent event{*deadline_, now};
   deadline_.reset();
   out = event;

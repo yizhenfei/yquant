@@ -1,6 +1,7 @@
 #include "yquant/base/termination_signals.h"
 
 #include <pthread.h>
+#include <sys/select.h>
 
 #include <cerrno>
 #include <system_error>
@@ -68,6 +69,32 @@ Status TerminationSignals::CheckStop(bool& out) noexcept {
     return SignalError(unmask_error != 0 ? unmask_error : restore_error);
   }
   out = stop_signal != 0;
+  return {};
+}
+
+Status TerminationSignals::Wait(
+    std::optional<std::uint64_t> timeout_ns) noexcept {
+  if (!prepared_) return {ErrorCode::kInvalidState, {}};
+  sigset_t wait_mask;
+  const int mask_error = pthread_sigmask(SIG_SETMASK, nullptr, &wait_mask);
+  if (mask_error != 0) return SignalError(mask_error);
+  // Unmask only termination signals. pselect changes the mask atomically with
+  // sleeping, so a pending signal cannot be lost between a stop check and wait.
+  if (sigdelset(&wait_mask, SIGINT) != 0 ||
+      sigdelset(&wait_mask, SIGTERM) != 0) {
+    return SignalError(errno);
+  }
+  struct timespec timeout{};
+  if (timeout_ns) {
+    // All uint64_t nanosecond durations fit in the supported 64-bit time_t
+    // after conversion to seconds.
+    constexpr std::uint64_t kNanosecondsPerSecond = 1000000000;
+    timeout.tv_sec = static_cast<time_t>(*timeout_ns / kNanosecondsPerSecond);
+    timeout.tv_nsec = static_cast<long>(*timeout_ns % kNanosecondsPerSecond);
+  }
+  const int result = pselect(0, nullptr, nullptr, nullptr,
+                             timeout_ns ? &timeout : nullptr, &wait_mask);
+  if (result < 0 && errno != EINTR) return SignalError(errno);
   return {};
 }
 

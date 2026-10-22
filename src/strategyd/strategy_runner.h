@@ -1,9 +1,9 @@
 #ifndef YQUANT_STRATEGYD_STRATEGY_RUNNER_H_
 #define YQUANT_STRATEGYD_STRATEGY_RUNNER_H_
 
-// Provides host-side lifecycle control for a single strategy through runner
-// commands and state. Coordinates strategy loading, event dispatch, shutdown,
-// and resource cleanup.
+// Defines startup inputs and observable lifecycle state for the strategyd
+// strategy runner. Market-data access, trading, and plugin loading are supplied
+// by separate components; this interface coordinates their use by one strategy.
 
 #include <cstddef>
 #include <cstdint>
@@ -23,168 +23,228 @@
 
 namespace yquant::strategyd {
 
-// Shared per-batch budget for market polls, trading events/local updates, and
-// timers. Bounds work before checking stop requests and drain deadlines again;
-// ignored or duplicate records also consume the budget.
+// Maximum market polls, trading events, and timer dispatches per batch, shared
+// across all sources to bound work between stop/deadline checks. Ignored and
+// duplicate quotes also consume this budget.
 inline constexpr std::size_t kMaxStrategyBatchSize = 64;
 
+// Lifecycle of a single load attempt. Finished is terminal, including after
+// startup failure; a new attempt requires a new runner.
 enum class RunnerState { kIdle, kStarting, kRunning, kStopping, kFinished };
 
-// All configuration values are borrowed only during Handle. The assembly has
-// already validated them and selected matching source/service implementations.
-struct LoadAndStart {
+// Supplies assembly-validated inputs to LoadAndStart, compatible with the
+// injected source and trading service. References are borrowed for that call;
+// the configuration loader may be reset after plugin initialization.
+struct StrategyStartOptions {
+  // Null-terminated plugin path. Null and empty paths are invalid.
   const char* library_path;
   StrategyConfigLoader& config;
   const md::MarketDataConfig& market_data;
   const trading::TradingClientConfig& trading_config;
 };
 
-struct Stop {};
-
-// Owns the strategy plugin and host services, dispatching market data, trading
-// events, and timers to strategy callbacks. Call Handle(LoadAndStart) to start
-// the strategy, then Run() to drive the event loop and complete shutdown.
-// Commands and strategy callbacks execute serially on the owning thread.
-class StrategyRunner {
+// Hosts one strategy instance and dispatches market, trading, and timer events
+// to it. Owns the plugin instance, library handle, and callback context; uses
+// injected components for market-data ingestion and trading.
+//
+// Call LoadAndStart once, then Run if it succeeds. Run drives events
+// until the environment requests stopping, the source finishes, or an error
+// occurs, then completes shutdown. Destruction releases remaining resources
+// without running an order-draining loop.
+//
+// All calls and destruction must be serialized on the owning thread. Strategy
+// callbacks run on that thread and must not reenter mutating runner operations.
+class StrategyRunner final {
  public:
-  // Every dependency is required and borrowed until destruction. The same
-  // environment handles startup cancellation and the running event loop.
+  // Borrows all four dependencies until destruction. Run uses environment to
+  // check for stop requests; loading and startup do not inspect it.
   StrategyRunner(const base::MonotonicClock& clock,
                  base::EventLoopEnvironment& environment,
                  MarketDataSource& source,
                  trading::TradingService& trading) noexcept;
-  virtual ~StrategyRunner() noexcept;
+  // Calls OnStop if OnStart succeeded, destroys the instance, and releases
+  // remaining resources. Does not wait for outstanding orders to drain; use
+  // Run to complete orderly shutdown before destruction.
+  ~StrategyRunner() noexcept;
 
   StrategyRunner(const StrategyRunner&) = delete;
   StrategyRunner& operator=(const StrategyRunner&) = delete;
   StrategyRunner(StrategyRunner&&) = delete;
   StrategyRunner& operator=(StrategyRunner&&) = delete;
 
-  // Starts once from Idle using validated assembly inputs. Configuration JSON
-  // is consumed/reset after plugin initialization. Failure finishes cleanup;
-  // an invalid state preserves the active instance and component resources.
-  [[nodiscard]] base::Status Handle(LoadAndStart command) noexcept;
-  // Running requests are recorded for Run to drain, without invoking callbacks.
-  // Idle/finished stops are immediate and idempotent. No callback reentry.
-  [[nodiscard]] base::Status Handle(Stop command) noexcept;
+  // Loads, configures, and starts the strategy from kIdle. Resets
+  // `options.config` after attempting plugin configuration initialization, even
+  // if that step fails; earlier failures leave the loader unchanged.
+  //
+  // An OK result always enters kRunning and permits Run. Does not inspect
+  // environment or process stop requests; Run handles them before dispatch.
+  // Startup failure cleans up and enters kFinished.
+  // Calls OnStop during cleanup only if OnStart succeeded.
+  // Outside kIdle, returns kInvalidState and replaces diagnostics, preserving
+  // the existing lifecycle state and component resources.
+  [[nodiscard]] base::Status LoadAndStart(
+      StrategyStartOptions options) noexcept;
 
-  // Drives requests and all three event sources on the owning thread. Requires
-  // Running, outside callbacks. Stops close new requests and drain outstanding
-  // orders before finalization. Failures retain the first diagnostic; invalid
-  // state leaves resources unchanged. All dependencies outlive this call.
+  // Drives requests and events until shutdown completes and enters kFinished.
+  // Stops on an environment request, source completion, or an error. Closes new
+  // strategy requests and drains outstanding trading work while the channel is
+  // usable, bounded by the configured shutdown timeout, before final cleanup.
+  // Returns the first error, including cleanup errors, or OK on normal exit.
+  // Returns kInvalidState outside kRunning or during a callback, leaving state,
+  // resources, and diagnostics unchanged.
   [[nodiscard]] base::Status Run() noexcept;
-  // Dispatches one due one-shot timer.
-  bool DispatchTimer() noexcept;
-  // Earliest source event, cold maintenance, local work, or drain deadline.
-  std::optional<std::uint64_t> next_deadline() const noexcept;
-  // Saturating total of structurally valid old/duplicate quotes ignored during
-  // this run. Retained after Stop so host diagnostics can report it.
+
+  // Returns the number of valid old or duplicate quotes ignored by this runner,
+  // saturated at UINT64_MAX and retained after shutdown.
   std::uint64_t ignored_quote_count() const noexcept {
     return ignored_quote_count_;
   }
 
   [[nodiscard]] RunnerState state() const noexcept { return state_; }
-  // Owns a copy so diagnostics can identify a strategy after destruction.
+  // Returns a view of the runner's copied ID, retained after plugin teardown.
+  // Empty until startup copies the configuration ID; valid until destruction
+  // of this runner.
   [[nodiscard]] std::string_view strategy_id() const noexcept {
     return strategy_id_.view();
   }
-  // Diagnostics remain valid until the next command. Cleanup keeps the first
-  // failure encountered by the current command.
+  // Returns the stage of the first failure in the current operation, or an
+  // empty string. Cleanup preserves that failure. Diagnostic contents may be
+  // replaced by subsequent LoadAndStart or Run calls.
   [[nodiscard]] const char* error_stage() const noexcept {
     return error_stage_;
   }
+  // Returns the runner-owned, null-terminated detail for that failure, or an
+  // empty string. May be truncated; contents follow error_stage's reset rules.
   [[nodiscard]] const char* error_detail() const noexcept {
     return error_detail_;
   }
 
- protected:
-  // Waits on the owning thread for at most timeout_ns, indefinitely if absent.
-  // pselect temporarily unblocks SIGINT/SIGTERM and restores the calling mask
-  // on return. The host must prepare termination handlers before Run(). EINTR
-  // succeeds; Run() then checks stop requests and recomputes deadlines. Tests
-  // may override this operation to advance a simulated clock or inject errors.
-  [[nodiscard]] virtual base::Status Wait(
-      std::optional<std::uint64_t> timeout_ns) noexcept;
-
  private:
-  // Applies one quote before its callback. False starts error draining; old
-  // valid quotes succeed without a callback. Called only while Running.
+  // Updates market and trading views before OnTick while kRunning. Borrows tick
+  // only for this call. Valid old/duplicate quotes return true without a
+  // callback; validation, trading, or callback failure begins stopping and
+  // returns false.
   bool DispatchQuote(const model::QuoteTick& tick) noexcept;
-  // Dispatches a committed trading event without reading another source between
-  // its two callbacks. Failure disables subsequent business callbacks.
+  // Delivers a committed event's order update before its fill, when present,
+  // without polling another source between callbacks. Borrows dispatch only
+  // for this call. Returns true if callbacks succeed or are disabled; callback
+  // failure disables further business callbacks, begins stopping, and returns
+  // false. Committed trading facts are preserved.
   bool DispatchTrading(const trading::TradingDispatch& dispatch) noexcept;
+  // Dispatches at most one due timer, disarming it before OnTimer so the
+  // callback can rearm it. Requires kRunning and no active callback.
+  // Returns true if no timer is due or the callback succeeds. On callback
+  // failure, records the error, begins stopping, and returns false.
+  bool DispatchTimer() noexcept;
+  // Distinguishes an accepted or ignored quote from a source yield or failure.
   enum class QuotePollResult { kEvent, kIdle, kError };
-  // Polls one market record. An idle result yields this source's remaining
-  // batch budget, including a poll-driven source whose deadline stays due.
+  // Polls the active market source once and dispatches a returned quote.
+  // Returns kIdle on a yield or completion, beginning stopping on completion.
+  // Polling, deadline-contract, or dispatch failure returns kError and begins
+  // stopping. Requires kRunning and a started source.
   QuotePollResult PollQuote() noexcept;
-  // Polls one local/broker event; false starts error stopping. Broker Idle must
-  // retain a future or absent deadline.
+  // Polls and dispatches at most one trading event. Requires a started trading
+  // service. Returns true on success, including no event; a polling or callback
+  // failure begins stopping and returns false.
   bool PollTrading() noexcept;
-  // Processes at most 64 polls/local events/timers with persistent rotation
-  // among all three sources. Market Idle yields only the market's remainder.
+  // Processes up to kMaxStrategyBatchSize ready operations fairly across the
+  // three sources. A yielding market source is skipped for the remaining batch;
+  // an error ends the batch. Preserves rotation across calls to avoid starving
+  // a ready source.
   void ProcessBatch() noexcept;
-  // Establishes non-nested callback phases on host services.
+  // Returns the earliest work or shutdown deadline in clock's absolute
+  // monotonic nanoseconds. nullopt means no deadline, including outside
+  // kRunning and kStopping; environment stop requests are checked separately.
+  std::optional<std::uint64_t> next_deadline() const noexcept;
+  // Enters a callback phase and enables trading requests only for business
+  // callbacks while kRunning. Requires that no callback is already active;
+  // each call must be paired with EndCallback.
   void BeginCallback(strategy::CallbackPhase phase) noexcept;
+  // Leaves the callback phase and closes trading requests until the next
+  // eligible callback. Requires a matching BeginCallback.
   void EndCallback() noexcept;
-  // Receives stop requests; a failed environment makes further draining unsafe.
+  // Checks environment stop requests and begins shutdown when requested.
+  // Records environment errors and disables further trading drain work.
   void CheckStop() noexcept;
-  // Closes new strategy requests and stops market data once; a second call
-  // preserves the original drain deadline and outstanding orders.
+  // Begins stopping, closes new requests, disarms timers, stops market data,
+  // and establishes the drain deadline. Repeated calls in kStopping or
+  // kFinished leave the existing deadline and resources unchanged.
   void EnterStopping() noexcept;
-  // Starts error stopping, optionally retaining a usable trading channel.
+  // Disables business callbacks and begins stopping after an error. If
+  // can_drain is false, finalization need not wait for trading to drain.
   void StopAfterError(bool can_drain) noexcept;
+  // Returns whether the trading service has no outstanding work to drain.
   bool IsDrained() const noexcept;
-  // Completes stopping when drained, failed, or timed out. True means
-  // finalized.
+  // Finalizes a stopping runner when trading is drained, draining is unsafe,
+  // or the deadline is due. Records a timeout error when needed. Returns true
+  // if this call finalized the runner, false if stopping is not yet complete
+  // or the runner is not kStopping.
   bool FinishStoppingIfReady() noexcept;
-  // Starts an explicit host operation without changing its resources/counters.
+  // Clears the operation result and diagnostics without changing lifecycle
+  // state, resources, or counters.
   void ResetError() noexcept;
-  // Copies only the first failure within an operation, including cleanup.
-  void SetError(base::Status status, const char* stage,
-                const char* detail) noexcept;
-  // Copies the quote's stable identity into the current operation diagnostic.
+  // Ignores OK statuses and preserves any failure recorded since ResetError.
+  // Requires non-null C strings. For the first failure, borrows stage until
+  // diagnostics are reset and copies detail, truncating if necessary.
+  void SetErrorIfNotOK(base::Status status, const char* stage,
+                       const char* detail) noexcept;
+  // Records the first failure with tick's source, instrument, and sequence.
+  // Ignores OK statuses and later failures without formatting. Borrows tick
+  // and non-null C-string detail only for this call; detail must not overlap
+  // error_detail_. stage follows SetErrorIfNotOK's lifetime requirement.
   void SetQuoteError(base::Status status, const char* stage, const char* detail,
                      const model::QuoteTick& tick) noexcept;
-  // Copies order identity before an event or plugin-owned buffer is released.
+  // Records the first failure with the client order ID and report sequence.
+  // Ignores OK statuses and later failures without formatting. Borrows non-null
+  // C-string detail only for this call; it must not overlap error_detail_.
+  // stage follows SetErrorIfNotOK's lifetime requirement.
   void SetOrderError(base::Status status, const char* stage, const char* detail,
                      model::ClientOrderId id, std::uint64_t sequence) noexcept;
-  // Returns true after cancellation/error has completed startup cleanup.
-  bool CancelStartupIfRequested() noexcept;
-  // Reports unconfirmed order facts before owned ledger storage is reset.
+  // Writes outstanding order/cancel diagnostics and available account/position
+  // snapshots to stderr. Requires the trading view to remain available.
   void ReportUnconfirmed() const noexcept;
-  // Final lifecycle cleanup, after draining or a startup/unrecoverable error.
-  // Keeps the ledger alive through OnStop and destroys the plugin before reset.
+  // Releases resources without a drain loop. Calls OnStop once if OnStart
+  // succeeded, destroys the instance before closing its library, then resets
+  // services and enters kFinished. Preserves the first error and keeps trading
+  // views available through OnStop and unconfirmed-order reporting. Repeated
+  // calls after kFinished do nothing.
   void Finalize() noexcept;
 
+  // Diagnostic buffer capacity in bytes, including the terminating null.
   static constexpr std::size_t kErrorDetailSize = 1024;
   const base::MonotonicClock& clock_;
   base::EventLoopEnvironment& environment_;
   MarketDataSource& source_;
   trading::TradingService& trading_service_;
-  // Services and context share this runner's serial callback lifetime.
+  // Callback-facing services and their context live through plugin destruction.
   MarketDataImpl market_data_;
   TimerImpl timer_;
   StrategyContextImpl context_;
   StrategyLibrary library_;
-  strategy::StrategyId strategy_id_;
+  strategy::StrategyId strategy_id_;  // Owned ID retained after teardown.
+  // Owned through the loaded plugin's destroy function; null before creation
+  // and after destruction. The library must remain open while this is non-null.
   strategy::Strategy* instance_ = nullptr;
   RunnerState state_ = RunnerState::kIdle;
-  bool started_ = false;
+  bool started_ = false;  // OnStart succeeded and OnStop is still owed.
+  // Requires source_.Stop after any Prepare attempt, including failure.
   bool source_prepared_ = false;
   bool source_started_ = false;
+  // Requires trading_service_.Stop after any Init attempt, including failure.
   bool trading_prepared_ = false;
   bool trading_started_ = false;
   bool callback_active_ = false;
-  bool stop_requested_ = false;
-  bool callbacks_enabled_ = true;
-  bool drain_viable_ = true;
+  bool callbacks_enabled_ = true;  // Business callbacks only; excludes OnStop.
+  bool drain_viable_ = true;  // False permits finalization without draining.
   // 0=market, 1=trading, 2=timer. Retained across batches so a continually
   // rearmed immediate timer cannot starve another ready source.
   std::uint8_t next_event_source_ = 0;
   std::uint64_t shutdown_timeout_ns_ = trading::kDefaultTradingTimeoutNs;
+  // Absolute monotonic nanoseconds; absent until the drain deadline is set.
   std::optional<std::uint64_t> shutdown_deadline_;
   std::uint64_t ignored_quote_count_ = 0;
   base::Status result_;
+  // Borrowed stage identifier, valid until reset; empty if no error is stored.
   const char* error_stage_ = "";
   char error_detail_[kErrorDetailSize] = {};
 };

@@ -16,17 +16,23 @@ namespace {
 using base::ErrorCode;
 using model::OrderState;
 using model::OrderUpdateKind;
+// Gateway keepalive interval: 250 ms, ending after drain acknowledgement.
 constexpr std::uint64_t kHeartbeatIntervalNs = 250000000;
-// Idle polls yield the current batch while keeping the low-latency event loop
-// polling. A future deadline also satisfies the runner's empty-read contract.
+// A 1 ns idle retry yields the current batch with a future deadline while
+// keeping the strategy event loop responsive to gateway traffic.
 constexpr std::uint64_t kPollRetryNs = 1;
+// Twice the maximum fill count keeps the power-of-two linear-probing table
+// at most half full, guaranteeing a vacant slot for each permitted fill.
 constexpr std::size_t kExecutionLookupCapacity = 2 * trading::kMaxTradingFills;
 
+// Adds an interval without wrapping an absolute deadline into the past.
 std::uint64_t SaturatingAdd(std::uint64_t value,
                             std::uint64_t amount) noexcept {
   return value > UINT64_MAX - amount ? UINT64_MAX : value + amount;
 }
 
+// Compares populated account fields for equal-revision consistency. Requires
+// already validated position counts; unused array slots are irrelevant.
 bool SameAccount(const trading::AccountView& lhs,
                  const trading::AccountView& rhs) noexcept {
   if (lhs.revision != rhs.revision || lhs.cash != rhs.cash ||
@@ -42,6 +48,8 @@ bool SameAccount(const trading::AccountView& lhs,
   return true;
 }
 
+// Compares execution facts, ignoring the host's receive timestamp so an exact
+// replay of a wire report is not mistaken for a changed execution.
 bool SameFill(const model::Fill& lhs, const model::Fill& rhs) noexcept {
   return lhs.client_order_id == rhs.client_order_id &&
          lhs.broker_order_id == rhs.broker_order_id &&
@@ -53,6 +61,8 @@ bool SameFill(const model::Fill& lhs, const model::Fill& rhs) noexcept {
          lhs.position_effect == rhs.position_effect;
 }
 
+// Hashes the order/execution pair into the power-of-two lookup table. The
+// FNV-1a offset basis and prime provide stable byte mixing, not authentication.
 std::size_t ExecutionHash(model::ClientOrderId order,
                           const model::ExecutionId& execution) noexcept {
   std::uint64_t hash =
@@ -63,16 +73,23 @@ std::size_t ExecutionHash(model::ClientOrderId order,
 }
 }  // namespace
 
+// Allocates all bounded session history and queues once during Init. Entries
+// are retained until Reset; request and local-update rings reuse their slots.
+// Access is serialized with the enclosing client's transport and callbacks.
 struct TradingServiceImpl::Storage {
+  // Keeps a host-visible snapshot separately from the last wire facts so local
+  // cancel intent does not alter duplicate-report comparisons.
   struct OrderRecord {
     model::OrderSnapshot snapshot;
     model::OrderUpdate last_wire_update;
     model::Fill last_wire_fill;
     bool last_notify = false;
     bool last_has_fill = false;
-    bool attempted = false;
-    bool cancel_attempted = false;
+    bool attempted = false;  // Entered transport; cannot be canceled locally.
+    bool cancel_attempted = false;  // Current cancel entered transport.
   };
+  // References an order by zero-based index. cancel_id matters only for cancel
+  // requests and is copied into the gateway cancellation message.
   struct Request {
     std::size_t index = 0;
     bool cancel = false;
@@ -82,23 +99,26 @@ struct TradingServiceImpl::Storage {
   std::array<Request, trading::kMaxTradingRequests> requests = {};
   std::array<std::size_t, trading::kMaxLocalOrderUpdates> local_updates = {};
   std::array<model::Fill, trading::kMaxTradingFills> fills = {};
+  // Zero is vacant; occupied slots contain a one-based index into fills.
   std::array<std::uint16_t, kExecutionLookupCapacity> fill_lookup = {};
   trading::AccountView account;
   trading::TradingClientConfig config;
   std::size_t order_count = 0;
+  // Head/count pairs describe populated ring entries, not monotonic counters.
   std::size_t request_head = 0;
   std::size_t request_count = 0;
   std::size_t local_head = 0;
   std::size_t local_count = 0;
   std::size_t fill_count = 0;
   std::uint64_t cancel_id = 0;
-  std::uint64_t generation = 0;
+  std::uint64_t generation = 0;  // Gateway session identity from Welcome.
+  // Absolute host-monotonic timestamps; receive time bounds heartbeat expiry.
   std::uint64_t last_received_ns = 0;
   std::uint64_t next_heartbeat_ns = 0;
   std::uint64_t next_poll_ns = 0;
-  bool stop_sent = false;
-  bool drained = false;
-  bool failed = false;
+  bool stop_sent = false;  // Stop entered transport after local requests.
+  bool drained = false;    // Gateway acknowledged final order facts.
+  bool failed = false;     // Further transport processing must not continue.
 };
 
 TradingServiceImpl::TradingServiceImpl(
@@ -164,6 +184,8 @@ base::Status TradingServiceImpl::Init(
     storage_.reset();
     return status;
   }
+  // Bound synchronous startup with real elapsed time, even when the injected
+  // strategy clock is simulated or has not started advancing.
   const auto start = std::chrono::steady_clock::now();
   trading::Message welcome;
   for (;;) {
@@ -281,6 +303,8 @@ ErrorCode TradingServiceImpl::SubmitOrder(const model::OrderRequest& request,
       request.quantity % definition.quantity_step != 0)
     return Fail(ErrorCode::kInvalidArgument,
                 "limit-order price or quantity is not aligned");
+  // Converts price-decimal scales to micro-yuan for overflow checks. Account
+  // reservations remain the gateway's responsibility after local acceptance.
   constexpr std::array<std::int64_t, 7> kPriceScales = {
       1000000, 100000, 10000, 1000, 100, 10, 1};
   const auto scale = kPriceScales[definition.price_decimals];
@@ -429,6 +453,8 @@ base::Status TradingServiceImpl::ProcessRequests(std::uint64_t now,
   for (std::size_t count = 0; count < limit && s.request_count != 0; ++count) {
     const auto request = s.requests[s.request_head];
     auto& record = s.orders[request.index];
+    // Only commands never handed to transport can be canceled locally. Already
+    // attempted commands require gateway facts to resolve their outcome.
     if (stopping_ && !request.cancel && !record.attempted) {
       if (s.local_count == s.local_updates.size()) break;
       s.local_updates[(s.local_head + s.local_count) % s.local_updates.size()] =
@@ -451,8 +477,8 @@ base::Status TradingServiceImpl::ProcessRequests(std::uint64_t now,
       }
       status = connection_.Queue(message);
       if (!status.ok()) return FailSession(status, connection_.error_detail());
-      // Queued transport commands are already uncertain on disconnect and
-      // cannot be converted to a local cancellation or resent.
+      // Transport acceptance is the uncertainty boundary: disconnection cannot
+      // justify either local cancellation or automatic resend after this point.
       if (request.cancel)
         record.cancel_attempted = true;
       else
@@ -461,6 +487,8 @@ base::Status TradingServiceImpl::ProcessRequests(std::uint64_t now,
     s.request_head = (s.request_head + 1) % s.requests.size();
     --s.request_count;
   }
+  // Preserve wire ordering: Stop must follow all requests already accepted
+  // into transport so the gateway drains the same command prefix.
   if (stopping_ && s.request_count == 0 && !s.stop_sent &&
       connection_.can_queue()) {
     trading::Message stop;
@@ -580,6 +608,8 @@ ErrorCode TradingServiceImpl::ApplyUpdate(
     return Fail(ErrorCode::kCorrupt, "remote report changed order identity");
   auto account_status = ValidateAccount(message.account, false);
   if (account_status != ErrorCode::kOk) return account_status;
+  // Duplicates must match the last wire facts, not host-only receive times or
+  // locally pending cancellation flags. They may carry a newer account view.
   if (next.report_sequence == old.report_sequence) {
     auto previous = record.last_wire_update.order;
     auto duplicate = next;
@@ -700,11 +730,15 @@ ErrorCode TradingServiceImpl::ApplyUpdate(
         return Fail(ErrorCode::kCorrupt, "broker ID belongs to another order");
     }
   }
+  // Commit only after every identity, transition, account, and fill check has
+  // passed. The runner must observe one complete view before either callback.
   trading::TradingDispatch dispatch;
   dispatch.notify_order = message.notify_order;
   dispatch.has_fill = message.has_fill;
   dispatch.update = wire;
   dispatch.update.order.receive_time_ns = now;
+  // An unrelated order report cannot resolve local cancellation intent; retain
+  // it until the matching cancel result arrives.
   if (!cancel_result && old.cancel_pending) {
     dispatch.update.order.cancel_pending = true;
     dispatch.update.order.cancel_request_id = old.cancel_request_id;
@@ -745,6 +779,8 @@ base::Status TradingServiceImpl::Poll(std::uint64_t now,
   if (now < s.last_received_ns)
     return FailSession({ErrorCode::kCorrupt, {}},
                        "remote polling clock regressed");
+  // Alternate ready local and wire events. A future wire deadline permits
+  // local progress without forcing a premature transport poll.
   if (has_local_updates() && (prefer_local_ || now < s.next_poll_ns)) {
     error_stage_ = "trading_local_update";
     const auto applied = ApplyLocalUpdate(out);

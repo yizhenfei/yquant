@@ -1,13 +1,7 @@
 #include "strategyd/strategy_runner.h"
 
-#include <pthread.h>
-#include <signal.h>
-#include <sys/select.h>
-
-#include <cerrno>
 #include <cstdio>
 #include <limits>
-#include <system_error>
 
 #include "strategyd/strategy_config_loader.h"
 #include "yquant/trading/trading_client_config.h"
@@ -26,7 +20,9 @@ StrategyRunner::StrategyRunner(const base::MonotonicClock& clock,
       context_(clock, market_data_, trading, timer_) {}
 
 StrategyRunner::~StrategyRunner() noexcept {
-  // Explicit Stop reports errors; this is the ownership safety net.
+  // Run performs orderly drain and exposes cleanup errors. Destruction still
+  // releases resources if the caller exits early, without starting another
+  // loop.
   Finalize();
 }
 
@@ -36,8 +32,8 @@ void StrategyRunner::ResetError() noexcept {
   error_detail_[0] = '\0';
 }
 
-void StrategyRunner::SetError(base::Status status, const char* stage,
-                              const char* detail) noexcept {
+void StrategyRunner::SetErrorIfNotOK(base::Status status, const char* stage,
+                                     const char* detail) noexcept {
   if (status.ok() || !result_.ok()) {
     return;
   }
@@ -49,96 +45,79 @@ void StrategyRunner::SetError(base::Status status, const char* stage,
 void StrategyRunner::SetQuoteError(base::Status status, const char* stage,
                                    const char* detail,
                                    const model::QuoteTick& tick) noexcept {
-  char copied[kErrorDetailSize];
-  std::snprintf(copied, sizeof(copied),
+  if (status.ok() || !result_.ok()) {
+    return;
+  }
+  result_ = status;
+  error_stage_ = stage;
+  std::snprintf(error_detail_, sizeof(error_detail_),
                 "source_id=%u instrument_id=%llu sequence=%llu: %s",
                 tick.source_id.value,
                 static_cast<unsigned long long>(tick.instrument_id.value),
                 static_cast<unsigned long long>(tick.sequence), detail);
-  SetError(status, stage, copied);
 }
 
-bool StrategyRunner::CancelStartupIfRequested() noexcept {
-  bool stop = false;
-  const auto status = environment_.CheckStop(stop);
-  if (!status.ok()) {
-    SetError(status, "signal", "could not inspect termination signals");
-  }
-  if (stop || !result_.ok()) {
-    Finalize();
-    return true;
-  }
-  return false;
-}
-
-base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
+base::Status StrategyRunner::LoadAndStart(
+    StrategyStartOptions options) noexcept {
   ResetError();
   if (state_ != RunnerState::kIdle) {
-    SetError({base::ErrorCode::kInvalidState, {}}, "command",
-             "a strategy can only be loaded in the idle state");
+    SetErrorIfNotOK({base::ErrorCode::kInvalidState, {}}, "command",
+                    "a strategy can only be loaded in the idle state");
     return result_;
   }
 
   state_ = RunnerState::kStarting;
-  if (CancelStartupIfRequested()) {
-    return result_;
-  }
-  auto& config_loader = command.config;
+  auto& config_loader = options.config;
   strategy_id_ = config_loader.strategy_id();
-  // A source may acquire resources before a failed Prepare; always stop it.
+  // Mark cleanup due before calling Prepare because even a failed attempt may
+  // own partial resources that require Stop.
   source_prepared_ = true;
-  const auto prepared = source_.Prepare(command.market_data);
+  const auto prepared = source_.Prepare(options.market_data);
   if (!prepared.ok()) {
-    SetError(prepared, "market_data_prepare", source_.error_detail());
+    SetErrorIfNotOK(prepared, "market_data_prepare", source_.error_detail());
     Finalize();
     return result_;
   }
-  const auto configured = market_data_.Configure(command.market_data);
+  const auto configured = market_data_.Configure(options.market_data);
   if (!configured.ok()) {
-    SetError(configured, "market_data_prepare",
-             "could not prepare the instrument dictionary");
+    SetErrorIfNotOK(configured, "market_data_prepare",
+                    "could not prepare the instrument dictionary");
     Finalize();
     return result_;
   }
-  if (CancelStartupIfRequested()) return result_;
 
-  shutdown_timeout_ns_ = command.trading_config.shutdown_timeout_ns;
+  shutdown_timeout_ns_ = options.trading_config.shutdown_timeout_ns;
   trading_prepared_ = true;
   const auto initialized =
-      trading_service_.Init(command.trading_config, command.market_data);
+      trading_service_.Init(options.trading_config, options.market_data);
   if (!initialized.ok()) {
-    SetError(initialized, trading_service_.error_stage(),
-             trading_service_.error_detail());
+    SetErrorIfNotOK(initialized, trading_service_.error_stage(),
+                    trading_service_.error_detail());
     Finalize();
     return result_;
   }
   trading_started_ = true;
-  if (CancelStartupIfRequested()) return result_;
 
-  const base::Status open_result = library_.Open(command.library_path);
+  const base::Status open_result = library_.Open(options.library_path);
   if (!open_result.ok()) {
-    SetError(open_result, library_.error_stage(), library_.error_detail());
+    SetErrorIfNotOK(open_result, library_.error_stage(),
+                    library_.error_detail());
     Finalize();
-    return result_;
-  }
-  if (CancelStartupIfRequested()) {
     return result_;
   }
 
   const auto* plugin = library_.plugin();
   const base::ErrorCode create_result = plugin->create(instance_);
   if ((create_result == base::ErrorCode::kOk) != (instance_ != nullptr)) {
-    SetError({base::ErrorCode::kCorrupt, {}}, "create",
-             "strategy factory returned inconsistent status and instance");
+    SetErrorIfNotOK(
+        {base::ErrorCode::kCorrupt, {}}, "create",
+        "strategy factory returned inconsistent status and instance");
   } else if (create_result != base::ErrorCode::kOk) {
-    SetError({create_result, {}}, "create",
-             "strategy factory returned an error");
+    SetErrorIfNotOK({create_result, {}}, "create",
+                    "strategy factory returned an error");
   }
   if (!result_.ok()) {
     Finalize();
-    return result_;
-  }
-  if (CancelStartupIfRequested()) {
     return result_;
   }
 
@@ -148,8 +127,8 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
       config.Initialize(config_loader.strategy_id(),
                         config_loader.parameters_json(), config_error);
   if (initialize_result != base::ErrorCode::kOk) {
-    // Plugins report paths relative to parameters. Copy both parts before
-    // destroying the instance or releasing its library.
+    // Prefix the plugin's parameter-relative path and copy its diagnostic
+    // before destroying plugin-owned storage or unloading the library.
     char detail[kErrorDetailSize];
     const char* separator = config_error.field_path[0] == '\0' ? "" : ".";
     std::snprintf(detail, sizeof(detail), "parameters%s%s: %s%s", separator,
@@ -158,79 +137,54 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
                       ? config_error.message
                       : "strategy configuration initialization failed",
                   config_error.truncated ? " [truncated]" : "");
-    SetError({initialize_result, {}}, "initialize", detail);
+    SetErrorIfNotOK({initialize_result, {}}, "initialize", detail);
     config_loader.Reset();
     Finalize();
     return result_;
   }
   if (!config.ready()) {
-    SetError({base::ErrorCode::kCorrupt, {}}, "initialize",
-             "strategy configuration did not become ready");
+    SetErrorIfNotOK({base::ErrorCode::kCorrupt, {}}, "initialize",
+                    "strategy configuration did not become ready");
     config_loader.Reset();
     Finalize();
     return result_;
   }
-  // JSON views are initialization-only. OnStart must use owned typed fields.
+  // End the JSON borrow before OnStart so callbacks can rely only on the
+  // plugin's owned typed fields, independent of parser/source storage.
   config_loader.Reset();
 
-  if (CancelStartupIfRequested()) {
-    return result_;
-  }
   BeginCallback(strategy::CallbackPhase::kStart);
   const base::ErrorCode start_result = instance_->OnStart(context_);
   EndCallback();
   if (start_result != base::ErrorCode::kOk) {
-    SetError({start_result, {}}, "start", "strategy OnStart returned an error");
+    SetErrorIfNotOK({start_result, {}}, "start",
+                    "strategy OnStart returned an error");
     Finalize();
     return result_;
   }
   started_ = true;
-  if (CancelStartupIfRequested()) {
+  const auto status =
+      source_.Start(market_data_.subscriptions(), clock_.Now());
+  if (!status.ok()) {
+    SetErrorIfNotOK(status, "market_data_start", source_.error_detail());
+    Finalize();
     return result_;
   }
-  if (source_prepared_) {
-    const auto status =
-        source_.Start(market_data_.subscriptions(), clock_.Now());
-    if (!status.ok()) {
-      SetError(status, "market_data_start", source_.error_detail());
-      Finalize();
-      return result_;
-    }
-    source_started_ = true;
-  }
-  if (CancelStartupIfRequested()) {
-    return result_;
-  }
+  source_started_ = true;
   state_ = RunnerState::kRunning;
   timer_.SetRunning(true);
   return result_;
 }
 
-base::Status StrategyRunner::Handle(Stop) noexcept {
-  if (callback_active_ || state_ == RunnerState::kStarting) {
-    return {base::ErrorCode::kInvalidState, {}};
-  }
-  if (state_ == RunnerState::kStopping) {
-    return {};
-  }
-  ResetError();
-  if (state_ == RunnerState::kIdle) {
-    Finalize();
-  } else if (state_ == RunnerState::kRunning) {
-    stop_requested_ = true;
-    timer_.BeginStopping();
-  }
-  return result_;
-}
-
 namespace {
 
-// Both sources use the host's monotonic time domain.
+// Returns whether an optional absolute deadline is due in host-monotonic time.
 bool IsDue(std::optional<std::uint64_t> deadline, std::uint64_t now) noexcept {
   return deadline && *deadline <= now;
 }
 
-// Keeps the earliest absolute deadline; absent inputs do not schedule work.
+// Lowers earliest to a present candidate, or initializes it if absent. An
+// absent candidate leaves the accumulated deadline unchanged.
 void IncludeDeadline(std::optional<std::uint64_t>& earliest,
                      std::optional<std::uint64_t> candidate) noexcept {
   if (candidate && (!earliest || *candidate < *earliest)) {
@@ -245,9 +199,6 @@ std::optional<std::uint64_t> StrategyRunner::next_deadline() const noexcept {
     return std::nullopt;
   }
   std::optional<std::uint64_t> deadline;
-  if (stop_requested_) {
-    deadline = 0;
-  }
   if (state_ == RunnerState::kRunning && source_started_) {
     IncludeDeadline(deadline, source_.next_deadline());
     IncludeDeadline(deadline, source_.next_service_deadline());
@@ -284,12 +235,15 @@ void StrategyRunner::EndCallback() noexcept {
 void StrategyRunner::SetOrderError(base::Status status, const char* stage,
                                    const char* detail, model::ClientOrderId id,
                                    std::uint64_t sequence) noexcept {
-  char copied[kErrorDetailSize];
-  std::snprintf(copied, sizeof(copied),
+  if (status.ok() || !result_.ok()) {
+    return;
+  }
+  result_ = status;
+  error_stage_ = stage;
+  std::snprintf(error_detail_, sizeof(error_detail_),
                 "client_order_id=%llu sequence=%llu: %s",
                 static_cast<unsigned long long>(id.value),
                 static_cast<unsigned long long>(sequence), detail);
-  SetError(status, stage, copied);
 }
 
 void StrategyRunner::EnterStopping() noexcept {
@@ -297,13 +251,12 @@ void StrategyRunner::EnterStopping() noexcept {
     return;
   }
   state_ = RunnerState::kStopping;
-  stop_requested_ = false;
   trading_service_.BeginStopping();
   timer_.BeginStopping();
   const auto now = clock_.Now();
   if (shutdown_timeout_ns_ > std::numeric_limits<std::uint64_t>::max() - now) {
-    SetError({base::ErrorCode::kResourceExhausted, {}}, "trading_drain",
-             "shutdown deadline overflowed");
+    SetErrorIfNotOK({base::ErrorCode::kResourceExhausted, {}}, "trading_drain",
+                    "shutdown deadline overflowed");
     drain_viable_ = false;
   } else {
     shutdown_deadline_ = now + shutdown_timeout_ns_;
@@ -312,7 +265,7 @@ void StrategyRunner::EnterStopping() noexcept {
   if (source_prepared_) {
     source_prepared_ = false;
     const auto status = source_.Stop();
-    SetError(status, "market_data_stop", source_.error_detail());
+    SetErrorIfNotOK(status, "market_data_stop", source_.error_detail());
   }
   if (!result_.ok()) {
     callbacks_enabled_ = false;
@@ -344,7 +297,7 @@ bool StrategyRunner::FinishStoppingIfReady() noexcept {
     return true;
   }
   if (IsDue(shutdown_deadline_, clock_.Now())) {
-    SetError(
+    SetErrorIfNotOK(
         {base::ErrorCode::kIoError, {}}, "trading_drain_timeout",
         "outstanding orders or requests did not drain before the deadline");
     callbacks_enabled_ = false;
@@ -358,9 +311,9 @@ void StrategyRunner::CheckStop() noexcept {
   bool stop = false;
   const auto status = environment_.CheckStop(stop);
   if (!status.ok()) {
-    SetError(status, "signal", "could not inspect termination signals");
+    SetErrorIfNotOK(status, "stop_check", "could not inspect stop requests");
     StopAfterError(false);
-  } else if (stop || stop_requested_) {
+  } else if (stop) {
     EnterStopping();
   }
 }
@@ -440,14 +393,14 @@ StrategyRunner::QuotePollResult StrategyRunner::PollQuote() noexcept {
     const auto status = polled.status.ok()
                             ? base::Status{base::ErrorCode::kCorrupt, {}}
                             : polled.status;
-    SetError(status, "market_data_poll", source_.error_detail());
+    SetErrorIfNotOK(status, "market_data_poll", source_.error_detail());
     StopAfterError(true);
     return QuotePollResult::kError;
   }
   if (polled.state == MarketDataPollState::kIdle) {
     if (!source_.is_poll_driven() && IsDue(source_.next_deadline(), now)) {
-      SetError({base::ErrorCode::kCorrupt, {}}, "market_data_poll",
-               "idle source retained an already-due deadline");
+      SetErrorIfNotOK({base::ErrorCode::kCorrupt, {}}, "market_data_poll",
+                      "idle source retained an already-due deadline");
       StopAfterError(true);
       return QuotePollResult::kError;
     }
@@ -455,13 +408,13 @@ StrategyRunner::QuotePollResult StrategyRunner::PollQuote() noexcept {
       EnterStopping();
       return QuotePollResult::kIdle;
     }
-    // SHM already bounded its scan internally. Retry only in the next Run
-    // iteration, so a transport yield does not multiply its scan budget here.
+    // Return the yield to ProcessBatch so it skips this source until the next
+    // batch. Retrying here would multiply a transport's bounded scan allowance.
     return QuotePollResult::kIdle;
   }
   if (polled.state != MarketDataPollState::kEvent) {
-    SetError({base::ErrorCode::kCorrupt, {}}, "market_data_poll",
-             "source returned an unknown polling state");
+    SetErrorIfNotOK({base::ErrorCode::kCorrupt, {}}, "market_data_poll",
+                    "source returned an unknown polling state");
     StopAfterError(true);
     return QuotePollResult::kError;
   }
@@ -478,7 +431,7 @@ bool StrategyRunner::DispatchTimer() noexcept {
   const auto code = instance_->OnTimer(context_, event);
   EndCallback();
   if (code != base::ErrorCode::kOk) {
-    SetError({code, {}}, "timer", "strategy OnTimer returned an error");
+    SetErrorIfNotOK({code, {}}, "timer", "strategy OnTimer returned an error");
     StopAfterError(true);
     return false;
   }
@@ -491,8 +444,8 @@ bool StrategyRunner::PollTrading() noexcept {
   bool event = false;
   const auto polled = trading_service_.Poll(now, dispatch, event);
   if (!polled.ok()) {
-    SetError(polled, trading_service_.error_stage(),
-             trading_service_.error_detail());
+    SetErrorIfNotOK(polled, trading_service_.error_stage(),
+                    trading_service_.error_detail());
     StopAfterError(false);
     return false;
   }
@@ -540,34 +493,6 @@ void StrategyRunner::ProcessBatch() noexcept {
   }
 }
 
-base::Status StrategyRunner::Wait(
-    std::optional<std::uint64_t> timeout_ns) noexcept {
-  sigset_t wait_mask;
-  const int mask_error = pthread_sigmask(SIG_SETMASK, nullptr, &wait_mask);
-  if (mask_error != 0) {
-    return {base::ErrorCode::kIoError, {mask_error, std::generic_category()}};
-  }
-  // Preserve unrelated signal blocking. pselect atomically opens the exit
-  // signal window with the wait, so a pending stop cannot be lost before sleep.
-  if (sigdelset(&wait_mask, SIGINT) != 0 ||
-      sigdelset(&wait_mask, SIGTERM) != 0) {
-    return {base::ErrorCode::kIoError, {errno, std::generic_category()}};
-  }
-  struct timespec timeout{};
-  if (timeout_ns) {
-    // Nanoseconds stored in uint64 fit in the supported 64-bit time_t seconds.
-    constexpr std::uint64_t kNanosecondsPerSecond = 1000000000;
-    timeout.tv_sec = static_cast<time_t>(*timeout_ns / kNanosecondsPerSecond);
-    timeout.tv_nsec = static_cast<long>(*timeout_ns % kNanosecondsPerSecond);
-  }
-  const int result = pselect(0, nullptr, nullptr, nullptr,
-                             timeout_ns ? &timeout : nullptr, &wait_mask);
-  if (result < 0 && errno != EINTR) {
-    return {base::ErrorCode::kIoError, {errno, std::generic_category()}};
-  }
-  return {};
-}
-
 base::Status StrategyRunner::Run() noexcept {
   if (state_ != RunnerState::kRunning || callback_active_) {
     return {base::ErrorCode::kInvalidState, {}};
@@ -579,11 +504,12 @@ base::Status StrategyRunner::Run() noexcept {
       return result_;
     }
     if (state_ == RunnerState::kRunning && source_started_) {
-      // Discovery/heartbeat work is deliberately outside the hot polling
-      // batch. A failed market source must not prevent broker-order draining.
+      // Keep discovery/health maintenance outside event batches. Source failure
+      // stops quote delivery while a usable trading channel continues draining.
       const auto serviced = source_.Service(clock_.Now());
       if (!serviced.ok()) {
-        SetError(serviced, "market_data_service", source_.error_detail());
+        SetErrorIfNotOK(serviced, "market_data_service",
+                        source_.error_detail());
         StopAfterError(true);
       }
     }
@@ -594,7 +520,7 @@ base::Status StrategyRunner::Run() noexcept {
     if (trading_started_ && drain_viable_) {
       const auto sent = trading_service_.ProcessRequests(clock_.Now());
       if (!sent.ok()) {
-        SetError(sent, "trading_send", trading_service_.error_detail());
+        SetErrorIfNotOK(sent, "trading_send", trading_service_.error_detail());
         StopAfterError(false);
       }
     }
@@ -613,9 +539,9 @@ base::Status StrategyRunner::Run() noexcept {
     }
     const auto timeout =
         deadline ? std::optional<std::uint64_t>{*deadline - now} : std::nullopt;
-    const auto waited = Wait(timeout);
+    const auto waited = environment_.Wait(timeout);
     if (!waited.ok()) {
-      SetError(waited, "wait", "could not wait for data or termination");
+      SetErrorIfNotOK(waited, "wait", "could not wait for the next event");
       StopAfterError(false);
     }
   }
@@ -719,21 +645,23 @@ void StrategyRunner::Finalize() noexcept {
   if (source_prepared_) {
     source_prepared_ = false;
     const auto status = source_.Stop();
-    SetError(status, "market_data_stop", source_.error_detail());
+    SetErrorIfNotOK(status, "market_data_stop", source_.error_detail());
   }
+  // Keep callback services alive through OnStop and plugin destruction; tear
+  // down transport only after unconfirmed facts have been reported.
   if (started_) {
     started_ = false;
     BeginCallback(strategy::CallbackPhase::kStop);
     const auto stopped = instance_->OnStop(context_);
     EndCallback();
-    SetError({stopped, {}}, "stop", "strategy OnStop returned an error");
+    SetErrorIfNotOK({stopped, {}}, "stop", "strategy OnStop returned an error");
   }
   if (instance_ != nullptr) {
     library_.plugin()->destroy(instance_);
     instance_ = nullptr;
   }
   const auto closed = library_.Close();
-  SetError(closed, library_.error_stage(), library_.error_detail());
+  SetErrorIfNotOK(closed, library_.error_stage(), library_.error_detail());
   if (!IsDrained()) {
     ReportUnconfirmed();
   }
@@ -741,7 +669,7 @@ void StrategyRunner::Finalize() noexcept {
   if (trading_prepared_) {
     trading_prepared_ = false;
     const auto stopped = trading_service_.Stop();
-    SetError(stopped, "trading_stop", trading_service_.error_detail());
+    SetErrorIfNotOK(stopped, "trading_stop", trading_service_.error_detail());
   }
   trading_service_.Reset();
   timer_.Reset();

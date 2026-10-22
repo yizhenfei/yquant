@@ -196,7 +196,7 @@ class ControlledSource final : public MarketDataSource {
 
 // Test environment never sleeps: it stops at a selected source boundary or
 // exposes a deterministic wait/check failure to the runner's cleanup path.
-class TestEventLoopEnvironment final : public TestLoopEnvironment {
+class TestEventLoopEnvironment final : public base::EventLoopEnvironment {
  public:
   const ControlledSource* source = nullptr;
   bool fail_check = false;
@@ -242,23 +242,21 @@ TEST(MarketRunnerTest, UpdatesSnapshotBeforeCallbackAndDropsOldSequences) {
   loop.source = &source;
   loop.stop_when_exhausted = true;
   RunnerTestHarness runner(loop, source);
-  ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTES_PATH,
-                                          YQUANT_TEST_QUOTE_CONFIG_PATH,
-                                          YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
-                  .ok())
+  ASSERT_TRUE(
+      runner
+          .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTES_PATH,
+                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
+                                        YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
+          .ok())
       << runner.error_detail();
   EXPECT_EQ(events.Read(), "CPS");
-  EXPECT_TRUE(runner.next_deadline().has_value());
   ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   EXPECT_EQ(source.poll_calls, 4);
   EXPECT_EQ(loop.wait_calls, 0);
   EXPECT_EQ(runner.ignored_quote_count(), 2U);
   ExpectQuoteTrace(events.Read(), "QQTD");
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
-  EXPECT_TRUE(runner.Handle(Stop{}).ok());
   EXPECT_EQ(runner.ignored_quote_count(), 2U);
-  EXPECT_FALSE(runner.next_deadline().has_value());
   EXPECT_EQ(runner.Run().code, ErrorCode::kInvalidState);
   EXPECT_TRUE(events.Read().empty());
 }
@@ -286,11 +284,12 @@ TEST(MarketRunnerTest, DeliversMissingSidesLockedCrossedAndNontradableQuotes) {
   loop.source = &source;
   loop.stop_when_exhausted = true;
   RunnerTestHarness runner(loop, source);
-  ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTES_PATH,
-                                          YQUANT_TEST_QUOTE_CONFIG_PATH,
-                                          YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
-                  .ok());
+  ASSERT_TRUE(
+      runner
+          .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTES_PATH,
+                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
+                                        YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
+          .ok());
   ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   EXPECT_EQ(source.poll_calls, 5);
   ExpectQuoteTrace(events.Read(), "CPSQQQQQTD");
@@ -314,17 +313,18 @@ TEST_P(InvalidQuoteTest, RejectsBeforeDispatchAndStopsTheStartedStrategy) {
   loop.source = &source;
   loop.stop_when_exhausted = true;
   RunnerTestHarness runner(loop, source);
-  ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTES_PATH,
-                                          YQUANT_TEST_QUOTE_CONFIG_PATH,
-                                          YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
-                  .ok());
+  ASSERT_TRUE(
+      runner
+          .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTES_PATH,
+                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
+                                        YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
+          .ok());
   EXPECT_FALSE(runner.Run().ok());
   EXPECT_EQ(source.poll_calls, 2);
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   EXPECT_STREQ(runner.error_stage(), "quote");
   ExpectQuoteTrace(events.Read(), "CPSQTD");
-  EXPECT_TRUE(runner.Handle(Stop{}).ok());
+  EXPECT_EQ(runner.Run().code, ErrorCode::kInvalidState);
   EXPECT_TRUE(events.Read().empty());
 }
 
@@ -358,22 +358,27 @@ TEST(MarketRunnerTest, TickFailurePreservesDiagnosticAndPairsStop) {
   ASSERT_TRUE(events.valid());
   const std::array quotes = {Quote(42), Quote(43)};
   ControlledSource source;
+  source.fail_stop = true;
   source.SetQuotes(quotes);
   TestEventLoopEnvironment loop;
   loop.source = &source;
   loop.stop_when_exhausted = true;
   RunnerTestHarness runner(loop, source);
-  ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_TICK_FAIL_PATH,
-                                          YQUANT_TEST_QUOTE_CONFIG_PATH,
-                                          YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
-                  .ok());
+  ASSERT_TRUE(
+      runner
+          .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_TICK_FAIL_PATH,
+                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
+                                        YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
+          .ok());
   EXPECT_EQ(runner.Run().code, ErrorCode::kInvalidArgument);
   EXPECT_EQ(source.poll_calls, 1);
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   EXPECT_STREQ(runner.error_stage(), "tick");
   EXPECT_EQ(runner.strategy_id(), "test-quotes");
-  EXPECT_NE(std::string(runner.error_detail()).find("42"), std::string::npos);
+  EXPECT_EQ(std::string(runner.error_detail()),
+            "source_id=1 instrument_id=" +
+                std::to_string(quotes[0].instrument_id.value) +
+                " sequence=42: strategy OnTick returned an error");
   ExpectQuoteTrace(events.Read(), "CPSQTD");
   EXPECT_EQ(runner.Run().code, ErrorCode::kInvalidState);
   EXPECT_TRUE(events.Read().empty());
@@ -387,18 +392,17 @@ TEST(MarketRunnerTest, StartFailureNeverActivatesOrDispatchesTheSource) {
   loop.source = &source;
   loop.stop_after_polls = 1;
   RunnerTestHarness runner(loop, source);
-  EXPECT_FALSE(
-      runner
-          .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTE_START_FAIL_PATH,
-                                  YQUANT_TEST_QUOTE_CONFIG_PATH,
-                                  YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
-          .ok());
+  EXPECT_FALSE(runner
+                   .LoadAndStart(
+                       StrategyOptions{YQUANT_TEST_PLUGIN_QUOTE_START_FAIL_PATH,
+                                       YQUANT_TEST_QUOTE_CONFIG_PATH,
+                                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
+                   .ok());
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   EXPECT_STREQ(runner.error_stage(), "start");
   ExpectQuoteTrace(events.Read(), "CPSD");
   EXPECT_EQ(source.start_calls, 0);
   EXPECT_EQ(source.poll_calls, 0);
-  EXPECT_FALSE(runner.next_deadline().has_value());
   EXPECT_EQ(runner.Run().code, ErrorCode::kInvalidState);
   EXPECT_TRUE(events.Read().empty());
 }
@@ -413,11 +417,12 @@ TEST(MarketRunnerTest, LimitsEachReadyBatchTo64Events) {
   // a stop request ready in this environment.
   loop.stop_after_polls = 1;
   RunnerTestHarness runner(loop, source);
-  ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTES_PATH,
-                                          YQUANT_TEST_QUOTE_CONFIG_PATH,
-                                          YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
-                  .ok());
+  ASSERT_TRUE(
+      runner
+          .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTES_PATH,
+                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
+                                        YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
+          .ok());
   EXPECT_EQ(events.Read(), "CPS");
   ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   EXPECT_EQ(source.poll_calls, 64);
@@ -435,11 +440,12 @@ TEST(MarketRunnerTest, RepeatedSequencesStillConsumeTheBatchBudget) {
   loop.source = &source;
   loop.stop_after_polls = 128;
   RunnerTestHarness runner(loop, source);
-  ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTES_PATH,
-                                          YQUANT_TEST_QUOTE_CONFIG_PATH,
-                                          YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
-                  .ok());
+  ASSERT_TRUE(
+      runner
+          .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTES_PATH,
+                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
+                                        YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
+          .ok());
   EXPECT_EQ(events.Read(), "CPS");
   ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   EXPECT_EQ(source.poll_calls, 128);
@@ -466,7 +472,7 @@ TEST_P(SourceFailureTest, RetainsErrorAndPairsLifecycleCallbacks) {
   TestEventLoopEnvironment loop;
   loop.source = &source;
   RunnerTestHarness runner(loop, source);
-  const auto start = runner.Handle(StrategyOptions{
+  const auto start = runner.LoadAndStart(StrategyOptions{
       YQUANT_TEST_PLUGIN_QUOTES_PATH, YQUANT_TEST_QUOTE_CONFIG_PATH,
       YQUANT_TEST_MARKET_DATA_CONFIG_PATH});
   loop.stop_after_start = source.fail_stop;
@@ -487,7 +493,7 @@ TEST_P(SourceFailureTest, RetainsErrorAndPairsLifecycleCallbacks) {
     EXPECT_EQ(source.stop_calls, 1);
     ExpectQuoteTrace(events.Read(), "CPSTD");
   }
-  EXPECT_TRUE(runner.Handle(Stop{}).ok());
+  EXPECT_EQ(runner.Run().code, ErrorCode::kInvalidState);
   EXPECT_TRUE(events.Read().empty());
 }
 
@@ -515,11 +521,12 @@ TEST(MarketRunnerTest, PollErrorSurvivesSourceStopFailure) {
   TestEventLoopEnvironment loop;
   loop.source = &source;
   RunnerTestHarness runner(loop, source);
-  ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTES_PATH,
-                                          YQUANT_TEST_QUOTE_CONFIG_PATH,
-                                          YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
-                  .ok());
+  ASSERT_TRUE(
+      runner
+          .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTES_PATH,
+                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
+                                        YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
+          .ok());
   EXPECT_FALSE(runner.Run().ok());
   EXPECT_STREQ(runner.error_stage(), "market_data_poll");
   EXPECT_NE(std::string(runner.error_detail()).find("injected poll failure"),
@@ -535,11 +542,12 @@ TEST(MarketRunnerTest, ReadySourceChecksStopAfterOneBoundedBatch) {
   loop.source = &source;
   loop.stop_after_polls = 64;
   RunnerTestHarness runner(loop, source);
-  ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTES_PATH,
-                                          YQUANT_TEST_QUOTE_CONFIG_PATH,
-                                          YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
-                  .ok());
+  ASSERT_TRUE(
+      runner
+          .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTES_PATH,
+                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
+                                        YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
+          .ok());
   ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   EXPECT_EQ(source.poll_calls, 64);
@@ -559,11 +567,12 @@ TEST(MarketRunnerTest, BusyPollingIdleChecksStopWithoutWaitingOrCorruption) {
   loop.source = &source;
   loop.stop_after_polls = 3;
   RunnerTestHarness runner(loop, source);
-  ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTES_PATH,
-                                          YQUANT_TEST_QUOTE_CONFIG_PATH,
-                                          YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
-                  .ok());
+  ASSERT_TRUE(
+      runner
+          .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTES_PATH,
+                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
+                                        YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
+          .ok());
   ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   EXPECT_EQ(source.poll_calls, 3);
   EXPECT_EQ(loop.wait_calls, 0);
@@ -580,12 +589,12 @@ TEST(MarketRunnerTest, UsesTheInjectedEnvironmentBeforeLoadingAnyPlugin) {
   loop.fail_check = true;
   RunnerTestHarness runner(loop, source);
   EXPECT_EQ(runner
-                .Handle({YQUANT_TEST_PLUGIN_QUOTES_PATH,
-                         YQUANT_TEST_QUOTE_CONFIG_PATH,
-                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
+                .LoadAndStart({YQUANT_TEST_PLUGIN_QUOTES_PATH,
+                               YQUANT_TEST_QUOTE_CONFIG_PATH,
+                               YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
                 .code,
             ErrorCode::kIoError);
-  EXPECT_STREQ(runner.error_stage(), "signal");
+  EXPECT_STREQ(runner.error_stage(), "stop_check");
   EXPECT_EQ(source.prepare_calls, 0);
   EXPECT_EQ(source.start_calls, 0);
   EXPECT_EQ(loop.check_calls, 1);
@@ -593,7 +602,7 @@ TEST(MarketRunnerTest, UsesTheInjectedEnvironmentBeforeLoadingAnyPlugin) {
   EXPECT_TRUE(events.Read().empty());
 }
 
-TEST(MarketRunnerTest, StopAfterSourceActivationDoesNotBeginPolling) {
+TEST(MarketRunnerTest, RunHandlesPendingStopBeforePolling) {
   QuoteEventPipe events;
   ASSERT_TRUE(events.valid());
   ControlledSource source;
@@ -601,16 +610,21 @@ TEST(MarketRunnerTest, StopAfterSourceActivationDoesNotBeginPolling) {
   loop.source = &source;
   loop.stop_after_start = true;
   RunnerTestHarness runner(loop, source);
-  ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTES_PATH,
-                                          YQUANT_TEST_QUOTE_CONFIG_PATH,
-                                          YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
-                  .ok());
+  ASSERT_TRUE(
+      runner
+          .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTES_PATH,
+                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
+                                        YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
+          .ok());
+  EXPECT_EQ(runner.state(), RunnerState::kRunning);
+  EXPECT_EQ(source.stop_calls, 0);
+  EXPECT_EQ(events.Read(), "CPS");
+  ASSERT_TRUE(runner.Run().ok());
   EXPECT_EQ(runner.state(), RunnerState::kFinished);
   EXPECT_EQ(source.start_calls, 1);
   EXPECT_EQ(source.poll_calls, 0);
   EXPECT_EQ(source.stop_calls, 1);
-  ExpectQuoteTrace(events.Read(), "CPSTD");
+  ExpectQuoteTrace(events.Read(), "TD");
 }
 
 // Maintenance deadlines must wake a waiting host even when no quote is due.
@@ -656,7 +670,7 @@ class MaintenanceClock final : public base::MonotonicClock {
   std::uint64_t Now() const noexcept override { return now; }
 };
 
-class MaintenanceEnvironment final : public TestLoopEnvironment {
+class MaintenanceEnvironment final : public base::EventLoopEnvironment {
  public:
   explicit MaintenanceEnvironment(MaintenanceClock& clock) : clock_(clock) {}
   base::Status CheckStop(bool& out) noexcept override {
@@ -692,12 +706,12 @@ TEST_P(MaintenanceDeadlineTest, ServicesBeforeQuoteDeadlineOrIndefiniteWait) {
   MaintenanceClock clock;
   MaintenanceEnvironment environment(clock);
   RunnerTestHarness runner(clock, environment, source);
-  ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTES_PATH,
-                                          YQUANT_TEST_QUOTE_CONFIG_PATH,
-                                          YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
-                  .ok());
-  EXPECT_EQ(runner.next_deadline(), 100U);
+  ASSERT_TRUE(
+      runner
+          .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_QUOTES_PATH,
+                                        YQUANT_TEST_QUOTE_CONFIG_PATH,
+                                        YQUANT_TEST_MARKET_DATA_CONFIG_PATH})
+          .ok());
   EXPECT_EQ(runner.Run().code, ErrorCode::kIoError);
   EXPECT_STREQ(runner.error_stage(), "market_data_service");
   EXPECT_STREQ(runner.error_detail(), "injected maintenance failure");
@@ -729,8 +743,8 @@ TEST_P(LoopFailureTest, StopsAndDestroysTheStartedStrategy) {
   IdleTestSource source;
   RunnerTestHarness runner(loop, source);
   ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_PLUGIN_GOOD_PATH,
-                                          YQUANT_TEST_CONFIG_PATH})
+                  .LoadAndStart(StrategyOptions{YQUANT_TEST_PLUGIN_GOOD_PATH,
+                                                YQUANT_TEST_CONFIG_PATH})
                   .ok());
   loop.fail_check = GetParam().check;
   loop.fail_wait = !GetParam().check;

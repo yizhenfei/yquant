@@ -36,9 +36,9 @@ TEST(FuturesHostTest, ZeroReplayTailDoesNotSkipTheLastOfTwoDueQuotes) {
   testing::MockTradingService service;
   RunnerTestHarness runner(clock, environment, source, service);
   ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_QUOTE_EXAMPLE_PATH,
-                                          YQUANT_TEST_QUOTE_EXAMPLE_CONFIG_PATH,
-                                          market.path()})
+                  .LoadAndStart(StrategyOptions{
+                      YQUANT_TEST_QUOTE_EXAMPLE_PATH,
+                      YQUANT_TEST_QUOTE_EXAMPLE_CONFIG_PATH, market.path()})
                   .ok())
       << runner.error_detail();
   ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
@@ -68,9 +68,9 @@ TEST(FuturesHostTest,
   service.quote_result = {base::ErrorCode::kIoError, {}};
   RunnerTestHarness runner(clock, environment, source, service);
   ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_QUOTE_EXAMPLE_PATH,
-                                          YQUANT_TEST_QUOTE_EXAMPLE_CONFIG_PATH,
-                                          market.path()})
+                  .LoadAndStart(StrategyOptions{
+                      YQUANT_TEST_QUOTE_EXAMPLE_PATH,
+                      YQUANT_TEST_QUOTE_EXAMPLE_CONFIG_PATH, market.path()})
                   .ok())
       << runner.error_detail();
   EXPECT_EQ(runner.Run().code, base::ErrorCode::kIoError);

@@ -1,3 +1,7 @@
+// Runs one configured strategy process. Keeps argument parsing and process
+// diagnostics here; configuration ownership and execution belong to the
+// assembly and runner.
+
 #include <cstdio>
 #include <cstring>
 #include <string_view>
@@ -11,11 +15,11 @@ namespace {
 using yquant::base::ErrorCode;
 using yquant::base::Status;
 using yquant::base::TerminationSignals;
-using yquant::strategyd::RunnerState;
 using yquant::strategyd::StrategyAssembly;
 using yquant::strategyd::StrategyOptions;
 using yquant::strategyd::StrategyRunner;
 
+// Writes CLI syntax to a required, open stream without taking ownership.
 void PrintUsage(FILE* output) noexcept {
   std::fputs(
       "Usage: yquant-strategyd --strategy LIBRARY --config JSON\n"
@@ -25,6 +29,9 @@ void PrintUsage(FILE* output) noexcept {
       output);
 }
 
+// Writes a failure and available identity/path context to stderr. stage and
+// detail are required C strings; null optional paths omit those fields. All
+// text is borrowed only for this call; zero omits the system-error field.
 void PrintFailure(const char* stage, ErrorCode code, const char* detail,
                   int system_error = 0, const char* strategy_path = nullptr,
                   const char* config_path = nullptr,
@@ -57,6 +64,8 @@ void PrintFailure(const char* stage, ErrorCode code, const char* detail,
   std::fputc('\n', stderr);
 }
 
+// Reports the runner's stored diagnostic and status. Optional path arguments
+// follow PrintFailure's nullability and borrowing rules.
 void PrintRunnerFailure(const StrategyRunner& runner, const Status& status,
                         const char* strategy_path, const char* config_path,
                         const char* market_data_path,
@@ -68,6 +77,8 @@ void PrintRunnerFailure(const StrategyRunner& runner, const Status& status,
 
 }  // namespace
 
+// Returns 0 after help, cancellation, or normal shutdown, 2 for invalid CLI
+// arguments, and 1 for setup, startup, or runtime failure.
 int main(int argc, char* argv[]) {
   if (argc == 2 && std::strcmp(argv[1], "--help") == 0) {
     PrintUsage(stdout);
@@ -103,11 +114,13 @@ int main(int argc, char* argv[]) {
     PrintUsage(stderr);
     return 2;
   }
-  TerminationSignals termination_signals;
-  const auto signal_status = termination_signals.Prepare();
+  // Prepare the runtime environment before loading plugin code. Stop requests
+  // are checked at configuration-load and event-loop boundaries.
+  TerminationSignals environment;
+  const auto signal_status = environment.Prepare();
   if (!signal_status.ok()) {
-    PrintFailure("signal_setup", signal_status.code,
-                 "could not prepare termination signals",
+    PrintFailure("environment_setup", signal_status.code,
+                 "could not prepare event-loop environment",
                  signal_status.system_error.value());
     return 1;
   }
@@ -117,7 +130,7 @@ int main(int argc, char* argv[]) {
   const auto loaded =
       assembly.Load(StrategyOptions{library_path, config_path, market_data_path,
                                     trading_path},
-                    termination_signals);
+                    environment);
   if (!loaded.ok()) {
     PrintFailure(assembly.error_stage(), loaded.code, assembly.error_detail(),
                  loaded.system_error.value(), library_path, config_path,
@@ -125,22 +138,20 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   if (assembly.cancelled()) return 0;
-  StrategyRunner runner(clock, termination_signals, assembly.source(),
+  StrategyRunner runner(clock, environment, assembly.source(),
                         assembly.trading());
-  const Status start_status = runner.Handle(assembly.start_command());
+  const Status start_status = runner.LoadAndStart(assembly.start_options());
   if (!start_status.ok()) {
     PrintRunnerFailure(runner, start_status, library_path, config_path,
                        market_data_path, trading_path);
     return 1;
-  }
-  if (runner.state() == RunnerState::kFinished) {
-    return 0;
   }
 
   const auto strategy_id = runner.strategy_id();
   std::fprintf(
       stdout, "yquant-strategyd: Running strategy=%s strategy_id=%.*s\n",
       library_path, static_cast<int>(strategy_id.size()), strategy_id.data());
+  // Make readiness visible immediately to supervising processes.
   std::fflush(stdout);
 
   const Status run_status = runner.Run();

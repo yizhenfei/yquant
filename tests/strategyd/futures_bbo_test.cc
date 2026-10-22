@@ -189,8 +189,8 @@ void CheckFuturesServiceScenario(bool closing, bool insufficient_cash = false,
   ASSERT_TRUE(capture.valid());
   RunnerTestHarness runner(clock, environment, source, service);
   ASSERT_TRUE(runner
-                  .Handle({YQUANT_TEST_FUTURES_BBO_PATH, strategy.path(),
-                           market.path()})
+                  .LoadAndStart({YQUANT_TEST_FUTURES_BBO_PATH, strategy.path(),
+                                 market.path()})
                   .ok())
       << runner.error_detail();
   ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
@@ -308,7 +308,7 @@ TEST(FuturesBboServiceTest, BrokerAccountLeadingClosingReportsDoesNotReopen) {
   ASSERT_TRUE(capture.valid());
   RunnerTestHarness runner(clock, environment, source, service);
   ASSERT_TRUE(runner
-                  .Handle({YQUANT_TEST_FUTURES_BBO_PATH, strategy.path(),
+                  .LoadAndStart({YQUANT_TEST_FUTURES_BBO_PATH, strategy.path(),
                            market.path()})
                   .ok())
       << runner.error_detail();

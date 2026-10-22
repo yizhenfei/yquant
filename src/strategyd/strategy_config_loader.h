@@ -10,8 +10,10 @@
 
 namespace yquant::strategyd {
 
-// Owns validated source text until configuration initialization is complete.
-// The JSON parser and duplicate-key scratch storage are local to Load().
+// Loads the strategy ID and raw parameters object for plugin initialization.
+// Owns the source behind parameters_json; the runner releases it after the
+// plugin has copied its typed configuration. Serialize Load, Reset, and view
+// access on the owning thread.
 class StrategyConfigLoader {
  public:
   StrategyConfigLoader() noexcept = default;
@@ -22,16 +24,20 @@ class StrategyConfigLoader {
   StrategyConfigLoader(StrategyConfigLoader&&) = delete;
   StrategyConfigLoader& operator=(StrategyConfigLoader&&) = delete;
 
-  // Replaces any previous source/configuration. On failure the ID and parameter
-  // view are empty, and error() retains an owned diagnostic until the next
-  // Load.
+  // Replaces the previous document and validates the root schema. Borrows path
+  // only for this call; null or empty paths return kInvalidArgument. On failure
+  // the ID and parameter view are empty and error owns the diagnostic. A later
+  // Load replaces the diagnostic even if it succeeds.
   [[nodiscard]] base::Status Load(const char* path) noexcept;
-  // Invalidates parameters_json(). Diagnostics remain valid until Load().
+  // Releases source storage and clears the ID and parameter view. Invalidates
+  // outstanding JSON views while preserving the diagnostic.
   void Reset() noexcept;
 
+  // Returns the owned ID, empty before loading or after Reset or a failed Load.
   [[nodiscard]] const strategy::StrategyId& strategy_id() const noexcept {
     return strategy_id_;
   }
+  // Returns a JSON view valid until the next Load, Reset, or destruction.
   [[nodiscard]] std::string_view parameters_json() const noexcept {
     return parameters_json_;
   }
@@ -42,6 +48,7 @@ class StrategyConfigLoader {
  private:
   base::JsonConfigDocument document_;
   strategy::StrategyId strategy_id_;
+  // Points into document_, never into the temporary schema parser.
   std::string_view parameters_json_;
   base::ConfigError error_;
 };

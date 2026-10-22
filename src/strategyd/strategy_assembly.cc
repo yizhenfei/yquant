@@ -18,15 +18,16 @@ base::Status StrategyAssembly::Load(
     StrategyOptions options, base::EventLoopEnvironment& environment) noexcept {
   if (loaded_) return {base::ErrorCode::kInvalidState, {}};
   loaded_ = true;
-  // Cancellation is distinct from successful loading: no runner is created.
+  // A clean stop can return OK before configuration is complete. Preserve a
+  // separate cancellation flag so the caller does not construct a runner.
   const auto check_stop = [&]() noexcept {
     bool stop = false;
     const auto status = environment.CheckStop(stop);
     cancelled_ = stop || !status.ok();
     if (!status.ok()) {
-      error_stage_ = "signal";
+      error_stage_ = "stop_check";
       std::snprintf(error_detail_, sizeof(error_detail_),
-                    "could not inspect termination signals");
+                    "could not inspect stop requests");
     }
     return status;
   };

@@ -91,7 +91,9 @@ CMakePresets.json
 
 [base::MonotonicClock](../../include/yquant/base/monotonic_clock.h) 提供可注入的纳秒时钟接口；`base::SteadyMonotonicClock` 以自身构造时的 `std::chrono::steady_clock` 读数为原点。`Now()` 不分配内存且不递减，同一时间域中的时间戳和期限共用一个时钟实例，跨实例、进程或机器不比较相对读数。时钟由使用方持有，存活时间覆盖全部借用者。
 
-[base::EventLoopEnvironment](../../include/yquant/base/event_loop_environment.h) 提供主线程的 `CheckStop()`，便于事件循环注入停止请求。[base::TerminationSignals](../../include/yquant/base/termination_signals.h) 实现 SIGINT、SIGTERM 的屏蔽和显式检查，由三个程序复用；信号处置与屏蔽掩码保留到进程退出，实现位于 `src/base/termination_signals.cc`。等待由各程序的主循环负责，策略程序的期限等待及信号协议见[主循环与信号](strategyd.md#主循环与信号)。
+[base::EventLoopEnvironment](../../include/yquant/base/event_loop_environment.h) 提供主线程的 `CheckStop()` 和 `Wait(timeout_ns)`。事件循环计算下一次等待的相对纳秒时长，运行环境负责等待与停止来源之间的唤醒协调；没有预定期限时传入 `std::nullopt`。返回后由事件循环重新检查停止请求、处理事件及释放资源。测试环境可推进模拟时间或注入检查、等待错误，无需派生运行器。
+
+[base::TerminationSignals](../../include/yquant/base/termination_signals.h) 是基于 SIGINT、SIGTERM 的运行环境，实现位于 `src/base/termination_signals.cc`。入口在加载用户代码前调用 `Prepare()`，屏蔽退出信号并安装只设置 `sig_atomic_t` 标志的处理函数；处置与屏蔽掩码保留到进程退出。`CheckStop()` 通过短暂解除屏蔽递送待处理信号，随后恢复掩码。`Wait()` 在 `pselect` 等待期间原子地解除退出信号屏蔽，并在返回时恢复调用前的掩码，保留其他信号的屏蔽状态。信号中断属于正常唤醒，其他系统错误通过返回值报告。业务运行器只依赖运行环境接口，期限调度见[主循环与运行环境](strategyd.md#主循环与运行环境)。
 
 ## 标准输出与诊断
 

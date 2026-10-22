@@ -3,7 +3,8 @@
 namespace yquant::strategyd {
 namespace {
 
-// Presence bits own the interpretation of zero fields, not the price itself.
+// Checks a book side's presence encoding. A present side requires positive
+// quantity but may have a zero or negative price; absent fields must be zero.
 bool ValidSide(std::uint8_t flags, model::QuoteFlag side, std::int64_t price,
                std::int64_t quantity) noexcept {
   return model::HasQuoteFlag(flags, side) ? quantity > 0
@@ -99,6 +100,8 @@ base::ErrorCode MarketDataImpl::ApplyQuote(const model::QuoteTick& tick,
       tick.ask_qty % definition.quantity_step != 0)
     return base::ErrorCode::kCorrupt;
   auto& slot = snapshots_[*index];
+  // Validate even old quotes before ignoring them so stale sequence numbers
+  // cannot hide malformed input from the configured source.
   if (slot.has_quote && tick.sequence <= slot.latest.sequence) {
     accepted = false;
     return base::ErrorCode::kOk;

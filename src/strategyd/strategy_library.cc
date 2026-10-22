@@ -31,8 +31,8 @@ base::Status StrategyLibrary::Open(const char* path) noexcept {
     return {base::ErrorCode::kInvalidArgument, {}};
   }
 
-  // realpath allocates only during loading and prevents bare filenames from
-  // being interpreted as dynamic-loader search names.
+  // Resolve against the working directory so a bare filename cannot trigger
+  // loader search-path lookup. The allocated path is confined to startup.
   char* absolute_path = realpath(path, nullptr);
   if (absolute_path == nullptr) {
     const int saved_errno = errno;
@@ -45,7 +45,7 @@ base::Status StrategyLibrary::Open(const char* path) noexcept {
 
   handle_ = dlopen(absolute_path, RTLD_NOW | RTLD_LOCAL);
   if (handle_ == nullptr) {
-    // dlerror storage may change on the next loader operation.
+    // Copy loader-owned error text before another loader call can replace it.
     const char* error = dlerror();
     SetError("dlopen",
              error != nullptr ? error : "dynamic library load failed");
@@ -88,7 +88,8 @@ base::Status StrategyLibrary::Open(const char* path) noexcept {
 }
 
 base::Status StrategyLibrary::Close() noexcept {
-  // No descriptor or function pointer may outlive the dlopen reference.
+  // Clear borrowed code/data pointers before releasing the loader reference,
+  // including on a close error where the reference will not be retried.
   plugin_ = nullptr;
   void* handle = handle_;
   handle_ = nullptr;

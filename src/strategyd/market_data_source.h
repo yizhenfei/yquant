@@ -1,6 +1,10 @@
 #ifndef YQUANT_STRATEGYD_MARKET_DATA_SOURCE_H_
 #define YQUANT_STRATEGYD_MARKET_DATA_SOURCE_H_
 
+// Defines the host's market-source lifecycle and polling results. Sources
+// provide owned quote values and scheduling hints; strategy callbacks and
+// subscription registration belong to the runner and its market-data view.
+
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -11,57 +15,69 @@
 
 namespace yquant::strategyd {
 
+// Separates a delivered quote from a source yield or an operation failure.
 enum class MarketDataPollState { kEvent, kIdle, kError };
 
-// kEvent writes one complete quote; kIdle/kError leave the caller's quote
-// unchanged. status is successful except for kError.
+// Describes one Poll result. Only kEvent overwrites the caller's quote;
+// kIdle and kError preserve it. status is non-OK exactly when state is kError.
 struct MarketDataPollResult {
   MarketDataPollState state = MarketDataPollState::kIdle;
   base::Status status;
 };
 
-// Internal host boundary, called serially on the main thread. Sources never
-// invoke strategies, sleep in Poll(), or publish borrowed SDK buffers.
+// Supplies quotes to the runner after Prepare and Start. The host serializes
+// every call on the owning strategy thread and calls Stop after any startup
+// attempt, including failures. A source never invokes strategy callbacks.
+//
+// Poll performs bounded, nonblocking work without allocation; Service handles
+// maintenance outside event batches. Scheduling and receive times use host
+// monotonic nanoseconds; exchange event timestamps retain their source domain.
 class MarketDataSource {
  public:
   virtual ~MarketDataSource() noexcept = default;
 
-  // Copies validated configuration; does not activate or publish quotes.
-  // A failed call leaves a new source unprepared and safe to Stop().
+  // Prepares from config without activating delivery. Borrows config only for
+  // this call; any data needed later must be copied or loaded into owned
+  // storage. Failure leaves a new source unprepared and safe to Stop.
   [[nodiscard]] virtual base::Status Prepare(
       const md::MarketDataConfig& config) noexcept = 0;
-  // Copies subscriptions and schedules from the host's monotonic now. Failure
-  // retains prepared state; no references to input remain after return.
+  // Activates a prepared source with a copied subscription set and scheduling
+  // origin now. Failure preserves prepared state. Retains no input references.
   [[nodiscard]] virtual base::Status Start(
       std::span<const model::InstrumentId> subscriptions,
       std::uint64_t now) noexcept = 0;
-  // Nonblocking, bounded work, no strategy callbacks or allocation. Poll only
-  // after Start and before Stop. now shares the context's monotonic domain.
+  // Polls an active source once, overwriting out only for kEvent. kIdle yields
+  // without a quote; kError supplies a non-OK status. The host stops the source
+  // after an error. Call only after successful Start and before Stop.
   [[nodiscard]] virtual MarketDataPollResult Poll(
       std::uint64_t now, model::QuoteTick& out) noexcept = 0;
-  // Empty means idle without a scheduled event; <= current time means ready.
+  // Returns the next absolute polling deadline, or nullopt if none is
+  // scheduled. A deadline at or before now makes Poll eligible for the next
+  // batch.
   virtual std::optional<std::uint64_t> next_deadline() const noexcept = 0;
-  // Poll-driven transports may remain idle at an already-due deadline. The
-  // host checks termination between bounded batches, including empty reads.
+  // Returns whether an idle Poll may leave an already-due deadline. Otherwise
+  // an idle source must advance its deadline or remove it. Poll-driven sources
+  // are retried in a later batch so the host can check termination first.
   virtual bool is_poll_driven() const noexcept { return false; }
-  // Finite sources become finished only after their final quote and optional
-  // tail have been consumed by Poll. Live sources remain unfinished.
+  // Returns whether a finite source has consumed its final quote and tail.
+  // Once true, the host begins stopping. Live sources retain the default false.
   virtual bool finished() const noexcept { return false; }
-  // Cold maintenance runs once between bounded batches. It may perform I/O or
-  // allocate, but must not wait for new data or invoke callbacks. A failure is
-  // terminal for the current source; the host calls Stop before returning it.
+  // Performs maintenance between event batches. May allocate or perform I/O,
+  // but must not wait for new data or invoke callbacks. Failure ends the
+  // current source session; the host calls Stop during error shutdown.
   [[nodiscard]] virtual base::Status Service(std::uint64_t) noexcept {
     return {};
   }
-  // The host includes this deadline in its wait, even without subscriptions.
+  // Returns the next absolute maintenance deadline, or nullopt if unscheduled.
+  // The host includes it in its wait even when no instruments are subscribed.
   virtual std::optional<std::uint64_t> next_service_deadline() const noexcept {
     return std::nullopt;
   }
-  // Idempotent synchronous cleanup, safe before activation and after errors.
-  // Must end all borrowed input access even when returning an error.
+  // Releases source resources synchronously, including after partial startup.
+  // Repeated calls are safe. Ends all borrowed input access even on failure.
   [[nodiscard]] virtual base::Status Stop() noexcept = 0;
-  // Host-owned diagnostic text, valid until the next operation. Stop preserves
-  // a preceding source failure so cleanup cannot erase its reason.
+  // Returns non-null, source-owned diagnostic text, possibly empty. Contents
+  // may change on the next operation; Stop preserves a preceding failure.
   virtual const char* error_detail() const noexcept = 0;
 };
 

@@ -3,6 +3,9 @@
 
 #include <signal.h>
 
+#include <cstdint>
+#include <optional>
+
 #include "yquant/base/event_loop_environment.h"
 
 namespace yquant::base {
@@ -21,6 +24,13 @@ class TerminationSignals final : public EventLoopEnvironment {
   // This explicit window delivers pending signals even on platforms where a
   // zero-timeout pselect does not. Failure preserves out.
   [[nodiscard]] Status CheckStop(bool& out) noexcept override;
+
+  // Waits with SIGINT/SIGTERM temporarily unblocked, restoring the calling
+  // thread's mask on return. Requires successful Prepare. Signal interruption
+  // succeeds; other wait errors are returned. Preserves unrelated signal bits
+  // from the calling mask while atomically entering the wait.
+  [[nodiscard]] Status Wait(
+      std::optional<std::uint64_t> timeout_ns) noexcept override;
 
  private:
   sigset_t blocked_mask_ = {};

@@ -15,35 +15,35 @@
 
 namespace yquant::strategyd {
 
-// Main-thread strategy subscriptions and last dispatched snapshots, indexed by
-// a fixed instrument scope. No map or buffer grows at runtime.
+// Implements strategy lookups, startup subscriptions, and last-dispatched quote
+// snapshots for a configured instrument scope. The runner configures the scope,
+// brackets callbacks, and applies quotes before invoking OnTick.
+//
+// All operations are serialized on the owning strategy thread. Subscription
+// and snapshot storage remains fixed during subscription and quote processing.
 class MarketDataImpl final : public strategy::MarketData {
  public:
-  // Borrows clock for this object's entire lifetime; all access is serialized
-  // by the owning strategy runner thread. Does not acquire other resources.
+  // Borrows clock until destruction to reject quotes with future receive times.
   explicit MarketDataImpl(const base::MonotonicClock& clock) noexcept
       : clock_(clock) {}
 
-  // Binds the configured source and copies its validated instrument metadata
-  // into an unconfigured object outside callbacks.
-  // Borrows config only for this call. Failure preserves the current state;
-  // successful configuration remains in place until Reset().
+  // Copies source identity and instrument metadata into an unconfigured view.
+  // Borrows config only for this call. Returns kInvalidState during a callback
+  // or if already configured; all failures preserve the current configuration.
   [[nodiscard]] base::Status Configure(
       const md::MarketDataConfig& config) noexcept;
-  // Clears the source binding, cached snapshots, and registrations. Call only
-  // outside callbacks.
+  // Clears configuration, snapshots, subscriptions, and callback phase. Call
+  // outside callbacks after the strategy has finished using the view.
   void Reset() noexcept;
 
-  // Host-only, non-nested phase boundaries on the owning thread. Begin before
-  // entering a strategy callback and End after it returns, including on error.
+  // Enters phase before invoking a strategy callback. Requires no active
+  // callback; pair with EndCallback even when the callback returns an error.
   void BeginCallback(strategy::CallbackPhase phase) noexcept { phase_ = phase; }
+  // Ends the current callback phase, closing startup subscription registration.
   void EndCallback() noexcept { phase_ = strategy::CallbackPhase::kNone; }
 
-  // Borrows the configured scope for host services until Reset().
-  const md::InstrumentScope& instruments() const noexcept {
-    return instruments_;
-  }
-
+  // Resolves canonical venue/symbol pairs within the configured scope,
+  // including futures symbols. Failure leaves out unchanged.
   [[nodiscard]] base::ErrorCode FindInstrument(
       std::string_view venue, std::string_view symbol,
       model::InstrumentDefinition& out) const noexcept override;
@@ -52,20 +52,22 @@ class MarketDataImpl final : public strategy::MarketData {
   [[nodiscard]] bool TryGetLatestQuote(
       model::InstrumentId id, model::QuoteTick& out) const noexcept override;
 
-  // Borrows fixed storage until Reset(). The runner consumes the registration
-  // list after OnStart has returned, when no further registrations are allowed.
+  // Returns a view of registered IDs, stable after OnStart until Reset or
+  // destruction. During OnStart, later subscriptions may extend the list.
   std::span<const model::InstrumentId> subscriptions() const noexcept {
     return {subscriptions_.data(), subscription_count_};
   }
 
-  // Validates against the bound source and instrument tick/quantity units.
-  // Accepted quotes update the cache; old quotes succeed with accepted=false.
-  // Failure changes neither cache nor accepted.
+  // Validates a subscribed quote's identity, fields, receive time, and units.
+  // Copies a newer quote into its snapshot and sets accepted=true; a valid old
+  // or duplicate quote sets accepted=false without changing the snapshot.
+  // Failure preserves snapshots and accepted. Borrows tick only for this call.
   [[nodiscard]] base::ErrorCode ApplyQuote(const model::QuoteTick& tick,
                                            bool& accepted) noexcept;
 
  private:
-  // latest is readable only once has_quote is true for this subscribed slot.
+  // Tracks one configured instrument; latest is meaningful only when has_quote
+  // is true. Subscription order is stored separately from scope order.
   struct InstrumentSlot {
     model::QuoteTick latest;
     bool subscribed = false;
@@ -76,7 +78,7 @@ class MarketDataImpl final : public strategy::MarketData {
   std::array<InstrumentSlot, md::kMaxMarketDataInstruments> snapshots_ = {};
   std::array<model::InstrumentId, md::kMaxMarketDataInstruments>
       subscriptions_ = {};
-  std::size_t subscription_count_ = 0;
+  std::size_t subscription_count_ = 0;  // Populated prefix of subscriptions_.
   strategy::CallbackPhase phase_ = strategy::CallbackPhase::kNone;
 };
 

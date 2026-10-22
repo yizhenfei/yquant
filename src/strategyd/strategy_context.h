@@ -8,13 +8,13 @@
 
 namespace yquant::strategyd {
 
-// Callback view of independently owned host services. Owns neither state nor
-// resources; the runner serializes access and keeps all dependencies alive.
+// Exposes the host clock and services through StrategyContext during callbacks.
+// The runner controls their lifecycle and serializes access on the strategy
+// thread. Strategies may use this view only during the current callback.
 class StrategyContextImpl final : public strategy::StrategyContext {
  public:
-  // Borrows clock and all services for this view's entire lifetime. No
-  // reference returned to a strategy may outlive the callback in which it was
-  // obtained.
+  // Borrows clock and all services until destruction. Returned service
+  // references remain callback-scoped and must not be retained by a strategy.
   StrategyContextImpl(const base::MonotonicClock& clock,
                       strategy::MarketData& market_data,
                       strategy::Trading& trading,

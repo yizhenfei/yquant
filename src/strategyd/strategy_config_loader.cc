@@ -12,8 +12,10 @@ namespace {
 using base::internal::JsonError;
 using base::internal::ParseConfigObject;
 
-// Parses common fields from already fully validated source. parameters borrows
-// the source unchanged; the caller owns it until configuration initialization.
+// Extracts the required ID and parameters object from validated JSON source.
+// parameters borrows source bytes, not parser storage. Failure may leave id and
+// parameters partially assigned and writes error; the caller discards both
+// outputs and releases source on failure.
 base::Status Parse(const base::JsonConfigDocument& source,
                    strategy::StrategyId& id, std::string_view& parameters,
                    base::ConfigError& error) noexcept {
@@ -46,6 +48,7 @@ base::Status Parse(const base::JsonConfigDocument& source,
       simdjson::ondemand::object object;
       json_error = field.value().get_object().get(object);
       if (json_error) return JsonError(json_error, key, error);
+      // Keep raw source for the plugin's schema parser after this parser dies.
       json_error = object.raw_json().get(parameters);
       if (json_error) return JsonError(json_error, key, error);
       while (!parameters.empty()) {
