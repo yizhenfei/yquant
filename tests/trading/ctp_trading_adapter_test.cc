@@ -16,15 +16,19 @@ namespace {
 // connection.
 class BridgePeer {
  public:
+  ~BridgePeer() {
+    stop_requested_.store(true, std::memory_order_relaxed);
+    if (thread_.joinable()) thread_.join();
+  }
   bool Open() { return listener_.Open({"127.0.0.1", 0}).ok(); }
   std::uint16_t port() const { return listener_.port(); }
   void Start(bool mismatched_report = false) {
-    thread_ = std::jthread([this, mismatched_report](std::stop_token stop) {
+    thread_ = std::thread([this, mismatched_report] {
       Connection connection;
       const auto deadline =
           std::chrono::steady_clock::now() + std::chrono::seconds(5);
       bool accepted = false;
-      while (!stop.stop_requested() &&
+      while (!stop_requested_.load(std::memory_order_relaxed) &&
              std::chrono::steady_clock::now() < deadline) {
         if (!accepted) {
           if (!listener_.Accept(connection, accepted).ok()) return;
@@ -89,9 +93,9 @@ class BridgePeer {
         } else if (input.type == MessageType::kStop) {
           // A final broker query can outlive a heartbeat interval. The client
           // must read its result without writing into the expected close.
-          const auto finish = std::chrono::steady_clock::now() +
-                              std::chrono::milliseconds(320);
-          while (!stop.stop_requested() &&
+          const auto finish =
+              std::chrono::steady_clock::now() + std::chrono::milliseconds(320);
+          while (!stop_requested_.load(std::memory_order_relaxed) &&
                  std::chrono::steady_clock::now() < finish) {
             Message extra;
             const auto polled = connection.Poll(extra);
@@ -106,7 +110,8 @@ class BridgePeer {
           if (!connection.Queue(response).ok()) return;
           response.type = MessageType::kDrained;
           if (!connection.Queue(response).ok()) return;
-          while (!connection.empty() && !stop.stop_requested())
+          while (!connection.empty() &&
+                 !stop_requested_.load(std::memory_order_relaxed))
             if (!connection.Service().ok()) return;
           return;
         } else if (input.type == MessageType::kHeartbeat) {
@@ -125,7 +130,9 @@ class BridgePeer {
   Listener listener_;
   model::InstrumentId instrument_;
   std::atomic<bool> heartbeat_after_stop_{false};
-  std::jthread thread_;
+  // Destruction requests exit and joins before releasing the owned listener.
+  std::atomic<bool> stop_requested_{false};
+  std::thread thread_;
 };
 
 md::MarketDataConfig Dictionary() {

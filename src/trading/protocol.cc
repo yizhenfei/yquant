@@ -658,13 +658,13 @@ base::Status EncodeMessage(const Message& message, std::span<std::byte> output,
   if (!ValidType(message.type) || message.sequence == 0)
     return {base::ErrorCode::kInvalidArgument, {}};
   std::array<std::byte, kMaxFrameSize> frame;
-  Writer payload(std::span(frame).subspan(kFrameHeaderSize));
+  Writer payload{std::span(frame).subspan(kFrameHeaderSize)};
   if (!WritePayload(payload, message))
     return {base::ErrorCode::kInvalidArgument, {}};
   const auto frame_size = kFrameHeaderSize + payload.size();
   if (frame_size > output.size())
     return {base::ErrorCode::kResourceExhausted, {}};
-  Writer header(std::span(frame).first(kFrameHeaderSize));
+  Writer header{std::span(frame).first(kFrameHeaderSize)};
   header.Uint(kMagic, 4);
   header.Uint(kVersion, 2);
   header.Uint(static_cast<std::uint16_t>(message.type), 2);

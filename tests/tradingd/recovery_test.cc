@@ -3,6 +3,7 @@
 #include <unistd.h>
 
 #include <array>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -91,8 +92,10 @@ class Clock final : public base::MonotonicClock {
 };
 
 TEST(BrokerRecoveryTest, RequestKeyRoundTripsWithoutTruncationOrAliasing) {
-  for (const auto identity : {1ULL, 42ULL, UINT64_MAX}) {
-    for (const auto sequence : {1ULL, 9ULL, UINT64_MAX}) {
+  for (const auto identity :
+       std::array<std::uint64_t, 3>{1, 42, UINT64_MAX}) {
+    for (const auto sequence :
+         std::array<std::uint64_t, 3>{1, 9, UINT64_MAX}) {
       for (const auto kind :
            {ExternalRequestKind::kNewOrder, ExternalRequestKind::kCancel}) {
         char encoded[kExternalRequestKeyBytes + 1];
