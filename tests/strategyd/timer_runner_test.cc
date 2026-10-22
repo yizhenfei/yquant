@@ -35,9 +35,10 @@ TEST_P(TimerRunnerTest, DispatchesOneShotTimersWithoutMarketData) {
   IdleTestSource source;
   Broker broker;
   loop_testing::LoopRunner runner(clock, environment, source, broker);
-  ASSERT_TRUE(
-      runner.Handle(StrategyOptions{GetParam().plugin, YQUANT_TEST_CONFIG_PATH})
-          .ok());
+  ASSERT_TRUE(runner
+                  .LoadAndStart(StrategyOptions{GetParam().plugin,
+                                                YQUANT_TEST_CONFIG_PATH})
+                  .ok());
   ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   EXPECT_EQ(events.Read(), GetParam().trace);
   ASSERT_GT(environment.waits, 0);
@@ -72,8 +73,8 @@ TEST(TimerIntegrationTest, StopDisarmsTheUnconsumedTimerBeforeOnStop) {
   Broker broker;
   loop_testing::LoopRunner runner(clock, environment, source, broker);
   ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{YQUANT_TEST_TIMER_BASIC_PATH,
-                                          YQUANT_TEST_CONFIG_PATH})
+                  .LoadAndStart(StrategyOptions{YQUANT_TEST_TIMER_BASIC_PATH,
+                                                YQUANT_TEST_CONFIG_PATH})
                   .ok());
   ASSERT_TRUE(runner.Run().ok());
   EXPECT_EQ(events.Read(), "CSTD");
@@ -91,7 +92,7 @@ TEST(TimerIntegrationTest, TimerCallbacksCanSubmitAndCancelThroughTheLedger) {
   environment.stop_at = 5 * kMs;
   loop_testing::LoopRunner runner(clock, environment, source, broker);
   ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{
+                  .LoadAndStart(StrategyOptions{
                       YQUANT_TEST_TIMER_TRADING_PATH, YQUANT_TEST_CONFIG_PATH,
                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH, trading.path()})
                   .ok())
@@ -115,7 +116,7 @@ TEST(TimerIntegrationTest, CallbackFailureDisarmsAndDrainsTheWorkingOrder) {
   environment.stop_at = 5 * kMs;
   loop_testing::LoopRunner runner(clock, environment, source, broker);
   ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{
+                  .LoadAndStart(StrategyOptions{
                       YQUANT_TEST_TIMER_FAIL_PATH, YQUANT_TEST_CONFIG_PATH,
                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH, trading.path()})
                   .ok());
@@ -142,7 +143,7 @@ TEST(TimerIntegrationTest, ImmediatelyRearmedTimerSharesThe64EventBudget) {
   environment.stop_at = 2 * kMs;
   loop_testing::LoopRunner runner(clock, environment, source, broker);
   ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{
+                  .LoadAndStart(StrategyOptions{
                       YQUANT_TEST_TIMER_FAIR_PATH, YQUANT_TEST_CONFIG_PATH,
                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH, trading.path()})
                   .ok());
@@ -176,7 +177,7 @@ TEST(TimerIntegrationTest,
   environment.stop_at = 10 * kMs;
   loop_testing::LoopRunner runner(clock, environment, source, broker);
   ASSERT_TRUE(runner
-                  .Handle(StrategyOptions{
+                  .LoadAndStart(StrategyOptions{
                       YQUANT_TEST_TIMER_FAIR_PATH, YQUANT_TEST_CONFIG_PATH,
                       YQUANT_TEST_MARKET_DATA_CONFIG_PATH, trading.path()})
                   .ok());

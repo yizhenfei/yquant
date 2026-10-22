@@ -127,7 +127,7 @@ int main(int argc, char* argv[]) {
   if (assembly.cancelled()) return 0;
   StrategyRunner runner(clock, termination_signals, assembly.source(),
                         assembly.trading());
-  const Status start_status = runner.Handle(assembly.start_command());
+  const Status start_status = runner.LoadAndStart(assembly.start_options());
   if (!start_status.ok()) {
     PrintRunnerFailure(runner, start_status, library_path, config_path,
                        market_data_path, trading_path);

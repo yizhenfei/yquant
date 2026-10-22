@@ -262,7 +262,7 @@ TEST(TradingRunnerTest, UsesInjectedServiceAndDispatchesCommittedReports) {
   TradingLoopEnvironment loop(clock);
   loop.service = &service;
   RunnerTestHarness runner(clock, loop, source, service);
-  ASSERT_TRUE(runner.Handle(Options()).ok()) << runner.error_detail();
+  ASSERT_TRUE(runner.LoadAndStart(Options()).ok()) << runner.error_detail();
   ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   EXPECT_EQ(events.Read(), "CPSQNAVFHVFHfTD");
   EXPECT_EQ(service.send_calls, 1);
@@ -281,7 +281,7 @@ TEST(TradingRunnerTest, ServiceInitializationFailurePreventsPluginCreation) {
   service.init_result = {ErrorCode::kIoError, {}};
   TradingLoopEnvironment loop(clock);
   RunnerTestHarness runner(clock, loop, source, service);
-  EXPECT_EQ(runner.Handle(Options()).code, ErrorCode::kIoError);
+  EXPECT_EQ(runner.LoadAndStart(Options()).code, ErrorCode::kIoError);
   EXPECT_STREQ(runner.error_stage(), "trading_connect");
   EXPECT_TRUE(events.Read().empty());
   EXPECT_EQ(service.init_calls, 1);
@@ -307,7 +307,7 @@ TEST_P(TradingServiceCallbackTest, SuppressesCallbacksWhileServiceDrains) {
   TradingLoopEnvironment loop(clock);
   loop.service = &service;
   RunnerTestHarness runner(clock, loop, source, service);
-  ASSERT_TRUE(runner.Handle(Options(GetParam().plugin)).ok());
+  ASSERT_TRUE(runner.LoadAndStart(Options(GetParam().plugin)).ok());
   EXPECT_EQ(runner.Run().code, ErrorCode::kInvalidArgument);
   EXPECT_STREQ(runner.error_stage(), GetParam().stage);
   EXPECT_EQ(events.Read(), GetParam().trace);
@@ -333,7 +333,7 @@ TEST(TradingRunnerTest, UncertainServiceSendIsNotRetried) {
   service.send_result = {ErrorCode::kIoError, {}};
   TradingLoopEnvironment loop(clock);
   RunnerTestHarness runner(clock, loop, source, service);
-  ASSERT_TRUE(runner.Handle(Options()).ok());
+  ASSERT_TRUE(runner.LoadAndStart(Options()).ok());
   EXPECT_EQ(runner.Run().code, ErrorCode::kIoError);
   EXPECT_STREQ(runner.error_stage(), "trading_send");
   EXPECT_EQ(service.send_calls, 1);
@@ -350,7 +350,7 @@ TEST(TradingRunnerTest, PollFailurePreservesFirstDiagnosticAndFinalizes) {
   service.stop_result = {ErrorCode::kIoError, {}};
   TradingLoopEnvironment loop(clock);
   RunnerTestHarness runner(clock, loop, source, service);
-  ASSERT_TRUE(runner.Handle(Options()).ok());
+  ASSERT_TRUE(runner.LoadAndStart(Options()).ok());
   EXPECT_EQ(runner.Run().code, ErrorCode::kCorrupt);
   EXPECT_STREQ(runner.error_stage(), "trading_poll");
   EXPECT_EQ(service.delivered, 0);
@@ -368,7 +368,7 @@ TEST(TradingRunnerTest, StopsBeforeSendingQueuedRequestsAndBoundsDispatch) {
   loop.source = &source;
   loop.stop_after_quote = true;
   RunnerTestHarness runner(clock, loop, source, service);
-  ASSERT_TRUE(runner.Handle(Options(YQUANT_TEST_TRADING_BULK_PATH)).ok());
+  ASSERT_TRUE(runner.LoadAndStart(Options(YQUANT_TEST_TRADING_BULK_PATH)).ok());
   ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   const auto trace = events.Read();
   EXPECT_EQ(std::count(trace.begin(), trace.end(), 'N'), 200);
@@ -386,7 +386,7 @@ TEST(TradingRunnerTest, DrainTimeoutUsesClientShutdownDeadline) {
   TradingLoopEnvironment loop(clock);
   loop.service = &service;
   RunnerTestHarness runner(clock, loop, source, service);
-  ASSERT_TRUE(runner.Handle(Options()).ok());
+  ASSERT_TRUE(runner.LoadAndStart(Options()).ok());
   EXPECT_EQ(runner.Run().code, ErrorCode::kIoError);
   EXPECT_STREQ(runner.error_stage(), "trading_drain_timeout");
   EXPECT_EQ(clock.now, 1000003000U);
@@ -402,7 +402,7 @@ TEST(TradingRunnerTest, ReadyMarketDoesNotStarveServiceReports) {
   TradingLoopEnvironment loop(clock);
   loop.service = &service;
   RunnerTestHarness runner(clock, loop, source, service);
-  ASSERT_TRUE(runner.Handle(Options()).ok());
+  ASSERT_TRUE(runner.LoadAndStart(Options()).ok());
   ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   EXPECT_EQ(service.delivered, 3);
   EXPECT_EQ(service.send_calls, 1);
@@ -418,7 +418,8 @@ TEST(TradingRunnerTest, MarketMaintenanceFailureStillDrainsService) {
   ScriptFills(service);
   TradingLoopEnvironment loop(clock);
   RunnerTestHarness runner(clock, loop, source, service);
-  ASSERT_TRUE(runner.Handle(Options(YQUANT_TEST_TRADING_FILL_FAIL_PATH)).ok());
+  ASSERT_TRUE(
+      runner.LoadAndStart(Options(YQUANT_TEST_TRADING_FILL_FAIL_PATH)).ok());
   EXPECT_EQ(runner.Run().code, ErrorCode::kIoError);
   EXPECT_STREQ(runner.error_stage(), "market_data_service");
   EXPECT_EQ(service.delivered, 3);
@@ -435,7 +436,7 @@ TEST(TradingRunnerTest, ReportsServiceStopFailureAfterSuccessfulCallbacks) {
   TradingLoopEnvironment loop(clock);
   loop.service = &service;
   RunnerTestHarness runner(clock, loop, source, service);
-  ASSERT_TRUE(runner.Handle(Options()).ok());
+  ASSERT_TRUE(runner.LoadAndStart(Options()).ok());
   EXPECT_EQ(runner.Run().code, ErrorCode::kIoError);
   EXPECT_STREQ(runner.error_stage(), "trading_stop");
 }
@@ -452,7 +453,7 @@ TEST(TradingRunnerTest, ServiceCapacityRejectionPreservesStrategyLifecycle) {
   loop.stop_after_quote = true;
   RunnerTestHarness runner(clock, loop, source, service);
   ASSERT_TRUE(
-      runner.Handle(Options(YQUANT_TEST_TRADING_INSUFFICIENT_PATH)).ok());
+      runner.LoadAndStart(Options(YQUANT_TEST_TRADING_INSUFFICIENT_PATH)).ok());
   ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();
   EXPECT_EQ(service.send_calls, 0);
   EXPECT_EQ(events.Read(), "CPSQLTD");

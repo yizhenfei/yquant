@@ -35,14 +35,14 @@
 
 相对路径以进程启动工作目录为基准。加载器将参数按文件路径解释，传给 `dlopen()` 前转换为绝对路径，避免把不含斜线的文件名解释为动态库搜索名称。运行时按路径打开动态库，不根据文件扩展名判断格式。
 
-内部只定义两种命令：
+宿主通过显式生命周期接口控制策略：
 
-| 命令 | 含义 | 当前来源 |
-| --- | --- | --- |
-| `LoadAndStart{library_path, config, market_data, trading_config}` | 使用必需的已校验配置准备组件，连接网关，加载并配置策略，调用启动回调后激活行情 | 装配层 |
-| `Stop` | 运行期登记停止请求，由 `Run()` 推进排空与最终释放 | `SIGINT`、`SIGTERM`，以及运行期错误收尾 |
+| 接口 | 含义 |
+| --- | --- |
+| `LoadAndStart(StrategyStartOptions)` | 使用已校验配置准备组件，连接网关，加载并配置策略，调用启动回调后激活行情 |
+| `Stop()` | 运行期登记停止请求，由 `Run()` 推进排空与最终释放 |
 
-命令行解析生成启动选项，装配层加载配置并选择组件，再由 runner 的命令入口启动策略。当前不建立外部命令队列或 IPC 服务；信号处理函数只记录停止请求，主线程完成回调与收尾。未来其他命令来源复用同一分派入口。
+命令行解析生成启动选项，装配层加载配置并选择组件，再由 runner 的 `LoadAndStart()` 启动策略。`StrategyStartOptions` 包含动态库路径、策略配置加载器、行情配置与交易客户端配置。信号处理函数只记录停止请求，主线程检查停止标志并完成回调与收尾。
 
 ## 策略接口
 
@@ -124,7 +124,7 @@ StrategyRunner(const base::MonotonicClock& clock,
                trading::TradingService& trading) noexcept;
 ```
 
-四个依赖均为必需引用，存活时间覆盖 runner。runner 负责策略生命周期和事件调度，通过统一交易接口初始化、发送、轮询和停止，不持有具体行情源、柜台适配器或交易模式分支。装配配置借用至 `Handle(LoadAndStart)` 返回，策略参数 JSON 在初始化后释放。runner 完成回调和实例销毁后重置组件，再由装配层销毁组件对象。
+四个依赖均为必需引用，存活时间覆盖 runner。runner 负责策略生命周期和事件调度，通过统一交易接口初始化、发送、轮询和停止，不持有具体行情源、柜台适配器或交易模式分支。装配配置借用至 `LoadAndStart()` 返回，策略参数 JSON 在初始化后释放。runner 完成回调和实例销毁后重置组件，再由装配层销毁组件对象。
 
 ### 状态与资源
 
@@ -136,14 +136,14 @@ StrategyRunner(const base::MonotonicClock& clock,
 
 | 触发条件 | 状态变化 |
 | --- | --- |
-| 空闲态处理 `LoadAndStart` 并成功启动 | `Idle → Starting → Running` |
+| 空闲态调用 `LoadAndStart()` 并成功启动 | `Idle → Starting → Running` |
 | 启动任一阶段失败 | `Starting → 失败收尾 → Finished`，保留失败结果 |
 | 启动阶段处理停止请求 | `Starting → Stopping → Finished`，仅在 `OnStart` 已成功时调用 `OnStop`；无其他错误时成功退出 |
-| 运行态处理 `Stop` | 保持 `Running`，登记停止并清除定时器，不调用策略 |
+| 运行态调用 `Stop()` | 保持 `Running`，登记停止并清除定时器，不调用策略 |
 | `Run()` 处理停止请求 | `Running → Stopping → Finished`，推进委托排空后最终释放；无法排空时失败收尾 |
-| 空闲态处理 `Stop` | `Idle → Finished` |
-| 结束态重复处理 `Stop` | 保持 `Finished`，不重复回调或释放 |
-| 非空闲态处理 `LoadAndStart` | 返回 `kInvalidState`，保持现有状态和实例 |
+| 空闲态调用 `Stop()` | `Idle → Finished` |
+| 结束态重复调用 `Stop()` | 保持 `Finished`，不重复回调或释放 |
+| 非空闲态调用 `LoadAndStart()` | 返回 `kInvalidState`，保持现有状态和实例 |
 
 ```mermaid
 flowchart TD
@@ -187,7 +187,7 @@ flowchart TD
 
 ### 主循环与信号
 
-`main()` 持有时钟、信号环境和 `StrategyAssembly`，完成行情与网关配置加载后创建 `StrategyRunner`，通过 `Handle(LoadAndStart)` 启动策略，再调用 `Run()` 驱动主循环。启动取消和运行循环使用构造时注入的同一个环境。停止请求检查及信号实现采用公共[进程基础设施](engineering.md#进程基础设施)中的 `base::EventLoopEnvironment` 与 `base::TerminationSignals`。行情批次处理与单条报价分派是 `StrategyRunner` 的私有实现，外部不直接调用。
+`main()` 持有时钟、信号环境和 `StrategyAssembly`，完成行情与网关配置加载后创建 `StrategyRunner`，通过 `LoadAndStart()` 启动策略，再调用 `Run()` 驱动主循环。启动取消和运行循环使用构造时注入的同一个环境。停止请求检查及信号实现采用公共[进程基础设施](engineering.md#进程基础设施)中的 `base::EventLoopEnvironment` 与 `base::TerminationSignals`。行情批次处理与单条报价分派是 `StrategyRunner` 的私有实现，外部不直接调用。
 
 `EventLoopEnvironment` 只提供停止请求检查，生产实现为 `TerminationSignals`。等待由 `StrategyRunner` 根据最早期限执行：读取当前线程信号掩码，仅在 `pselect` 期间解除 `SIGINT`、`SIGTERM` 的屏蔽，返回后恢复调用前的掩码。测试通过重写主循环的等待操作推进模拟时间或注入等待错误。
 
@@ -199,7 +199,7 @@ flowchart TD
 
 `pselect` 期间临时解除退出信号屏蔽，返回后恢复屏蔽并立即检查停止。事件批次与启动同步阶段的边界通过 `pthread_sigmask()` 临时设置 `wait_mask`，立即恢复 `blocked_mask`，再读取停止标志；检查窗口不调用策略或 SDK。信号和时间期限的等待采用同一主线程协议。[pselect](https://man7.org/linux/man-pages/man2/select.2.html)、[信号掩码](https://man7.org/linux/man-pages/man3/pthread_sigmask.3p.html)
 
-运行态的 `Handle(Stop)` 登记请求并立即清除策略定时器，不执行策略回调或交易资源释放。调用方在 `Run()` 完成收尾后再销毁 `StrategyRunner`；析构不另建排空事件循环。
+运行态的 `Stop()` 登记请求并立即清除策略定时器，不执行策略回调或交易资源释放。调用方在 `Run()` 完成收尾后再销毁 `StrategyRunner`；析构不另建排空事件循环。
 
 ```text
 Main(args):
@@ -221,7 +221,7 @@ Main(args):
         return 失败时为 1，取消时为 0
     runner = StrategyRunner(clock, termination_signals,
                             assembly.source(), assembly.trading())
-    result = runner.Handle(assembly.start_command())
+    result = runner.LoadAndStart(assembly.start_options())
     if result 成功且 runner 处于 Running:
         向 stdout 输出 Running 状态并刷新
         result = runner.Run()

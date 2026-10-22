@@ -649,7 +649,7 @@ class LoopRunner : public RunnerTestHarness {
       : RunnerTestHarness(clock, environment, source, broker),
         broker_(broker),
         environment_(environment) {}
-  base::Status Handle(StrategyOptions options) noexcept {
+  base::Status LoadAndStart(StrategyOptions options) noexcept {
     trading::TradingConfig config;
     config.initial_account.cash_balance = 100000000000000;
     if (options.trading_config_path) {
@@ -661,7 +661,7 @@ class LoopRunner : public RunnerTestHarness {
     auto status = broker_.Prepare(config);
     if (!status.ok()) return status;
     options.trading_config_path = nullptr;
-    return RunnerTestHarness::Handle(options);
+    return RunnerTestHarness::LoadAndStart(options);
   }
   base::Status Run() noexcept {
     environment_.running = true;

@@ -188,7 +188,7 @@ TEST(RemoteTimerRunnerTest, TimerSubmitsCancelsAndDrainsThroughTcpRuntime) {
   IdleTestSource source;
   TestStrategyRunner runner(clock, environment, source, assembly.trading());
   std::thread worker([&peer] { peer.Serve(); });
-  const auto loaded = runner.Handle(assembly.start_command());
+  const auto loaded = runner.LoadAndStart(assembly.start_options());
   const auto result = loaded.ok() ? runner.Run() : loaded;
   peer.Abort();
   worker.join();

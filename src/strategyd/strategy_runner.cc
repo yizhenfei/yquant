@@ -71,7 +71,8 @@ bool StrategyRunner::CancelStartupIfRequested() noexcept {
   return false;
 }
 
-base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
+base::Status StrategyRunner::LoadAndStart(
+    StrategyStartOptions options) noexcept {
   ResetError();
   if (state_ != RunnerState::kIdle) {
     SetError({base::ErrorCode::kInvalidState, {}}, "command",
@@ -83,17 +84,17 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
   if (CancelStartupIfRequested()) {
     return result_;
   }
-  auto& config_loader = command.config;
+  auto& config_loader = options.config;
   strategy_id_ = config_loader.strategy_id();
   // A source may acquire resources before a failed Prepare; always stop it.
   source_prepared_ = true;
-  const auto prepared = source_.Prepare(command.market_data);
+  const auto prepared = source_.Prepare(options.market_data);
   if (!prepared.ok()) {
     SetError(prepared, "market_data_prepare", source_.error_detail());
     Finalize();
     return result_;
   }
-  const auto configured = market_data_.Configure(command.market_data);
+  const auto configured = market_data_.Configure(options.market_data);
   if (!configured.ok()) {
     SetError(configured, "market_data_prepare",
              "could not prepare the instrument dictionary");
@@ -102,10 +103,10 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
   }
   if (CancelStartupIfRequested()) return result_;
 
-  shutdown_timeout_ns_ = command.trading_config.shutdown_timeout_ns;
+  shutdown_timeout_ns_ = options.trading_config.shutdown_timeout_ns;
   trading_prepared_ = true;
   const auto initialized =
-      trading_service_.Init(command.trading_config, command.market_data);
+      trading_service_.Init(options.trading_config, options.market_data);
   if (!initialized.ok()) {
     SetError(initialized, trading_service_.error_stage(),
              trading_service_.error_detail());
@@ -115,7 +116,7 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
   trading_started_ = true;
   if (CancelStartupIfRequested()) return result_;
 
-  const base::Status open_result = library_.Open(command.library_path);
+  const base::Status open_result = library_.Open(options.library_path);
   if (!open_result.ok()) {
     SetError(open_result, library_.error_stage(), library_.error_detail());
     Finalize();
@@ -206,7 +207,7 @@ base::Status StrategyRunner::Handle(LoadAndStart command) noexcept {
   return result_;
 }
 
-base::Status StrategyRunner::Handle(Stop) noexcept {
+base::Status StrategyRunner::Stop() noexcept {
   if (callback_active_ || state_ == RunnerState::kStarting) {
     return {base::ErrorCode::kInvalidState, {}};
   }

@@ -58,7 +58,7 @@ class BboScenario {
     if (!strategy.valid() || !trading.valid())
       return {base::ErrorCode::kIoError, {}};
     loop_testing::LoopRunner runner(clock, environment, source, broker);
-    auto result = runner.Handle(
+    auto result = runner.LoadAndStart(
         StrategyOptions{YQUANT_TEST_BBO_EXAMPLE_PATH, strategy.path(),
                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH, trading.path()});
     if (result.ok()) result = runner.Run();

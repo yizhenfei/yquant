@@ -8,7 +8,7 @@
 
 namespace yquant::strategyd {
 
-// CLI inputs. library_path remains valid through Handle(start_command());
+// CLI inputs. library_path remains valid through LoadAndStart(start_options());
 // all other paths are borrowed only during Load.
 struct StrategyOptions {
   const char* library_path;
@@ -27,12 +27,12 @@ class StrategyAssembly {
 
   // Single use. Checks cancellation between file reads. Failure/cancellation
   // acquires no active source/transport. Only after success and !cancelled()
-  // may callers borrow components and start_command(). Diagnostics are owned.
+  // may callers borrow components and start_options(). Diagnostics are owned.
   [[nodiscard]] base::Status Load(
       StrategyOptions options,
       base::EventLoopEnvironment& environment) noexcept;
   bool cancelled() const noexcept { return cancelled_; }
-  LoadAndStart start_command() noexcept {
+  StrategyStartOptions start_options() noexcept {
     return {library_path_, strategy_config_, market_config_.config(),
             trading_config_.config()};
   }

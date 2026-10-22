@@ -76,8 +76,9 @@ class RunnerTestHarness {
         service_(service),
         assembly_(clock_) {}
 
-  base::Status Handle(StrategyOptions options) noexcept {
-    if (runner_ != nullptr) return runner_->Handle(assembly_.start_command());
+  base::Status LoadAndStart(StrategyOptions options) noexcept {
+    if (runner_ != nullptr)
+      return runner_->LoadAndStart(assembly_.start_options());
     if (finished_) return {base::ErrorCode::kInvalidState, {}};
     if (options.market_data_config_path == nullptr)
       options.market_data_config_path = YQUANT_TEST_MARKET_DATA_CONFIG_PATH;
@@ -90,10 +91,10 @@ class RunnerTestHarness {
     }
     runner_ = std::make_unique<TestStrategyRunner>(clock_, environment_,
                                                    source_, service_);
-    return runner_->Handle(assembly_.start_command());
+    return runner_->LoadAndStart(assembly_.start_options());
   }
-  base::Status Handle(Stop command) noexcept {
-    if (runner_ != nullptr) return runner_->Handle(command);
+  base::Status Stop() noexcept {
+    if (runner_ != nullptr) return runner_->Stop();
     finished_ = true;
     return {};
   }
