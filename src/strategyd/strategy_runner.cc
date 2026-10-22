@@ -142,13 +142,6 @@ base::Status StrategyRunner::LoadAndStart(
     Finalize();
     return result_;
   }
-  if (!config.ready()) {
-    SetErrorIfNotOK({base::ErrorCode::kCorrupt, {}}, "initialize",
-                    "strategy configuration did not become ready");
-    config_loader.Reset();
-    Finalize();
-    return result_;
-  }
   // End the JSON borrow before OnStart so callbacks can rely only on the
   // plugin's owned typed fields, independent of parser/source storage.
   config_loader.Reset();
