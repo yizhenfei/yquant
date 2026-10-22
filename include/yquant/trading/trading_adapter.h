@@ -26,9 +26,11 @@ struct TradingEvent {
   model::OrderReason reason;
 };
 
-enum class TradingPollState { kEvent, kIdle, kError };
+enum class TradingPollState { kEvent, kAccount, kIdle, kError };
 
-// Only kEvent changes Poll's output; status is successful except for kError.
+// Only kEvent changes Poll's output; kAccount signals an updated cached broker
+// account readable through ReadBrokerAccountSnapshot. Other outcomes preserve
+// the caller's event. status is successful except for kError.
 struct TradingPollResult {
   TradingPollState state = TradingPollState::kIdle;
   base::Status status;
@@ -45,11 +47,22 @@ class TradingAdapter {
   [[nodiscard]] virtual base::Status Prepare(
       const TradingConfig& config) noexcept = 0;
   [[nodiscard]] virtual base::Status Start(std::uint64_t now) noexcept = 0;
+  // Announces irreversible gateway shutdown. This only changes adapter-local
+  // control state; all transport and final broker-account work stays in Poll.
+  // Called once after Prepare, including when startup was only partial.
+  virtual void BeginStopping() noexcept {}
   // Copies the initial owned account after Start succeeds and before any order
   // is sent. Performs no allocation; failure preserves out. The host validates
   // instrument membership before publishing this snapshot to the strategy.
   [[nodiscard]] virtual base::Status ReadAccountSnapshot(
       TradingAccountSnapshot& out) noexcept = 0;
+  // Broker-managed adapters expose a complete coherent snapshot after Start
+  // and each kEvent/kAccount Poll. Failure preserves out; no SDK views escape.
+  // Simulators keep the unsupported default and use ReadAccountSnapshot.
+  [[nodiscard]] virtual base::Status ReadBrokerAccountSnapshot(
+      BrokerAccountSnapshot&) noexcept {
+    return {base::ErrorCode::kUnsupported, {}};
+  }
   // Observes an accepted quote before the strategy callback. Simulation may
   // schedule matching facts, delivered later through Poll; never calls back
   // into the strategy. Live adapters can retain this no-op implementation.

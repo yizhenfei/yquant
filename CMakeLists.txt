@@ -56,6 +56,7 @@ target_link_libraries(yquant_md PRIVATE simdjson::simdjson)
 target_compile_options(yquant_md PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(yquant_trading STATIC
+  src/trading/ctp_trading_adapter.cc
   src/trading/protocol.cc
   src/trading/connection.cc
   src/trading/mock_trading_adapter.cc
@@ -205,7 +206,7 @@ foreach(config IN ITEMS mock_source local tcp_source tcp_relay record_local
 endforeach()
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/tradingd")
 foreach(config IN ITEMS local persistent mysql client_1 client_2 instrument_scope
-                        bbo_mock_trading futures_trading)
+                        bbo_mock_trading futures_trading simnow_bridge)
   configure_file("examples/tradingd/${config}.json"
     "${CMAKE_BINARY_DIR}/tradingd/${config}.json" COPYONLY)
 endforeach()
@@ -269,6 +270,17 @@ include(cmake/ProjectBoundaries.cmake)
 
 if(BUILD_TESTING)
   include(GoogleTest)
+
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME Futures.CtpScripts
+      COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+        -s tests/scripts -v)
+    set_tests_properties(Futures.CtpScripts PROPERTIES
+      WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+      ENVIRONMENT "YQUANT_BUILD_DIR=${CMAKE_BINARY_DIR}"
+      TIMEOUT 60)
+  endif()
 
   add_test(NAME Project.LibraryBoundaries
     COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${PROJECT_SOURCE_DIR}"

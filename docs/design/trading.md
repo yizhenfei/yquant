@@ -6,9 +6,9 @@
 
 每个策略进程运行一个策略实例，所有交易统一经网关执行。股票和期货账户分别通过对应快照接口查询，期货规则见[国内期货模拟交易](domestic-futures.md)。多台机器上的策略可以连接同一个网关，由网关管理唯一账户账本。支持买入和卖出限价委托、撤单、委托与账户查询及委托和成交回调；各进程内部由主线程串行驱动。
 
-本文维护订单、账户和模拟柜台的公共业务规则。共享模式的身份、传输、账户视图及停止协议见[共享交易网关](tradingd.md)。当前共享网关使用股票现金账户；期货模拟由策略宿主中的 `simulated_futures` 接入提供。
+本文维护订单、账户和柜台适配的公共业务规则。共享模式的身份、传输、账户视图及停止协议见[共享交易网关](tradingd.md)。网关支持股票现金账户、本地期货模拟及 [SimNow 柜台账户](simnow-trading.md)。
 
-股票账本使用人民币现金账户，只允许足额买入和卖出现有可卖持仓。期货开平仓、保证金、手续费、损益和行情驱动撮合见[国内期货模拟交易](domestic-futures.md)。股票手续费与税费、融资融券、日切与真实柜台接入另行扩展。共享网关可启用 mmap 日志与检查点，恢复规则和独立柜台对账契约见[交易网关持久化与恢复](tradingd-persistence.md)。
+股票账本使用人民币现金账户，只允许足额买入和卖出现有可卖持仓。本地期货开平仓、保证金、手续费、损益和行情驱动撮合见[国内期货模拟交易](domestic-futures.md)；柜台账户保留查询的资金和持仓，不由本地模拟器重算。股票手续费与税费、融资融券及日切另行扩展。现金模拟网关可启用 mmap 日志与检查点，恢复规则见[交易网关持久化与恢复](tradingd-persistence.md)。
 
 行情模型与订阅规则见[行情驱动设计](market-data.md)，动态库所有权与配置初始化见[策略进程设计](strategyd.md)。本设计扩展其事件循环和收尾流程。
 
@@ -22,6 +22,7 @@
 | `trading::TradingEngine` | 网关的交易引擎，持有权威账本、预占和请求队列，驱动柜台并提交回报 |
 | `trading::TradingAdapter` | 柜台接入边界，提供初始账户快照、发送请求和规范化回报，不调用策略 |
 | `trading::MockTradingAdapter` | 以定时脚本生成受理、成交或撤单结果，由使用方持有 |
+| `trading::CtpTradingAdapter` | 连接 SimNow 交易桥，接收规范化委托、成交及柜台账户快照 |
 | `md::InstrumentScope` | 持有运行范围内的只读标的定义，供行情和交易独立查询 |
 | `strategyd::TradingServiceImpl` | 生产环境的交易服务实现，通过 TCP 访问 tradingd，保存本策略订单缓存和网关账户视图 |
 | `StrategyRunner` | 驱动请求、行情、交易回报及停止排空，串行调用策略 |
@@ -52,7 +53,7 @@
 
 ### 请求与快照
 
-`OrderRequest` 包含 `instrument_id`、`side`、`limit_price`、`quantity` 和 `position_effect`。提供限价单，价格和数量都必须大于零，并符合标的的价位及数量步长。股票意图为 `kNone`，期货意图见[开平仓](domestic-futures.md#开平仓意图)。
+`OrderRequest` 包含 `instrument_id`、`side`、`limit_price`、`quantity` 和 `position_effect`。提供限价单，价格和数量都必须大于零，并符合标的的价位及数量步长。股票意图为 `kNone`，本地期货意图见[开平仓](domestic-futures.md#开平仓意图)；柜台普通平仓 `kClose` 及其场所约束见 [SimNow 报单规则](simnow-trading.md#报单成交与撤单)。
 
 `OrderSnapshot` 是可复制、自包含的定长快照：
 
@@ -244,7 +245,7 @@ base::ErrorCode OnFill(
 | 受理 | 绑定柜台委托 ID；尚待受理时进入 `Working` |
 | 拒单 | 原因；仅在尚无成交的 `PendingNew` 上进入 `Rejected` |
 | 成交 | 唯一成交 ID、价格、本笔数量；更新累计量，进入 `Working` 或 `Filled` |
-| 撤单成功 | 撤单请求 ID、最终累计成交量；剩余量归零，进入 `Canceled` |
+| 撤单成功 | 本地请求使用对应撤单 ID；柜台主动撤单可为零。最终累计成交量核对后，剩余量归零，进入 `Canceled` |
 | 撤单拒绝 | 撤单请求 ID、原因；结束对应请求，保留原委托状态 |
 
 规范化序号由适配器按委托从 1 开始连续递增，原生回报序号不直接作为宿主序号。第一次有效成交可以隐式确认受理，允许 `PendingNew` 直接进入 `Working` 或 `Filled`；随后到达的受理事件仅更新回报序号与接收时间，不重复通知，也不改变已确认的状态。受理和成交事件必须提供非空柜台委托 ID。
@@ -267,18 +268,18 @@ base::ErrorCode OnFill(
 - 旧或重复序号不入账、不回调，仍占事件批次额度；不对旧事件执行依赖当前账本的状态转换校验。
 - 新序号必须等于上次序号加一，序号缺口属于协议错误，不能套用完整行情快照允许跳号的规则。
 - 新成交的去重键为 `(client_order_id, execution_id)`。同一成交的重传由适配器归一为旧事件；以新序号再次发布已存在的成交 ID 属于协议错误，账本不再次增加数量。
-- 柜台委托 ID 绑定后不可改变。新序号的撤单结果必须关联当前在途请求 ID，否则为协议错误；旧序号的迟到结果按序号去重，不能改变后一次撤单的标记。
+- 柜台委托 ID 绑定后不可改变。新序号的本地撤单结果必须关联当前在途请求 ID；柜台模式允许没有本地在途请求的主动撤单。旧序号的迟到结果按序号去重，不能改变后一次撤单的标记。
 - 累计量倒退、超量成交、终态反转、未知订单、未知事件类型和非法时间戳均拒绝处理，保留当前账本并进入错误收尾。
 
 ### 落账与回调顺序
 
 网关先校验事件及存储容量，再一次性提交委托、成交、请求和[持仓与资金变更](#预占与成交)。随后将订单更新及完整账户视图发送给所属策略。策略服务校验并提交本地查询视图后，runner 先调用 `OnOrderUpdate()`，成交事件再调用 `OnFill()`；两者之间不读取下一条交易事件。
 
-进入 `OnOrderUpdate()` 时，查询结果与传入的委托快照一致。该回调可以发出新的本地请求，例如登记撤单；因此随后的 `OnFill()` 查询已包含本笔成交，也可以包含前一个回调新增的本地请求状态。
+进入 `OnOrderUpdate()` 时，本地委托查询与传入快照一致。柜台账户是最近完成查询的整批结果，可能领先该批中的逐笔委托回报；不能据此认定尚未收到终态的订单已经结束。该回调可以登记新的本地请求，随后的 `OnFill()` 委托查询也可包含前一个回调新增的请求状态。
 
 回调失败不回滚已经接受的柜台事实。任一业务回调失败后，停止后续行情、委托和成交回调，宿主继续执行能够完成的撤单与入账；成功启动的实例最终仍调用一次 `OnStop()`。
 
-## 模拟柜台
+## 柜台接入
 
 ### 宿主接入接口
 
@@ -290,16 +291,20 @@ base::ErrorCode OnFill(
 Prepare(config) -> Status
 Start(now) -> Status
 ReadAccountSnapshot(TradingAccountSnapshot& out) -> Status
+ReadBrokerAccountSnapshot(BrokerAccountSnapshot& out) -> Status
 OnQuote(quote, now) -> Status
 SendOrder(client_order_id, request, now) -> Status
 SendCancel(client_order_id, broker_order_id, cancel_request_id, now) -> Status
-Poll(now, TradingEvent& out) -> Event / Idle / Error
+Poll(now, TradingEvent& out) -> Event / Account / Idle / Error
 next_deadline() -> optional<单调时间期限>
 is_drained() -> bool
+BeginStopping()
 Stop() -> Status
 ```
 
-全部操作由主线程串行调用。`Prepare` 分配或初始化有界存储，`Start` 建立无历史委托的模拟会话。`ReadAccountSnapshot` 只在启动成功且尚未接收委托时调用，复制自持的初始账户；失败保持输出不变，不在轮询期重新初始化账本。发送操作复制请求，不保留输入借用；`Poll` 非阻塞，每次至多返回一条自包含事件，`Idle` 或错误保持 `out` 不变。
+全部操作由主线程串行调用。`Prepare` 分配或初始化有界存储，`Start` 完成接入初始化。本地账本用 `ReadAccountSnapshot` 复制初始账户；柜台模式用 `ReadBrokerAccountSnapshot` 读取查询快照，保留其实际金额、成本和冻结。发送操作复制请求，不保留输入借用；`Poll` 非阻塞，每次至多返回一条自包含事件。`Account` 表示纯账户更新，不改变事件输出；`Idle` 或错误也保持 `out` 不变。
+
+柜台模式在提交订单事件前校验对应账户版本和运行范围，随后一起提交本地订单与柜台视图；不进入模拟 FIFO 账本。`BeginStopping` 只登记停止状态，常规轮询继续提交最终账户，适配器确认柜台排空后才返回 `is_drained=true`。
 
 `next_deadline()` 表示下一事件的期限，立即就绪时不晚于当前单调时间，无事件时为空；返回 `Idle` 时，下一期限必须为空或晚于传入该次 `Poll()` 的 `now`。`is_drained()` 只有在没有活动委托、未决请求及待发布事件时为真。
 
@@ -307,7 +312,7 @@ Stop() -> Status
 
 `OnQuote` 在报价通过宿主校验、最新行情及期货估值更新后调用，早于策略 `OnTick`；它只计划交易回报，不直接调用策略。默认实现无操作，期货模拟交易所据此更新外部盘口及撮合。
 
-### 回报生成规则
+### 模拟回报生成规则
 
 `MockTradingAdapter` 使用单调时间定时发布回报，成交价取委托限价，行情不参与撮合。每一步发布后，以本次 `Poll(now)` 的 `now + interval` 安排下一步；不补发一串落后于当前时间的阶段。相同期限按计划登记顺序发布，使测试结果可重复。
 

@@ -190,6 +190,7 @@ void TradingEngine::BeginStopping() noexcept {
   accept_requests_ = false;
   if (!stopping_) {
     stopping_ = true;
+    if (prepared_) adapter_.BeginStopping();
     if (storage_ != nullptr) {
       storage_->scan_cursor = 0;
       storage_->scan_pending = true;
@@ -200,6 +201,75 @@ void TradingEngine::BeginStopping() noexcept {
 
 bool TradingEngine::accepting_orders() const noexcept {
   return prepared_ && storage_ != nullptr && accept_requests_ && !stopping_;
+}
+
+bool TradingEngine::broker_managed() const noexcept {
+  return storage_ != nullptr && storage_->broker_managed;
+}
+
+ErrorCode TradingEngine::ValidateBrokerAccount(
+    const BrokerAccountSnapshot& account) noexcept {
+  if (account.revision == 0 ||
+      account.position_count > account.positions.size() ||
+      account.account.margin < 0 || account.account.reserved < 0 ||
+      account.account.commission < 0)
+    return Fail(ErrorCode::kCorrupt, "invalid broker account fields");
+  for (std::size_t i = 0; i < account.position_count; ++i) {
+    const auto& position = account.positions[i];
+    model::InstrumentDefinition instrument;
+    if (!instruments_.TryGetInstrument(position.instrument_id, instrument) ||
+        instrument.type != model::InstrumentType::kFutures ||
+        instrument.quantity_step <= 0 || position.margin < 0)
+      return Fail(ErrorCode::kCorrupt,
+                  "broker holding is outside the futures dictionary");
+    __int128 gross = 0;
+    for (const auto* bucket :
+         {&position.long_today, &position.long_yesterday, &position.short_today,
+          &position.short_yesterday}) {
+      if (bucket->quantity < 0 || bucket->frozen_qty < 0 ||
+          bucket->frozen_qty > bucket->quantity || bucket->open_notional < 0 ||
+          bucket->quantity % instrument.quantity_step != 0 ||
+          bucket->frozen_qty % instrument.quantity_step != 0)
+        return Fail(ErrorCode::kCorrupt, "invalid broker position bucket");
+      gross += bucket->quantity;
+    }
+    if (gross > INT64_MAX)
+      return Fail(ErrorCode::kCorrupt, "broker gross holding overflows");
+    const __int128 long_available =
+        static_cast<__int128>(position.long_today.quantity) +
+        position.long_yesterday.quantity - position.long_today.frozen_qty -
+        position.long_yesterday.frozen_qty;
+    const __int128 short_available =
+        static_cast<__int128>(position.short_today.quantity) +
+        position.short_yesterday.quantity - position.short_today.frozen_qty -
+        position.short_yesterday.frozen_qty;
+    if (position.unallocated_long_frozen < 0 ||
+        position.unallocated_short_frozen < 0 ||
+        position.unallocated_long_frozen > long_available ||
+        position.unallocated_short_frozen > short_available ||
+        position.unallocated_long_frozen % instrument.quantity_step != 0 ||
+        position.unallocated_short_frozen % instrument.quantity_step != 0)
+      return Fail(ErrorCode::kCorrupt, "invalid unallocated broker freeze");
+    for (std::size_t j = 0; j < i; ++j)
+      if (account.positions[j].instrument_id == position.instrument_id)
+        return Fail(ErrorCode::kCorrupt, "duplicate broker holding");
+  }
+  if (broker_managed()) {
+    const auto& old = storage_->broker_account;
+    if (account.revision < old.revision)
+      return Fail(ErrorCode::kCorrupt, "broker account revision regressed");
+    if (account.revision == old.revision) {
+      if (account.account != old.account ||
+          account.position_count != old.position_count)
+        return Fail(ErrorCode::kCorrupt,
+                    "broker account changed at the same revision");
+      for (std::size_t i = 0; i < account.position_count; ++i)
+        if (account.positions[i] != old.positions[i])
+          return Fail(ErrorCode::kCorrupt,
+                      "broker holding changed at the same revision");
+    }
+  }
+  return ErrorCode::kOk;
 }
 
 std::uint64_t TradingEngine::mutation_revision() const noexcept {
@@ -348,6 +418,23 @@ ErrorCode TradingEngine::SubmitOrder(const model::OrderRequest& request,
     return Fail(ErrorCode::kInvalidArgument,
                 "instrument or position effect disagrees with account type");
   }
+  if (futures) {
+    const auto effect = request.position_effect;
+    const bool day_specific = instrument.venue == model::Venue::kShfe ||
+                              instrument.venue == model::Venue::kIne;
+    const bool valid_effect =
+        effect == model::PositionEffect::kOpen ||
+        (s.broker_managed
+             ? (day_specific
+                    ? effect == model::PositionEffect::kCloseToday ||
+                          effect == model::PositionEffect::kCloseYesterday
+                    : effect == model::PositionEffect::kClose)
+             : effect == model::PositionEffect::kCloseToday ||
+                   effect == model::PositionEffect::kCloseYesterday);
+    if (!valid_effect)
+      return Fail(ErrorCode::kInvalidArgument,
+                  "unsupported closing effect for venue");
+  }
   constexpr std::array<std::int64_t, 7> kPriceScales = {
       1000000, 100000, 10000, 1000, 100, 10, 1};
   const auto scale = kPriceScales[instrument.price_decimals];
@@ -367,20 +454,20 @@ ErrorCode TradingEngine::SubmitOrder(const model::OrderRequest& request,
   if (existing_position) position = s.positions[*existing_position];
   auto cash = s.cash;
   FuturesReservation futures_reservation;
-  if (futures) {
+  if (futures && !s.broker_managed) {
     // All fallible order/request checks precede the atomic account claim.
     // After it succeeds, the remaining order publication cannot fail.
     const auto reserved = s.futures.Reserve(request, futures_reservation);
     if (reserved != ErrorCode::kOk)
       return Fail(reserved, s.futures.error_detail());
-  } else if (request.side == model::OrderSide::kBuy) {
+  } else if (!futures && request.side == model::OrderSide::kBuy) {
     if (notional > cash.available) {
       return Fail(ErrorCode::kResourceExhausted, "insufficient available cash");
     }
     // notional <= available and reserved + available == balance <= INT64_MAX.
     cash.reserved += notional;
     cash.available -= notional;
-  } else {
+  } else if (!futures) {
     if (request.quantity > position.available_qty) {
       return Fail(ErrorCode::kResourceExhausted,
                   "insufficient sellable shares");
@@ -511,6 +598,10 @@ bool TradingEngine::TryGetPosition(
 
 bool TradingEngine::TryGetFuturesAccount(
     model::FuturesAccountSnapshot& out) const noexcept {
+  if (broker_managed()) {
+    out = storage_->broker_account.account;
+    return true;
+  }
   return storage_ != nullptr &&
          storage_->type == model::AccountType::kFutures &&
          storage_->futures.TryGetAccount(out);
@@ -519,13 +610,28 @@ bool TradingEngine::TryGetFuturesAccount(
 bool TradingEngine::TryGetFuturesPosition(
     model::InstrumentId id,
     model::FuturesPositionSnapshot& out) const noexcept {
+  if (broker_managed()) {
+    model::InstrumentDefinition instrument;
+    if (!instruments_.TryGetInstrument(id, instrument) ||
+        instrument.type != model::InstrumentType::kFutures)
+      return false;
+    for (std::size_t i = 0; i < storage_->broker_account.position_count; ++i)
+      if (storage_->broker_account.positions[i].instrument_id == id) {
+        out = storage_->broker_account.positions[i];
+        return true;
+      }
+    out = {};
+    out.instrument_id = id;
+    return true;
+  }
   return storage_ != nullptr &&
          storage_->type == model::AccountType::kFutures &&
          storage_->futures.TryGetPosition(id, out);
 }
 
 ErrorCode TradingEngine::ApplyQuote(const model::QuoteTick& tick) noexcept {
-  if (storage_ == nullptr || storage_->type == model::AccountType::kCash)
+  if (storage_ == nullptr || storage_->type == model::AccountType::kCash ||
+      broker_managed())
     return ErrorCode::kOk;
   const auto applied = storage_->futures.ApplyQuote(tick);
   return applied == ErrorCode::kOk
@@ -689,12 +795,12 @@ ErrorCode TradingEngine::ApplyLocalUpdate(TradingDispatch& out) noexcept {
   dispatch.update.reason.Set(0, "canceled before sending during shutdown");
   auto cash = s.cash;
   auto position = s.positions[record.position_index];
-  if (s.type == model::AccountType::kFutures) {
+  if (s.type == model::AccountType::kFutures && !s.broker_managed) {
     const auto released =
         s.futures.Release(record.snapshot, record.futures_reservation);
     if (released != ErrorCode::kOk)
       return Fail(released, s.futures.error_detail());
-  } else {
+  } else if (s.type == model::AccountType::kCash) {
     if (!ReleaseReservation(cash, position, record.reserved_cash,
                             record.reserved_qty)) {
       return Fail(ErrorCode::kCorrupt,
@@ -733,12 +839,15 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
   const bool is_fill = event.kind == OrderUpdateKind::kFill;
   const bool is_cancel = event.kind == OrderUpdateKind::kCanceled ||
                          event.kind == OrderUpdateKind::kCancelRejected;
+  const bool external_cancel =
+      s.broker_managed && event.kind == OrderUpdateKind::kCanceled &&
+      event.cancel_request_id.value == 0 && !old.cancel_pending;
   if (!ValidKind(event.kind) || event.report_sequence == 0 ||
       event.receive_time_ns > transaction_now || event.reason.size > 128 ||
       event.reason.text[event.reason.size] != '\0' ||
       event.cumulative_filled_qty < 0 ||
       event.cumulative_filled_qty > old.original_qty ||
-      (is_cancel != (event.cancel_request_id.value != 0)) ||
+      (!external_cancel && is_cancel != (event.cancel_request_id.value != 0)) ||
       (!is_fill && !EmptyFill(event.fill)) ||
       ((is_fill || event.kind == OrderUpdateKind::kAccepted) &&
        event.broker_order_id.empty())) {
@@ -859,15 +968,17 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
     }
     case OrderUpdateKind::kCanceled:
     case OrderUpdateKind::kCancelRejected:
-      if (!old.cancel_pending || !record.cancel_attempted ||
-          event.cancel_request_id != old.cancel_request_id ||
-          (old.state != OrderState::kWorking &&
-           old.state != OrderState::kFilled)) {
+      if (!external_cancel &&
+          (!old.cancel_pending || !record.cancel_attempted ||
+           event.cancel_request_id != old.cancel_request_id ||
+           (old.state != OrderState::kWorking &&
+            old.state != OrderState::kFilled))) {
         return Fail(ErrorCode::kCorrupt,
                     "cancel result does not match the pending attempt");
       }
       if (event.kind == OrderUpdateKind::kCanceled) {
-        if (old.state != OrderState::kWorking)
+        if (old.state != OrderState::kWorking &&
+            !(external_cancel && old.state == OrderState::kPendingNew))
           return Fail(ErrorCode::kCorrupt,
                       "cancellation would reverse a filled order");
         next.state = OrderState::kCanceled;
@@ -889,7 +1000,7 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
   auto position = s.positions[record.position_index];
   auto reserved_cash = record.reserved_cash;
   auto reserved_qty = record.reserved_qty;
-  if (s.type == model::AccountType::kFutures) {
+  if (s.type == model::AccountType::kFutures && !s.broker_managed) {
     auto reservation = record.futures_reservation;
     ErrorCode applied = ErrorCode::kOk;
     if (dispatch.has_fill) {
@@ -901,7 +1012,7 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
     if (applied != ErrorCode::kOk)
       return Fail(applied, s.futures.error_detail());
     record.futures_reservation = reservation;
-  } else if (dispatch.has_fill) {
+  } else if (s.type == model::AccountType::kCash && dispatch.has_fill) {
     const auto& fill = dispatch.fill;
     std::int64_t actual_cash;
     if (!CashAmount(fill.price, fill.quantity, record.price_scale,
@@ -943,8 +1054,9 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
         (reserved_cash != 0 || reserved_qty != 0)) {
       return Fail(ErrorCode::kCorrupt, "filled order retained a reservation");
     }
-  } else if (event.kind == OrderUpdateKind::kRejected ||
-             event.kind == OrderUpdateKind::kCanceled) {
+  } else if (s.type == model::AccountType::kCash &&
+             (event.kind == OrderUpdateKind::kRejected ||
+              event.kind == OrderUpdateKind::kCanceled)) {
     if (!ReleaseReservation(cash, position, reserved_cash, reserved_qty)) {
       return Fail(ErrorCode::kCorrupt,
                   "terminal order reservation is inconsistent");
@@ -1132,7 +1244,8 @@ base::Status TradingEngine::Init(const TradingConfig& config,
                 "gateway engine already initialized");
   }
   if (config.adapter != TradingAdapterKind::kMock &&
-      config.adapter != TradingAdapterKind::kSimulatedFutures) {
+      config.adapter != TradingAdapterKind::kSimulatedFutures &&
+      config.adapter != TradingAdapterKind::kCtp) {
     return Fail({base::ErrorCode::kInvalidArgument, {}}, "trading_prepare",
                 "gateway engine requires a broker configuration");
   }
@@ -1144,6 +1257,23 @@ base::Status TradingEngine::Init(const TradingConfig& config,
   const auto started = adapter_.Start(clock_.Now());
   if (!started.ok())
     return Fail(started, "trading_start", adapter_.error_detail());
+  if (config.adapter == TradingAdapterKind::kCtp) {
+    BrokerAccountSnapshot account;
+    const auto snapshot = adapter_.ReadBrokerAccountSnapshot(account);
+    if (!snapshot.ok())
+      return Fail(snapshot, "trading_account", adapter_.error_detail());
+    const auto valid = ValidateBrokerAccount(account);
+    if (valid != ErrorCode::kOk) return {valid, {}};
+    auto* storage = new (std::nothrow) Storage;
+    if (storage == nullptr)
+      return Fail({ErrorCode::kResourceExhausted, {}}, "trading_account",
+                  "cannot allocate broker order storage");
+    storage->type = model::AccountType::kFutures;
+    storage->broker_managed = true;
+    storage->broker_account = account;
+    storage_ = storage;
+    return {};
+  }
   TradingAccountSnapshot account;
   const auto snapshot = adapter_.ReadAccountSnapshot(account);
   if (!snapshot.ok())
@@ -1191,10 +1321,21 @@ base::Status TradingEngine::Poll(std::uint64_t now, TradingDispatch& out,
       event = false;
       return {};
     }
-    if (polled.state != TradingPollState::kEvent)
+    if (polled.state != TradingPollState::kEvent &&
+        !(broker_managed() && polled.state == TradingPollState::kAccount))
       return Fail({base::ErrorCode::kCorrupt, {}}, "trading_poll",
                   "adapter returned an unknown polling state");
-    const auto applied = ApplyEvent(input, dispatch);
+    BrokerAccountSnapshot broker;
+    if (broker_managed()) {
+      const auto snapshot = adapter_.ReadBrokerAccountSnapshot(broker);
+      if (!snapshot.ok())
+        return Fail(snapshot, "trading_account", adapter_.error_detail());
+      const auto valid = ValidateBrokerAccount(broker);
+      if (valid != ErrorCode::kOk) return {valid, {}};
+    }
+    const auto applied = polled.state == TradingPollState::kEvent
+                             ? ApplyEvent(input, dispatch)
+                             : ErrorCode::kOk;
     if (applied != base::ErrorCode::kOk) {
       char broker[kTradingIdHexSize];
       char execution[kTradingIdHexSize];
@@ -1221,6 +1362,7 @@ base::Status TradingEngine::Poll(std::uint64_t now, TradingDispatch& out,
                    error_detail_);
       return {applied, {}};
     }
+    if (broker_managed()) storage_->broker_account = broker;
   }
   out = dispatch;
   event = true;

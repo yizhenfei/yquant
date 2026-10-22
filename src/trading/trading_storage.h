@@ -88,6 +88,8 @@ struct TradingEngine::Storage {
       {};
   std::size_t position_count = 0;
   model::AccountType type = model::AccountType::kCash;
+  bool broker_managed = false;
+  BrokerAccountSnapshot broker_account;
   FuturesLedger futures;
 };
 

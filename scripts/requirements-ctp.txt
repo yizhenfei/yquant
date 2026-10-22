@@ -1,0 +1,2 @@
+# CTP market-data and SimNow trader bridges; not needed by offline replay.
+openctp-ctp==6.7.0.9

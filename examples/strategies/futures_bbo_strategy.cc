@@ -243,6 +243,10 @@ class FuturesBboStrategy final : public Strategy {
         instrument_.quantity_step <= 0 ||
         config_.quote_qty() % instrument_.quantity_step != 0)
       return ErrorCode::kInvalidArgument;
+    broker_managed_ = context.trading().supports_generic_close();
+    generic_close_ = broker_managed_ &&
+                     instrument_.venue != yquant::model::Venue::kShfe &&
+                     instrument_.venue != yquant::model::Venue::kIne;
     FuturesAccountSnapshot account;
     FuturesPositionSnapshot position;
     std::int64_t gross = 0;
@@ -347,7 +351,9 @@ class FuturesBboStrategy final : public Strategy {
         account.commission,
         position.long_today.frozen_qty + position.long_yesterday.frozen_qty +
             position.short_today.frozen_qty +
-            position.short_yesterday.frozen_qty,
+            position.short_yesterday.frozen_qty +
+            position.unallocated_long_frozen +
+            position.unallocated_short_frozen,
         slots, max_gross_seen_);
     return written < 0 || std::fflush(stdout) != 0 ? ErrorCode::kIoError
                                                    : ErrorCode::kOk;
@@ -357,6 +363,8 @@ class FuturesBboStrategy final : public Strategy {
   struct Side {
     ClientOrderId id;
     std::uint64_t retry = 0;
+    // Retained after terminal orders to track submission of both directions.
+    bool ever_submitted = false;
   };
   struct Target {
     bool valid = false;
@@ -392,10 +400,23 @@ class FuturesBboStrategy final : public Strategy {
         return ErrorCode::kCorrupt;
       gross += bucket.quantity;
     }
+    if (position.unallocated_long_frozen < 0 ||
+        position.unallocated_short_frozen < 0 ||
+        position.unallocated_long_frozen >
+            position.long_today.quantity + position.long_yesterday.quantity -
+                position.long_today.frozen_qty -
+                position.long_yesterday.frozen_qty ||
+        position.unallocated_short_frozen >
+            position.short_today.quantity + position.short_yesterday.quantity -
+                position.short_today.frozen_qty -
+                position.short_yesterday.frozen_qty)
+      return ErrorCode::kCorrupt;
     constexpr auto kMinimum = std::numeric_limits<std::int64_t>::min();
-    if (account.equity < kMinimum + account.margin ||
-        account.equity - account.margin < kMinimum + account.reserved ||
-        account.available != account.equity - account.margin - account.reserved)
+    if (!context.trading().supports_generic_close() &&
+        (account.equity < kMinimum + account.margin ||
+         account.equity - account.margin < kMinimum + account.reserved ||
+         account.available !=
+             account.equity - account.margin - account.reserved))
       return ErrorCode::kCorrupt;
     return ErrorCode::kOk;
   }
@@ -441,7 +462,8 @@ class FuturesBboStrategy final : public Strategy {
         order.leaves_qty < 0 || order.leaves_qty > order.original_qty ||
         (order.position_effect != PositionEffect::kOpen &&
          order.position_effect != PositionEffect::kCloseToday &&
-         order.position_effect != PositionEffect::kCloseYesterday))
+         order.position_effect != PositionEffect::kCloseYesterday &&
+         !(generic_close_ && order.position_effect == PositionEffect::kClose)))
       return ErrorCode::kCorrupt;
     return ErrorCode::kOk;
   }
@@ -485,13 +507,36 @@ class FuturesBboStrategy final : public Strategy {
         side == 0 ? position.short_yesterday : position.long_yesterday;
     auto today_available = today.quantity - today.frozen_qty;
     auto yesterday_available = yesterday.quantity - yesterday.frozen_qty;
+    const auto unallocated = side == 0 ? position.unallocated_short_frozen
+                                       : position.unallocated_long_frozen;
+    if (generic_close_) {
+      auto available = today_available + yesterday_available - unallocated;
+      if (occupied && own.position_effect == PositionEffect::kClose) {
+        available +=
+            std::min(own.leaves_qty,
+                     today.frozen_qty + yesterday.frozen_qty + unallocated);
+      }
+      if (available > 0)
+        intent = {PositionEffect::kClose,
+                  std::min(available, config_.quote_qty())};
+      else if (today.quantity == 0 && yesterday.quantity == 0)
+        intent = {PositionEffect::kOpen, config_.quote_qty()};
+      return ErrorCode::kOk;
+    }
+    if (unallocated != 0) return ErrorCode::kUnsupported;
     if (occupied && own.position_effect == PositionEffect::kCloseToday) {
-      if (own.leaves_qty > today.frozen_qty) return ErrorCode::kCorrupt;
-      today_available += own.leaves_qty;
+      if (!broker_managed_ && own.leaves_qty > today.frozen_qty)
+        return ErrorCode::kCorrupt;
+      today_available += broker_managed_
+                             ? std::min(own.leaves_qty, today.frozen_qty)
+                             : own.leaves_qty;
     } else if (occupied &&
                own.position_effect == PositionEffect::kCloseYesterday) {
-      if (own.leaves_qty > yesterday.frozen_qty) return ErrorCode::kCorrupt;
-      yesterday_available += own.leaves_qty;
+      if (!broker_managed_ && own.leaves_qty > yesterday.frozen_qty)
+        return ErrorCode::kCorrupt;
+      yesterday_available +=
+          broker_managed_ ? std::min(own.leaves_qty, yesterday.frozen_qty)
+                          : own.leaves_qty;
     }
     if (today_available > 0)
       intent = {PositionEffect::kCloseToday,
@@ -537,6 +582,28 @@ class FuturesBboStrategy final : public Strategy {
     std::int64_t gross = 0;
     const auto account_read = ReadAccount(context, account, position, gross);
     if (account_read != ErrorCode::kOk) return account_read;
+    if (broker_managed_) {
+      // A batched account query may already include executions whose individual
+      // reports have not reached this callback. Retain both slots until those
+      // closing reports settle; do not reopen from that leading account view.
+      for (std::size_t current = 0; current < 2; ++current) {
+        const auto& closing = orders[current];
+        if (sides_[current].id.value == 0 ||
+            closing.position_effect == PositionEffect::kOpen)
+          continue;
+        const auto& today =
+            current == 0 ? position.short_today : position.long_today;
+        const auto& yesterday =
+            current == 0 ? position.short_yesterday : position.long_yesterday;
+        const auto held =
+            closing.position_effect == PositionEffect::kClose
+                ? today.quantity + yesterday.quantity
+            : closing.position_effect == PositionEffect::kCloseToday
+                ? today.quantity
+                : yesterday.quantity;
+        if (held < closing.leaves_qty) return ErrorCode::kOk;
+      }
+    }
     Intent intent;
     const auto selected =
         SelectIntent(index, position, order, occupied, intent);
@@ -608,6 +675,7 @@ class FuturesBboStrategy final : public Strategy {
     if (submitted == ErrorCode::kResourceExhausted) return Delay(side, now);
     if (submitted != ErrorCode::kOk) return submitted;
     ++submitted_;
+    side.ever_submitted = true;
     return ErrorCode::kOk;
   }
   // Callback-only coordination; no borrowed service or event reference escapes.
@@ -635,7 +703,13 @@ class FuturesBboStrategy final : public Strategy {
     }
     if (!first_submit_reported_ && submitted_ != 0) {
       first_submit_reported_ = true;
-      return WriteMarker("futures_bbo: first quotes submitted\n");
+      const auto written = WriteMarker("futures_bbo: first quotes submitted\n");
+      if (written != ErrorCode::kOk) return written;
+    }
+    if (!both_sides_reported_ && sides_[0].ever_submitted &&
+        sides_[1].ever_submitted) {
+      both_sides_reported_ = true;
+      return WriteMarker("futures_bbo: both sides submitted\n");
     }
     return ErrorCode::kOk;
   }
@@ -649,7 +723,10 @@ class FuturesBboStrategy final : public Strategy {
   std::uint64_t filled_qty_ = 0;
   std::int64_t max_gross_seen_ = 0;
   bool started_ = false;
+  bool generic_close_ = false;
+  bool broker_managed_ = false;
   bool first_submit_reported_ = false;
+  bool both_sides_reported_ = false;
   bool had_inventory_ = false;
   bool locked_seen_ = false;
   bool round_trip_reported_ = false;

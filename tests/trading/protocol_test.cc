@@ -130,7 +130,7 @@ TEST(TradingProtocol, HeaderHasStableLittleEndianLayout) {
   ASSERT_TRUE(trading::EncodeMessage(message, bytes, size).ok());
   ASSERT_EQ(size, 32);
   EXPECT_EQ(std::memcmp(bytes.data(), "YQTR", 4), 0);
-  EXPECT_EQ(bytes[4], std::byte{2});
+  EXPECT_EQ(bytes[4], std::byte{3});
   EXPECT_EQ(bytes[5], std::byte{0});
   EXPECT_EQ(bytes[8], std::byte{32});
   for (std::size_t index = 0; index < 8; ++index) {
@@ -381,7 +381,7 @@ TEST(TradingProtocol, RejectsNoncanonicalPayloadFlagsCountsAndEnums) {
   ASSERT_TRUE(trading::EncodeMessage(Example(trading::MessageType::kAccount),
                                      bytes, size)
                   .ok());
-  bytes[64] =
+  bytes[66] =
       std::byte{65};  // position_count follows revision and three cash values.
   EXPECT_FALSE(
       trading::DecodeMessage(std::span(bytes).first(size), output).ok());
@@ -525,6 +525,100 @@ TEST(TradingProtocol, CompleteFuturesDictionaryFitsWithinOneFrame) {
   EXPECT_EQ(decoded.account.futures_position_count, 64U);
   EXPECT_EQ(decoded.account.futures_positions[63],
             message.account.futures_positions[63]);
+}
+
+TEST(TradingProtocol, BrokerAccountAndUnallocatedFreezesUseVersionThree) {
+  auto message = Example(MessageType::kAccount);
+  message.account = {};
+  message.account.type = model::AccountType::kFutures;
+  message.account.broker_managed = true;
+  message.account.revision = 1;
+  message.account.futures = {93, 100, 43, 8, 6, 0, 7, 2};
+  message.account.futures_position_count = 1;
+  auto& p = message.account.futures_positions[0];
+  ASSERT_EQ(model::MakeInstrumentId("DCE", "a2701", p.instrument_id),
+            base::ErrorCode::kOk);
+  p.long_today = {2, 1, 2010000000};
+  p.long_yesterday = {1, 0, 1000000000};
+  p.unallocated_long_frozen = 1;
+  std::array<std::byte, trading::kMaxFrameSize> bytes{};
+  std::size_t size = 0;
+  ASSERT_TRUE(EncodeMessage(message, bytes, size).ok());
+  EXPECT_EQ(bytes[4], std::byte{3});
+  Message decoded;
+  ASSERT_TRUE(DecodeMessage(std::span(bytes).first(size), decoded).ok());
+  EXPECT_TRUE(decoded.account.broker_managed);
+  EXPECT_EQ(decoded.account.futures, message.account.futures);
+  EXPECT_EQ(decoded.account.futures_positions[0], p);
+  p.unallocated_long_frozen = 3;
+  ExpectEncodingRejected(message);
+  p.unallocated_long_frozen = 0;
+  message.account.broker_managed = false;
+  ExpectEncodingRejected(message);
+  message = Example(MessageType::kAccount);
+  message.account.broker_managed = true;
+  ExpectEncodingRejected(message);
+}
+
+TEST(TradingProtocol, VersionTwoCashAccountDefaultsToLocalManagement) {
+  auto message = Example(MessageType::kAccount);
+  std::array<std::byte, trading::kMaxFrameSize> bytes{};
+  std::size_t size = 0;
+  ASSERT_TRUE(EncodeMessage(message, bytes, size).ok());
+  // v2 has the account type at offset 40 but no following management byte.
+  std::memmove(bytes.data() + 41, bytes.data() + 42, size - 42);
+  --size;
+  bytes[4] = std::byte{2};
+  for (std::size_t i = 0; i < 4; ++i)
+    bytes[8 + i] = std::byte((size >> (8 * i)) & 255);
+  Message decoded;
+  ASSERT_TRUE(DecodeMessage(std::span(bytes).first(size), decoded).ok());
+  EXPECT_FALSE(decoded.account.broker_managed);
+  EXPECT_EQ(decoded.account.cash, message.account.cash);
+}
+
+TEST(TradingProtocol, GenericCloseUsesBrokerVenuesAndPreservesEffect) {
+  auto request = Example(MessageType::kNewOrder);
+  ASSERT_EQ(
+      model::MakeInstrumentId("DCE", "a2701", request.request.instrument_id),
+      base::ErrorCode::kOk);
+  request.request.position_effect = model::PositionEffect::kClose;
+  std::array<std::byte, trading::kMaxFrameSize> bytes{};
+  std::size_t size = 0;
+  ASSERT_TRUE(EncodeMessage(request, bytes, size).ok());
+  Message decoded;
+  ASSERT_TRUE(DecodeMessage(std::span(bytes).first(size), decoded).ok());
+  EXPECT_EQ(decoded.request.position_effect, model::PositionEffect::kClose);
+  ASSERT_EQ(
+      model::MakeInstrumentId("SHFE", "rb2701", request.request.instrument_id),
+      base::ErrorCode::kOk);
+  ExpectEncodingRejected(request);
+}
+
+TEST(TradingProtocol, VersionTwoFuturesDefaultsUnallocatedFreezesToZero) {
+  auto message = Example(MessageType::kAccount);
+  message.account = {};
+  message.account.revision = 1;
+  message.account.type = model::AccountType::kFutures;
+  message.account.futures_position_count = 1;
+  auto& position = message.account.futures_positions[0];
+  ASSERT_EQ(model::MakeInstrumentId("SHFE", "rb2701", position.instrument_id),
+            base::ErrorCode::kOk);
+  position.long_today = {2, 1, 2010000000};
+  std::array<std::byte, trading::kMaxFrameSize> bytes{};
+  std::size_t size = 0;
+  ASSERT_TRUE(EncodeMessage(message, bytes, size).ok());
+  // Drop v3's two trailing unallocated freezes and its account management byte.
+  size -= 16;
+  std::memmove(bytes.data() + 41, bytes.data() + 42, size - 42);
+  --size;
+  bytes[4] = std::byte{2};
+  for (std::size_t i = 0; i < 4; ++i)
+    bytes[8 + i] = std::byte((size >> (8 * i)) & 255);
+  Message decoded;
+  ASSERT_TRUE(DecodeMessage(std::span(bytes).first(size), decoded).ok());
+  EXPECT_FALSE(decoded.account.broker_managed);
+  EXPECT_EQ(decoded.account.futures_positions[0], position);
 }
 
 }  // namespace

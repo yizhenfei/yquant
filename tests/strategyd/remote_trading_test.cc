@@ -53,6 +53,7 @@ class TradingServiceImplTest : public ::testing::Test {
     config.endpoint.port = listener.port();
     account.revision = 1;
     account.cash = {1000000000, 0, 1000000000};
+    ConfigureInitialAccount();
     std::thread handshake([this] {
       const auto deadline =
           std::chrono::steady_clock::now() + std::chrono::seconds(2);
@@ -99,6 +100,8 @@ class TradingServiceImplTest : public ::testing::Test {
     remote.SetAcceptingRequests(false);
     return id;
   }
+  // Derived fixtures may replace the cash welcome with broker-owned futures.
+  virtual void ConfigureInitialAccount() {}
 
   trading::Message Receive() {
     trading::Message message;
@@ -196,6 +199,86 @@ class TradingServiceImplTest : public ::testing::Test {
   model::InstrumentId futures_instrument;
   static constexpr std::uint64_t generation = 77;
 };
+
+class BrokerTradingServiceImplTest : public TradingServiceImplTest {
+ protected:
+  void ConfigureInitialAccount() override {
+    account = {};
+    account.revision = 1;
+    account.type = model::AccountType::kFutures;
+    account.broker_managed = true;
+    account.futures = {93, 100, 43, 8, 6, 0, 7, 2};
+    account.futures_position_count = 1;
+    account.futures_positions[0].instrument_id = futures_instrument;
+    account.futures_positions[0].long_today = {2, 0, 2010000000};
+    account.futures_positions[0].long_yesterday = {1, 0, 1000000000};
+    account.futures_positions[0].unallocated_long_frozen = 1;
+  }
+};
+
+TEST_F(BrokerTradingServiceImplTest,
+       PureBrokerUpdatesPreserveMoneyAndNeverInjectQuotes) {
+  EXPECT_TRUE(remote.supports_generic_close());
+  model::FuturesAccountSnapshot before;
+  ASSERT_TRUE(remote.TryGetFuturesAccount(before));
+  EXPECT_EQ(before, account.futures);
+  model::QuoteTick quote;
+  quote.instrument_id = futures_instrument;
+  quote.source_id = {1};
+  quote.sequence = 1;
+  quote.bid_price = 100;
+  quote.ask_price = 101;
+  quote.bid_qty = quote.ask_qty = 1;
+  quote.flags = 7;
+  ASSERT_TRUE(remote.OnQuote(quote).ok());
+  Transmit();
+  Message unexpected;
+  EXPECT_EQ(peer.Poll(unexpected).state, trading::ReceiveState::kIdle);
+  Message update;
+  update.type = MessageType::kAccount;
+  update.account = account;
+  update.account.revision = 2;
+  update.account.futures.available = 9;
+  update.account.futures_positions[0].unallocated_long_frozen = 2;
+  Send(update);
+  trading::TradingDispatch dispatch;
+  bool event = true;
+  ASSERT_TRUE(PollMessage(dispatch, event).ok());
+  EXPECT_FALSE(event);
+  ASSERT_TRUE(remote.TryGetFuturesAccount(before));
+  EXPECT_EQ(before.available, 9);
+  model::FuturesPositionSnapshot position;
+  ASSERT_TRUE(remote.TryGetFuturesPosition(futures_instrument, position));
+  EXPECT_EQ(position.unallocated_long_frozen, 2);
+}
+
+TEST_F(BrokerTradingServiceImplTest,
+       ExternalCancellationBeforeAcceptanceSettlesOrder) {
+  remote.SetAcceptingRequests(true);
+  model::ClientOrderId id;
+  ASSERT_EQ(remote.SubmitOrder({futures_instrument, model::OrderSide::kBuy, 100,
+                                1, model::PositionEffect::kOpen},
+                               id),
+            ErrorCode::kOk);
+  remote.SetAcceptingRequests(false);
+  Transmit();
+  (void)Receive();
+  Message canceled;
+  canceled.type = MessageType::kOrderUpdate;
+  canceled.account = account;
+  canceled.update.kind = model::OrderUpdateKind::kCanceled;
+  ASSERT_TRUE(remote.TryGetOrder(id, canceled.update.order));
+  canceled.update.order.state = model::OrderState::kCanceled;
+  canceled.update.order.leaves_qty = 0;
+  canceled.update.order.report_sequence = 1;
+  Send(canceled);
+  trading::TradingDispatch dispatch;
+  bool event = false;
+  ASSERT_TRUE(Poll(dispatch, event).ok()) << remote.error_detail();
+  EXPECT_TRUE(event);
+  EXPECT_EQ(dispatch.update.cancel_request_id.value, 0);
+  EXPECT_EQ(dispatch.update.order.state, model::OrderState::kCanceled);
+}
 
 TEST_F(TradingServiceImplTest, LocalQueueDoesNotReserveAuthoritativeAccount) {
   model::CashSnapshot before;

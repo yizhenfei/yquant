@@ -1,6 +1,9 @@
 # 国内期货模拟交易
 
-`yquant-strategyd` 使用期货合约规格、开平仓委托和保证金账本运行双边报价策略；历史报价由回放源发布，成交由 `tradingd` 中的模拟交易所生成。
+`yquant-strategyd` 使用期货合约规格、开平仓委托和保证金账本运行双边报价策略；行情可来自 [CTP 实时接入与同源回放](ctp-market-data.md)或仓库历史样本，成交由 `tradingd` 中的模拟交易所生成。
+
+本文件描述本地撮合与 FIFO 模拟账本。将订单交给外部模拟柜台的流程及账户口径见
+[SimNow 模拟柜台接入](simnow-trading.md)。
 
 ## 组件与执行顺序
 
@@ -8,7 +11,8 @@
 
 ```mermaid
 flowchart LR
-    REPLAY[strategyd 回放与行情缓存] --> STRATEGY[策略回调]
+    CTP[CTP 行情桥与 marketd] --> REPLAY[strategyd 行情缓存与回放]
+    REPLAY --> STRATEGY[策略回调]
     REPLAY --> QUOTE[TCP 模拟行情输入]
     STRATEGY --> REQUEST[TCP 委托与撤单]
     QUOTE --> GATEWAY[tradingd 估值与撮合]
@@ -126,6 +130,9 @@ elapsed_ns,event_time_ns,bid_price,bid_qty,ask_price,ask_qty,flags
 
 默认样本包含 2017-12-27 09:38:06.422000 至 10:09:25.324000 的 744 条 `a1805` 报价，保留原始买卖一价量，用采集时间差控制回放，不进行插值。原始文件名为 `a1803_few.csv`，内容的合约字段全部为 `a1805`。样本中的交易所时间字段不用于生成事件时间，回放 `event_time_ns=0` 且不设置事件时间有效标志。
 
+样本采集间隔不均，中位间隔为 1.489 秒，最大间隔为 29.674 秒；它用于离线功能测试。
+实时接入后的日常测试使用[同源录制回放](ctp-market-data.md#历史回放)。
+
 来源固定为 [net1qian-flink-ctp-demo 的历史 CSV](https://github.com/qingtiandalaoye/net1qian-flink-ctp-demo/blob/13b3bc3f907e4962a4d3ea0e9f95b9015e23c176/src/main/resources/a1803_few.csv)。仓库保留原始文件、上游 MIT 许可、规范化 CSV 和包含提交号、字段映射及 SHA256 的清单，位于 `examples/data/`。
 
 ```sh
@@ -139,7 +146,7 @@ python3 scripts/prepare_futures_sample.py --download
 
 ## 期货双边报价策略
 
-`futures_bbo_strategy` 从零持仓启动，每侧报价一手，净仓限制为 `[-1, 1]`、总仓限制为 2。买侧优先平空、卖侧优先平多，先平今再平昨，没有反向仓时才开仓。持仓变化后重新选择开平意图，即使价格相同也可能撤换委托。
+样例配置以零持仓启动 `futures_bbo_strategy`，每侧报价一手，净仓限制为 `[-1, 1]`、总仓限制为 2。买侧优先平空、卖侧优先平多，先平今再平昨，没有反向仓时才开仓。持仓变化后重新选择开平意图，即使价格相同也可能撤换委托。
 
 净仓检查独立计算所有买单或所有卖单成交后的最坏结果。总仓检查使用当前总仓加全部未成交开仓单的余量，不提前抵扣平仓单。两张开仓单先后成交形成锁仓时，策略按平仓意图解锁；不能仅凭净仓为零判断已平仓。
 

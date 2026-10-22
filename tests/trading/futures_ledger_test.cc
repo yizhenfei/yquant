@@ -615,5 +615,238 @@ TEST_F(FuturesLedgerTest, RuntimeDispatchMarksFuturesAccountBeforeQueries) {
   EXPECT_EQ(snapshot.equity, 100020 * kYuan);
 }
 
+// A broker supplies complete snapshots separately from normalized order facts.
+// The fake never computes fees, margin, freezes or simulated executions.
+class BrokerSnapshotAdapter final : public TradingAdapter {
+ public:
+  BrokerAccountSnapshot account;
+  TradingEvent fact;
+  TradingPollState pending = TradingPollState::kIdle;
+  int stopping_calls = 0;
+  void BeginStopping() noexcept override { ++stopping_calls; }
+  base::Status Prepare(const TradingConfig&) noexcept override { return {}; }
+  base::Status Start(std::uint64_t) noexcept override { return {}; }
+  base::Status ReadAccountSnapshot(TradingAccountSnapshot&) noexcept override {
+    return {ErrorCode::kUnsupported, {}};
+  }
+  base::Status ReadBrokerAccountSnapshot(
+      BrokerAccountSnapshot& out) noexcept override {
+    out = account;
+    return {};
+  }
+  base::Status SendOrder(model::ClientOrderId, const model::OrderRequest&,
+                         std::uint64_t) noexcept override {
+    return {};
+  }
+  base::Status SendCancel(model::ClientOrderId, const model::BrokerOrderId&,
+                          model::CancelRequestId,
+                          std::uint64_t) noexcept override {
+    return {};
+  }
+  TradingPollResult Poll(std::uint64_t, TradingEvent& out) noexcept override {
+    const auto state = pending;
+    pending = TradingPollState::kIdle;
+    if (state == TradingPollState::kEvent) out = fact;
+    return {state, {}};
+  }
+  std::optional<std::uint64_t> next_deadline() const noexcept override {
+    return pending == TradingPollState::kIdle ? std::nullopt
+                                              : std::optional<std::uint64_t>{0};
+  }
+  bool is_drained() const noexcept override {
+    return pending == TradingPollState::kIdle;
+  }
+  base::Status Stop() noexcept override { return {}; }
+  const char* error_detail() const noexcept override { return "broker fake"; }
+};
+
+TEST_F(FuturesLedgerTest,
+       BrokerBootstrapAndPureUpdatesPreserveActualCostAndMoney) {
+  BrokerSnapshotAdapter adapter;
+  adapter.account.revision = 1;
+  adapter.account.account = {93000000, 100000000, 43000000, 8000000,
+                             6000000,  0,         7000000,  12345};
+  adapter.account.position_count = 1;
+  adapter.account.positions[0].instrument_id = id;
+  // Two lots opened at 100 and 101 cannot become a single tick-aligned price.
+  adapter.account.positions[0].long_today = {2, 0, 2010000000};
+  adapter.account.positions[0].long_yesterday = {1, 0, 1000000000};
+  adapter.account.positions[0].unallocated_long_frozen = 1;
+  TradingEngine engine(clock, market, adapter);
+  TradingConfig broker;
+  broker.adapter = TradingAdapterKind::kCtp;
+  ASSERT_TRUE(engine.Init(broker, config).ok()) << engine.error_detail();
+  EXPECT_TRUE(engine.broker_managed());
+  model::FuturesAccountSnapshot actual;
+  model::FuturesPositionSnapshot position;
+  ASSERT_TRUE(engine.TryGetFuturesAccount(actual));
+  EXPECT_EQ(actual, adapter.account.account);
+  ASSERT_TRUE(engine.TryGetFuturesPosition(id, position));
+  EXPECT_EQ(position, adapter.account.positions[0]);
+  model::QuoteTick quote;
+  quote.instrument_id = id;
+  quote.bid_price = 900;
+  quote.ask_price = 1000;
+  quote.flags = 7;
+  ASSERT_EQ(engine.ApplyQuote(quote), ErrorCode::kOk);
+  ASSERT_TRUE(engine.TryGetFuturesAccount(actual));
+  EXPECT_EQ(actual, adapter.account.account);
+  engine.SetAcceptingRequests(true);
+  model::ClientOrderId order;
+  ASSERT_EQ(engine.SubmitOrder(
+                {id, OrderSide::kBuy, 100, 1, PositionEffect::kOpen}, order),
+            ErrorCode::kOk);
+  engine.SetAcceptingRequests(false);
+  ASSERT_TRUE(engine.TryGetFuturesAccount(actual));
+  EXPECT_EQ(actual, adapter.account.account);
+  adapter.account.revision = 2;
+  adapter.account.account.available = 12000000;
+  adapter.account.positions[0].unallocated_long_frozen = 2;
+  adapter.pending = TradingPollState::kAccount;
+  TradingDispatch dispatch;
+  bool event = false;
+  ASSERT_TRUE(engine.Poll(1000, dispatch, event).ok());
+  EXPECT_TRUE(event);
+  EXPECT_FALSE(dispatch.notify_order);
+  EXPECT_EQ(dispatch.update.order.client_order_id.value, 0);
+  ASSERT_TRUE(engine.TryGetFuturesAccount(actual));
+  EXPECT_EQ(actual.available, 12000000);
+  ASSERT_TRUE(engine.TryGetFuturesPosition(id, position));
+  EXPECT_EQ(position.unallocated_long_frozen, 2);
+  adapter.account.account.available = 7;
+  adapter.pending = TradingPollState::kAccount;
+  EXPECT_FALSE(engine.Poll(1000, dispatch, event).ok());
+  ASSERT_TRUE(engine.TryGetFuturesAccount(actual));
+  EXPECT_EQ(actual.available, 12000000);
+}
+
+TEST_F(FuturesLedgerTest, BrokerExternalCancelNeedsNoSyntheticLocalCancel) {
+  BrokerSnapshotAdapter adapter;
+  adapter.account.revision = 1;
+  TradingEngine engine(clock, market, adapter);
+  TradingConfig broker;
+  broker.adapter = TradingAdapterKind::kCtp;
+  ASSERT_TRUE(engine.Init(broker, config).ok());
+  engine.SetAcceptingRequests(true);
+  model::ClientOrderId order;
+  ASSERT_EQ(engine.SubmitOrder(
+                {id, OrderSide::kBuy, 100, 1, PositionEffect::kOpen}, order),
+            ErrorCode::kOk);
+  engine.SetAcceptingRequests(false);
+  ASSERT_TRUE(engine.ProcessRequests(1000).ok());
+  adapter.fact.client_order_id = order;
+  ASSERT_EQ(adapter.fact.broker_order_id.Assign("ctp-order"), ErrorCode::kOk);
+  adapter.fact.report_sequence = 1;
+  adapter.fact.kind = model::OrderUpdateKind::kCanceled;
+  adapter.fact.receive_time_ns = 1000;
+  adapter.pending = TradingPollState::kEvent;
+  TradingDispatch dispatch;
+  bool event = false;
+  ASSERT_TRUE(engine.Poll(1000, dispatch, event).ok()) << engine.error_detail();
+  EXPECT_TRUE(event);
+  EXPECT_EQ(dispatch.update.order.state, model::OrderState::kCanceled);
+  EXPECT_EQ(dispatch.update.cancel_request_id.value, 0);
+  EXPECT_TRUE(engine.is_drained());
+}
+
+TEST_F(FuturesLedgerTest,
+       BrokerUnknownHoldingAndOverallocatedFreezeRejectBootstrap) {
+  BrokerSnapshotAdapter adapter;
+  adapter.account.revision = 1;
+  adapter.account.position_count = 1;
+  ASSERT_EQ(model::MakeInstrumentId("DCE", "a2701",
+                                    adapter.account.positions[0].instrument_id),
+            ErrorCode::kOk);
+  TradingConfig broker;
+  broker.adapter = TradingAdapterKind::kCtp;
+  TradingEngine unknown(clock, market, adapter);
+  EXPECT_FALSE(unknown.Init(broker, config).ok());
+  adapter.account.positions[0].instrument_id = id;
+  adapter.account.positions[0].long_today.quantity = 1;
+  adapter.account.positions[0].unallocated_long_frozen = 2;
+  TradingEngine bad_freeze(clock, market, adapter);
+  EXPECT_FALSE(bad_freeze.Init(broker, config).ok());
+}
+
+TEST_F(FuturesLedgerTest, BrokerEventValidatesAccountBeforeCommittingOrder) {
+  BrokerSnapshotAdapter adapter;
+  adapter.account.revision = 1;
+  TradingEngine engine(clock, market, adapter);
+  TradingConfig broker;
+  broker.adapter = TradingAdapterKind::kCtp;
+  ASSERT_TRUE(engine.Init(broker, config).ok());
+  engine.SetAcceptingRequests(true);
+  model::ClientOrderId order;
+  ASSERT_EQ(engine.SubmitOrder(
+                {id, OrderSide::kBuy, 100, 1, PositionEffect::kOpen}, order),
+            ErrorCode::kOk);
+  engine.SetAcceptingRequests(false);
+  ASSERT_TRUE(engine.ProcessRequests(1000).ok());
+  adapter.fact.client_order_id = order;
+  adapter.fact.report_sequence = 1;
+  adapter.fact.receive_time_ns = 1000;
+  ASSERT_EQ(adapter.fact.broker_order_id.Assign("ctp-accepted"),
+            ErrorCode::kOk);
+  adapter.account.revision = 2;
+  adapter.account.position_count = 1;
+  ASSERT_EQ(model::MakeInstrumentId("DCE", "a2701",
+                                    adapter.account.positions[0].instrument_id),
+            ErrorCode::kOk);
+  adapter.pending = TradingPollState::kEvent;
+  TradingDispatch dispatch;
+  bool event = false;
+  EXPECT_FALSE(engine.Poll(1000, dispatch, event).ok());
+  model::OrderSnapshot retained;
+  ASSERT_TRUE(engine.TryGetOrder(order, retained));
+  EXPECT_EQ(retained.state, model::OrderState::kPendingNew);
+  EXPECT_EQ(retained.report_sequence, 0);
+}
+
+TEST_F(FuturesLedgerTest, BrokerGenericCloseUsesExchangeAllocationOnly) {
+  auto generic = config;
+  auto& instrument = generic.instruments[0].instrument;
+  ASSERT_EQ(model::MakeInstrumentId("DCE", "a2701", instrument.id),
+            ErrorCode::kOk);
+  instrument.venue = model::Venue::kDce;
+  std::memset(instrument.symbol, 0, sizeof(instrument.symbol));
+  std::memcpy(instrument.symbol, "a2701", 5);
+  md::InstrumentScope generic_market;
+  ASSERT_TRUE(generic_market.Configure(generic).ok());
+  BrokerSnapshotAdapter adapter;
+  adapter.account.revision = 1;
+  TradingEngine engine(clock, generic_market, adapter);
+  TradingConfig broker;
+  broker.adapter = TradingAdapterKind::kCtp;
+  ASSERT_TRUE(engine.Init(broker, generic).ok());
+  engine.SetAcceptingRequests(true);
+  model::ClientOrderId order{99};
+  EXPECT_EQ(engine.SubmitOrder({instrument.id, OrderSide::kSell, 100, 1,
+                                PositionEffect::kCloseToday},
+                               order),
+            ErrorCode::kInvalidArgument);
+  EXPECT_EQ(order.value, 99);
+  // Inventory/funds remain broker risk decisions; no simulated reservation.
+  ASSERT_EQ(engine.SubmitOrder({instrument.id, OrderSide::kSell, 100, 1,
+                                PositionEffect::kClose},
+                               order),
+            ErrorCode::kOk);
+  model::FuturesAccountSnapshot actual;
+  ASSERT_TRUE(engine.TryGetFuturesAccount(actual));
+  EXPECT_EQ(actual, adapter.account.account);
+}
+
+TEST_F(FuturesLedgerTest, BrokerShutdownAnnouncedOnceWithoutTransportWork) {
+  BrokerSnapshotAdapter adapter;
+  adapter.account.revision = 1;
+  TradingEngine engine(clock, market, adapter);
+  TradingConfig broker;
+  broker.adapter = TradingAdapterKind::kCtp;
+  ASSERT_TRUE(engine.Init(broker, config).ok());
+  engine.BeginStopping();
+  engine.BeginStopping();
+  EXPECT_EQ(adapter.stopping_calls, 1);
+  EXPECT_EQ(adapter.pending, TradingPollState::kIdle);
+}
+
 }  // namespace
 }  // namespace yquant::trading

@@ -17,6 +17,10 @@ class Trading {
   // True only during running business callbacks with an active gateway client;
   // does not promise valid parameters or available capacity.
   virtual bool accepting_orders() const noexcept = 0;
+  // Broker-managed futures support exchange-defined generic Close. Callers
+  // still use explicit day-specific effects on SHFE/INE; simulators return
+  // false.
+  virtual bool supports_generic_close() const noexcept { return false; }
   // Atomically registers PendingNew and a queued request, then sets out. kOk
   // means local acceptance, not gateway risk approval or broker acceptance.
   // The shared gateway checks and reserves cash/shares; insufficient resources

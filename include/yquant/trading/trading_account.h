@@ -47,6 +47,19 @@ struct TradingAccountSnapshot {
                          const TradingAccountSnapshot&) noexcept = default;
 };
 
+// Complete broker-owned futures view, copied at bootstrap and after each
+// adapter fact. Amounts/costs are broker facts, never reconstructed from
+// configured fees, marks or FIFO lots. Revisions increase when content changes.
+// Every nonzero holding must be included, including holdings outside the
+// requested strategy scope so the gateway can reject an incomplete dictionary.
+struct BrokerAccountSnapshot {
+  std::uint64_t revision = 0;
+  model::FuturesAccountSnapshot account;
+  std::array<model::FuturesPositionSnapshot, md::kMaxMarketDataInstruments>
+      positions = {};
+  std::size_t position_count = 0;
+};
+
 }  // namespace yquant::trading
 
 #endif  // YQUANT_TRADING_TRADING_ACCOUNT_H_
