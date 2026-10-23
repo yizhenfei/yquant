@@ -31,6 +31,8 @@
 
 公共交易实现使用 `yquant::trading` 命名空间，构建为 `yquant_trading`。`TradingEngine` 由网关持有，借用柜台适配器、标的范围和时钟，其存活时间覆盖引擎。引擎不实现策略侧 `TradingService`。策略装配层持有独立的只读标的范围与 `TradingServiceImpl`，不创建引擎或柜台适配器；服务与上下文存活时间覆盖全部回调及实例销毁。价格精度与标的身份均来自[共享标的字典](market-data.md#共享标的字典)，构建归属见[目录与模块](engineering.md#目录与模块)。
 
+单笔订单的状态转换提炼为事件驱动的 `OrderCore`，输入事件、动作命令及其与引擎的提交边界见[订单核心状态机](order-core.md)。
+
 `StrategyRunner` 必须借用一个 `TradingService`。运行时通过 `Init(config, dictionary)` 建立账户，通过 `ProcessRequests(now)` 推进自身传输，通过 `Poll(now, dispatch, event)` 返回已经提交的回调数据。`next_deadline()` 汇总传输与本地工作的期限，`has_ready_event(now)` 单独表示可轮询事件，`is_drained()` 包含账本和传输的排空状态。具体实现选择及所有权见[组件装配](strategyd.md#组件装配)。
 
 ## 委托模型
