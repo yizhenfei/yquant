@@ -211,7 +211,7 @@ class StrategyRunner final {
   // error_detail_.
   // stage follows SetErrorIfNotOK's lifetime requirement.
   void SetOrderError(base::Status status, const char* stage, const char* detail,
-                     model::ClientOrderId id, uint64_t sequence) noexcept;
+                     model::StrategyOrderId id, uint64_t sequence) noexcept;
   // Writes outstanding order/cancel diagnostics and available account/position
   // snapshots to stderr. Requires the trading view to remain available.
   void ReportUnconfirmed() const noexcept;

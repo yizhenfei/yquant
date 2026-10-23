@@ -7,7 +7,6 @@
 
 #include <array>
 #include <atomic>
-#include <cstddef>
 #include <memory>
 #include <optional>
 #include <span>
@@ -71,9 +70,9 @@ struct OrderOwner {
 struct Server::Storage final : trading::TradingMutationSink {
   explicit Storage(const base::MonotonicClock& clock) noexcept
       : clock_(clock),
-        ctp(instruments),
+        ctp(&instruments),
         adapter(*this),
-        trading(clock, instruments, adapter) {}
+        trading(&clock, &instruments, &adapter) {}
   const base::MonotonicClock& clock_;
   ServerConfig config;
   trading::Listener listener;
@@ -86,7 +85,8 @@ struct Server::Storage final : trading::TradingMutationSink {
   uint64_t simulation_client_id = 0;
   std::array<model::QuoteTick, md::kMaxMarketDataInstruments>
       simulation_quotes = {};
-  // Attaches the stable external key without changing the common adapter ABI.
+  // Attaches the stable adapter request key without changing the common adapter
+  // ABI.
   struct Adapter final : trading::TradingAdapter {
     explicit Adapter(Storage& storage) noexcept : storage(storage) {}
     base::Status Prepare(const trading::TradingConfig& c) noexcept override {
@@ -116,13 +116,13 @@ struct Server::Storage final : trading::TradingMutationSink {
                            const model::OrderRequest& request,
                            uint64_t now) noexcept override;
     base::Status SendCancel(model::ClientOrderId id,
-                            const model::BrokerOrderId& broker,
+                            const model::AdapterOrderId& broker,
                             model::CancelRequestId cancel,
                             uint64_t now) noexcept override {
       return storage.selected_adapter->SendCancel(id, broker, cancel, now);
     }
     trading::TradingPollResult Poll(
-        uint64_t now, trading::TradingEvent& out) noexcept override {
+        uint64_t now, model::TradingEvent& out) noexcept override {
       return storage.selected_adapter->Poll(now, out);
     }
     std::optional<uint64_t> next_deadline() const noexcept override {
@@ -222,6 +222,14 @@ struct Server::Storage final : trading::TradingMutationSink {
   base::Status SaveArchiveEnd(uint64_t run, uint64_t lsn) noexcept;
   // Resolves the complete recovered simulation prefix and drains old orders.
   // No independent counter evidence exists for a lost simulation WAL tail.
+  // Applies the retained mock report prefix without sending requests.
+  base::Status ReplayMockHistory() noexcept;
+  // Rejects send intents absent from the mock's recovered history.
+  base::Status RejectAbsentMockOrders(uint64_t now) noexcept;
+  // Resolves cancel intents and queues cancels for recovered working orders.
+  base::Status ScheduleRecoveredCancels(uint64_t now) noexcept;
+  // Drains recovered orders by advancing only the mock schedule.
+  base::Status DrainRecoveredMock(uint64_t now) noexcept;
   base::Status RecoverMock() noexcept;
   // Owner-only coherent encoding; buffer must not be owned by the worker.
   base::Status CaptureCheckpoint(uint64_t now) noexcept;

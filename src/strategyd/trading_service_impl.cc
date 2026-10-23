@@ -61,8 +61,9 @@ bool SameAccount(const trading::AccountView& lhs,
 // Compares execution facts, ignoring the host's receive timestamp so an exact
 // replay of a wire report is not mistaken for a changed execution.
 bool SameFill(const model::Fill& lhs, const model::Fill& rhs) noexcept {
-  return lhs.client_order_id == rhs.client_order_id &&
-         lhs.broker_order_id == rhs.broker_order_id &&
+  return lhs.strategy_order_id == rhs.strategy_order_id &&
+         lhs.client_order_id == rhs.client_order_id &&
+         lhs.adapter_order_id == rhs.adapter_order_id &&
          lhs.execution_id == rhs.execution_id &&
          lhs.instrument_id == rhs.instrument_id && lhs.side == rhs.side &&
          lhs.price == rhs.price && lhs.quantity == rhs.quantity &&
@@ -73,7 +74,7 @@ bool SameFill(const model::Fill& lhs, const model::Fill& rhs) noexcept {
 
 // Hashes the order/execution pair into the power-of-two lookup table. The
 // FNV-1a offset basis and prime provide stable byte mixing, not authentication.
-size_t ExecutionHash(model::ClientOrderId order,
+size_t ExecutionHash(model::StrategyOrderId order,
                      const model::ExecutionId& execution) noexcept {
   uint64_t hash = (14695981039346656037ULL ^ order.value) * 1099511628211ULL;
   for (const unsigned char byte : execution.view()) {
@@ -287,8 +288,8 @@ bool TradingServiceImpl::supports_generic_close() const noexcept {
   return storage_ != nullptr && storage_->account.broker_managed;
 }
 
-ErrorCode TradingServiceImpl::SubmitOrder(const model::OrderRequest& request,
-                                          model::ClientOrderId& out) noexcept {
+ErrorCode TradingServiceImpl::SubmitOrder(
+    const model::OrderRequest& request, model::StrategyOrderId& out) noexcept {
   if (!accepting_orders()) {
     return Fail(ErrorCode::kInvalidState, "trading requests are not enabled");
   }
@@ -343,7 +344,7 @@ ErrorCode TradingServiceImpl::SubmitOrder(const model::OrderRequest& request,
   }
   const auto index = s.order_count;
   auto& order = s.orders[index].snapshot;
-  order.client_order_id = {index + 1};
+  order.strategy_order_id = {index + 1};
   order.instrument_id = request.instrument_id;
   order.side = request.side;
   order.position_effect = request.position_effect;
@@ -354,11 +355,11 @@ ErrorCode TradingServiceImpl::SubmitOrder(const model::OrderRequest& request,
       index, false, {}};
   ++s.request_count;
   ++s.order_count;
-  out = order.client_order_id;
+  out = order.strategy_order_id;
   return ErrorCode::kOk;
 }
 
-ErrorCode TradingServiceImpl::CancelOrder(model::ClientOrderId id) noexcept {
+ErrorCode TradingServiceImpl::CancelOrder(model::StrategyOrderId id) noexcept {
   if (!accepting_orders()) {
     return Fail(ErrorCode::kInvalidState,
                 "cancellation requires a running business callback");
@@ -386,7 +387,7 @@ ErrorCode TradingServiceImpl::CancelOrder(model::ClientOrderId id) noexcept {
   return ErrorCode::kOk;
 }
 
-bool TradingServiceImpl::TryGetOrder(model::ClientOrderId id,
+bool TradingServiceImpl::TryGetOrder(model::StrategyOrderId id,
                                      model::OrderSnapshot& out) const noexcept {
   if (storage_ == nullptr || id.value == 0 ||
       id.value > storage_->order_count) {
@@ -514,11 +515,11 @@ base::Status TradingServiceImpl::ProcessRequests(uint64_t now,
       }
       trading::Message message;
       message.generation = s.generation;
-      message.order_id = record.snapshot.client_order_id;
+      message.strategy_order_id = record.snapshot.strategy_order_id;
       if (request.cancel) {
         message.type = trading::MessageType::kCancelOrder;
         message.cancel_id = request.cancel_id;
-        message.broker_order_id = record.snapshot.broker_order_id;
+        message.adapter_order_id = record.snapshot.adapter_order_id;
       } else {
         message.type = trading::MessageType::kNewOrder;
         const auto& order = record.snapshot;
@@ -660,7 +661,7 @@ ErrorCode TradingServiceImpl::ApplyUpdate(
   auto& s = *storage_;
   const auto& wire = message.update;
   const auto& next = wire.order;
-  const auto id = next.client_order_id;
+  const auto id = next.strategy_order_id;
   if (id.value == 0 || id.value > s.order_count) {
     return Fail(ErrorCode::kCorrupt,
                 "remote report belongs to an unknown order");
@@ -668,14 +669,16 @@ ErrorCode TradingServiceImpl::ApplyUpdate(
   auto& record = s.orders[id.value - 1];
   const auto& old = record.snapshot;
   if (!record.attempted || next.report_sequence == 0 ||
+      (old.client_order_id.value != 0 &&
+       next.client_order_id != old.client_order_id) ||
       next.instrument_id != old.instrument_id || next.side != old.side ||
       next.limit_price != old.limit_price ||
       next.original_qty != old.original_qty ||
       next.position_effect != old.position_effect ||
       next.cumulative_filled_qty < old.cumulative_filled_qty ||
       next.cumulative_filled_qty > old.original_qty ||
-      (!old.broker_order_id.empty() &&
-       next.broker_order_id != old.broker_order_id)) {
+      (!old.adapter_order_id.empty() &&
+       next.adapter_order_id != old.adapter_order_id)) {
     return Fail(ErrorCode::kCorrupt, "remote report changed order identity");
   }
   auto account_status = ValidateAccount(message.account, false);
@@ -730,7 +733,7 @@ ErrorCode TradingServiceImpl::ApplyUpdate(
   bool valid = false;
   switch (wire.kind) {
     case OrderUpdateKind::kAccepted:
-      valid = !next.broker_order_id.empty() &&
+      valid = !next.adapter_order_id.empty() &&
               (old.state == OrderState::kPendingNew ||
                old.state == OrderState::kWorking ||
                model::IsTerminalOrderState(old.state)) &&
@@ -746,7 +749,7 @@ ErrorCode TradingServiceImpl::ApplyUpdate(
       break;
     case OrderUpdateKind::kFill:
       valid = !model::IsTerminalOrderState(old.state) &&
-              !next.broker_order_id.empty() &&
+              !next.adapter_order_id.empty() &&
               next.state == (next.cumulative_filled_qty == old.original_qty
                                  ? OrderState::kFilled
                                  : OrderState::kWorking);
@@ -783,8 +786,10 @@ ErrorCode TradingServiceImpl::ApplyUpdate(
   size_t fill_slot = 0;
   if (message.has_fill) {
     const auto& fill = message.fill;
-    if (fill.client_order_id != id || fill.instrument_id != old.instrument_id ||
-        fill.side != old.side || fill.broker_order_id != next.broker_order_id ||
+    if (fill.strategy_order_id != id ||
+        fill.client_order_id != next.client_order_id ||
+        fill.instrument_id != old.instrument_id || fill.side != old.side ||
+        fill.adapter_order_id != next.adapter_order_id ||
         fill.position_effect != old.position_effect ||
         fill.execution_id.empty() || fill.price <= 0 || fill.quantity <= 0 ||
         fill.quantity > old.original_qty - old.cumulative_filled_qty ||
@@ -802,17 +807,17 @@ ErrorCode TradingServiceImpl::ApplyUpdate(
     fill_slot = ExecutionHash(id, fill.execution_id);
     while (s.fill_lookup[fill_slot] != 0) {
       const auto& previous = s.fills[s.fill_lookup[fill_slot] - 1];
-      if (previous.client_order_id == id &&
+      if (previous.strategy_order_id == id &&
           previous.execution_id == fill.execution_id) {
         return Fail(ErrorCode::kCorrupt, "remote execution ID repeated");
       }
       fill_slot = (fill_slot + 1) & (kExecutionLookupCapacity - 1);
     }
   }
-  if (old.broker_order_id.empty() && !next.broker_order_id.empty()) {
+  if (old.adapter_order_id.empty() && !next.adapter_order_id.empty()) {
     for (size_t index = 0; index < s.order_count; ++index) {
       if (index != id.value - 1 &&
-          s.orders[index].snapshot.broker_order_id == next.broker_order_id) {
+          s.orders[index].snapshot.adapter_order_id == next.adapter_order_id) {
         return Fail(ErrorCode::kCorrupt, "broker ID belongs to another order");
       }
     }

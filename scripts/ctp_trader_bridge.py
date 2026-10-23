@@ -689,7 +689,7 @@ class TraderSession:
         order.cumulative += quantity
         order.state = 2 if order.cumulative == order.request["quantity"] else 1
         execution = hashlib.sha256("\0".join(key).encode("utf-8")).hexdigest()
-        fill = {"client_order_id": order.client_id, "broker_order_id": order.broker_id,
+        fill = {"client_order_id": order.client_id, "adapter_order_id": order.broker_id,
                 "execution_id": execution, "instrument_id": self.instrument.instrument_id,
                 "side": side, "price": price(row["Price"], self.instrument),
                 "quantity": quantity, "event_time_ns": 0,
@@ -699,7 +699,7 @@ class TraderSession:
         self._finish_terminal(order)
 
     def _snapshot(self, order):
-        return {"client_order_id": order.client_id, "broker_order_id": order.broker_id,
+        return {"client_order_id": order.client_id, "adapter_order_id": order.broker_id,
                 "instrument_id": self.instrument.instrument_id,
                 "side": order.request["side"], "limit_price": order.request["limit_price"],
                 "original_qty": order.request["quantity"],
@@ -944,9 +944,9 @@ def serve(listener, session, instrument, token, interrupted):
             if welcomed and commands:
                 command = commands.popleft()
                 if command["type"] == wire.NEW_ORDER:
-                    session.submit(command["order_id"], command["request"])
+                    session.submit(command["client_order_id"], command["request"])
                 elif command["type"] == wire.CANCEL_ORDER:
-                    session.cancel(command["order_id"], command["cancel_id"], command["broker_order_id"])
+                    session.cancel(command["client_order_id"], command["cancel_id"], command["adapter_order_id"])
                 else:
                     session.stop()
             if welcomed and session.drained:

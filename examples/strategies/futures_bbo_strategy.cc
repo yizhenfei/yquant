@@ -27,7 +27,6 @@
 namespace {
 
 using yquant::base::ErrorCode;
-using yquant::model::ClientOrderId;
 using yquant::model::Fill;
 using yquant::model::FuturesAccountSnapshot;
 using yquant::model::FuturesPositionBucket;
@@ -44,6 +43,7 @@ using yquant::model::OrderUpdateKind;
 using yquant::model::PositionEffect;
 using yquant::model::QuoteFlag;
 using yquant::model::QuoteTick;
+using yquant::model::StrategyOrderId;
 using yquant::strategy::ConfigError;
 using yquant::strategy::Strategy;
 using yquant::strategy::StrategyConfig;
@@ -288,13 +288,13 @@ class FuturesBboStrategy final : public Strategy {
   ErrorCode OnOrderUpdate(StrategyContext& context,
                           const OrderUpdate& update) noexcept override {
     OrderSnapshot order;
-    if (!context.trading().TryGetOrder(update.order.client_order_id, order) ||
+    if (!context.trading().TryGetOrder(update.order.strategy_order_id, order) ||
         order != update.order || order.instrument_id != instrument_.id ||
         (order.side != OrderSide::kBuy && order.side != OrderSide::kSell)) {
       return ErrorCode::kCorrupt;
     }
     auto& side = sides_[order.side == OrderSide::kBuy ? 0 : 1];
-    const bool matched = side.id == order.client_order_id;
+    const bool matched = side.id == order.strategy_order_id;
     if (matched && IsTerminalOrderState(order.state)) {
       side.id = {};
     }
@@ -318,10 +318,10 @@ class FuturesBboStrategy final : public Strategy {
                    const Fill& fill) noexcept override {
     OrderSnapshot order;
     if (fill.instrument_id != instrument_.id || fill.quantity <= 0 ||
-        !context.trading().TryGetOrder(fill.client_order_id, order) ||
+        !context.trading().TryGetOrder(fill.strategy_order_id, order) ||
         order.side != fill.side ||
         order.position_effect != fill.position_effect ||
-        order.broker_order_id != fill.broker_order_id) {
+        order.adapter_order_id != fill.adapter_order_id) {
       return ErrorCode::kCorrupt;
     }
     if (fills_ == kMaxCounter ||
@@ -390,7 +390,7 @@ class FuturesBboStrategy final : public Strategy {
 
  private:
   struct Side {
-    ClientOrderId id;
+    StrategyOrderId id;
     uint64_t retry = 0;
     // Retained after terminal orders to track submission of both directions.
     bool ever_submitted = false;
@@ -497,7 +497,7 @@ class FuturesBboStrategy final : public Strategy {
     }
     if (!context.trading().TryGetOrder(sides_[index].id, order) ||
         order.instrument_id != instrument_.id ||
-        order.client_order_id != sides_[index].id ||
+        order.strategy_order_id != sides_[index].id ||
         order.side != (index == 0 ? OrderSide::kBuy : OrderSide::kSell) ||
         order.original_qty <= 0 || order.original_qty > config_.quote_qty() ||
         order.leaves_qty < 0 || order.leaves_qty > order.original_qty ||

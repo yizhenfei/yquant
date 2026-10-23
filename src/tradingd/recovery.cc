@@ -24,9 +24,9 @@ static_assert((kFillBuckets & (kFillBuckets - 1)) == 0);
 static_assert(kMaxRecoveredBrokerFills < UINT16_MAX);
 static_assert(kMaxRecoveryIdentities <= UINT16_MAX);
 
-bool ValidKind(ExternalRequestKind kind) noexcept {
-  return kind == ExternalRequestKind::kNewOrder ||
-         kind == ExternalRequestKind::kCancel;
+bool ValidKind(AdapterRequestKind kind) noexcept {
+  return kind == AdapterRequestKind::kNewOrder ||
+         kind == AdapterRequestKind::kCancel;
 }
 
 uint64_t Hash(std::string_view value,
@@ -112,7 +112,7 @@ bool ValidOrder(const BrokerRecoveryOrder& order,
       order.cumulative_filled_qty > request.quantity ||
       order.fact_sequence == 0 || order.fact_sequence > cut ||
       (order.state != model::OrderState::kRejected &&
-       order.broker_order_id.empty())) {
+       order.adapter_order_id.empty())) {
     return false;
   }
   if (!FitsNotional(request.limit_price, request.quantity,
@@ -135,7 +135,7 @@ bool ValidOrder(const BrokerRecoveryOrder& order,
 bool SameOrder(const BrokerRecoveryOrder& left,
                const BrokerRecoveryOrder& right) noexcept {
   return left.request_key == right.request_key &&
-         left.broker_order_id == right.broker_order_id &&
+         left.adapter_order_id == right.adapter_order_id &&
          left.request.instrument_id == right.request.instrument_id &&
          left.request.side == right.request.side &&
          left.request.limit_price == right.request.limit_price &&
@@ -149,7 +149,7 @@ bool SameOrder(const BrokerRecoveryOrder& left,
 bool SameFill(const BrokerRecoveryFill& left,
               const BrokerRecoveryFill& right) noexcept {
   return left.request_key == right.request_key &&
-         left.broker_order_id == right.broker_order_id &&
+         left.adapter_order_id == right.adapter_order_id &&
          left.execution_id == right.execution_id &&
          left.instrument_id == right.instrument_id && left.side == right.side &&
          left.price == right.price && left.quantity == right.quantity &&
@@ -165,8 +165,8 @@ bool ValidFill(const BrokerRecoveryFill& fill, const BrokerRecoveryOrder& order,
   return instrument != nullptr &&
          fill.position_effect == model::PositionEffect::kNone &&
          FitsNotional(fill.price, fill.quantity, instrument->price_decimals) &&
-         !fill.execution_id.empty() && !fill.broker_order_id.empty() &&
-         fill.broker_order_id == order.broker_order_id &&
+         !fill.execution_id.empty() && !fill.adapter_order_id.empty() &&
+         fill.adapter_order_id == order.adapter_order_id &&
          fill.instrument_id == order.request.instrument_id &&
          fill.side == order.request.side && fill.price > 0 &&
          fill.quantity > 0 && fill.quantity <= order.request.quantity &&
@@ -188,7 +188,7 @@ struct Workspace {
   std::array<uint32_t, kMaxRecoveredBrokerFills> fill_rows;
   std::array<uint16_t, kMaxRecoveredBrokerFills> fill_orders;
   std::array<uint16_t, kMaxRecoveredBrokerOrders> owners;
-  std::array<ExternalRequestKey, kMaxRecoveredBrokerOrders> keys;
+  std::array<AdapterRequestKey, kMaxRecoveredBrokerOrders> keys;
   std::array<int64_t, kMaxRecoveredBrokerOrders> quantities = {};
   size_t order_count = 0;
   size_t fill_count = 0;
@@ -209,9 +209,9 @@ static_assert(sizeof(Workspace) < 160 * 1024);
 
 }  // namespace
 
-base::Status EncodeExternalRequestKey(
-    uint64_t namespace_id, ExternalRequestKind kind, uint64_t sequence,
-    char (&output)[kExternalRequestKeyBytes + 1]) noexcept {
+base::Status EncodeAdapterRequestKey(
+    uint64_t namespace_id, AdapterRequestKind kind, uint64_t sequence,
+    char (&output)[kAdapterRequestKeyBytes + 1]) noexcept {
   if (namespace_id == 0 || sequence == 0 || !ValidKind(kind)) {
     return {base::ErrorCode::kInvalidArgument, {}};
   }
@@ -221,7 +221,7 @@ base::Status EncodeExternalRequestKey(
     bytes[9 + index] = static_cast<unsigned char>(sequence >> (56 - 8 * index));
   }
   bytes[8] = static_cast<unsigned char>(kind);
-  char result[kExternalRequestKeyBytes + 1];
+  char result[kAdapterRequestKeyBytes + 1];
   uint32_t accumulator = 0;
   unsigned bits = 0;
   size_t size = 0;
@@ -241,9 +241,9 @@ base::Status EncodeExternalRequestKey(
   return {};
 }
 
-base::Status DecodeExternalRequestKey(std::string_view input,
-                                      ExternalRequestKey& output) noexcept {
-  if (input.size() != kExternalRequestKeyBytes) {
+base::Status DecodeAdapterRequestKey(std::string_view input,
+                                     AdapterRequestKey& output) noexcept {
+  if (input.size() != kAdapterRequestKeyBytes) {
     return {base::ErrorCode::kCorrupt, {}};
   }
   std::array<unsigned char, kRequestIdentityBytes> bytes{};
@@ -269,12 +269,12 @@ base::Status DecodeExternalRequestKey(std::string_view input,
   if (size != bytes.size() || (accumulator & ((1U << bits) - 1)) != 0) {
     return {base::ErrorCode::kCorrupt, {}};
   }
-  ExternalRequestKey key;
+  AdapterRequestKey key;
   for (unsigned index = 0; index < 8; ++index) {
     key.namespace_id = (key.namespace_id << 8) | bytes[index];
     key.sequence = (key.sequence << 8) | bytes[9 + index];
   }
-  key.kind = static_cast<ExternalRequestKind>(bytes[8]);
+  key.kind = static_cast<AdapterRequestKind>(bytes[8]);
   if (key.namespace_id == 0 || key.sequence == 0 || !ValidKind(key.kind)) {
     return {base::ErrorCode::kCorrupt, {}};
   }
@@ -358,9 +358,9 @@ base::Status BuildRecoveredBrokerState(
   Workspace work;
   for (size_t row = 0; row < view.orders.size(); ++row) {
     const auto& order = view.orders[row];
-    ExternalRequestKey key;
-    if (!DecodeExternalRequestKey(order.request_key.view(), key).ok() ||
-        key.kind != ExternalRequestKind::kNewOrder) {
+    AdapterRequestKey key;
+    if (!DecodeAdapterRequestKey(order.request_key.view(), key).ok() ||
+        key.kind != AdapterRequestKind::kNewOrder) {
       return fail(BrokerRecoveryError::kInvalidIdentity);
     }
     if (!ValidOrder(order, instruments, view.consistent_cut)) {
@@ -387,13 +387,13 @@ base::Status BuildRecoveredBrokerState(
       return fail(BrokerRecoveryError::kCapacityExceeded,
                   base::ErrorCode::kResourceExhausted);
     }
-    if (!order.broker_order_id.empty()) {
+    if (!order.adapter_order_id.empty()) {
       auto broker_bucket =
-          Hash(order.broker_order_id.view()) & (kOrderBuckets - 1);
+          Hash(order.adapter_order_id.view()) & (kOrderBuckets - 1);
       while (work.broker_lookup[broker_bucket] != 0) {
         const auto other = work.broker_lookup[broker_bucket] - 1;
-        if (view.orders[work.order_rows[other]].broker_order_id ==
-            order.broker_order_id) {
+        if (view.orders[work.order_rows[other]].adapter_order_id ==
+            order.adapter_order_id) {
           return fail(BrokerRecoveryError::kConflictingOrder);
         }
         broker_bucket = (broker_bucket + 1) & (kOrderBuckets - 1);

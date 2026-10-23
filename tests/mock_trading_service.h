@@ -96,7 +96,7 @@ class MockTradingService final : public trading::TradingService {
     return broker_managed;
   }
   base::ErrorCode SubmitOrder(const model::OrderRequest& request,
-                              model::ClientOrderId& out) noexcept override {
+                              model::StrategyOrderId& out) noexcept override {
     if (!accepting_orders()) {
       return base::ErrorCode::kInvalidState;
     }
@@ -108,7 +108,7 @@ class MockTradingService final : public trading::TradingService {
     }
     requests.push_back(request);
     model::OrderSnapshot order;
-    order.client_order_id = {orders_.size() + 1};
+    order.strategy_order_id = {orders_.size() + 1};
     order.instrument_id = request.instrument_id;
     order.side = request.side;
     order.position_effect = request.position_effect;
@@ -117,10 +117,10 @@ class MockTradingService final : public trading::TradingService {
     order.state = model::OrderState::kPendingNew;
     orders_.push_back(order);
     attempted_.push_back(false);
-    out = order.client_order_id;
+    out = order.strategy_order_id;
     return base::ErrorCode::kOk;
   }
-  base::ErrorCode CancelOrder(model::ClientOrderId id) noexcept override {
+  base::ErrorCode CancelOrder(model::StrategyOrderId id) noexcept override {
     if (!accepting_orders()) {
       return base::ErrorCode::kInvalidState;
     }
@@ -136,7 +136,7 @@ class MockTradingService final : public trading::TradingService {
     order.cancel_request_id = {static_cast<uint64_t>(cancel_calls)};
     return base::ErrorCode::kOk;
   }
-  bool TryGetOrder(model::ClientOrderId id,
+  bool TryGetOrder(model::StrategyOrderId id,
                    model::OrderSnapshot& out) const noexcept override {
     if (!initialized_ || id.value == 0 || id.value > orders_.size()) {
       return false;
@@ -210,7 +210,7 @@ class MockTradingService final : public trading::TradingService {
       return false;
     }
     const auto id =
-        events[next_event_].dispatch.update.order.client_order_id.value;
+        events[next_event_].dispatch.update.order.strategy_order_id.value;
     return id != 0 && id <= attempted_.size() && attempted_[id - 1] &&
            events[next_event_].deadline <= now;
   }
@@ -242,7 +242,7 @@ class MockTradingService final : public trading::TradingService {
       return {};
     }
     const auto& next = events[next_event_];
-    const auto id = next.dispatch.update.order.client_order_id.value;
+    const auto id = next.dispatch.update.order.strategy_order_id.value;
     if (id == 0 || id > orders_.size()) {
       return {base::ErrorCode::kCorrupt, {}};
     }

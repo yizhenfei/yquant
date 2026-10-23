@@ -248,13 +248,14 @@ void StrategyRunner::EndCallback() noexcept {
 }
 
 void StrategyRunner::SetOrderError(base::Status status, const char* stage,
-                                   const char* detail, model::ClientOrderId id,
+                                   const char* detail,
+                                   model::StrategyOrderId id,
                                    uint64_t sequence) noexcept {
   if (!TryRecordFailure(status, stage)) {
     return;
   }
   ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_),
-                           "client_order_id={} sequence={}: {}", id.value,
+                           "strategy_order_id={} sequence={}: {}", id.value,
                            sequence, detail);
 }
 
@@ -374,7 +375,7 @@ bool StrategyRunner::DispatchTrading(
     if (code != base::ErrorCode::kOk) {
       SetOrderError({code, {}}, "order_update",
                     "strategy OnOrderUpdate returned an error",
-                    dispatch.update.order.client_order_id,
+                    dispatch.update.order.strategy_order_id,
                     dispatch.update.order.report_sequence);
       StopAfterError(true);
       return false;
@@ -386,7 +387,7 @@ bool StrategyRunner::DispatchTrading(
     EndCallback();
     if (code != base::ErrorCode::kOk) {
       SetOrderError({code, {}}, "fill", "strategy OnFill returned an error",
-                    dispatch.fill.client_order_id,
+                    dispatch.fill.strategy_order_id,
                     dispatch.update.order.report_sequence);
       StopAfterError(true);
       return false;
@@ -602,7 +603,7 @@ void StrategyRunner::ReportUnconfirmed() const noexcept {
         "yquant-strategyd: unconfirmed_order={} state={} instrument_id={} "
         "side={} price={} quantity={} filled={} leaves={} cancel_pending={} "
         "cancel_request={} effect={}\n",
-        order.client_order_id.value, static_cast<unsigned>(order.state),
+        order.strategy_order_id.value, static_cast<unsigned>(order.state),
         order.instrument_id.value, static_cast<unsigned>(order.side),
         order.limit_price, order.original_qty, order.cumulative_filled_qty,
         order.leaves_qty, static_cast<unsigned>(order.cancel_pending),

@@ -73,7 +73,7 @@ class BridgePeer {
           response.account.revision = 2;
           response.account.futures.available = 777;
           auto& order = response.update.order;
-          order.client_order_id = input.order_id;
+          order.client_order_id = input.client_order_id;
           order.instrument_id = input.request.instrument_id;
           order.side = input.request.side;
           order.limit_price = input.request.limit_price;
@@ -82,7 +82,7 @@ class BridgePeer {
           order.position_effect = input.request.position_effect;
           order.state = model::OrderState::kWorking;
           order.report_sequence = 1;
-          (void)order.broker_order_id.Assign("20261022/1/1/123");
+          (void)order.adapter_order_id.Assign("20261022/1/1/123");
           if (mismatched_report) {
             ++order.limit_price;
           }
@@ -91,7 +91,7 @@ class BridgePeer {
           response.type = MessageType::kOrderUpdate;
           response.account.revision = 3;
           auto& order = response.update.order;
-          order.client_order_id = input.order_id;
+          order.client_order_id = input.client_order_id;
           order.instrument_id = instrument_;
           order.side = model::OrderSide::kBuy;
           order.limit_price = 106785;
@@ -99,7 +99,7 @@ class BridgePeer {
           order.position_effect = model::PositionEffect::kOpen;
           order.state = model::OrderState::kCanceled;
           order.report_sequence = 2;
-          (void)order.broker_order_id.Assign("20261022/1/1/123");
+          (void)order.adapter_order_id.Assign("20261022/1/1/123");
           response.update.kind = model::OrderUpdateKind::kCanceled;
           response.update.cancel_request_id = input.cancel_id;
         } else if (input.type == MessageType::kStop) {
@@ -184,7 +184,7 @@ TradingConfig Config(uint16_t port) {
   return config;
 }
 
-TradingPollResult Wait(CtpTradingAdapter& adapter, TradingEvent& event) {
+TradingPollResult Wait(CtpTradingAdapter& adapter, model::TradingEvent& event) {
   for (size_t attempt = 0; attempt < 1000; ++attempt) {
     const auto now = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -207,7 +207,7 @@ TEST(CtpTradingAdapterTest, BrokerAccountReportsAndCancelUseActualWire) {
   ASSERT_TRUE(peer.Open());
   peer.SetInstrument(scope[0].id);
   peer.Start();
-  CtpTradingAdapter adapter(scope);
+  CtpTradingAdapter adapter(&scope);
   ASSERT_TRUE(adapter.Prepare(Config(peer.port())).ok());
   ASSERT_TRUE(adapter.Start(0).ok()) << adapter.error_detail();
   BrokerAccountSnapshot account;
@@ -218,14 +218,14 @@ TEST(CtpTradingAdapterTest, BrokerAccountReportsAndCancelUseActualWire) {
                                     1, model::PositionEffect::kOpen};
   ASSERT_TRUE(adapter.SendOrder({10}, request, 0).ok());
   EXPECT_FALSE(adapter.is_drained());
-  TradingEvent event;
+  model::TradingEvent event;
   ASSERT_EQ(Wait(adapter, event).state, TradingPollState::kEvent)
       << adapter.error_detail();
   EXPECT_EQ(event.kind, model::OrderUpdateKind::kAccepted);
   EXPECT_EQ(event.client_order_id.value, 10);
   ASSERT_TRUE(adapter.ReadBrokerAccountSnapshot(account).ok());
   EXPECT_EQ(account.account.available, 777);
-  ASSERT_TRUE(adapter.SendCancel({10}, event.broker_order_id, {7}, 0).ok());
+  ASSERT_TRUE(adapter.SendCancel({10}, event.adapter_order_id, {7}, 0).ok());
   ASSERT_EQ(Wait(adapter, event).state, TradingPollState::kEvent);
   EXPECT_EQ(event.kind, model::OrderUpdateKind::kCanceled);
   EXPECT_EQ(event.cancel_request_id.value, 7);
@@ -256,7 +256,7 @@ TEST(CtpTradingAdapterTest, MismatchedBrokerOrderFailsWithoutChangingOutput) {
   BridgePeer peer;
   ASSERT_TRUE(peer.Open());
   peer.Start(true);
-  CtpTradingAdapter adapter(scope);
+  CtpTradingAdapter adapter(&scope);
   ASSERT_TRUE(adapter.Prepare(Config(peer.port())).ok());
   ASSERT_TRUE(adapter.Start(0).ok());
   ASSERT_TRUE(adapter
@@ -265,7 +265,7 @@ TEST(CtpTradingAdapterTest, MismatchedBrokerOrderFailsWithoutChangingOutput) {
                               model::PositionEffect::kOpen},
                              0)
                   .ok());
-  TradingEvent output;
+  model::TradingEvent output;
   output.report_sequence = 999;
   EXPECT_EQ(Wait(adapter, output).state, TradingPollState::kError);
   EXPECT_EQ(output.report_sequence, 999);

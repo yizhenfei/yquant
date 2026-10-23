@@ -4,12 +4,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <cstddef>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string_view>
 
+#include "yquant/model/trading_event.h"
 #include "yquant/trading/trading_adapter.h"
 
 namespace yquant::trading {
@@ -25,17 +25,17 @@ enum class MockTradingMutationKind : uint8_t {
 };
 
 // Complete accepted operation, recorded immediately before the mock commits.
-// Only kSendOrder uses request/request_key; kSendCancel uses broker_order_id
+// Only kSendOrder uses request/request_key; kSendCancel uses adapter_order_id
 // and cancel_request_id; kReport owns the exact generated event, including UTC.
 struct MockTradingMutation {
   MockTradingMutationKind kind = MockTradingMutationKind::kSendOrder;
   uint64_t now = 0;
   model::ClientOrderId client_order_id;
   model::OrderRequest request;
-  model::BrokerOrderId request_key;
-  model::BrokerOrderId broker_order_id;
+  model::AdapterOrderId request_key;
+  model::AdapterOrderId adapter_order_id;
   model::CancelRequestId cancel_request_id;
-  TradingEvent event;
+  model::TradingEvent event;
 };
 
 // The callback borrows mutation only for this call, must not reenter the
@@ -72,10 +72,10 @@ class MockTradingAdapter final : public TradingAdapter {
                                        const model::OrderRequest& request,
                                        uint64_t now) noexcept override;
   [[nodiscard]] base::Status SendCancel(
-      model::ClientOrderId id, const model::BrokerOrderId& broker_order_id,
+      model::ClientOrderId id, const model::AdapterOrderId& adapter_order_id,
       model::CancelRequestId cancel_request_id, uint64_t now) noexcept override;
-  [[nodiscard]] TradingPollResult Poll(uint64_t now,
-                                       TradingEvent& out) noexcept override;
+  [[nodiscard]] TradingPollResult Poll(
+      uint64_t now, model::TradingEvent& out) noexcept override;
   std::optional<uint64_t> next_deadline() const noexcept override;
   bool is_drained() const noexcept override;
   [[nodiscard]] base::Status Stop() noexcept override;
@@ -85,11 +85,11 @@ class MockTradingAdapter final : public TradingAdapter {
   // owns both and serializes changes with every other adapter operation.
   void SetMutationObserver(MockTradingMutationObserver observer,
                            void* context) noexcept;
-  // Optional recoverable external key, copied into the order before acceptance.
-  // An empty key retains the normal session-local mock identity. Nonempty keys
-  // must be unique and contain at most 64 bytes. Nonempty keys or an installed
-  // observer require a cash account and equity requests with kNone position
-  // effect. Failure leaves state unchanged.
+  // Optional recoverable adapter request key, copied into the order before
+  // acceptance. An empty key retains the normal session-local mock identity.
+  // Nonempty keys must be unique and contain at most 64 bytes. Nonempty keys or
+  // an installed observer require a cash account and equity requests with kNone
+  // position effect. Failure leaves state unchanged.
   [[nodiscard]] base::Status SendOrderWithIdentity(
       model::ClientOrderId id, const model::OrderRequest& request,
       std::string_view request_key, uint64_t now) noexcept;
@@ -100,9 +100,9 @@ class MockTradingAdapter final : public TradingAdapter {
   // Restore requires Prepare/Start and compatible configuration, validates a
   // private candidate, and preserves existing state and saved_now on failure.
   // used changes only on success. Encoding may modify output before failure.
-  [[nodiscard]] base::Status EncodeState(std::span<std::byte> output,
-                                         size_t& used,
-                                         uint64_t now) const noexcept;
+  [[nodiscard]] base::Status EncodeState(uint64_t now,
+                                         std::span<std::byte> output,
+                                         size_t& used) const noexcept;
   [[nodiscard]] base::Status RestoreState(
       std::span<const std::byte> input, uint64_t now,
       uint64_t* saved_now = nullptr) noexcept;
@@ -124,14 +124,39 @@ class MockTradingAdapter final : public TradingAdapter {
   size_t recovery_event_count() const noexcept;
   [[nodiscard]] base::Status ReadRecoveryOrder(
       size_t index, model::OrderSnapshot& out,
-      model::BrokerOrderId* request_key = nullptr) const noexcept;
+      model::AdapterOrderId* request_key = nullptr) const noexcept;
   [[nodiscard]] base::Status ReadRecoveryFill(size_t index,
                                               model::Fill& out) const noexcept;
   [[nodiscard]] base::Status ReadRecoveryEvent(
-      size_t index, TradingEvent& out) const noexcept;
+      size_t index, model::TradingEvent& out) const noexcept;
 
  private:
   struct Storage;
+  struct PreparedReport;
+  // Builds the next scheduled event without changing orders or queued plans.
+  // A non-null replay supplies the recorded execution timestamp for validation.
+  base::Status PrepareScheduledReport(uint64_t now,
+                                      const model::TradingEvent* replay,
+                                      PreparedReport& report) noexcept;
+  // Builds one incremental fill and its subsequent scheduled step.
+  base::Status PrepareFillReport(uint64_t now,
+                                 const model::TradingEvent* replay,
+                                 PreparedReport& report) noexcept;
+  // Publishes an observer-approved event and advances the indexed plan heap.
+  void CommitScheduledReport(uint64_t now,
+                             const PreparedReport& report) noexcept;
+  struct RestoreCandidate;
+  // Reads and checks configuration in a private restore candidate.
+  base::Status ReadRestoreConfig(RestoreCandidate& context) noexcept;
+  // Reads orders and rebuilds their identity lookups without publishing them.
+  base::Status ReadRestoreOrders(RestoreCandidate& context) noexcept;
+  // Restores scheduled deadlines in the supplied monotonic clock domain.
+  base::Status ReadRestorePlans(uint64_t now,
+                                RestoreCandidate& context) noexcept;
+  // Replays emitted history to validate sequence, quantity and state facts.
+  base::Status ReadRestoreHistory(RestoreCandidate& context) noexcept;
+  // Reconciles latest order state and next steps with validated report history.
+  base::Status ValidateRestoredOrders(RestoreCandidate& context) noexcept;
   enum class State { kUnprepared, kPrepared, kActive, kFailed, kStopped };
 
   // Copies a failure without changing state or caller output.
@@ -141,8 +166,8 @@ class MockTradingAdapter final : public TradingAdapter {
                               const char* detail) noexcept;
   // Poll implementation optionally checks an exact replay event before commit;
   // replay bypasses the observer and uses its recorded UTC fill timestamp.
-  TradingPollResult PollImpl(uint64_t now, TradingEvent& out,
-                             const TradingEvent* replay) noexcept;
+  TradingPollResult PollImpl(uint64_t now, const model::TradingEvent* replay,
+                             model::TradingEvent& out) noexcept;
   base::Status Observe(const MockTradingMutation& mutation) noexcept;
 
   std::unique_ptr<Storage> storage_;

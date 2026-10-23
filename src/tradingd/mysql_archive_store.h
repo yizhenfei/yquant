@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <cstddef>
+#include <memory>
 #include <span>
 
 #include "tradingd/journal.h"
@@ -47,7 +47,7 @@ struct MysqlArchiveProgress {
 // progress.
 class MysqlArchiveStore {
  public:
-  MysqlArchiveStore() noexcept = default;
+  MysqlArchiveStore() noexcept;
   ~MysqlArchiveStore() noexcept;
   MysqlArchiveStore(const MysqlArchiveStore&) = delete;
   MysqlArchiveStore& operator=(const MysqlArchiveStore&) = delete;
@@ -101,12 +101,21 @@ class MysqlArchiveStore {
 
  private:
   struct Storage;
+  // Writes retained sessions, checking immutable identity on duplicate keys.
+  base::Status WriteSessions(const ArchiveProjection& projection) noexcept;
+  // Upserts changed orders after checking immutable ownership and request data.
+  base::Status WriteOrders(const ArchiveProjection& projection) noexcept;
+  // Inserts unique executions or checks rediscovered baseline business facts.
+  base::Status WriteFills(const ArchiveProjection& projection) noexcept;
+  // Replaces cash and position views inside the current archive transaction.
+  base::Status WriteAccount(const ArchiveProjection& projection) noexcept;
+  // Writes business projections in dependency order within the transaction.
   [[nodiscard]] base::Status WriteProjection(
       const ArchiveProjection& projection) noexcept;
   [[nodiscard]] base::Status Fail(base::ErrorCode code, const char* detail,
                                   bool retry = false) noexcept;
   [[nodiscard]] base::Status DatabaseFailure() noexcept;
-  Storage* storage_ = nullptr;
+  std::unique_ptr<Storage> storage_;
   bool (*cancelled_)(void*) noexcept = nullptr;
   void* cancellation_context_ = nullptr;
   bool retriable_ = false;

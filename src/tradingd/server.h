@@ -19,7 +19,8 @@ namespace yquant::tradingd {
 // remain retained across restarts, including after EOF.
 class Server {
  public:
-  explicit Server(const base::MonotonicClock& clock) noexcept;
+  // Borrows a non-null clock that must outlive this server.
+  explicit Server(const base::MonotonicClock* clock) noexcept;
   ~Server() noexcept;
   Server(const Server&) = delete;
   Server& operator=(const Server&) = delete;
@@ -63,6 +64,25 @@ class Server {
   [[nodiscard]] base::Status Handle(size_t index,
                                     const trading::Message& message,
                                     uint64_t now) noexcept;
+  // Authenticates and persists a new client before sending its account view.
+  base::Status HandleHello(size_t index,
+                           const trading::Message& message) noexcept;
+  // Validates the simulation publisher and updates quote-driven valuations.
+  base::Status HandleSimulationQuote(size_t index,
+                                     const trading::Message& message,
+                                     uint64_t now) noexcept;
+  // Submits a client-local order or persists and sends its rejection.
+  base::Status HandleNewOrder(size_t index, const trading::Message& message,
+                              uint64_t now) noexcept;
+  // Maps a client cancel to its core order or sends an explicit rejection.
+  base::Status HandleCancelOrder(size_t index,
+                                 const trading::Message& message) noexcept;
+  // Accepts available client slots without reusing retained identities.
+  base::Status AcceptClients(uint64_t now) noexcept;
+  // Reads a bounded request batch and sends due heartbeats for one client.
+  base::Status ServiceClient(size_t index, uint64_t now) noexcept;
+  // Flushes queued messages and disconnects clients past their stop deadline.
+  void FlushClients(uint64_t now) noexcept;
   // Commits a bounded broker batch, then routes reports and committed views.
   [[nodiscard]] base::Status Dispatch(uint64_t now) noexcept;
   // Scans a bounded round-robin batch; existing user cancels finish first.

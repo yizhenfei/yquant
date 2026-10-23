@@ -529,9 +529,9 @@ class SocketTests(unittest.TestCase):
             client, thread, errors = self.start_server(s)
             generation = self.hello(client, s)
             client.sendall(wire.encode_message(dict(type=wire.NEW_ORDER, generation=generation,
-                           sequence=2, order_id=1, request=request(s))) +
+                           sequence=2, client_order_id=1, request=request(s))) +
                            wire.encode_message(dict(type=wire.CANCEL_ORDER, generation=generation,
-                           sequence=3, order_id=1, cancel_id=8, broker_order_id=b"")))
+                           sequence=3, client_order_id=1, cancel_id=8, adapter_order_id=b"")))
             self.assertTrue(canceled.wait(1), "cancel was blocked by the in-flight query")
             self.assertEqual(s.cycle["inflight"][0], "TradingAccount")
             self.assertEqual([call[0] for call in api.calls],

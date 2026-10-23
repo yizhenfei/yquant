@@ -1,6 +1,9 @@
 #ifndef YQUANT_MODEL_QUOTE_TICK_H_
 #define YQUANT_MODEL_QUOTE_TICK_H_
 
+// Defines complete best-bid/ask snapshots and their validity flags for
+// publication from market-data sources to strategies.
+
 #include <stdint.h>
 
 #include <type_traits>
@@ -31,7 +34,8 @@ constexpr bool HasQuoteFlag(uint8_t flags, QuoteFlag flag) noexcept {
   return (flags & static_cast<uint8_t>(flag)) != 0;
 }
 
-// Sets flag when enabled is true and clears it otherwise; preserves other bits.
+// Sets `flag` in `flags` when enabled, or clears it otherwise. Preserves all
+// other bits in the existing mask.
 constexpr void SetQuoteFlag(uint8_t& flags, QuoteFlag flag,
                             bool enabled = true) noexcept {
   const auto mask = static_cast<uint8_t>(flag);
@@ -45,7 +49,8 @@ constexpr void SetQuoteFlag(uint8_t& flags, QuoteFlag flag,
 // Self-contained, copyable top-of-book snapshot from one configured source.
 // The host validates it before publishing it to a strategy. Sequence numbers
 // increase within (source_id, instrument_id), without resetting during a run.
-// This is a complete one-level view, not a complete order-book snapshot.
+// Each tick replaces both sides of the previous one-level view. It carries
+// no depth beyond the best bid and ask.
 struct QuoteTick {
   SourceId source_id;
   InstrumentId instrument_id;
@@ -62,10 +67,8 @@ struct QuoteTick {
   int64_t bid_qty = 0;
   int64_t ask_price = 0;
   int64_t ask_qty = 0;
-  // For a snapshot with both sides present:
-  //   SetQuoteFlag(flags, QuoteFlag::kBidValid);
-  //   SetQuoteFlag(flags, QuoteFlag::kAskValid);
-  // Test presence with HasQuoteFlag(flags, QuoteFlag::kBidValid).
+  // QuoteFlag mask. Side presence is determined by validity bits, not prices;
+  // unsupported bits must be zero.
   uint8_t flags = 0;
 
   friend constexpr bool operator==(const QuoteTick&,

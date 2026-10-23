@@ -4,12 +4,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <cstddef>
+#include <memory>
 #include <optional>
 #include <span>
 
 #include "yquant/base/monotonic_clock.h"
 #include "yquant/md/instrument_scope.h"
+#include "yquant/model/trading_event.h"
 #include "yquant/trading/trading_adapter.h"
 #include "yquant/trading/trading_dispatch.h"
 #include "yquant/trading/trading_limits.h"
@@ -25,9 +26,10 @@ namespace yquant::trading {
 // No operation invokes strategies.
 class TradingEngine final {
  public:
-  TradingEngine(const base::MonotonicClock& clock,
-                const md::InstrumentScope& instruments,
-                TradingAdapter& adapter) noexcept;
+  // Borrows non-null dependencies; all must outlive this engine.
+  TradingEngine(const base::MonotonicClock* clock,
+                const md::InstrumentScope* instruments,
+                TradingAdapter* adapter) noexcept;
   ~TradingEngine() noexcept;
   TradingEngine(const TradingEngine&) = delete;
   TradingEngine& operator=(const TradingEngine&) = delete;
@@ -95,7 +97,7 @@ class TradingEngine final {
 
   // Commits a supplied normalized report, preserving state and out on failure.
   // Serial access and the runtime's monotonic clock domain are required.
-  [[nodiscard]] base::ErrorCode ApplyEvent(const TradingEvent& event,
+  [[nodiscard]] base::ErrorCode ApplyEvent(const model::TradingEvent& event,
                                            TradingDispatch& out) noexcept;
   // Commits one queued CanceledBeforeSend event. Empty input returns
   // kInvalidState without changing out or account/order facts.
@@ -158,6 +160,48 @@ class TradingEngine final {
 
  private:
   struct Storage;
+  struct Submission;
+  struct ReportTransaction;
+  // Validates units, account compatibility, capacity and cash arithmetic.
+  base::ErrorCode ValidateSubmission(const model::OrderRequest& request,
+                                     Submission& transaction) noexcept;
+  // Stages cash claims or atomically reserves simulated futures resources.
+  base::ErrorCode ReserveSubmission(const model::OrderRequest& request,
+                                    Submission& transaction) noexcept;
+  // Publishes an already journaled request, ownership slot and reservation.
+  void CommitSubmission(const model::OrderRequest& request,
+                        const Submission& transaction) noexcept;
+  // Validates report fields before duplicate suppression, preserving all state.
+  base::ErrorCode ValidateReportFields(const model::TradingEvent& event,
+                                       const model::OrderSnapshot& old,
+                                       uint64_t transaction_now) noexcept;
+  // Checks execution identity, instrument units, timestamps and limit price.
+  base::ErrorCode ValidateExecution(const model::TradingEvent& event,
+                                    const model::OrderSnapshot& old) noexcept;
+  // Stages the next order state and deduplication slots without committing.
+  base::ErrorCode PrepareOrderTransition(
+      const model::TradingEvent& event, size_t index, uint64_t transaction_now,
+      ReportTransaction& transaction) noexcept;
+  // Stages a unique execution and verifies cumulative quantity progression.
+  base::ErrorCode PrepareExecution(const model::TradingEvent& event,
+                                   size_t index,
+                                   ReportTransaction& transaction) noexcept;
+  // Resolves a matching cancel attempt and stages any retry deadline.
+  base::ErrorCode PrepareCancelResult(const model::TradingEvent& event,
+                                      size_t index, uint64_t transaction_now,
+                                      ReportTransaction& transaction) noexcept;
+  // Stages cash effects or applies an atomic simulated-futures transaction.
+  base::ErrorCode PrepareReportAccount(size_t index,
+                                       ReportTransaction& transaction) noexcept;
+  // Stages execution cash, holdings and reservation changes.
+  base::ErrorCode PrepareCashExecution(size_t index,
+                                       ReportTransaction& transaction) noexcept;
+  // Publishes a validated, journaled report; no remaining operation can fail.
+  void CommitReport(const model::TradingEvent& event, size_t index,
+                    ReportTransaction& transaction) noexcept;
+  // Revisits an already-scanned order on the next bounded stopping pass.
+  void ScheduleReportRescan(size_t index) noexcept;
+  // Appends a fact before publication, rejecting reentrant sink invocation.
   [[nodiscard]] base::ErrorCode BeforeCommit(TradingMutation& fact) noexcept;
   // Requires no account storage and closed requests. Validates initial cash
   // and distinct, known, unreserved positions before allocating. Failure keeps
@@ -177,8 +221,9 @@ class TradingEngine final {
   // Copies diagnostics without changing business facts. Detail must not alias
   // this runtime's diagnostic buffer.
   base::ErrorCode Fail(base::ErrorCode code, const char* detail) noexcept;
-  base::Status Fail(base::Status status, const char* stage,
-                    const char* detail) noexcept;
+  // Records the adapter stage and diagnostic for a failed lifecycle operation.
+  base::Status FailStage(base::Status status, const char* stage,
+                         const char* detail) noexcept;
 
   TradingMutationSink* sink_ = nullptr;
   bool replaying_ = false;
@@ -189,7 +234,7 @@ class TradingEngine final {
   const base::MonotonicClock& clock_;
   const md::InstrumentScope& instruments_;
   TradingAdapter& adapter_;
-  Storage* storage_ = nullptr;
+  std::unique_ptr<Storage> storage_;
   bool prepared_ = false;
   bool accept_requests_ = false;
   bool stopping_ = false;

@@ -49,7 +49,7 @@ struct SimulatedFuturesExchange::Storage {
   enum class Kind { kAccepted, kFill, kCancel };
   struct Order {
     model::ClientOrderId id;
-    model::BrokerOrderId broker;
+    model::AdapterOrderId broker;
     model::OrderRequest request;
     int64_t matched = 0;
     int64_t published = 0;
@@ -329,7 +329,7 @@ base::Status SimulatedFuturesExchange::SendOrder(
 }
 
 base::Status SimulatedFuturesExchange::SendCancel(
-    model::ClientOrderId id, const model::BrokerOrderId& broker,
+    model::ClientOrderId id, const model::AdapterOrderId& broker,
     model::CancelRequestId cancel, uint64_t now) noexcept {
   if (state_ != State::kActive) {
     return Error(base::ErrorCode::kInvalidState, "exchange is not active");
@@ -427,8 +427,8 @@ base::Status SimulatedFuturesExchange::OnQuote(const model::QuoteTick& quote,
   return {};
 }
 
-TradingPollResult SimulatedFuturesExchange::Poll(uint64_t now,
-                                                 TradingEvent& out) noexcept {
+TradingPollResult SimulatedFuturesExchange::Poll(
+    uint64_t now, model::TradingEvent& out) noexcept {
   if (state_ != State::kActive) {
     return {TradingPollState::kError,
             Error(base::ErrorCode::kInvalidState, "exchange is not active")};
@@ -444,9 +444,9 @@ TradingPollResult SimulatedFuturesExchange::Poll(uint64_t now,
     return PollError(base::ErrorCode::kResourceExhausted,
                      "exchange report identity exhausted");
   }
-  TradingEvent event;
+  model::TradingEvent event;
   event.client_order_id = pending.id;
-  event.broker_order_id = pending.broker;
+  event.adapter_order_id = pending.broker;
   event.report_sequence = pending.sequence + 1;
   event.receive_time_ns = now;
   event.cumulative_filled_qty = pending.published;
@@ -458,7 +458,7 @@ TradingPollResult SimulatedFuturesExchange::Poll(uint64_t now,
     }
     event.kind = model::OrderUpdateKind::kFill;
     event.fill.client_order_id = pending.id;
-    event.fill.broker_order_id = pending.broker;
+    event.fill.adapter_order_id = pending.broker;
     event.fill.instrument_id = pending.request.instrument_id;
     event.fill.side = pending.request.side;
     event.fill.position_effect = pending.request.position_effect;

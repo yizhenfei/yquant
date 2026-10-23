@@ -2,7 +2,6 @@
 #include <stdint.h>
 
 #include <array>
-#include <cstddef>
 #include <span>
 #include <string>
 #include <vector>
@@ -29,7 +28,7 @@ bool Start(MockTradingAdapter& adapter,
 std::vector<std::byte> Snapshot(MockTradingAdapter& adapter, uint64_t now) {
   std::vector<std::byte> bytes(64 * 1024);
   size_t used = 0;
-  if (!adapter.EncodeState(bytes, used, now).ok()) {
+  if (!adapter.EncodeState(now, bytes, used).ok()) {
     return {};
   }
   bytes.resize(used);
@@ -75,9 +74,9 @@ TEST(MockTradingPersistenceTest, SnapshotRestoresPartialFillAndPendingCancel) {
   ASSERT_TRUE(
       source.SendOrderWithIdentity({7}, Request(), "session-A/order-9", 0)
           .ok());
-  TradingEvent event;
+  model::TradingEvent event;
   ASSERT_EQ(source.Poll(kInterval, event).state, TradingPollState::kEvent);
-  const auto broker = event.broker_order_id;
+  const auto broker = event.adapter_order_id;
   ASSERT_TRUE(source.SendCancel({7}, broker, {11}, kInterval).ok());
   ASSERT_EQ(source.Poll(2 * kInterval, event).state, TradingPollState::kEvent);
   ASSERT_EQ(event.kind, model::OrderUpdateKind::kFill);
@@ -97,7 +96,7 @@ TEST(MockTradingPersistenceTest, SnapshotRestoresPartialFillAndPendingCancel) {
   EXPECT_EQ(recovered.recovery_event_count(), 2U);
   EXPECT_EQ(recovered.recovery_fill_count(), 1U);
   model::OrderSnapshot order;
-  model::BrokerOrderId key;
+  model::AdapterOrderId key;
   ASSERT_TRUE(recovered.ReadRecoveryOrder(0, order, &key).ok());
   EXPECT_EQ(key.view(), "session-A/order-9");
   EXPECT_EQ(order.cumulative_filled_qty, 4);
@@ -131,9 +130,9 @@ TEST(MockTradingPersistenceTest, ReplayPreservesExactEventsAndSuppressesSink) {
   source.SetMutationObserver(Observer::Observe, &source_observer);
   ASSERT_TRUE(
       source.SendOrderWithIdentity({1}, Request(1), "unique-request", 0).ok());
-  TradingEvent event;
+  model::TradingEvent event;
   ASSERT_EQ(source.Poll(kInterval, event).state, TradingPollState::kEvent);
-  const auto broker = event.broker_order_id;
+  const auto broker = event.adapter_order_id;
   ASSERT_EQ(source.Poll(2 * kInterval, event).state, TradingPollState::kEvent);
   const auto utc = event.fill.event_time_ns;
   ASSERT_TRUE(source.SendCancel({1}, broker, {3}, 2 * kInterval).ok());
@@ -199,7 +198,7 @@ TEST(MockTradingPersistenceTest, RejectedJournalLeavesEveryOperationUnchanged) {
   ASSERT_TRUE(adapter.SendOrder({1}, Request(), 0).ok());
   const auto before_report = Snapshot(adapter, kInterval);
   observer.fail = true;
-  TradingEvent event;
+  model::TradingEvent event;
   event.client_order_id = {99};
   EXPECT_EQ(adapter.Poll(kInterval, event).state, TradingPollState::kError);
   EXPECT_EQ(event.client_order_id.value, 99U);
@@ -209,11 +208,11 @@ TEST(MockTradingPersistenceTest, RejectedJournalLeavesEveryOperationUnchanged) {
   const auto accepted = Snapshot(adapter, kInterval);
   observer.fail = true;
   EXPECT_FALSE(
-      adapter.SendCancel({1}, event.broker_order_id, {8}, kInterval).ok());
+      adapter.SendCancel({1}, event.adapter_order_id, {8}, kInterval).ok());
   EXPECT_EQ(Snapshot(adapter, kInterval), accepted);
   observer.fail = false;
   EXPECT_TRUE(
-      adapter.SendCancel({1}, event.broker_order_id, {8}, kInterval).ok());
+      adapter.SendCancel({1}, event.adapter_order_id, {8}, kInterval).ok());
 }
 
 TEST(MockTradingPersistenceTest, RejectsDamagedAndInvalidSnapshotAtomically) {
@@ -331,7 +330,7 @@ TEST(MockTradingPersistenceTest, InvalidReplayReportPreservesPendingPlan) {
   Observer observer;
   source.SetMutationObserver(Observer::Observe, &observer);
   ASSERT_TRUE(source.SendOrder({1}, Request(), 0).ok());
-  TradingEvent event;
+  model::TradingEvent event;
   ASSERT_EQ(source.Poll(kInterval, event).state, TradingPollState::kEvent);
   MockTradingAdapter replay;
   ASSERT_TRUE(Start(replay));
@@ -370,7 +369,7 @@ TEST(MockTradingPersistenceTest, RejectsUnrepresentablePositionEffects) {
   // be encoded as cash-only persistence while it contains such a request.
   ASSERT_TRUE(source.SendOrder({1}, mutation.request, 0).ok());
   std::vector<std::byte> state(kMaxMockTradingStateBytes);
-  EXPECT_EQ(source.EncodeState(state, used, 0).code,
+  EXPECT_EQ(source.EncodeState(0, state, used).code,
             base::ErrorCode::kUnsupported);
   EXPECT_EQ(used, 123U);
 }
@@ -389,7 +388,7 @@ TEST(MockTradingPersistenceTest, RejectsFuturesAccountPersistence) {
   ASSERT_TRUE(futures.Start(0).ok());
   std::vector<std::byte> state(kMaxMockTradingStateBytes);
   size_t used = 123;
-  EXPECT_EQ(futures.EncodeState(state, used, 0).code,
+  EXPECT_EQ(futures.EncodeState(0, state, used).code,
             base::ErrorCode::kUnsupported);
   EXPECT_EQ(used, 123U);
   uint64_t saved_now = 456;
@@ -412,7 +411,7 @@ TEST(MockTradingPersistenceTest, ReportCodecRejectsFuturesExecutionEffect) {
   Observer observer;
   source.SetMutationObserver(Observer::Observe, &observer);
   ASSERT_TRUE(source.SendOrder({1}, Request(), 0).ok());
-  TradingEvent event;
+  model::TradingEvent event;
   ASSERT_EQ(source.Poll(kInterval, event).state, TradingPollState::kEvent);
   ASSERT_EQ(source.Poll(2 * kInterval, event).state, TradingPollState::kEvent);
   ASSERT_EQ(event.kind, model::OrderUpdateKind::kFill);

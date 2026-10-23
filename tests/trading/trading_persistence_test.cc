@@ -4,7 +4,6 @@
 #include <stdint.h>
 
 #include <array>
-#include <cstddef>
 #include <cstring>
 #include <memory>
 #include <optional>
@@ -37,12 +36,12 @@ class Adapter final : public TradingAdapter {
     ++sends;
     return {};
   }
-  base::Status SendCancel(model::ClientOrderId, const model::BrokerOrderId&,
+  base::Status SendCancel(model::ClientOrderId, const model::AdapterOrderId&,
                           model::CancelRequestId, uint64_t) noexcept override {
     ++sends;
     return {};
   }
-  TradingPollResult Poll(uint64_t, TradingEvent&) noexcept override {
+  TradingPollResult Poll(uint64_t, model::TradingEvent&) noexcept override {
     return {};
   }
   std::optional<uint64_t> next_deadline() const noexcept override { return {}; }
@@ -95,21 +94,21 @@ class TradingPersistenceTest : public ::testing::Test {
     ledger.EndCallback();
     return id;
   }
-  TradingEvent Report(model::ClientOrderId id, uint64_t seq,
-                      model::OrderUpdateKind kind) const {
-    TradingEvent report;
+  model::TradingEvent Report(model::ClientOrderId id, uint64_t seq,
+                             model::OrderUpdateKind kind) const {
+    model::TradingEvent report;
     report.client_order_id = id;
-    EXPECT_EQ(report.broker_order_id.Assign("broker-1"), ErrorCode::kOk);
+    EXPECT_EQ(report.adapter_order_id.Assign("broker-1"), ErrorCode::kOk);
     report.report_sequence = seq;
     report.kind = kind;
     report.receive_time_ns = clock.now;
     return report;
   }
-  TradingEvent Fill(model::ClientOrderId id, uint64_t seq = 2) const {
+  model::TradingEvent Fill(model::ClientOrderId id, uint64_t seq = 2) const {
     auto report = Report(id, seq, model::OrderUpdateKind::kFill);
     report.cumulative_filled_qty = 30;
     report.fill.client_order_id = id;
-    report.fill.broker_order_id = report.broker_order_id;
+    report.fill.adapter_order_id = report.adapter_order_id;
     EXPECT_EQ(report.fill.execution_id.Assign("fill-1"), ErrorCode::kOk);
     report.fill.instrument_id = config.instruments[0].instrument.id;
     report.fill.side = model::OrderSide::kBuy;
@@ -171,7 +170,7 @@ TEST_F(TradingPersistenceTest, RejectedJournalPreservesOrderAndSendQueues) {
   EXPECT_TRUE(ledger.ProcessRequests(adapter, clock.now).ok());
   EXPECT_EQ(adapter.sends, 1U);
   EXPECT_EQ(sink.facts.back().kind, TradingMutationKind::kSendNew);
-  EXPECT_EQ(sink.facts.back().order_id, id);
+  EXPECT_EQ(sink.facts.back().client_order_id, id);
 }
 
 TEST_F(TradingPersistenceTest, RejectedJournalPreservesReportAndOutput) {
@@ -431,7 +430,7 @@ TEST_F(TradingPersistenceTest, InvalidReconciledFactsPreserveExistingLedger) {
   terminal.cumulative_filled_qty = 10;
   terminal.leaves_qty = 0;
   terminal.report_sequence = 1;
-  ASSERT_EQ(terminal.broker_order_id.Assign("broker-1"), ErrorCode::kOk);
+  ASSERT_EQ(terminal.adapter_order_id.Assign("broker-1"), ErrorCode::kOk);
   auto historical = Fill(id).fill;
   historical.quantity = 10;
   auto baseline = account;
@@ -528,7 +527,7 @@ TEST_F(TradingPersistenceTest, CorruptCheckpointAndReplayPreserveLedger) {
   }
   auto fact = sink.facts[0];
   fact.revision = recovered.mutation_revision() + 1;
-  fact.order_id = id;  // Already allocated identity must not be reused.
+  fact.client_order_id = id;  // Already allocated identity must not be reused.
   EXPECT_EQ(recovered.ReplayMutation(fact).code, ErrorCode::kCorrupt);
   EXPECT_EQ(Checkpoint(recovered), before);
 }
@@ -623,7 +622,7 @@ TEST_F(TradingPersistenceTest, CashMutationCodecRejectsFuturesEffect) {
   TradingMutation mutation;
   mutation.kind = TradingMutationKind::kNewOrder;
   mutation.revision = 1;
-  mutation.order_id = {1};
+  mutation.client_order_id = {1};
   mutation.request = {config.instruments[0].instrument.id,
                       model::OrderSide::kBuy, 1000, 10,
                       model::PositionEffect::kOpen};
@@ -635,7 +634,7 @@ TEST_F(TradingPersistenceTest, CashMutationCodecRejectsFuturesEffect) {
   mutation = {};
   mutation.kind = TradingMutationKind::kReport;
   mutation.revision = 1;
-  mutation.order_id = {1};
+  mutation.client_order_id = {1};
   mutation.event = Fill({1});
   mutation.event.fill.position_effect = model::PositionEffect::kOpen;
   EXPECT_EQ(EncodeTradingMutation(mutation, bytes, size).code,

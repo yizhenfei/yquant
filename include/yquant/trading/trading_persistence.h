@@ -4,10 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <cstddef>
 #include <span>
 
-#include "yquant/trading/trading_adapter.h"
+#include "yquant/base/status.h"
+#include "yquant/model/trading_event.h"
 
 namespace yquant::trading {
 
@@ -29,10 +29,10 @@ struct TradingMutation {
   TradingMutationKind kind = TradingMutationKind::kNewOrder;
   uint64_t revision = 0;
   uint64_t now = 0;
-  model::ClientOrderId order_id;
+  model::ClientOrderId client_order_id;
   model::CancelRequestId cancel_id;
   model::OrderRequest request;
-  TradingEvent event;
+  model::TradingEvent event;
 };
 
 // Called serially after validation and before any business-state change or

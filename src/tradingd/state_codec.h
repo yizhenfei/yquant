@@ -1,13 +1,17 @@
 #ifndef YQUANT_TRADINGD_STATE_CODEC_H_
 #define YQUANT_TRADINGD_STATE_CODEC_H_
 
+// Defines bounded cursors and stored strategy-report decoding for gateway
+// checkpoint/WAL control records. Ledger mutation codecs belong to trading.
+
 #include <stddef.h>
 #include <stdint.h>
 
-#include <cstddef>
 #include <cstring>
 #include <span>
 #include <string_view>
+
+#include "yquant/trading/protocol.h"
 
 namespace yquant::tradingd {
 
@@ -107,6 +111,27 @@ class StateReader {
   size_t position_ = 0;
   bool ok_ = true;
 };
+
+// Decodes a stored strategy-facing report, preserving message on failure.
+// Pre-v4 frames used the client slot for strategy-local IDs; core ledger IDs
+// are recovered separately from the persisted ownership mapping.
+inline base::Status DecodeStoredStrategyReport(
+    std::span<const std::byte> bytes, trading::Message& message) noexcept {
+  const auto status = trading::DecodeMessage(bytes, message);
+  if (status.ok() && bytes.size() >= 6 &&
+      std::to_integer<unsigned>(bytes[4]) <
+          trading::kOrderIdentityWireVersion &&
+      message.type == trading::MessageType::kOrderUpdate) {
+    message.update.order.strategy_order_id = {
+        message.update.order.client_order_id.value};
+    message.update.order.client_order_id = {};
+    if (message.has_fill) {
+      message.fill.strategy_order_id = {message.fill.client_order_id.value};
+      message.fill.client_order_id = {};
+    }
+  }
+  return status;
+}
 
 }  // namespace yquant::tradingd
 #endif  // YQUANT_TRADINGD_STATE_CODEC_H_

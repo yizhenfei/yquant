@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -115,7 +114,7 @@ base::Status ReadMessage(StateReader& reader,
   if (!reader.ok()) {
     return CorruptState();
   }
-  return trading::DecodeMessage(bytes, message);
+  return DecodeStoredStrategyReport(bytes, message);
 }
 }  // namespace
 
@@ -168,9 +167,9 @@ base::Status Server::Storage::Adapter::SendOrder(
     return CorruptState();
   }
   const auto owner = storage.owners[index];
-  char key[kExternalRequestKeyBytes + 1];
-  const auto status = EncodeExternalRequestKey(
-      storage.clients[owner.client].session_id, ExternalRequestKind::kNewOrder,
+  char key[kAdapterRequestKeyBytes + 1];
+  const auto status = EncodeAdapterRequestKey(
+      storage.clients[owner.client].session_id, AdapterRequestKind::kNewOrder,
       owner.local + 1, key);
   if (!status.ok()) {
     return status;
@@ -213,7 +212,7 @@ base::Status Server::Storage::BeforeCommit(
   auto cancel = context_cancel;
   if (mutation.kind != Kind::kNewOrder &&
       context_client == trading::kMaxClients) {
-    const auto index = OwnerIndex(mutation.order_id);
+    const auto index = OwnerIndex(mutation.client_order_id);
     if (index == owners.size()) {
       return CorruptState();
     }
@@ -312,7 +311,7 @@ base::Status Server::Storage::ReplayRecord(
     auto status = ReadMessage(reader, message);
     if (!status.ok() || !reader.done() ||
         message.type != trading::MessageType::kOrderUpdate ||
-        message.update.order.client_order_id.value != local_index + 1) {
+        message.update.order.strategy_order_id.value != local_index + 1) {
       return CorruptState();
     }
     if (local.core_id.value == 0) {
@@ -345,9 +344,10 @@ base::Status Server::Storage::ReplayRecord(
   using Kind = trading::TradingMutationKind;
   if (mutation.kind == Kind::kNewOrder) {
     const auto index = s.trading.order_count() - 1;
-    s.BindOwner(index, {mutation.order_id, static_cast<size_t>(client_index),
-                        static_cast<size_t>(local_index)});
-    local.core_id = mutation.order_id;
+    s.BindOwner(index,
+                {mutation.client_order_id, static_cast<size_t>(client_index),
+                 static_cast<size_t>(local_index)});
+    local.core_id = mutation.client_order_id;
   } else if (mutation.kind == Kind::kCancel) {
     local.core_cancel = mutation.cancel_id;
     local.local_cancel = {local_cancel};
@@ -563,7 +563,7 @@ base::Status Server::Storage::CaptureCheckpoint(uint64_t now) noexcept {
   });
   if (status.ok()) {
     status = encode_blob([&](auto out, auto& size) noexcept {
-      return mock.EncodeState(out, size, now);
+      return mock.EncodeState(now, out, size);
     });
   }
   if (!status.ok()) {
@@ -659,7 +659,7 @@ base::Status Server::Storage::LoadCheckpoint(uint64_t& stream,
         status = ReadMessage(reader, message);
         if (!status.ok() ||
             message.type != trading::MessageType::kOrderUpdate ||
-            message.update.order.client_order_id.value != i + 1) {
+            message.update.order.strategy_order_id.value != i + 1) {
           return CorruptState();
         }
         local.rejected = message.update.order;
@@ -708,7 +708,7 @@ base::Status Server::Storage::LoadCheckpoint(uint64_t& stream,
   return {};
 }
 
-base::Status Server::Storage::RecoverMock() noexcept {
+base::Status Server::Storage::ReplayMockHistory() noexcept {
   // Both histories come from the same valid local prefix. They are simulation
   // evidence only; a real adapter must use independent complete broker history.
   trading.AbandonRecoveredRequests();
@@ -720,7 +720,7 @@ base::Status Server::Storage::RecoverMock() noexcept {
     }
   }
   for (size_t i = 0; i < mock.recovery_event_count(); ++i) {
-    trading::TradingEvent event;
+    model::TradingEvent event;
     auto status = mock.ReadRecoveryEvent(i, event);
     if (!status.ok()) {
       return status;
@@ -742,11 +742,10 @@ base::Status Server::Storage::RecoverMock() noexcept {
       return {code, {}};
     }
   }
-  const auto now = clock_.Now();
-  auto status = mock.RebaseDeadlines(last_record_time, now);
-  if (!status.ok()) {
-    return status;
-  }
+  return {};
+}
+
+base::Status Server::Storage::RejectAbsentMockOrders(uint64_t now) noexcept {
   for (size_t i = 0; i < trading.order_count(); ++i) {
     model::OrderSnapshot order;
     if (!trading.TryGetOrderAt(i, order)) {
@@ -755,7 +754,7 @@ base::Status Server::Storage::RecoverMock() noexcept {
     bool found = false;
     for (size_t j = 0; j < mock.recovery_order_count(); ++j) {
       model::OrderSnapshot broker;
-      status = mock.ReadRecoveryOrder(j, broker);
+      const auto status = mock.ReadRecoveryOrder(j, broker);
       if (!status.ok()) {
         return status;
       }
@@ -764,7 +763,7 @@ base::Status Server::Storage::RecoverMock() noexcept {
     if (!found && !model::IsTerminalOrderState(order.state)) {
       // A journaled send intent without a mock Send record has no external
       // simulation side effect. Do not send it for the first time on restart.
-      trading::TradingEvent rejected;
+      model::TradingEvent rejected;
       rejected.client_order_id = order.client_order_id;
       rejected.report_sequence = order.report_sequence + 1;
       rejected.kind = model::OrderUpdateKind::kRejected;
@@ -778,48 +777,60 @@ base::Status Server::Storage::RecoverMock() noexcept {
     }
   }
 
-  uint64_t recovery_now = now;
-  for (size_t step = 0; step < kRecoveryStepBudget; ++step) {
-    for (size_t i = 0; i < trading.order_count(); ++i) {
-      model::OrderSnapshot order;
-      if (!trading.TryGetOrderAt(i, order)) {
-        return CorruptState();
-      }
-      if (order.cancel_pending) {
-        bool matched = false;
-        for (size_t j = 0; j < mock.recovery_order_count(); ++j) {
-          model::OrderSnapshot broker;
-          status = mock.ReadRecoveryOrder(j, broker);
+  return {};
+}
+
+base::Status Server::Storage::ScheduleRecoveredCancels(uint64_t now) noexcept {
+  for (size_t i = 0; i < trading.order_count(); ++i) {
+    model::OrderSnapshot order;
+    if (!trading.TryGetOrderAt(i, order)) {
+      return CorruptState();
+    }
+    if (order.cancel_pending) {
+      bool matched = false;
+      for (size_t j = 0; j < mock.recovery_order_count(); ++j) {
+        model::OrderSnapshot broker;
+        auto status = mock.ReadRecoveryOrder(j, broker);
+        if (!status.ok()) {
+          return status;
+        }
+        if (broker.client_order_id != order.client_order_id) {
+          continue;
+        }
+        matched = true;
+        if (!broker.cancel_pending) {
+          // The simulated broker proves that the recorded cancel attempt
+          // did not reach it. Settle that exact pending intent locally.
+          status =
+              mock.SendCancel(order.client_order_id, broker.adapter_order_id,
+                              order.cancel_request_id, now);
           if (!status.ok()) {
             return status;
           }
-          if (broker.client_order_id != order.client_order_id) {
-            continue;
-          }
-          matched = true;
-          if (!broker.cancel_pending) {
-            // The simulated broker proves that the recorded cancel attempt
-            // did not reach it. Settle that exact pending intent locally.
-            status =
-                mock.SendCancel(order.client_order_id, broker.broker_order_id,
-                                order.cancel_request_id, recovery_now);
-            if (!status.ok()) {
-              return status;
-            }
-          }
-          break;
         }
-        if (!matched) {
-          return CorruptState();
-        }
-      } else if (order.state == model::OrderState::kWorking) {
-        trading.SetAcceptingRequests(true);
-        const auto code = trading.CancelOrder(order.client_order_id);
-        trading.SetAcceptingRequests(false);
-        if (code != base::ErrorCode::kOk) {
-          return {code, {}};
-        }
+        break;
       }
+      if (!matched) {
+        return CorruptState();
+      }
+    } else if (order.state == model::OrderState::kWorking) {
+      trading.SetAcceptingRequests(true);
+      const auto code = trading.CancelOrder(order.client_order_id);
+      trading.SetAcceptingRequests(false);
+      if (code != base::ErrorCode::kOk) {
+        return {code, {}};
+      }
+    }
+  }
+  return {};
+}
+
+base::Status Server::Storage::DrainRecoveredMock(uint64_t now) noexcept {
+  uint64_t recovery_now = now;
+  for (size_t step = 0; step < kRecoveryStepBudget; ++step) {
+    auto status = ScheduleRecoveredCancels(recovery_now);
+    if (!status.ok()) {
+      return status;
     }
     status = trading.ProcessRequests(recovery_now);
     if (!status.ok()) {
@@ -847,7 +858,7 @@ base::Status Server::Storage::RecoverMock() noexcept {
     if (!status.ok()) {
       return status;
     }
-    trading::TradingEvent event;
+    model::TradingEvent event;
     const auto polled = mock.Poll(recovery_now, event);
     if (polled.state != trading::TradingPollState::kEvent) {
       return CorruptState();
@@ -859,6 +870,22 @@ base::Status Server::Storage::RecoverMock() noexcept {
     }
   }
   return {base::ErrorCode::kResourceExhausted, {}};
+}
+
+base::Status Server::Storage::RecoverMock() noexcept {
+  auto status = ReplayMockHistory();
+  if (!status.ok()) {
+    return status;
+  }
+  const auto now = clock_.Now();
+  status = mock.RebaseDeadlines(last_record_time, now);
+  if (status.ok()) {
+    status = RejectAbsentMockOrders(now);
+  }
+  if (status.ok()) {
+    status = DrainRecoveredMock(now);
+  }
+  return status;
 }
 
 base::Status Server::Storage::StartPersistence() noexcept {

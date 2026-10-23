@@ -5,7 +5,6 @@
 #include <stdint.h>
 
 #include <array>
-#include <cstddef>
 #include <span>
 
 #include "yquant/base/status.h"
@@ -18,6 +17,8 @@
 namespace yquant::trading {
 
 inline constexpr size_t kMaxClients = 16;
+// First wire version carrying distinct strategy and gateway order identities.
+inline constexpr uint16_t kOrderIdentityWireVersion = 4;
 inline constexpr size_t kMaxInstruments = 64;
 inline constexpr size_t kMaxTokenBytes = 64;
 // A full 64-instrument futures view plus an order/fill fits in one frame.
@@ -74,12 +75,13 @@ enum class MessageType : uint16_t {
 // generation zero; all subsequent messages carry the welcomed generation.
 // Updates pair an owned order/fill with its fully committed account view.
 // Hello carries client_id/token/instruments; Welcome carries instruments and
-// account. NewOrder carries order_id/request; CancelOrder carries order_id,
-// cancel_id and an optional broker_order_id. OrderUpdate carries update,
-// notify_order, has_fill, an optional fill, and account; Account carries
-// account. Stop/Drained/Heartbeat are empty; Error carries error_code/reason.
-// Gateway initiated cancellations use zero update cancel_request_id; client
-// cancel commands require a nonzero cancel_id. Inactive fields are ignored.
+// account. NewOrder carries one order identity/request; CancelOrder carries one
+// order identity, cancel_id and an optional adapter_order_id. OrderUpdate
+// carries update, notify_order, has_fill, an optional fill, and account;
+// Account carries account. Stop/Drained/Heartbeat are empty; Error carries
+// error_code/reason. Gateway initiated cancellations use zero update
+// cancel_request_id; client cancel commands require a nonzero cancel_id.
+// Inactive fields are ignored.
 struct Message {
   MessageType type = MessageType::kHeartbeat;
   uint64_t generation = 0;
@@ -88,11 +90,14 @@ struct Message {
   char token[kMaxTokenBytes + 1] = {};
   std::array<InstrumentSpec, kMaxInstruments> instruments = {};
   size_t instrument_count = 0;
-  model::ClientOrderId order_id;
+  // Exactly one request identity is set: strategy on the strategy gateway
+  // connection, client on the adapter bridge connection.
+  model::ClientOrderId client_order_id;
+  model::StrategyOrderId strategy_order_id;
   model::OrderRequest request;
   model::QuoteTick quote;
   model::CancelRequestId cancel_id;
-  model::BrokerOrderId broker_order_id;
+  model::AdapterOrderId adapter_order_id;
   model::OrderUpdate update;
   model::Fill fill;
   bool notify_order = true;
@@ -102,11 +107,13 @@ struct Message {
   model::OrderReason reason;
 };
 
-// Wire version 3 adds broker-managed futures identity; readers retain v1/v2
-// support for stored cash/simulated-futures frames. Simulation
-// quote frames reuse the market-data quote codec; live gateways reject them.
-// Explicit little-endian, versioned framing. Encoding/decoding are bounded,
-// allocation-free, reject noncanonical data and preserve outputs on failure.
+// Wire version 4 separates strategy and gateway order identities; readers
+// retain v1-v3 support for stored frames. Legacy identity scope is resolved by
+// the connection owner. Version 3 adds broker-managed futures identity.
+// Simulation quote frames reuse the market-data quote codec; live gateways
+// reject them. Explicit little-endian, versioned framing. Encoding/decoding are
+// bounded, allocation-free, reject noncanonical data and preserve outputs on
+// failure.
 [[nodiscard]] base::Status EncodeMessage(const Message& message,
                                          std::span<std::byte> output,
                                          size_t& size) noexcept;

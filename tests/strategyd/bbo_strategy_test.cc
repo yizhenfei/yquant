@@ -376,7 +376,7 @@ TEST(BboStrategyTest,
   scenario.broker.fill_count = 1;
   scenario.environment.stop_at = 9 * kMs;
   ASSERT_TRUE(scenario.Run(BboJson(0, 1500)).ok()) << scenario.detail;
-  std::optional<model::ClientOrderId> replacement;
+  std::optional<model::StrategyOrderId> replacement;
   size_t early_buys = 0;
   for (size_t index = 0; index < scenario.broker.sent_count; ++index) {
     const auto& order = scenario.broker.orders[index];

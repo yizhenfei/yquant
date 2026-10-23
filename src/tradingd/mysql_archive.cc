@@ -10,7 +10,6 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
-#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -215,7 +214,7 @@ struct MysqlArchive::Storage {
     if (!status.ok()) {
       return status;
     }
-    projection.reset(new (std::nothrow) ArchiveProjection(clock));
+    projection.reset(new (std::nothrow) ArchiveProjection(&clock));
     if (!projection) {
       return {base::ErrorCode::kResourceExhausted, {}};
     }

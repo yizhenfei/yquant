@@ -73,7 +73,8 @@ target_include_directories(yquant_trading PUBLIC
 target_link_libraries(yquant_trading PUBLIC
   yquant::base yquant::md yquant::strategy_api
   PRIVATE simdjson::simdjson Threads::Threads)
-target_compile_options(yquant_trading PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_options(yquant_trading PRIVATE
+  -Wall -Wextra -Wpedantic -Werror=switch)
 
 # Application object targets contain only their own private implementation.
 # They are reused solely by the matching executable and its unit tests.
@@ -117,7 +118,8 @@ target_include_directories(yquant_tradingd_objects PRIVATE "${PROJECT_SOURCE_DIR
 target_link_libraries(yquant_tradingd_objects PUBLIC
   yquant::base yquant::md yquant::trading
   PRIVATE simdjson::simdjson Threads::Threads)
-target_compile_options(yquant_tradingd_objects PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_options(yquant_tradingd_objects PRIVATE
+  -Wall -Wextra -Wpedantic -Werror=switch)
 option(YQUANT_WITH_MYSQL "Enable MySQL trading archive (Oracle client API)" OFF)
 if(YQUANT_WITH_MYSQL)
   find_path(YQUANT_MYSQL_INCLUDE_DIR mysql.h PATH_SUFFIXES mysql REQUIRED)

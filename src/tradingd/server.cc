@@ -66,7 +66,7 @@ bool ClientDrained(const Client& client,
 
 }  // namespace
 
-Server::Server(const base::MonotonicClock& clock) noexcept : clock_(clock) {}
+Server::Server(const base::MonotonicClock* clock) noexcept : clock_(*clock) {}
 Server::~Server() noexcept { Close(); }
 
 base::Status Server::Fail(base::ErrorCode code, const char* detail) noexcept {
@@ -182,188 +182,177 @@ void Server::BroadcastAccount() noexcept {
   }
 }
 
-base::Status Server::Handle(size_t index, const trading::Message& message,
-                            uint64_t now) noexcept {
+base::Status Server::HandleHello(size_t index,
+                                 const trading::Message& message) noexcept {
   auto& s = *storage_;
   auto& client = s.clients[index];
-  if (!client.authenticated) {
-    if (message.type != trading::MessageType::kHello ||
-        message.generation != 0 || message.client_id == 0 ||
-        !SameToken(message.token, s.config.token) ||
-        message.instrument_count == 0) {
-      Disconnect(index);
-      return {};
-    }
-    for (const auto& other : s.clients) {
-      if (other.id == message.client_id) {
-        Disconnect(index);
-        return {};
-      }
-    }
-    for (size_t i = 0; i < message.instrument_count; ++i) {
-      model::InstrumentDefinition instrument;
-      if (!s.instruments.TryGetInstrument(message.instruments[i].id,
-                                          instrument) ||
-          instrument.price_decimals != message.instruments[i].price_decimals) {
-        Disconnect(index);
-        return {};
-      }
-    }
-    client.id = message.client_id;
-    client.authenticated = true;
-    client.instruments = message.instruments;
-    client.instrument_count = message.instrument_count;
-    const auto registered = s.RegisterClient(index);
-    if (!registered.ok()) {
-      Disconnect(index);
-      return {};
-    }
-    trading::Message welcome;
-    welcome.type = trading::MessageType::kWelcome;
-    welcome.generation = s.generation;
-    welcome.instruments = client.instruments;
-    welcome.instrument_count = client.instrument_count;
-    welcome.account = s.account;
-    if (!client.connection.Queue(welcome).ok()) {
-      Disconnect(index);
-    }
-    return {};
-  }
-  if (message.generation != s.generation ||
-      (message.type != trading::MessageType::kNewOrder &&
-       message.type != trading::MessageType::kCancelOrder &&
-       message.type != trading::MessageType::kStop &&
-       message.type != trading::MessageType::kHeartbeat &&
-       message.type != trading::MessageType::kSimulationQuote)) {
+  if (message.type != trading::MessageType::kHello || message.generation != 0 ||
+      message.client_id == 0 || !SameToken(message.token, s.config.token) ||
+      message.instrument_count == 0) {
     Disconnect(index);
     return {};
   }
-  if (message.type == trading::MessageType::kSimulationQuote) {
-    if (s.config.trading.adapter !=
-            trading::TradingAdapterKind::kSimulatedFutures ||
-        client.stopping || s.stopping ||
-        !HasInstrument(client, message.quote.instrument_id) ||
-        (s.simulation_client_id && s.simulation_client_id != client.id)) {
+  for (const auto& other : s.clients) {
+    if (other.id == message.client_id) {
       Disconnect(index);
       return {};
     }
-    const auto slot = s.instruments.FindIndex(message.quote.instrument_id);
-    if (!slot) {
+  }
+  for (size_t i = 0; i < message.instrument_count; ++i) {
+    model::InstrumentDefinition instrument;
+    if (!s.instruments.TryGetInstrument(message.instruments[i].id,
+                                        instrument) ||
+        instrument.price_decimals != message.instruments[i].price_decimals) {
       Disconnect(index);
       return {};
     }
-    const auto& definition = s.instruments[*slot];
-    if (definition.type != model::InstrumentType::kFutures ||
-        message.quote.source_id != s.instruments.source_id() ||
-        message.quote.bid_price % definition.price_tick ||
-        message.quote.ask_price % definition.price_tick ||
-        message.quote.bid_qty % definition.quantity_step ||
-        message.quote.ask_qty % definition.quantity_step) {
-      Disconnect(index);
-      return {};
-    }
-    if (message.quote.sequence <= s.simulation_quotes[*slot].sequence) {
-      return {};
-    }
-    s.simulation_client_id = client.id;
-    auto quote = message.quote;
-    quote.receive_time_ns = now;
-    auto status = s.futures.OnQuote(quote, now);
-    if (!status.ok()) {
-      return Fail(status.code, s.futures.error_detail());
-    }
-    const auto code = s.trading.ApplyQuote(quote);
-    if (code != base::ErrorCode::kOk) {
-      return Fail(code, s.trading.error_detail());
-    }
-    s.simulation_quotes[*slot] = quote;
+  }
+  client.id = message.client_id;
+  client.authenticated = true;
+  client.instruments = message.instruments;
+  client.instrument_count = message.instrument_count;
+  const auto registered = s.RegisterClient(index);
+  if (!registered.ok()) {
+    Disconnect(index);
+    return {};
+  }
+  trading::Message welcome;
+  welcome.type = trading::MessageType::kWelcome;
+  welcome.generation = s.generation;
+  welcome.instruments = client.instruments;
+  welcome.instrument_count = client.instrument_count;
+  welcome.account = s.account;
+  if (!client.connection.Queue(welcome).ok()) {
+    Disconnect(index);
+  }
+  return {};
+}
+
+base::Status Server::HandleSimulationQuote(size_t index,
+                                           const trading::Message& message,
+                                           uint64_t now) noexcept {
+  auto& s = *storage_;
+  auto& client = s.clients[index];
+  if (s.config.trading.adapter !=
+          trading::TradingAdapterKind::kSimulatedFutures ||
+      client.stopping || s.stopping ||
+      !HasInstrument(client, message.quote.instrument_id) ||
+      (s.simulation_client_id && s.simulation_client_id != client.id)) {
+    Disconnect(index);
+    return {};
+  }
+  const auto slot = s.instruments.FindIndex(message.quote.instrument_id);
+  if (!slot) {
+    Disconnect(index);
+    return {};
+  }
+  const auto& definition = s.instruments[*slot];
+  if (definition.type != model::InstrumentType::kFutures ||
+      message.quote.source_id != s.instruments.source_id() ||
+      message.quote.bid_price % definition.price_tick ||
+      message.quote.ask_price % definition.price_tick ||
+      message.quote.bid_qty % definition.quantity_step ||
+      message.quote.ask_qty % definition.quantity_step) {
+    Disconnect(index);
+    return {};
+  }
+  if (message.quote.sequence <= s.simulation_quotes[*slot].sequence) {
+    return {};
+  }
+  s.simulation_client_id = client.id;
+  auto quote = message.quote;
+  quote.receive_time_ns = now;
+  auto status = s.futures.OnQuote(quote, now);
+  if (!status.ok()) {
+    return Fail(status.code, s.futures.error_detail());
+  }
+  const auto code = s.trading.ApplyQuote(quote);
+  if (code != base::ErrorCode::kOk) {
+    return Fail(code, s.trading.error_detail());
+  }
+  s.simulation_quotes[*slot] = quote;
+  ++s.account.revision;
+  RefreshAccount();
+  s.account_dirty = true;
+  return {};
+}
+
+base::Status Server::HandleNewOrder(size_t index,
+                                    const trading::Message& message,
+                                    uint64_t now) noexcept {
+  auto& s = *storage_;
+  auto& client = s.clients[index];
+  if (client.stopping || s.stopping || s.degraded ||
+      message.strategy_order_id.value != client.order_count + 1 ||
+      client.order_count == client.orders.size() ||
+      !HasInstrument(client, message.request.instrument_id)) {
+    Disconnect(index);
+    return {};
+  }
+  const auto local_index = client.order_count++;
+  auto& local = client.orders[local_index];
+  s.context_client = index;
+  s.context_local = local_index;
+  s.context_cancel = {};
+  s.trading.SetAcceptingRequests(true);
+  const auto code = s.trading.SubmitOrder(message.request, local.core_id);
+  s.trading.SetAcceptingRequests(false);
+  s.context_client = trading::kMaxClients;
+  if (code != base::ErrorCode::kOk && s.degraded) {
+    --client.order_count;
+    local = {};
+    Disconnect(index);
+    return {};
+  }
+  if (code == base::ErrorCode::kOk) {
+    s.BindOwner(s.trading.order_count() - 1,
+                {local.core_id, index, local_index});
     ++s.account.revision;
     RefreshAccount();
     s.account_dirty = true;
-    return {};
-  }
-  if (message.type == trading::MessageType::kHeartbeat) {
-    return {};
-  }
-  if (message.type == trading::MessageType::kStop) {
-    client.requested_stop = true;
-    if (!client.stopping) {
-      client.stopping = true;
-      client.stop_time = now;
+  } else {
+    trading::Message reply;
+    reply.type = trading::MessageType::kOrderUpdate;
+    reply.generation = s.generation;
+    reply.account = s.account;
+    reply.update.kind = model::OrderUpdateKind::kRejected;
+    reply.update.reason.Set(static_cast<int32_t>(code),
+                            s.trading.error_detail());
+    auto& order = reply.update.order;
+    order.strategy_order_id = message.strategy_order_id;
+    order.instrument_id = message.request.instrument_id;
+    order.side = message.request.side;
+    order.limit_price = message.request.limit_price;
+    order.original_qty = message.request.quantity;
+    order.position_effect = message.request.position_effect;
+    order.state = model::OrderState::kRejected;
+    order.report_sequence = ++local.report_sequence;
+    order.receive_time_ns = now;
+    local.rejected = order;
+    const auto recorded = s.PersistRejection(index, local_index, reply);
+    if (!recorded.ok()) {
+      return recorded;
     }
-    return {};
-  }
-  if (!client.connection.can_queue()) {
-    Disconnect(index);
-    return {};
-  }
-  if (message.type == trading::MessageType::kNewOrder) {
-    if (client.stopping || s.stopping || s.degraded ||
-        message.order_id.value != client.order_count + 1 ||
-        client.order_count == client.orders.size() ||
-        !HasInstrument(client, message.request.instrument_id)) {
+    if (!client.connection.Queue(reply).ok()) {
       Disconnect(index);
-      return {};
     }
-    const auto local_index = client.order_count++;
-    auto& local = client.orders[local_index];
-    s.context_client = index;
-    s.context_local = local_index;
-    s.context_cancel = {};
-    s.trading.SetAcceptingRequests(true);
-    const auto code = s.trading.SubmitOrder(message.request, local.core_id);
-    s.trading.SetAcceptingRequests(false);
-    s.context_client = trading::kMaxClients;
-    if (code != base::ErrorCode::kOk && s.degraded) {
-      --client.order_count;
-      local = {};
-      Disconnect(index);
-      return {};
-    }
-    if (code == base::ErrorCode::kOk) {
-      s.BindOwner(s.trading.order_count() - 1,
-                  {local.core_id, index, local_index});
-      ++s.account.revision;
-      RefreshAccount();
-      s.account_dirty = true;
-    } else {
-      trading::Message reply;
-      reply.type = trading::MessageType::kOrderUpdate;
-      reply.generation = s.generation;
-      reply.account = s.account;
-      reply.update.kind = model::OrderUpdateKind::kRejected;
-      reply.update.reason.Set(static_cast<int32_t>(code),
-                              s.trading.error_detail());
-      auto& order = reply.update.order;
-      order.client_order_id = message.order_id;
-      order.instrument_id = message.request.instrument_id;
-      order.side = message.request.side;
-      order.limit_price = message.request.limit_price;
-      order.original_qty = message.request.quantity;
-      order.position_effect = message.request.position_effect;
-      order.state = model::OrderState::kRejected;
-      order.report_sequence = ++local.report_sequence;
-      order.receive_time_ns = now;
-      local.rejected = order;
-      const auto recorded = s.PersistRejection(index, local_index, reply);
-      if (!recorded.ok()) {
-        return recorded;
-      }
-      if (!client.connection.Queue(reply).ok()) {
-        Disconnect(index);
-      }
-    }
-    return {};
   }
-  if (message.order_id.value == 0 ||
-      message.order_id.value > client.order_count ||
+  return {};
+}
+
+base::Status Server::HandleCancelOrder(
+    size_t index, const trading::Message& message) noexcept {
+  auto& s = *storage_;
+  auto& client = s.clients[index];
+  if (message.strategy_order_id.value == 0 ||
+      message.strategy_order_id.value > client.order_count ||
       message.cancel_id.value == 0 ||
       message.cancel_id.value <= client.last_cancel_id) {
     Disconnect(index);
     return {};
   }
   client.last_cancel_id = message.cancel_id.value;
-  auto& local = client.orders[message.order_id.value - 1];
+  auto& local = client.orders[message.strategy_order_id.value - 1];
   model::OrderSnapshot snapshot = local.rejected;
   const bool has_core = local.core_id.value != 0;
   if (has_core) {
@@ -375,11 +364,11 @@ base::Status Server::Handle(size_t index, const trading::Message& message,
   }
   base::ErrorCode code = base::ErrorCode::kInvalidState;
   if (has_core && !client.stopping && !s.stopping &&
-      (message.broker_order_id.empty() ||
-       message.broker_order_id == snapshot.broker_order_id)) {
+      (message.adapter_order_id.empty() ||
+       message.adapter_order_id == snapshot.adapter_order_id)) {
     s.trading.SetAcceptingRequests(true);
     s.context_client = index;
-    s.context_local = message.order_id.value - 1;
+    s.context_local = message.strategy_order_id.value - 1;
     s.context_cancel = message.cancel_id;
     code = s.trading.CancelOrder(local.core_id);
     s.context_client = trading::kMaxClients;
@@ -397,7 +386,7 @@ base::Status Server::Handle(size_t index, const trading::Message& message,
     reply.generation = s.generation;
     reply.account = s.account;
     reply.update.order = snapshot;
-    reply.update.order.client_order_id = message.order_id;
+    reply.update.order.strategy_order_id = message.strategy_order_id;
     reply.update.order.report_sequence = ++local.report_sequence;
     reply.update.order.cancel_pending = false;
     reply.update.order.cancel_request_id = message.cancel_id;
@@ -411,7 +400,7 @@ base::Status Server::Handle(size_t index, const trading::Message& message,
       local.rejected = reply.update.order;
     }
     const auto recorded =
-        s.PersistRejection(index, message.order_id.value - 1, reply);
+        s.PersistRejection(index, message.strategy_order_id.value - 1, reply);
     if (!recorded.ok()) {
       return recorded;
     }
@@ -419,6 +408,51 @@ base::Status Server::Handle(size_t index, const trading::Message& message,
       Disconnect(index);
     }
   }
+  return {};
+}
+
+base::Status Server::Handle(size_t index, const trading::Message& message,
+                            uint64_t now) noexcept {
+  auto& s = *storage_;
+  auto& client = s.clients[index];
+  if (!client.authenticated) {
+    return HandleHello(index, message);
+  }
+  if (message.generation != s.generation) {
+    Disconnect(index);
+    return {};
+  }
+  switch (message.type) {
+    case trading::MessageType::kSimulationQuote:
+      return HandleSimulationQuote(index, message, now);
+    case trading::MessageType::kHeartbeat:
+      return {};
+    case trading::MessageType::kStop:
+      client.requested_stop = true;
+      if (!client.stopping) {
+        client.stopping = true;
+        client.stop_time = now;
+      }
+      return {};
+    case trading::MessageType::kNewOrder:
+    case trading::MessageType::kCancelOrder:
+      if (!client.connection.can_queue()) {
+        Disconnect(index);
+        return {};
+      }
+      return message.type == trading::MessageType::kNewOrder
+                 ? HandleNewOrder(index, message, now)
+                 : HandleCancelOrder(index, message);
+    case trading::MessageType::kHello:
+    case trading::MessageType::kWelcome:
+    case trading::MessageType::kOrderUpdate:
+    case trading::MessageType::kAccount:
+    case trading::MessageType::kDrained:
+    case trading::MessageType::kError:
+      Disconnect(index);
+      return {};
+  }
+  Disconnect(index);
   return {};
 }
 
@@ -460,10 +494,10 @@ base::Status Server::Dispatch(uint64_t now) noexcept {
     message.update = dispatch.update;
     message.fill = dispatch.fill;
     message.account = s.account;
-    message.update.order.client_order_id.value = owner.local + 1;
+    message.update.order.strategy_order_id.value = owner.local + 1;
     message.update.order.report_sequence = ++local.report_sequence;
     if (dispatch.has_fill) {
-      message.fill.client_order_id.value = owner.local + 1;
+      message.fill.strategy_order_id.value = owner.local + 1;
     }
     const auto wire_cancel =
         message.update.order.cancel_request_id == local.core_cancel
@@ -553,6 +587,88 @@ void Server::NotifyDrained() noexcept {
   }
 }
 
+base::Status Server::AcceptClients(uint64_t now) noexcept {
+  auto& s = *storage_;
+  if (s.stopping) {
+    return {};
+  }
+  for (size_t i = 0; i < s.config.max_clients; ++i) {
+    auto& client = s.clients[i];
+    if (client.id != 0 || client.connection.open()) {
+      continue;
+    }
+    bool accepted = false;
+    const auto status = s.listener.Accept(client.connection, accepted);
+    if (!status.ok()) {
+      return Fail(status.code, "listener accept failed");
+    }
+    if (!accepted) {
+      break;
+    }
+    client.last_receive = now;
+    client.last_heartbeat = now;
+  }
+  return {};
+}
+
+base::Status Server::ServiceClient(size_t index, uint64_t now) noexcept {
+  auto& s = *storage_;
+  auto& client = s.clients[index];
+  if (!client.connection.open()) {
+    return {};
+  }
+  if (now < client.last_receive ||
+      now - client.last_receive >= s.config.heartbeat_timeout_ns) {
+    Disconnect(index);
+    return {};
+  }
+  for (size_t j = 0; j < kRequestsPerClient; ++j) {
+    trading::Message message;
+    const auto result = client.connection.Poll(message);
+    if (result.state == trading::ReceiveState::kIdle) {
+      break;
+    }
+    if (result.state != trading::ReceiveState::kMessage) {
+      Disconnect(index);
+      break;
+    }
+    client.last_receive = now;
+    const auto status = Handle(index, message, now);
+    if (!status.ok()) {
+      return status;
+    }
+    if (!client.connection.open()) {
+      break;
+    }
+  }
+  if (client.connection.open() && client.authenticated &&
+      now - client.last_heartbeat >= kHeartbeatIntervalNs) {
+    trading::Message heartbeat;
+    heartbeat.type = trading::MessageType::kHeartbeat;
+    heartbeat.generation = s.generation;
+    if (!client.connection.Queue(heartbeat).ok()) {
+      Disconnect(index);
+    }
+    client.last_heartbeat = now;
+  }
+  return {};
+}
+
+void Server::FlushClients(uint64_t now) noexcept {
+  auto& s = *storage_;
+  for (size_t i = 0; i < s.config.max_clients; ++i) {
+    auto& client = s.clients[i];
+    if (client.connection.open() && !client.connection.Service().ok()) {
+      Disconnect(i);
+    }
+    if (client.connection.open() && client.stopping && !client.drained_sent &&
+        now >= client.stop_time &&
+        now - client.stop_time >= s.config.shutdown_timeout_ns) {
+      Disconnect(i);
+    }
+  }
+}
+
 base::Status Server::Service(uint64_t now) noexcept {
   if (!storage_) {
     return Fail(base::ErrorCode::kInvalidState, "server is not initialized");
@@ -570,62 +686,14 @@ base::Status Server::Service(uint64_t now) noexcept {
     BeginStopping(now);
     s.trading.BeginStopping();
   }
-  if (!s.stopping) {
-    for (size_t i = 0; i < s.config.max_clients; ++i) {
-      auto& client = s.clients[i];
-      if (client.id != 0 || client.connection.open()) {
-        continue;
-      }
-      bool accepted = false;
-      const auto status = s.listener.Accept(client.connection, accepted);
-      if (!status.ok()) {
-        return Fail(status.code, "listener accept failed");
-      }
-      if (!accepted) {
-        break;
-      }
-      client.last_receive = now;
-      client.last_heartbeat = now;
-    }
+  auto status = AcceptClients(now);
+  if (!status.ok()) {
+    return status;
   }
   for (size_t i = 0; i < s.config.max_clients; ++i) {
-    auto& client = s.clients[i];
-    if (!client.connection.open()) {
-      continue;
-    }
-    if (now < client.last_receive ||
-        now - client.last_receive >= s.config.heartbeat_timeout_ns) {
-      Disconnect(i);
-      continue;
-    }
-    for (size_t j = 0; j < kRequestsPerClient; ++j) {
-      trading::Message message;
-      const auto result = client.connection.Poll(message);
-      if (result.state == trading::ReceiveState::kIdle) {
-        break;
-      }
-      if (result.state != trading::ReceiveState::kMessage) {
-        Disconnect(i);
-        break;
-      }
-      client.last_receive = now;
-      const auto status = Handle(i, message, now);
-      if (!status.ok()) {
-        return status;
-      }
-      if (!client.connection.open()) {
-        break;
-      }
-    }
-    if (client.connection.open() && client.authenticated &&
-        now - client.last_heartbeat >= kHeartbeatIntervalNs) {
-      trading::Message heartbeat;
-      heartbeat.type = trading::MessageType::kHeartbeat;
-      heartbeat.generation = s.generation;
-      if (!client.connection.Queue(heartbeat).ok()) {
-        Disconnect(i);
-      }
-      client.last_heartbeat = now;
+    status = ServiceClient(i, now);
+    if (!status.ok()) {
+      return status;
     }
   }
   if (s.degraded) {
@@ -640,7 +708,7 @@ base::Status Server::Service(uint64_t now) noexcept {
       return Fail(scheduled.code, s.trading.error_detail());
     }
   }
-  auto status = s.trading.ProcessRequests(now);
+  status = s.trading.ProcessRequests(now);
   if (!status.ok() && !s.degraded) {
     return Fail(status.code, s.trading.error_detail());
   }
@@ -657,17 +725,7 @@ base::Status Server::Service(uint64_t now) noexcept {
     s.account_dirty = false;
   }
   NotifyDrained();
-  for (size_t i = 0; i < s.config.max_clients; ++i) {
-    auto& client = s.clients[i];
-    if (client.connection.open() && !client.connection.Service().ok()) {
-      Disconnect(i);
-    }
-    if (client.connection.open() && client.stopping && !client.drained_sent &&
-        now >= client.stop_time &&
-        now - client.stop_time >= s.config.shutdown_timeout_ns) {
-      Disconnect(i);
-    }
-  }
+  FlushClients(now);
   if (s.config.mysql_archive.enabled && !s.degraded) {
     s.mysql_archive.PublishApplied(s.journal.published_lsn());
   }

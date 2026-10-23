@@ -1,9 +1,10 @@
 """Bounded codec for YQuant's owned trading messages.
 
-The bridge writes wire version 3 and reads versions 1 through 3. Message
+The bridge writes wire version 4 and reads versions 1 through 4. Message
 objects are dictionaries using the C++ field names; instrument dictionaries
 use ``id`` and futures positions use ``instrument_id``. Opaque identifiers,
 tokens and diagnostics accept UTF-8 strings or bytes and decode to bytes.
+Version 4 separates strategy and client order identities.
 Version 3 carries broker identity and unallocated directional position freezes.
 There is no socket or CTP dependency here. Live bridges reject simulation
 quote messages at the framing boundary.
@@ -18,7 +19,8 @@ HEADER_SIZE = 32
 MAX_FRAME_SIZE = 16384
 # Keep these values aligned with trading/protocol.cc and identifiers.h.
 _MAGIC = 0x52545159
-_VERSION = 3
+_ORDER_IDENTITY_VERSION = 4
+_VERSION = _ORDER_IDENTITY_VERSION
 _HEADER = struct.Struct("<IHHIIQQ")
 _MAX_INSTRUMENTS = 64
 _MAX_TOKEN_BYTES = 64
@@ -340,8 +342,11 @@ def _read_reason(reader):
 def _write_order(writer, order):
     order = _mapping(order, "order")
     identity = _instrument(order.get("instrument_id"))
-    client = _int_field(order, "client_order_id", minimum=1)
-    broker = _bytes(order.get("broker_order_id", b""), "broker_order_id",
+    client = _int_field(order, "client_order_id", 0)
+    strategy = _int_field(order, "strategy_order_id", 0)
+    if not client and not strategy:
+        raise WireError("order has no identity")
+    broker = _bytes(order.get("adapter_order_id", b""), "adapter_order_id",
                     _MAX_OPAQUE_BYTES)
     side = _int_field(order, "side", minimum=1, maximum=2)
     price = _signed(order, "limit_price")
@@ -363,11 +368,12 @@ def _write_order(writer, order):
     writer.opaque(broker)
     writer.put("QB4qBB3QB", identity, side, price, quantity, cumulative, leaves,
                state, pending, cancel_id, report, received, effect)
+    writer.put("Q", strategy)
 
 
 def _read_order(reader):
     result = {"client_order_id": reader.get("Q"),
-              "broker_order_id": reader.opaque()}
+              "adapter_order_id": reader.opaque()}
     fields = ("instrument_id", "side", "limit_price", "original_qty",
               "cumulative_filled_qty", "leaves_qty", "state")
     result.update(zip(fields, reader.get("QB4qB")))
@@ -375,6 +381,8 @@ def _read_order(reader):
     result.update(zip(("cancel_request_id", "report_sequence", "receive_time_ns"),
                       reader.get("3Q")))
     result["position_effect"] = reader.get("B") if reader.version >= 2 else 0
+    if reader.version >= _ORDER_IDENTITY_VERSION:
+        result["strategy_order_id"] = reader.get("Q")
     return result
 
 
@@ -385,11 +393,13 @@ def _write_fill(writer, fill, order):
         actual = _int_field(fill, name)
         if actual != order.get(name, 0):
             raise WireError(f"fill {name} differs from order")
-    broker = _bytes(fill.get("broker_order_id"), "broker_order_id",
+    if fill.get("strategy_order_id", 0) != order.get("strategy_order_id", 0):
+        raise WireError("fill strategy_order_id differs from order")
+    broker = _bytes(fill.get("adapter_order_id"), "adapter_order_id",
                     _MAX_OPAQUE_BYTES, 1)
-    if broker != _bytes(order.get("broker_order_id", b""), "broker_order_id",
+    if broker != _bytes(order.get("adapter_order_id", b""), "adapter_order_id",
                         _MAX_OPAQUE_BYTES):
-        raise WireError("fill broker_order_id differs from order")
+        raise WireError("fill adapter_order_id differs from order")
     execution = _bytes(fill.get("execution_id"), "execution_id",
                        _MAX_OPAQUE_BYTES, 1)
     price, quantity = _signed(fill, "price"), _signed(fill, "quantity")
@@ -406,15 +416,18 @@ def _write_fill(writer, fill, order):
     writer.opaque(execution)
     writer.put("QB2q2QBB", fill["instrument_id"], fill["side"], price, quantity,
                event, received, has_event, fill["position_effect"])
+    writer.put("Q", _int_field(fill, "strategy_order_id", 0))
 
 
 def _read_fill(reader):
     result = {"client_order_id": reader.get("Q"),
-              "broker_order_id": reader.opaque(), "execution_id": reader.opaque()}
+              "adapter_order_id": reader.opaque(), "execution_id": reader.opaque()}
     result.update(zip(("instrument_id", "side", "price", "quantity",
                        "event_time_ns", "receive_time_ns"), reader.get("QB2q2Q")))
     result["has_event_time"] = reader.boolean()
     result["position_effect"] = reader.get("B") if reader.version >= 2 else 0
+    if reader.version >= _ORDER_IDENTITY_VERSION:
+        result["strategy_order_id"] = reader.get("Q")
     return result
 
 
@@ -431,18 +444,26 @@ def _write_payload(writer, message):
         _write_account(writer, message.get("account"))
     elif kind == NEW_ORDER:
         request = _mapping(message.get("request"), "request")
-        client = _int_field(message, "order_id", minimum=1)
+        client = _int_field(message, "client_order_id", 0)
+        strategy = _int_field(message, "strategy_order_id", 0)
+        if bool(client) == bool(strategy):
+            raise WireError("request requires exactly one identity")
         identity = _instrument(request.get("instrument_id"))
         side = _int_field(request, "side", minimum=1, maximum=2)
         price, quantity = _signed(request, "limit_price"), _signed(request, "quantity")
         _amount(price, quantity)
         effect = _effect(identity, request.get("position_effect", 0))
-        writer.put("QQBqqB", client, identity, side, price, quantity, effect)
+        writer.put("QQBqqBQ", client, identity, side, price, quantity, effect, strategy)
     elif kind == CANCEL_ORDER:
-        writer.put("QQ", _int_field(message, "order_id", minimum=1),
+        client = _int_field(message, "client_order_id", 0)
+        strategy = _int_field(message, "strategy_order_id", 0)
+        if bool(client) == bool(strategy):
+            raise WireError("request requires exactly one identity")
+        writer.put("QQ", client,
                    _int_field(message, "cancel_id", minimum=1))
-        writer.opaque(_bytes(message.get("broker_order_id", b""),
-                             "broker_order_id", _MAX_OPAQUE_BYTES))
+        writer.opaque(_bytes(message.get("adapter_order_id", b""),
+                             "adapter_order_id", _MAX_OPAQUE_BYTES))
+        writer.put("Q", strategy)
     elif kind == ORDER_UPDATE:
         notify = _boolean(message.get("notify_order", True), "notify_order")
         has_fill = message.get("fill") is not None
@@ -468,7 +489,7 @@ def _write_payload(writer, message):
 
 
 def encode_message(message):
-    """Encode one version-3 dictionary; invalid values raise WireError.
+    """Encode one version-4 dictionary; invalid values raise WireError.
 
     ``type`` and nonzero ``sequence`` are required; ``generation`` defaults to
     zero. Unused fields are ignored, as in the C++ codec. Optional order flags,
@@ -497,7 +518,7 @@ def frame_size(header):
         magic, version, kind, size, reserved, _, sequence = _HEADER.unpack(header)
     except (struct.error, BufferError, TypeError):
         return 0
-    if (magic != _MAGIC or version not in (1, 2, 3)
+    if (magic != _MAGIC or version not in (1, 2, 3, 4)
             or not HELLO <= kind <= ERROR or reserved != 0 or sequence == 0
             or not HEADER_SIZE <= size <= MAX_FRAME_SIZE):
         return 0
@@ -526,13 +547,17 @@ def decode_message(frame):
         result["instruments"] = _read_instruments(reader)
         result["account"] = _read_account(reader)
     elif kind == NEW_ORDER:
-        result["order_id"] = reader.get("Q")
+        result["client_order_id"] = reader.get("Q")
         result["request"] = dict(zip(("instrument_id", "side", "limit_price", "quantity"),
                                        reader.get("QBqq")))
         result["request"]["position_effect"] = reader.get("B") if version >= 2 else 0
+        if version >= _ORDER_IDENTITY_VERSION:
+            result["strategy_order_id"] = reader.get("Q")
     elif kind == CANCEL_ORDER:
-        result["order_id"], result["cancel_id"] = reader.get("QQ")
-        result["broker_order_id"] = reader.opaque()
+        result["client_order_id"], result["cancel_id"] = reader.get("QQ")
+        result["adapter_order_id"] = reader.opaque()
+        if version >= _ORDER_IDENTITY_VERSION:
+            result["strategy_order_id"] = reader.get("Q")
     elif kind == ORDER_UPDATE:
         result["notify_order"], result["has_fill"] = reader.boolean(), reader.boolean()
         result["order"] = _read_order(reader)

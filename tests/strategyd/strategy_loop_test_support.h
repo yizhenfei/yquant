@@ -214,16 +214,16 @@ class QuoteSource final : public MarketDataSource {
 };
 
 struct SentOrder {
-  model::ClientOrderId id;
+  model::StrategyOrderId id;
   model::OrderRequest request;
-  model::BrokerOrderId broker;
+  model::AdapterOrderId broker;
   uint64_t at = 0;
   int64_t cumulative = 0;
   uint64_t sequence = 0;
   bool finished = false;
 };
 struct SentCancel {
-  model::ClientOrderId id;
+  model::StrategyOrderId id;
   model::CancelRequestId cancel_id;
   uint64_t at = 0;
 };
@@ -262,7 +262,7 @@ class Broker final : public trading::TradingService {
     return initialized_ && accepting_ && !stopping_;
   }
   base::ErrorCode SubmitOrder(const model::OrderRequest& request,
-                              model::ClientOrderId& out) noexcept override {
+                              model::StrategyOrderId& out) noexcept override {
     if (!accepting_orders()) {
       return base::ErrorCode::kInvalidState;
     }
@@ -270,16 +270,16 @@ class Broker final : public trading::TradingService {
       return base::ErrorCode::kResourceExhausted;
     }
     auto& p = snapshots_[count_++];
-    p.client_order_id = {count_};
+    p.strategy_order_id = {count_};
     p.instrument_id = request.instrument_id;
     p.side = request.side;
     p.limit_price = request.limit_price;
     p.original_qty = p.leaves_qty = request.quantity;
     p.position_effect = request.position_effect;
-    out = p.client_order_id;
+    out = p.strategy_order_id;
     return base::ErrorCode::kOk;
   }
-  base::ErrorCode CancelOrder(model::ClientOrderId id) noexcept override {
+  base::ErrorCode CancelOrder(model::StrategyOrderId id) noexcept override {
     if (!accepting_orders()) {
       return base::ErrorCode::kInvalidState;
     }
@@ -294,7 +294,7 @@ class Broker final : public trading::TradingService {
     p.cancel_request_id = {++cancel_id_};
     return base::ErrorCode::kOk;
   }
-  bool TryGetOrder(model::ClientOrderId id,
+  bool TryGetOrder(model::StrategyOrderId id,
                    model::OrderSnapshot& out) const noexcept override {
     if (!initialized_ || id.value == 0 || id.value > count_) {
       return false;
@@ -347,7 +347,7 @@ class Broker final : public trading::TradingService {
           local_[local_count_++] = i;
           continue;
         }
-        auto status = SendOrder(p.client_order_id,
+        auto status = SendOrder(p.strategy_order_id,
                                 {p.instrument_id, p.side, p.limit_price,
                                  p.original_qty, p.position_effect},
                                 now);
@@ -362,7 +362,7 @@ class Broker final : public trading::TradingService {
       }
       if (p.cancel_pending && sent_cancel_[i] != p.cancel_request_id) {
         sent_cancel_[i] = p.cancel_request_id;
-        auto status = SendCancel(p.client_order_id, p.broker_order_id,
+        auto status = SendCancel(p.strategy_order_id, p.adapter_order_id,
                                  p.cancel_request_id, now);
         if (!status.ok()) {
           return status;
@@ -382,7 +382,7 @@ class Broker final : public trading::TradingService {
       event = true;
       return {};
     }
-    trading::TradingEvent report;
+    model::TradingEvent report;
     const auto result = Poll(now, report);
     if (!result.status.ok()) {
       return result.status;
@@ -392,7 +392,7 @@ class Broker final : public trading::TradingService {
       return {};
     }
     auto& p = snapshots_[report.client_order_id.value - 1];
-    p.broker_order_id = report.broker_order_id;
+    p.adapter_order_id = report.adapter_order_id;
     p.report_sequence = report.report_sequence;
     p.receive_time_ns = now;
     if (report.kind == model::OrderUpdateKind::kAccepted) {
@@ -462,7 +462,7 @@ class Broker final : public trading::TradingService {
     out = account_;
     return {};
   }
-  base::Status SendOrder(model::ClientOrderId id,
+  base::Status SendOrder(model::StrategyOrderId id,
                          const model::OrderRequest& request,
                          uint64_t now) noexcept {
     if (sent_count == orders.size()) {
@@ -504,8 +504,8 @@ class Broker final : public trading::TradingService {
     }
     return {};
   }
-  base::Status SendCancel(model::ClientOrderId id,
-                          const model::BrokerOrderId& broker,
+  base::Status SendCancel(model::StrategyOrderId id,
+                          const model::AdapterOrderId& broker,
                           model::CancelRequestId cancel_id,
                           uint64_t now) noexcept {
     if (cancel_count == cancels.size()) {
@@ -532,7 +532,7 @@ class Broker final : public trading::TradingService {
     return Error();
   }
   trading::TradingPollResult Poll(uint64_t now,
-                                  trading::TradingEvent& out) noexcept {
+                                  model::TradingEvent& out) noexcept {
     const auto selected = NextPlan();
     if (!selected || plans_[*selected].at > now) {
       return {};
@@ -541,8 +541,8 @@ class Broker final : public trading::TradingService {
     plans_[*selected].active = false;
     auto& order = orders[plan.order];
     out = {};
-    out.client_order_id = order.id;
-    out.broker_order_id = order.broker;
+    out.client_order_id = {order.id.value};
+    out.adapter_order_id = order.broker;
     out.report_sequence = ++order.sequence;
     out.kind = plan.kind;
     out.cancel_request_id = plan.cancel_id;
@@ -553,8 +553,8 @@ class Broker final : public trading::TradingService {
         order.finished = true;
       }
       auto& fill = out.fill;
-      fill.client_order_id = order.id;
-      fill.broker_order_id = order.broker;
+      fill.strategy_order_id = order.id;
+      fill.adapter_order_id = order.broker;
       char execution[64];
       const int size = ::yquant::base::FormatTo(execution, sizeof(execution),
                                                 "execution-{}-{}",

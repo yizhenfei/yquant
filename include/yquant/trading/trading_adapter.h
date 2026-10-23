@@ -13,20 +13,6 @@
 
 namespace yquant::trading {
 
-// Self-contained normalized input to the host ledger. Sequence starts at one
-// for each order; non-fill events leave fill empty. No field borrows SDK data.
-struct TradingEvent {
-  model::ClientOrderId client_order_id;
-  model::BrokerOrderId broker_order_id;
-  uint64_t report_sequence = 0;
-  model::OrderUpdateKind kind = model::OrderUpdateKind::kAccepted;
-  int64_t cumulative_filled_qty = 0;
-  uint64_t receive_time_ns = 0;
-  model::Fill fill;
-  model::CancelRequestId cancel_request_id;
-  model::OrderReason reason;
-};
-
 enum class TradingPollState { kEvent, kAccount, kIdle, kError };
 
 // Only kEvent changes Poll's output; kAccount signals an updated cached broker
@@ -80,12 +66,12 @@ class TradingAdapter {
   // Must also settle requests registered before an order finished filling;
   // such orders produce an associated rejection rather than being forgotten.
   [[nodiscard]] virtual base::Status SendCancel(
-      model::ClientOrderId id, const model::BrokerOrderId& broker_order_id,
+      model::ClientOrderId id, const model::AdapterOrderId& adapter_order_id,
       model::CancelRequestId cancel_request_id, uint64_t now) noexcept = 0;
   // Nonblocking, allocation-free and bounded work; emits at most one event.
   // Idle/error preserve out. now shares the host's monotonic clock domain.
-  [[nodiscard]] virtual TradingPollResult Poll(uint64_t now,
-                                               TradingEvent& out) noexcept = 0;
+  [[nodiscard]] virtual TradingPollResult Poll(
+      uint64_t now, model::TradingEvent& out) noexcept = 0;
   // Earliest pending event; empty if none. Idle must not retain a due deadline.
   virtual std::optional<uint64_t> next_deadline() const noexcept = 0;
   // True only with no active orders, outstanding requests or pending events.

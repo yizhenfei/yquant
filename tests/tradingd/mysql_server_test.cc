@@ -1,25 +1,23 @@
 #include <stdint.h>
 
-#include <utility>
-
-#include "tradingd/server.h"
-#include "yquant/base/format.h"
-
-#if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
-#include <mysql.h>
-#endif
-
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "gtest/gtest.h"
 #include "marketd/test_support.h"
+#include "tradingd/server.h"
+#include "yquant/base/format.h"
 #include "yquant/trading/connection.h"
+
+#if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
+#include <mysql.h>
+#endif
 
 namespace yquant::tradingd {
 namespace {
@@ -221,7 +219,7 @@ class MysqlServerTest : public ::testing::Test {
     trading::Message message;
     message.type = trading::MessageType::kNewOrder;
     message.generation = generation;
-    message.order_id = {local_id};
+    message.strategy_order_id = {local_id};
     message.request = {config.market_data.instruments[0].instrument.id,
                        model::OrderSide::kBuy, 1000, quantity};
     ASSERT_TRUE(peer.Queue(message).ok());
@@ -249,7 +247,7 @@ class MysqlServerTest : public ::testing::Test {
 
   bool HasUpdate(uint64_t order, model::OrderState state) const {
     for (const auto& message : updates) {
-      if (message.update.order.client_order_id.value == order &&
+      if (message.update.order.strategy_order_id.value == order &&
           message.update.order.state == state) {
         return true;
       }
@@ -260,7 +258,7 @@ class MysqlServerTest : public ::testing::Test {
   marketd::testing::RuntimeDirectory directory;
   MysqlServerClock clock;
   ServerConfig config;
-  Server server{clock};
+  Server server{&clock};
   trading::Connection peer;
   uint64_t generation = 0;
   std::vector<trading::Message> updates;

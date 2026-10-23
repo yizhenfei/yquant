@@ -118,7 +118,7 @@ class TradingdPersistenceTest : public ::testing::Test {
     trading::Message order;
     order.type = trading::MessageType::kNewOrder;
     order.generation = peer.generation;
-    order.order_id = {local_id};
+    order.strategy_order_id = {local_id};
     order.request = {config.market_data.instruments[0].instrument.id,
                      model::OrderSide::kBuy, 1000, quantity};
     ASSERT_TRUE(peer.connection.Queue(order).ok());
@@ -139,7 +139,7 @@ class TradingdPersistenceTest : public ::testing::Test {
   RuntimeDirectory directory;
   PersistenceClock clock;
   ServerConfig config;
-  Server server{clock};
+  Server server{&clock};
   PersistentPeer peer;
 };
 
@@ -181,7 +181,7 @@ TEST_F(TradingdPersistenceTest,
   Advance();
   const auto* accepted = Update(model::OrderUpdateKind::kAccepted);
   ASSERT_NE(accepted, nullptr);
-  const auto old_broker_id = accepted->update.order.broker_order_id;
+  const auto old_broker_id = accepted->update.order.adapter_order_id;
   EXPECT_EQ(server.account().cash.reserved, 100000000);
   Restart();
   EXPECT_EQ(server.account().cash.balance, 1000000000);
@@ -193,7 +193,7 @@ TEST_F(TradingdPersistenceTest,
   Advance();
   accepted = Update(model::OrderUpdateKind::kAccepted);
   ASSERT_NE(accepted, nullptr);
-  EXPECT_NE(accepted->update.order.broker_order_id, old_broker_id);
+  EXPECT_NE(accepted->update.order.adapter_order_id, old_broker_id);
   EXPECT_EQ(server.account().cash.reserved, 100000000);
   EXPECT_EQ(server.account().cash.balance, 1000000000);
 }
@@ -212,7 +212,7 @@ TEST_F(TradingdPersistenceTest,
 
 TEST_F(TradingdPersistenceTest, UniquePublisherLockExcludesSecondServer) {
   Start();
-  Server second{clock};
+  Server second{&clock};
   config.persistence.initialize = false;
   EXPECT_FALSE(second.Init(config).ok());
   EXPECT_NE(server.port(), 0U);
@@ -477,7 +477,7 @@ TEST_F(TradingdPersistenceTest,
     trading::Message cancel;
     cancel.type = trading::MessageType::kCancelOrder;
     cancel.generation = peer.generation;
-    cancel.order_id = {1};
+    cancel.strategy_order_id = {1};
     cancel.cancel_id = {1};
     ASSERT_TRUE(peer.connection.Queue(cancel).ok());
     Pump();
@@ -658,7 +658,7 @@ TEST(TradingdPersistenceProcessTest, SigkillRecoversFileBackedPageCache) {
   trading::Message order;
   order.type = trading::MessageType::kNewOrder;
   order.generation = generation;
-  order.order_id = {1};
+  order.strategy_order_id = {1};
   order.request = {hello.instruments[0].id, model::OrderSide::kBuy, 1000, 10};
   ASSERT_TRUE(peer.Queue(order).ok());
   bool filled = false;

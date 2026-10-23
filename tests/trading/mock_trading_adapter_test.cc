@@ -27,12 +27,12 @@ bool Start(trading::MockTradingAdapter& adapter,
 }
 
 // Compares fields rather than padding, including values unused by event kind.
-bool SameEvent(const trading::TradingEvent& left,
-               const trading::TradingEvent& right) {
+bool SameEvent(const model::TradingEvent& left,
+               const model::TradingEvent& right) {
   const auto& a = left.fill;
   const auto& b = right.fill;
   return left.client_order_id == right.client_order_id &&
-         left.broker_order_id == right.broker_order_id &&
+         left.adapter_order_id == right.adapter_order_id &&
          left.report_sequence == right.report_sequence &&
          left.kind == right.kind &&
          left.cumulative_filled_qty == right.cumulative_filled_qty &&
@@ -42,7 +42,7 @@ bool SameEvent(const trading::TradingEvent& left,
          left.reason.view() == right.reason.view() &&
          left.reason.truncated == right.reason.truncated &&
          a.client_order_id == b.client_order_id &&
-         a.broker_order_id == b.broker_order_id &&
+         a.adapter_order_id == b.adapter_order_id &&
          a.execution_id == b.execution_id &&
          a.instrument_id == b.instrument_id && a.side == b.side &&
          a.price == b.price && a.quantity == b.quantity &&
@@ -60,7 +60,7 @@ TEST(MockTradingAdapterTest, FillsInTwoStepsWithOwnedIdsAndContinuousSequence) {
   request = {};
   EXPECT_FALSE(adapter.is_drained());
   EXPECT_EQ(adapter.next_deadline(), kInterval);
-  trading::TradingEvent event;
+  model::TradingEvent event;
   event.client_order_id = {99};
   auto unchanged = event;
   EXPECT_EQ(adapter.Poll(kInterval - 1, event).state,
@@ -72,9 +72,9 @@ TEST(MockTradingAdapterTest, FillsInTwoStepsWithOwnedIdsAndContinuousSequence) {
   EXPECT_EQ(event.client_order_id.value, 1U);
   EXPECT_EQ(event.report_sequence, 1U);
   EXPECT_EQ(event.cumulative_filled_qty, 0);
-  EXPECT_FALSE(event.broker_order_id.empty());
+  EXPECT_FALSE(event.adapter_order_id.empty());
   EXPECT_EQ(event.fill.client_order_id.value, 0U);
-  const auto broker = event.broker_order_id;
+  const auto broker = event.adapter_order_id;
   unchanged = event;
   EXPECT_EQ(adapter.Poll(kInterval, event).state,
             trading::TradingPollState::kIdle);
@@ -84,8 +84,8 @@ TEST(MockTradingAdapterTest, FillsInTwoStepsWithOwnedIdsAndContinuousSequence) {
   EXPECT_EQ(event.kind, model::OrderUpdateKind::kFill);
   EXPECT_EQ(event.report_sequence, 2U);
   EXPECT_EQ(event.cumulative_filled_qty, 100);
-  EXPECT_EQ(event.broker_order_id, broker);
-  EXPECT_EQ(event.fill.broker_order_id, broker);
+  EXPECT_EQ(event.adapter_order_id, broker);
+  EXPECT_EQ(event.fill.adapter_order_id, broker);
   EXPECT_EQ(event.fill.client_order_id.value, 1U);
   EXPECT_EQ(event.fill.instrument_id, Request().instrument_id);
   EXPECT_EQ(event.fill.side, model::OrderSide::kBuy);
@@ -114,7 +114,7 @@ TEST(MockTradingAdapterTest, OneShareSkipsZeroFillAndOddQuantityUsesFloor) {
     trading::MockTradingAdapter adapter;
     ASSERT_TRUE(Start(adapter));
     ASSERT_TRUE(adapter.SendOrder({1}, Request(quantity), 0).ok());
-    trading::TradingEvent event;
+    model::TradingEvent event;
     ASSERT_EQ(adapter.Poll(kInterval, event).state,
               trading::TradingPollState::kEvent);
     ASSERT_EQ(adapter.Poll(2 * kInterval, event).state,
@@ -135,12 +135,12 @@ TEST(MockTradingAdapterTest, WorkingRequiresExplicitCancellation) {
   trading::MockTradingAdapter adapter;
   ASSERT_TRUE(Start(adapter, trading::MockTradingMode::kWorking));
   ASSERT_TRUE(adapter.SendOrder({7}, Request(), 0).ok());
-  trading::TradingEvent event;
+  model::TradingEvent event;
   ASSERT_EQ(adapter.Poll(kInterval, event).state,
             trading::TradingPollState::kEvent);
   EXPECT_FALSE(adapter.is_drained());
   EXPECT_FALSE(adapter.next_deadline());
-  const auto broker = event.broker_order_id;
+  const auto broker = event.adapter_order_id;
   ASSERT_TRUE(adapter.SendCancel({7}, broker, {11}, kInterval).ok());
   ASSERT_EQ(adapter.Poll(2 * kInterval, event).state,
             trading::TradingPollState::kEvent);
@@ -156,7 +156,7 @@ TEST(MockTradingAdapterTest, RejectModeTerminatesWithoutFills) {
   trading::MockTradingAdapter adapter;
   ASSERT_TRUE(Start(adapter, trading::MockTradingMode::kReject));
   ASSERT_TRUE(adapter.SendOrder({4}, Request(), 0).ok());
-  trading::TradingEvent event;
+  model::TradingEvent event;
   ASSERT_EQ(adapter.Poll(kInterval, event).state,
             trading::TradingPollState::kEvent);
   EXPECT_EQ(event.kind, model::OrderUpdateKind::kRejected);
@@ -173,7 +173,7 @@ TEST(MockTradingAdapterTest, EqualDeadlinesFollowPlanRegistrationOrder) {
   ASSERT_TRUE(Start(adapter));
   ASSERT_TRUE(adapter.SendOrder({9}, Request(), 0).ok());
   ASSERT_TRUE(adapter.SendOrder({3}, Request(), 0).ok());
-  trading::TradingEvent event;
+  model::TradingEvent event;
   for (const auto now : {kInterval, 2 * kInterval, 3 * kInterval}) {
     ASSERT_EQ(adapter.Poll(now, event).state,
               trading::TradingPollState::kEvent);
@@ -189,7 +189,7 @@ TEST(MockTradingAdapterTest, LatePollingDoesNotFastForwardFutureSteps) {
   trading::MockTradingAdapter adapter;
   ASSERT_TRUE(Start(adapter));
   ASSERT_TRUE(adapter.SendOrder({1}, Request(), 0).ok());
-  trading::TradingEvent event;
+  model::TradingEvent event;
   ASSERT_EQ(adapter.Poll(100 * kInterval, event).state,
             trading::TradingPollState::kEvent);
   EXPECT_EQ(event.kind, model::OrderUpdateKind::kAccepted);
@@ -208,10 +208,10 @@ TEST(MockTradingAdapterTest, DueFillPrecedesCancelAndFutureFillIsRemoved) {
   trading::MockTradingAdapter adapter;
   ASSERT_TRUE(Start(adapter));
   ASSERT_TRUE(adapter.SendOrder({1}, Request(), 0).ok());
-  trading::TradingEvent event;
+  model::TradingEvent event;
   ASSERT_EQ(adapter.Poll(kInterval, event).state,
             trading::TradingPollState::kEvent);
-  const auto broker = event.broker_order_id;
+  const auto broker = event.adapter_order_id;
   ASSERT_TRUE(adapter.SendCancel({1}, broker, {9}, kInterval).ok());
   ASSERT_EQ(adapter.Poll(2 * kInterval, event).state,
             trading::TradingPollState::kEvent);
@@ -237,10 +237,10 @@ TEST(MockTradingAdapterTest,
   trading::MockTradingAdapter adapter;
   ASSERT_TRUE(Start(adapter));
   ASSERT_TRUE(adapter.SendOrder({1}, Request(1), 0).ok());
-  trading::TradingEvent event;
+  model::TradingEvent event;
   ASSERT_EQ(adapter.Poll(kInterval, event).state,
             trading::TradingPollState::kEvent);
-  const auto broker = event.broker_order_id;
+  const auto broker = event.adapter_order_id;
   ASSERT_EQ(adapter.Poll(2 * kInterval, event).state,
             trading::TradingPollState::kEvent);
   ASSERT_TRUE(adapter.is_drained());
@@ -274,13 +274,13 @@ TEST(MockTradingAdapterTest, ValidatesSendsWithoutSchedulingFailedRequests) {
   EXPECT_FALSE(adapter.next_deadline());
   ASSERT_TRUE(adapter.SendOrder({1}, Request(), 0).ok());
   EXPECT_FALSE(adapter.SendOrder({1}, Request(), 0).ok());
-  trading::TradingEvent event;
+  model::TradingEvent event;
   ASSERT_EQ(adapter.Poll(kInterval, event).state,
             trading::TradingPollState::kEvent);
-  const auto broker = event.broker_order_id;
+  const auto broker = event.adapter_order_id;
   EXPECT_FALSE(adapter.SendCancel({1}, broker, {}, kInterval).ok());
   EXPECT_FALSE(adapter.SendCancel({99}, broker, {1}, kInterval).ok());
-  model::BrokerOrderId incorrect;
+  model::AdapterOrderId incorrect;
   ASSERT_EQ(incorrect.Assign("another-order"), base::ErrorCode::kOk);
   EXPECT_FALSE(adapter.SendCancel({1}, incorrect, {1}, kInterval).ok());
   ASSERT_TRUE(adapter.SendCancel({1}, broker, {1}, kInterval).ok());
@@ -292,19 +292,19 @@ TEST(MockTradingAdapterTest, ValidatesSendsWithoutSchedulingFailedRequests) {
 TEST(MockTradingAdapterTest, FullOrderAndPlanCapacityDrainsWithoutStaleNodes) {
   trading::MockTradingAdapter adapter;
   ASSERT_TRUE(Start(adapter));
-  std::array<model::BrokerOrderId, trading::kMaxTradingOrders> brokers;
+  std::array<model::AdapterOrderId, trading::kMaxTradingOrders> brokers;
   for (size_t index = 0; index < trading::kMaxTradingOrders; ++index) {
     ASSERT_TRUE(adapter.SendOrder({index + 1}, Request(), 0).ok());
   }
   EXPECT_EQ(
       adapter.SendOrder({trading::kMaxTradingOrders + 1}, Request(), 0).code,
       base::ErrorCode::kResourceExhausted);
-  trading::TradingEvent event;
+  model::TradingEvent event;
   for (size_t index = 0; index < trading::kMaxTradingOrders; ++index) {
     ASSERT_EQ(adapter.Poll(kInterval, event).state,
               trading::TradingPollState::kEvent);
     ASSERT_EQ(event.client_order_id.value, index + 1);
-    brokers[index] = event.broker_order_id;
+    brokers[index] = event.adapter_order_id;
   }
   for (size_t index = 0; index < trading::kMaxTradingOrders; ++index) {
     ASSERT_TRUE(
@@ -337,7 +337,7 @@ TEST(MockTradingAdapterTest,
             base::ErrorCode::kResourceExhausted);
   EXPECT_TRUE(adapter.is_drained());
   ASSERT_TRUE(adapter.SendOrder({1}, Request(), UINT64_MAX - kInterval).ok());
-  trading::TradingEvent event;
+  model::TradingEvent event;
   event.client_order_id = {999};
   const auto unchanged = event;
   const auto poll = adapter.Poll(UINT64_MAX, event);
@@ -357,7 +357,7 @@ TEST(MockTradingAdapterTest,
   EXPECT_TRUE(adapter.is_drained());
   EXPECT_FALSE(adapter.Start(0).ok());
   EXPECT_FALSE(adapter.SendOrder({1}, Request(), 0).ok());
-  trading::TradingEvent event;
+  model::TradingEvent event;
   event.client_order_id = {9};
   const auto unchanged = event;
   EXPECT_EQ(adapter.Poll(0, event).state, trading::TradingPollState::kError);
@@ -429,7 +429,7 @@ TEST(MockTradingAdapterTest,
   EXPECT_EQ(adapter.ReadAccountSnapshot(snapshot).code,
             base::ErrorCode::kInvalidState);
   EXPECT_EQ(snapshot, unchanged);
-  trading::TradingEvent event;
+  model::TradingEvent event;
   ASSERT_EQ(adapter.Poll(kInterval, event).state,
             trading::TradingPollState::kEvent);
   ASSERT_TRUE(adapter.is_drained());

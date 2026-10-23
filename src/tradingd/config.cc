@@ -1,6 +1,7 @@
 #include "tradingd/config.h"
 
 #include <arpa/inet.h>
+#include <simdjson.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -331,39 +332,9 @@ base::Status Resolve(char* value, std::string_view field,
   return status;
 }
 
-}  // namespace
-
-base::Status ValidateConfig(const ServerConfig& config,
-                            base::ConfigError& error) noexcept {
-  error.Clear();
-  in_addr address = {};
-  if (strnlen(config.listen.address, sizeof(config.listen.address)) >=
-          sizeof(config.listen.address) ||
-      inet_pton(AF_INET, config.listen.address, &address) != 1) {
-    return InvalidConfig("listen.address", "must be a numeric IPv4 address",
-                         error);
-  }
-  const auto length = strnlen(config.token, sizeof(config.token));
-  if (length == 0 || length > trading::kMaxTokenBytes) {
-    return InvalidConfig("token", "must contain from 1 to 64 bytes", error);
-  }
-  if (config.max_clients == 0 || config.max_clients > trading::kMaxClients) {
-    return InvalidConfig("max_clients", "must be from 1 to 16", error);
-  }
-  if (config.heartbeat_timeout_ns < kMinimumTimeoutNs ||
-      config.heartbeat_timeout_ns > kMaximumTimeoutNs) {
-    return InvalidConfig("heartbeat_timeout_ms",
-                         "must be from 1000 to 60000 ms", error);
-  }
-  if (config.shutdown_timeout_ns < kMinimumTimeoutNs ||
-      config.shutdown_timeout_ns > kMaximumTimeoutNs) {
-    return InvalidConfig("shutdown_timeout_ms", "must be from 1000 to 60000 ms",
-                         error);
-  }
-  if (config.persistence.enabled() &&
-      config.trading.adapter != trading::TradingAdapterKind::kMock) {
-    return InvalidConfig("persistence", "requires a cash mock adapter", error);
-  }
+// Checks journal sizing, supported adapters and initialization requirements.
+base::Status ValidatePersistence(const ServerConfig& config,
+                                 base::ConfigError& error) noexcept {
   const auto& persistence = config.persistence;
   if (persistence.enabled()) {
     if (strnlen(persistence.directory, sizeof(persistence.directory)) >=
@@ -407,6 +378,13 @@ base::Status ValidateConfig(const ServerConfig& config,
     return InvalidConfig("persistence.directory",
                          "required for persistent state", error);
   }
+  return {};
+}
+
+// Checks archive connection and batch bounds against persistent-state settings.
+base::Status ValidateArchive(const ServerConfig& config,
+                             base::ConfigError& error) noexcept {
+  const auto& persistence = config.persistence;
   const auto& archive = config.mysql_archive;
   if (archive.enabled) {
 #ifndef YQUANT_WITH_MYSQL
@@ -448,7 +426,50 @@ base::Status ValidateConfig(const ServerConfig& config,
                            error);
     }
   }
-  auto status = md::ValidateMarketDataScope(config.market_data, error);
+  return {};
+}
+
+}  // namespace
+
+base::Status ValidateConfig(const ServerConfig& config,
+                            base::ConfigError& error) noexcept {
+  error.Clear();
+  in_addr address = {};
+  if (strnlen(config.listen.address, sizeof(config.listen.address)) >=
+          sizeof(config.listen.address) ||
+      inet_pton(AF_INET, config.listen.address, &address) != 1) {
+    return InvalidConfig("listen.address", "must be a numeric IPv4 address",
+                         error);
+  }
+  const auto length = strnlen(config.token, sizeof(config.token));
+  if (length == 0 || length > trading::kMaxTokenBytes) {
+    return InvalidConfig("token", "must contain from 1 to 64 bytes", error);
+  }
+  if (config.max_clients == 0 || config.max_clients > trading::kMaxClients) {
+    return InvalidConfig("max_clients", "must be from 1 to 16", error);
+  }
+  if (config.heartbeat_timeout_ns < kMinimumTimeoutNs ||
+      config.heartbeat_timeout_ns > kMaximumTimeoutNs) {
+    return InvalidConfig("heartbeat_timeout_ms",
+                         "must be from 1000 to 60000 ms", error);
+  }
+  if (config.shutdown_timeout_ns < kMinimumTimeoutNs ||
+      config.shutdown_timeout_ns > kMaximumTimeoutNs) {
+    return InvalidConfig("shutdown_timeout_ms", "must be from 1000 to 60000 ms",
+                         error);
+  }
+  if (config.persistence.enabled() &&
+      config.trading.adapter != trading::TradingAdapterKind::kMock) {
+    return InvalidConfig("persistence", "requires a cash mock adapter", error);
+  }
+  auto status = ValidatePersistence(config, error);
+  if (status.ok()) {
+    status = ValidateArchive(config, error);
+  }
+  if (!status.ok()) {
+    return status;
+  }
+  status = md::ValidateMarketDataScope(config.market_data, error);
   if (!status.ok()) {
     return status;
   }

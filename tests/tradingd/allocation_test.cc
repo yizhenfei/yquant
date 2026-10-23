@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -235,7 +234,7 @@ const char* Exercise(Server& server, trading::Connection& client,
   trading::Message order;
   order.type = trading::MessageType::kNewOrder;
   order.generation = observation.generation;
-  order.order_id = {1};
+  order.strategy_order_id = {1};
   order.request = {instrument, model::OrderSide::kBuy, 1000, 10};
   if (!client.Queue(order).ok()) {
     return "order queue failed";
@@ -255,7 +254,7 @@ const char* Exercise(Server& server, trading::Connection& client,
   trading::Message cancel;
   cancel.type = trading::MessageType::kCancelOrder;
   cancel.generation = observation.generation;
-  cancel.order_id = {1};
+  cancel.strategy_order_id = {1};
   cancel.cancel_id = {1};
   if (!client.Queue(cancel).ok()) {
     return "cancel queue failed";
@@ -349,7 +348,7 @@ void CheckEstablishedTradingHeap(bool persistent) {
     config.persistence.initialize = true;
     config.persistence.wal_segment_bytes = kMinWalSegmentBytes;
   }
-  Server server(clock);
+  Server server(&clock);
   ASSERT_TRUE(server.Init(config).ok()) << server.error_detail();
   trading::Endpoint endpoint;
   endpoint.port = server.port();

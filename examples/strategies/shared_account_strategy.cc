@@ -144,7 +144,7 @@ class SharedAccountStrategy final : public strategy::Strategy {
   ErrorCode OnOrderUpdate(strategy::StrategyContext& context,
                           const model::OrderUpdate& update) noexcept override {
     model::OrderSnapshot order;
-    if (update.order.client_order_id != order_id_ ||
+    if (update.order.strategy_order_id != order_id_ ||
         !context.trading().TryGetOrder(order_id_, order) ||
         order != update.order) {
       return ErrorCode::kCorrupt;
@@ -164,7 +164,7 @@ class SharedAccountStrategy final : public strategy::Strategy {
   }
   ErrorCode OnFill(strategy::StrategyContext&,
                    const model::Fill& fill) noexcept override {
-    if (fill.client_order_id != order_id_ || fill.quantity <= 0 ||
+    if (fill.strategy_order_id != order_id_ || fill.quantity <= 0 ||
         filled_qty_ > config_.quantity - fill.quantity) {
       return ErrorCode::kCorrupt;
     }
@@ -195,7 +195,7 @@ class SharedAccountStrategy final : public strategy::Strategy {
                : ErrorCode::kOk;
   }
   Config config_;
-  model::ClientOrderId order_id_;
+  model::StrategyOrderId order_id_;
   int64_t filled_qty_ = 0;
 };
 

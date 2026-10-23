@@ -136,7 +136,7 @@ class ServerTest : public ::testing::Test {
     trading::Message message;
     message.type = trading::MessageType::kNewOrder;
     message.generation = peer.generation;
-    message.order_id = {id};
+    message.strategy_order_id = {id};
     message.request = {config.market_data.instruments[0].instrument.id, side,
                        1000, qty};
     ASSERT_TRUE(peer.connection.Queue(message).ok());
@@ -147,7 +147,7 @@ class ServerTest : public ::testing::Test {
     for (auto it = peer.received.rbegin(); it != peer.received.rend(); ++it) {
       if (it->type == trading::MessageType::kOrderUpdate &&
           it->update.kind == kind &&
-          it->update.order.client_order_id.value == order_id) {
+          it->update.order.strategy_order_id.value == order_id) {
         return &*it;
       }
     }
@@ -163,7 +163,7 @@ class ServerTest : public ::testing::Test {
 
   TestClock clock;
   ServerConfig config = Config();
-  Server server{clock};
+  Server server{&clock};
   Peer first;
   Peer second;
 };
@@ -251,10 +251,18 @@ TEST_F(ServerTest, IdenticalLocalOrderIdsRouteFillsOnlyToTheirOwners) {
   EXPECT_EQ(second_fill->fill.quantity, 10);
   EXPECT_EQ(first_fill->update.order.cumulative_filled_qty, 10);
   EXPECT_EQ(second_fill->update.order.cumulative_filled_qty, 20);
-  EXPECT_EQ(first_fill->fill.client_order_id.value, 1U);
-  EXPECT_EQ(second_fill->fill.client_order_id.value, 1U);
-  EXPECT_NE(first_fill->fill.broker_order_id,
-            second_fill->fill.broker_order_id);
+  EXPECT_EQ(first_fill->fill.strategy_order_id.value, 1U);
+  EXPECT_EQ(second_fill->fill.strategy_order_id.value, 1U);
+  EXPECT_NE(first_fill->fill.client_order_id.value, 0U);
+  EXPECT_NE(second_fill->fill.client_order_id.value, 0U);
+  EXPECT_NE(first_fill->fill.client_order_id,
+            second_fill->fill.client_order_id);
+  EXPECT_EQ(first_fill->fill.client_order_id,
+            first_fill->update.order.client_order_id);
+  EXPECT_EQ(second_fill->fill.client_order_id,
+            second_fill->update.order.client_order_id);
+  EXPECT_NE(first_fill->fill.adapter_order_id,
+            second_fill->fill.adapter_order_id);
   EXPECT_EQ(server.account().cash.balance, 700000000);
 }
 
@@ -364,7 +372,7 @@ TEST_F(ServerTest,
   trading::Message cancel;
   cancel.type = trading::MessageType::kCancelOrder;
   cancel.generation = first.generation;
-  cancel.order_id = {1};
+  cancel.strategy_order_id = {1};
   cancel.cancel_id = {1};
   ASSERT_TRUE(first.connection.Queue(cancel).ok());
   Pump();

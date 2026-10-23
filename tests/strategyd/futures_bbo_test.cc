@@ -163,7 +163,7 @@ void CheckFuturesServiceScenario(bool closing, bool insufficient_cash = false,
     d.notify_order = true;
     d.update.kind = model::OrderUpdateKind::kAccepted;
     auto& order = d.update.order;
-    order.client_order_id = {i};
+    order.strategy_order_id = {i};
     order.instrument_id = id;
     order.side = closing ? OrderSide::kSell
                          : (i == 1 ? OrderSide::kBuy : OrderSide::kSell);
@@ -279,8 +279,8 @@ TEST(FuturesBboServiceTest, BrokerAccountLeadingClosingReportsDoesNotReopen) {
   auto& update = accepted.dispatch.update;
   accepted.dispatch.notify_order = true;
   update.kind = model::OrderUpdateKind::kAccepted;
-  update.order.client_order_id = {1};
-  ASSERT_EQ(update.order.broker_order_id.Assign("broker-close"),
+  update.order.strategy_order_id = {1};
+  ASSERT_EQ(update.order.adapter_order_id.Assign("broker-close"),
             base::ErrorCode::kOk);
   update.order.instrument_id = id;
   update.order.side = OrderSide::kSell;
@@ -299,8 +299,8 @@ TEST(FuturesBboServiceTest, BrokerAccountLeadingClosingReportsDoesNotReopen) {
   filled.dispatch.update.order.report_sequence = 2;
   filled.dispatch.has_fill = true;
   auto& fill = filled.dispatch.fill;
-  fill.client_order_id = {1};
-  fill.broker_order_id = update.order.broker_order_id;
+  fill.strategy_order_id = {1};
+  fill.adapter_order_id = update.order.adapter_order_id;
   ASSERT_EQ(fill.execution_id.Assign("close-trade"), base::ErrorCode::kOk);
   fill.instrument_id = id;
   fill.side = OrderSide::kSell;

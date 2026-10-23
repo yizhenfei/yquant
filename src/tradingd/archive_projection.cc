@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cstddef>
 #include <cstring>
 #include <memory>
 #include <new>
@@ -61,7 +60,7 @@ base::Status ReadMessage(StateReader& reader,
   if (!reader.ok()) {
     return Corrupt();
   }
-  return trading::DecodeMessage(bytes, message);
+  return DecodeStoredStrategyReport(bytes, message);
 }
 
 bool SameSession(const ArchiveSession& a, const ArchiveSession& b) noexcept {
@@ -120,8 +119,8 @@ struct ArchiveProjection::Storage {
   }
 };
 
-ArchiveProjection::ArchiveProjection(const base::MonotonicClock& clock) noexcept
-    : trading_(clock, instruments_, replay_adapter_) {}
+ArchiveProjection::ArchiveProjection(const base::MonotonicClock* clock) noexcept
+    : trading_(clock, &instruments_, &replay_adapter_) {}
 ArchiveProjection::~ArchiveProjection() noexcept = default;
 
 base::Status ArchiveProjection::Configure(const ServerConfig& config) noexcept {
@@ -331,7 +330,7 @@ base::Status ArchiveProjection::RestoreGateway(
         const auto status = ReadMessage(reader, message);
         if (!status.ok() ||
             message.type != trading::MessageType::kOrderUpdate ||
-            message.update.order.client_order_id.value != local + 1 ||
+            message.update.order.strategy_order_id.value != local + 1 ||
             message.update.order.state != model::OrderState::kRejected ||
             !HasInstrument(s.sessions[slot],
                            message.update.order.instrument_id)) {
@@ -422,7 +421,7 @@ base::Status ArchiveProjection::Replay(
     auto status = ReadMessage(reader, message);
     if (!status.ok() || !reader.done() ||
         message.type != trading::MessageType::kOrderUpdate ||
-        message.update.order.client_order_id.value != local + 1 ||
+        message.update.order.strategy_order_id.value != local + 1 ||
         message.has_fill ||
         !HasInstrument(s.sessions[slot], message.update.order.instrument_id) ||
         (message.update.kind != model::OrderUpdateKind::kRejected &&
@@ -467,11 +466,12 @@ base::Status ArchiveProjection::Replay(
   using Kind = trading::TradingMutationKind;
   if (mutation.kind == Kind::kNewOrder) {
     if (key != 0 || local != s.local_counts[slot] ||
-        FindOrder(mutation.order_id) != nullptr ||
+        FindOrder(mutation.client_order_id) != nullptr ||
         !HasInstrument(s.sessions[slot], mutation.request.instrument_id)) {
       return Corrupt();
     }
-  } else if (key == 0 || s.orders[key - 1].core_id != mutation.order_id) {
+  } else if (key == 0 ||
+             s.orders[key - 1].core_id != mutation.client_order_id) {
     return Corrupt();
   }
   const auto previous_fill_count = trading_.fill_count();
@@ -482,7 +482,7 @@ base::Status ArchiveProjection::Replay(
   }
   auto& order = s.Insert(slot, local);
   if (mutation.kind == Kind::kNewOrder) {
-    order.core_id = mutation.order_id;
+    order.core_id = mutation.client_order_id;
   }
   if (mutation.kind == Kind::kCancel) {
     order.local_cancel_id = {local_cancel};
@@ -494,7 +494,7 @@ base::Status ArchiveProjection::Replay(
   order.source_lsn = lsn;
   if (dispatch.update.order.client_order_id.value != 0) {
     ++order.report_sequence;
-    dispatch.update.order.client_order_id = {local + 1};
+    dispatch.update.order.strategy_order_id = {local + 1};
     dispatch.update.order.report_sequence = order.report_sequence;
     if (dispatch.update.order.cancel_request_id == order.core_cancel_id) {
       dispatch.update.order.cancel_request_id = order.local_cancel_id;
@@ -510,7 +510,7 @@ base::Status ArchiveProjection::Replay(
             ? order.local_cancel_id
             : model::CancelRequestId{};
     if (dispatch.has_fill) {
-      dispatch.fill.client_order_id = {local + 1};
+      dispatch.fill.strategy_order_id = {local + 1};
     }
     s.update = {order.client_id, order.session_id,      order.local_order_id,
                 dispatch.update, dispatch.notify_order, dispatch.has_fill,

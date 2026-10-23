@@ -52,7 +52,7 @@ class FuturesLedgerTest : public ::testing::Test {
   }
 
   void Configure() {
-    ASSERT_EQ(ledger.Configure(account, market), ErrorCode::kOk)
+    ASSERT_EQ(ledger.Configure(account, &market), ErrorCode::kOk)
         << ledger.error_detail();
   }
 
@@ -309,13 +309,13 @@ TEST_F(FuturesLedgerTest, BootstrapRejectsInventoryOffQuantityStep) {
   position.instrument_id = id;
   position.reference_price = 100;
   position.long_today = {3, 100};
-  EXPECT_EQ(ledger.Configure(account, market), ErrorCode::kInvalidArgument);
+  EXPECT_EQ(ledger.Configure(account, &market), ErrorCode::kInvalidArgument);
   model::FuturesAccountSnapshot untouched;
   untouched.balance = 7;
   EXPECT_FALSE(ledger.TryGetAccount(untouched));
   EXPECT_EQ(untouched.balance, 7);
   position.long_today.quantity = 5;
-  EXPECT_EQ(ledger.Configure(account, market), ErrorCode::kOk);
+  EXPECT_EQ(ledger.Configure(account, &market), ErrorCode::kOk);
   EXPECT_EQ(Position().long_today.quantity, 5);
 }
 
@@ -397,11 +397,11 @@ class FuturesSendAdapter final : public TradingAdapter {
     sent_effect = request.position_effect;
     return {};
   }
-  base::Status SendCancel(model::ClientOrderId, const model::BrokerOrderId&,
+  base::Status SendCancel(model::ClientOrderId, const model::AdapterOrderId&,
                           model::CancelRequestId, uint64_t) noexcept override {
     return {};
   }
-  TradingPollResult Poll(uint64_t, TradingEvent&) noexcept override {
+  TradingPollResult Poll(uint64_t, model::TradingEvent&) noexcept override {
     return {};
   }
   std::optional<uint64_t> next_deadline() const noexcept override { return {}; }
@@ -431,15 +431,15 @@ TEST_F(FuturesLedgerTest,
   FuturesSendAdapter adapter;
   ASSERT_TRUE(trading.ProcessRequests(adapter, 1000).ok());
   EXPECT_EQ(adapter.sent_effect, PositionEffect::kOpen);
-  TradingEvent event;
+  model::TradingEvent event;
   event.client_order_id = order_id;
-  ASSERT_EQ(event.broker_order_id.Assign("futures-order"), ErrorCode::kOk);
+  ASSERT_EQ(event.adapter_order_id.Assign("futures-order"), ErrorCode::kOk);
   event.kind = model::OrderUpdateKind::kFill;
   event.report_sequence = 1;
   event.cumulative_filled_qty = 1;
   event.receive_time_ns = 1000;
   event.fill.client_order_id = order_id;
-  event.fill.broker_order_id = event.broker_order_id;
+  event.fill.adapter_order_id = event.adapter_order_id;
   ASSERT_EQ(event.fill.execution_id.Assign("fill-1"), ErrorCode::kOk);
   event.fill.instrument_id = id;
   event.fill.side = OrderSide::kBuy;
@@ -559,15 +559,15 @@ TEST_F(FuturesLedgerTest,
   trading.EndCallback();
   FuturesSendAdapter adapter;
   ASSERT_TRUE(trading.ProcessRequests(adapter, 1000).ok());
-  TradingEvent event;
+  model::TradingEvent event;
   event.client_order_id = order_id;
-  ASSERT_EQ(event.broker_order_id.Assign("stock-order"), ErrorCode::kOk);
+  ASSERT_EQ(event.adapter_order_id.Assign("stock-order"), ErrorCode::kOk);
   event.kind = model::OrderUpdateKind::kFill;
   event.report_sequence = 1;
   event.cumulative_filled_qty = 1;
   event.receive_time_ns = 1000;
   event.fill.client_order_id = order_id;
-  event.fill.broker_order_id = event.broker_order_id;
+  event.fill.adapter_order_id = event.adapter_order_id;
   ASSERT_EQ(event.fill.execution_id.Assign("stock-fill"), ErrorCode::kOk);
   event.fill.instrument_id = stock_id;
   event.fill.side = OrderSide::kBuy;
@@ -618,7 +618,7 @@ TEST_F(FuturesLedgerTest, RuntimeDispatchMarksFuturesAccountBeforeQueries) {
 class BrokerSnapshotAdapter final : public TradingAdapter {
  public:
   BrokerAccountSnapshot account;
-  TradingEvent fact;
+  model::TradingEvent fact;
   TradingPollState pending = TradingPollState::kIdle;
   int stopping_calls = 0;
   void BeginStopping() noexcept override { ++stopping_calls; }
@@ -636,11 +636,11 @@ class BrokerSnapshotAdapter final : public TradingAdapter {
                          uint64_t) noexcept override {
     return {};
   }
-  base::Status SendCancel(model::ClientOrderId, const model::BrokerOrderId&,
+  base::Status SendCancel(model::ClientOrderId, const model::AdapterOrderId&,
                           model::CancelRequestId, uint64_t) noexcept override {
     return {};
   }
-  TradingPollResult Poll(uint64_t, TradingEvent& out) noexcept override {
+  TradingPollResult Poll(uint64_t, model::TradingEvent& out) noexcept override {
     const auto state = pending;
     pending = TradingPollState::kIdle;
     if (state == TradingPollState::kEvent) {
@@ -671,7 +671,7 @@ TEST_F(FuturesLedgerTest,
   adapter.account.positions[0].long_today = {2, 0, 2010000000};
   adapter.account.positions[0].long_yesterday = {1, 0, 1000000000};
   adapter.account.positions[0].unallocated_long_frozen = 1;
-  TradingEngine engine(clock, market, adapter);
+  TradingEngine engine(&clock, &market, &adapter);
   TradingConfig broker;
   broker.adapter = TradingAdapterKind::kCtp;
   ASSERT_TRUE(engine.Init(broker, config).ok()) << engine.error_detail();
@@ -722,7 +722,7 @@ TEST_F(FuturesLedgerTest,
 TEST_F(FuturesLedgerTest, BrokerExternalCancelNeedsNoSyntheticLocalCancel) {
   BrokerSnapshotAdapter adapter;
   adapter.account.revision = 1;
-  TradingEngine engine(clock, market, adapter);
+  TradingEngine engine(&clock, &market, &adapter);
   TradingConfig broker;
   broker.adapter = TradingAdapterKind::kCtp;
   ASSERT_TRUE(engine.Init(broker, config).ok());
@@ -734,7 +734,7 @@ TEST_F(FuturesLedgerTest, BrokerExternalCancelNeedsNoSyntheticLocalCancel) {
   engine.SetAcceptingRequests(false);
   ASSERT_TRUE(engine.ProcessRequests(1000).ok());
   adapter.fact.client_order_id = order;
-  ASSERT_EQ(adapter.fact.broker_order_id.Assign("ctp-order"), ErrorCode::kOk);
+  ASSERT_EQ(adapter.fact.adapter_order_id.Assign("ctp-order"), ErrorCode::kOk);
   adapter.fact.report_sequence = 1;
   adapter.fact.kind = model::OrderUpdateKind::kCanceled;
   adapter.fact.receive_time_ns = 1000;
@@ -758,19 +758,19 @@ TEST_F(FuturesLedgerTest,
             ErrorCode::kOk);
   TradingConfig broker;
   broker.adapter = TradingAdapterKind::kCtp;
-  TradingEngine unknown(clock, market, adapter);
+  TradingEngine unknown(&clock, &market, &adapter);
   EXPECT_FALSE(unknown.Init(broker, config).ok());
   adapter.account.positions[0].instrument_id = id;
   adapter.account.positions[0].long_today.quantity = 1;
   adapter.account.positions[0].unallocated_long_frozen = 2;
-  TradingEngine bad_freeze(clock, market, adapter);
+  TradingEngine bad_freeze(&clock, &market, &adapter);
   EXPECT_FALSE(bad_freeze.Init(broker, config).ok());
 }
 
 TEST_F(FuturesLedgerTest, BrokerEventValidatesAccountBeforeCommittingOrder) {
   BrokerSnapshotAdapter adapter;
   adapter.account.revision = 1;
-  TradingEngine engine(clock, market, adapter);
+  TradingEngine engine(&clock, &market, &adapter);
   TradingConfig broker;
   broker.adapter = TradingAdapterKind::kCtp;
   ASSERT_TRUE(engine.Init(broker, config).ok());
@@ -784,7 +784,7 @@ TEST_F(FuturesLedgerTest, BrokerEventValidatesAccountBeforeCommittingOrder) {
   adapter.fact.client_order_id = order;
   adapter.fact.report_sequence = 1;
   adapter.fact.receive_time_ns = 1000;
-  ASSERT_EQ(adapter.fact.broker_order_id.Assign("ctp-accepted"),
+  ASSERT_EQ(adapter.fact.adapter_order_id.Assign("ctp-accepted"),
             ErrorCode::kOk);
   adapter.account.revision = 2;
   adapter.account.position_count = 1;
@@ -813,7 +813,7 @@ TEST_F(FuturesLedgerTest, BrokerGenericCloseUsesExchangeAllocationOnly) {
   ASSERT_TRUE(generic_market.Configure(generic).ok());
   BrokerSnapshotAdapter adapter;
   adapter.account.revision = 1;
-  TradingEngine engine(clock, generic_market, adapter);
+  TradingEngine engine(&clock, &generic_market, &adapter);
   TradingConfig broker;
   broker.adapter = TradingAdapterKind::kCtp;
   ASSERT_TRUE(engine.Init(broker, generic).ok());
@@ -837,7 +837,7 @@ TEST_F(FuturesLedgerTest, BrokerGenericCloseUsesExchangeAllocationOnly) {
 TEST_F(FuturesLedgerTest, BrokerShutdownAnnouncedOnceWithoutTransportWork) {
   BrokerSnapshotAdapter adapter;
   adapter.account.revision = 1;
-  TradingEngine engine(clock, market, adapter);
+  TradingEngine engine(&clock, &market, &adapter);
   TradingConfig broker;
   broker.adapter = TradingAdapterKind::kCtp;
   ASSERT_TRUE(engine.Init(broker, config).ok());

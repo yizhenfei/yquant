@@ -1,7 +1,10 @@
 #ifndef YQUANT_TRADING_FUTURES_LEDGER_H_
 #define YQUANT_TRADING_FUTURES_LEDGER_H_
 
+#include <stddef.h>
 #include <stdint.h>
+
+#include <memory>
 
 #include "yquant/base/status.h"
 #include "yquant/md/instrument_scope.h"
@@ -26,16 +29,17 @@ struct FuturesReservation {
 // transactions. It models gross margin and configured fees, not CTP settlement.
 class FuturesLedger {
  public:
-  FuturesLedger() noexcept = default;
+  FuturesLedger() noexcept;
   ~FuturesLedger() noexcept;
   FuturesLedger(const FuturesLedger&) = delete;
   FuturesLedger& operator=(const FuturesLedger&) = delete;
 
-  // Borrows the immutable dictionary until Reset. Invalid metadata, duplicate
-  // positions, arithmetic overflow or allocation failure leaves it disabled.
+  // Borrows the non-null immutable dictionary until Reset. Invalid metadata,
+  // duplicate positions, arithmetic overflow or allocation failure leaves it
+  // disabled.
   [[nodiscard]] base::ErrorCode Configure(
       const TradingAccountSnapshot& account,
-      const md::InstrumentScope& market_data) noexcept;
+      const md::InstrumentScope* market_data) noexcept;
   void Reset() noexcept;
 
   // Open requires sufficient available margin plus fees. A valid close may
@@ -69,8 +73,12 @@ class FuturesLedger {
 
  private:
   struct Storage;
+  // Reads exact FIFO cost without consuming lots; failure preserves out.
+  base::ErrorCode ReadOpeningCost(size_t position_index, size_t bucket_index,
+                                  int64_t quantity, int64_t& out) noexcept;
+  // Copies diagnostics while preserving all account and reservation facts.
   base::ErrorCode Fail(base::ErrorCode code, const char* detail) noexcept;
-  Storage* storage_ = nullptr;
+  std::unique_ptr<Storage> storage_;
   const md::InstrumentScope* instruments_ = nullptr;
   char error_detail_[256] = {};
 };

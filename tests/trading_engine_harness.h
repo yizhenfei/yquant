@@ -4,7 +4,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <cstddef>
 #include <optional>
 #include <span>
 #include <utility>
@@ -20,7 +19,7 @@ class TradingEngineHarness {
  public:
   TradingEngineHarness(const base::MonotonicClock& clock,
                        const md::InstrumentScope& instruments) noexcept
-      : engine_(clock, instruments, adapter_) {}
+      : engine_(&clock, &instruments, &adapter_) {}
   base::Status Configure(
       const trading::TradingAccountSnapshot& account) noexcept {
     adapter_.initial = account;
@@ -144,13 +143,13 @@ class TradingEngineHarness {
       return target->SendOrder(id, request, now);
     }
     base::Status SendCancel(model::ClientOrderId id,
-                            const model::BrokerOrderId& broker,
+                            const model::AdapterOrderId& broker,
                             model::CancelRequestId cancel,
                             uint64_t now) noexcept override {
       return target->SendCancel(id, broker, cancel, now);
     }
     trading::TradingPollResult Poll(
-        uint64_t now, trading::TradingEvent& out) noexcept override {
+        uint64_t now, model::TradingEvent& out) noexcept override {
       return target ? target->Poll(now, out) : trading::TradingPollResult{};
     }
     std::optional<uint64_t> next_deadline() const noexcept override {

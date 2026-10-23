@@ -1,19 +1,8 @@
 #include "tradingd/mysql_archive_store.h"
 
+#include <arpa/inet.h>
 #include <stddef.h>
 #include <stdint.h>
-
-#include <cstddef>
-#include <span>
-#include <string>
-
-#include "trading_engine_harness.h"
-#include "tradingd/archive_projection.h"
-#include "yquant/base/format.h"
-
-#if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
-#include <arpa/inet.h>
-#include <mysql.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -26,13 +15,21 @@
 #include <cstdlib>
 #include <cstring>
 #include <future>
+#include <span>
+#include <string>
 #include <thread>
 #include <vector>
 
 #include "gtest/gtest.h"
 #include "marketd/test_support.h"
+#include "trading_engine_harness.h"
+#include "tradingd/archive_projection.h"
 #include "tradingd/state_codec.h"
+#include "yquant/base/format.h"
 #include "yquant/trading/mock_trading_adapter.h"
+
+#if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
+#include <mysql.h>
 
 namespace yquant::tradingd {
 namespace {
@@ -388,9 +385,9 @@ class MysqlArchiveStoreTest : public ::testing::Test {
     ASSERT_TRUE(mock.Prepare(config.trading).ok());
     ASSERT_TRUE(mock.Start(clock.Now()).ok());
     ASSERT_TRUE(source.ProcessRequests(mock, clock.Now()).ok());
-    trading::TradingEvent accepted;
+    model::TradingEvent accepted;
     accepted.client_order_id = id;
-    ASSERT_EQ(accepted.broker_order_id.Assign("broker-1"), ErrorCode::kOk);
+    ASSERT_EQ(accepted.adapter_order_id.Assign("broker-1"), ErrorCode::kOk);
     accepted.report_sequence = 1;
     accepted.receive_time_ns = clock.Now();
     trading::TradingDispatch dispatch;
@@ -400,7 +397,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
     fill.kind = model::OrderUpdateKind::kFill;
     fill.cumulative_filled_qty = 4;
     fill.fill.client_order_id = id;
-    fill.fill.broker_order_id = accepted.broker_order_id;
+    fill.fill.adapter_order_id = accepted.adapter_order_id;
     ASSERT_EQ(fill.fill.execution_id.Assign("execution-1"), ErrorCode::kOk);
     fill.fill.instrument_id = config.market_data.instruments[0].instrument.id;
     fill.fill.side = model::OrderSide::kBuy;
@@ -507,7 +504,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
   ::yquant::testing::TradingEngineHarness source{clock, market};
   trading::MockTradingAdapter mock;
   FactSink sink;
-  ArchiveProjection projection{clock};
+  ArchiveProjection projection{&clock};
 };
 
 TEST_F(MysqlArchiveStoreTest, PublishesFactsProjectionAndWatermarkAtomically) {

@@ -9,6 +9,7 @@
 #include <new>
 #include <optional>
 #include <string_view>
+#include <utility>
 
 #include "trading/trading_storage.h"
 #include "yquant/base/format.h"
@@ -41,25 +42,61 @@ void CopyIdHex(std::string_view value,
 
 constexpr uint64_t kCancelRetryNs = 10000000;
 
+// Rejects unspecified directions before reserving account resources.
 bool ValidSide(model::OrderSide side) noexcept {
-  return side == model::OrderSide::kBuy || side == model::OrderSide::kSell;
+  switch (side) {
+    case model::OrderSide::kBuy:
+    case model::OrderSide::kSell:
+      return true;
+    case model::OrderSide::kUnknown:
+      return false;
+  }
+  return false;
 }
 
 // Non-fill reports may not smuggle a second, unprocessed execution payload.
 bool EmptyFill(const model::Fill& fill) noexcept {
-  return fill.client_order_id.value == 0 && fill.broker_order_id.empty() &&
-         fill.execution_id.empty() && fill.instrument_id.value == 0 &&
+  return fill.client_order_id.value == 0 && fill.strategy_order_id.value == 0 &&
+         fill.adapter_order_id.empty() && fill.execution_id.empty() &&
+         fill.instrument_id.value == 0 &&
          fill.side == model::OrderSide::kUnknown && fill.price == 0 &&
          fill.quantity == 0 && fill.event_time_ns == 0 &&
          fill.receive_time_ns == 0 && !fill.has_event_time &&
          fill.position_effect == model::PositionEffect::kNone;
 }
 
+// Allows broker report kinds; local cancellations have a separate commit path.
 bool ValidKind(OrderUpdateKind kind) noexcept {
-  return kind == OrderUpdateKind::kAccepted ||
-         kind == OrderUpdateKind::kRejected || kind == OrderUpdateKind::kFill ||
-         kind == OrderUpdateKind::kCanceled ||
-         kind == OrderUpdateKind::kCancelRejected;
+  switch (kind) {
+    case OrderUpdateKind::kAccepted:
+    case OrderUpdateKind::kRejected:
+    case OrderUpdateKind::kFill:
+    case OrderUpdateKind::kCanceled:
+    case OrderUpdateKind::kCancelRejected:
+      return true;
+    case OrderUpdateKind::kCanceledBeforeSend:
+      return false;
+  }
+  return false;
+}
+
+// Selects legal closing intents for the account authority and venue.
+bool SupportsPositionEffect(model::PositionEffect effect, bool broker_managed,
+                            model::Venue venue) noexcept {
+  const bool day_specific =
+      venue == model::Venue::kShfe || venue == model::Venue::kIne;
+  switch (effect) {
+    case model::PositionEffect::kOpen:
+      return true;
+    case model::PositionEffect::kCloseToday:
+    case model::PositionEffect::kCloseYesterday:
+      return !broker_managed || day_specific;
+    case model::PositionEffect::kClose:
+      return broker_managed && !day_specific;
+    case model::PositionEffect::kNone:
+      return false;
+  }
+  return false;
 }
 
 // All supported prices convert exactly to micro-yuan; no floating point or
@@ -99,10 +136,10 @@ bool ReleaseReservation(model::CashSnapshot& cash,
 }
 }  // namespace
 
-TradingEngine::TradingEngine(const base::MonotonicClock& clock,
-                             const md::InstrumentScope& instruments,
-                             TradingAdapter& adapter) noexcept
-    : clock_(clock), instruments_(instruments), adapter_(adapter) {}
+TradingEngine::TradingEngine(const base::MonotonicClock* clock,
+                             const md::InstrumentScope* instruments,
+                             TradingAdapter* adapter) noexcept
+    : clock_(*clock), instruments_(*instruments), adapter_(*adapter) {}
 TradingEngine::~TradingEngine() noexcept { Reset(); }
 
 base::Status TradingEngine::ConfigureAccount(
@@ -112,20 +149,19 @@ base::Status TradingEngine::ConfigureAccount(
             {}};
   }
   if (account.type == model::AccountType::kFutures) {
-    auto* storage = new (std::nothrow) Storage;
+    auto storage = std::unique_ptr<Storage>(new (std::nothrow) Storage);
     if (storage == nullptr) {
       return {Fail(ErrorCode::kResourceExhausted,
                    "cannot allocate fixed trading storage"),
               {}};
     }
-    const auto configured = storage->futures.Configure(account, instruments_);
+    const auto configured = storage->futures.Configure(account, &instruments_);
     if (configured != ErrorCode::kOk) {
       (void)Fail(configured, storage->futures.error_detail());
-      delete storage;
       return {configured, {}};
     }
     storage->type = model::AccountType::kFutures;
-    storage_ = storage;
+    storage_ = std::move(storage);
     error_detail_[0] = '\0';
     return {};
   }
@@ -162,7 +198,7 @@ base::Status TradingEngine::ConfigureAccount(
       }
     }
   }
-  auto* storage = new (std::nothrow) Storage;
+  auto storage = std::unique_ptr<Storage>(new (std::nothrow) Storage);
   if (storage == nullptr) {
     return {Fail(ErrorCode::kResourceExhausted,
                  "cannot allocate fixed trading storage"),
@@ -173,15 +209,14 @@ base::Status TradingEngine::ConfigureAccount(
   for (size_t index = 0; index < account.position_count; ++index) {
     storage->positions[index] = account.positions[index];
   }
-  storage_ = storage;
+  storage_ = std::move(storage);
   error_detail_[0] = '\0';
   return {};
 }
 
 void TradingEngine::Reset() noexcept {
   (void)Stop();
-  delete storage_;
-  storage_ = nullptr;
+  storage_.reset();
   sink_ = nullptr;
   replaying_ = false;
   invoking_sink_ = false;
@@ -431,11 +466,8 @@ std::optional<size_t> TradingEngine::FindPosition(
   return {};
 }
 
-ErrorCode TradingEngine::SubmitOrder(const model::OrderRequest& request,
-                                     model::ClientOrderId& out) noexcept {
-  if (!accepting_orders()) {
-    return Fail(ErrorCode::kInvalidState, "trading requests are not enabled");
-  }
+ErrorCode TradingEngine::ValidateSubmission(const model::OrderRequest& request,
+                                            Submission& transaction) noexcept {
   model::InstrumentDefinition instrument;
   if (!instruments_.TryGetInstrument(request.instrument_id, instrument) ||
       !ValidSide(request.side) || request.limit_price <= 0 ||
@@ -459,23 +491,10 @@ ErrorCode TradingEngine::SubmitOrder(const model::OrderRequest& request,
     return Fail(ErrorCode::kInvalidArgument,
                 "instrument or position effect disagrees with account type");
   }
-  if (futures) {
-    const auto effect = request.position_effect;
-    const bool day_specific = instrument.venue == model::Venue::kShfe ||
-                              instrument.venue == model::Venue::kIne;
-    const bool valid_effect =
-        effect == model::PositionEffect::kOpen ||
-        (s.broker_managed
-             ? (day_specific
-                    ? effect == model::PositionEffect::kCloseToday ||
-                          effect == model::PositionEffect::kCloseYesterday
-                    : effect == model::PositionEffect::kClose)
-             : effect == model::PositionEffect::kCloseToday ||
-                   effect == model::PositionEffect::kCloseYesterday);
-    if (!valid_effect) {
-      return Fail(ErrorCode::kInvalidArgument,
-                  "unsupported closing effect for venue");
-    }
+  if (futures && !SupportsPositionEffect(request.position_effect,
+                                         s.broker_managed, instrument.venue)) {
+    return Fail(ErrorCode::kInvalidArgument,
+                "unsupported closing effect for venue");
   }
   constexpr std::array<int64_t, 7> kPriceScales = {1000000, 100000, 10000, 1000,
                                                    100,     10,     1};
@@ -491,13 +510,28 @@ ErrorCode TradingEngine::SubmitOrder(const model::OrderRequest& request,
       s.position_count == md::kMaxMarketDataInstruments) {
     return Fail(ErrorCode::kResourceExhausted, "position capacity exhausted");
   }
-  model::PositionSnapshot position;
+  transaction.futures = futures;
+  transaction.scale = scale;
+  transaction.notional = notional;
+  transaction.position_index =
+      existing_position ? *existing_position : s.position_count;
+  transaction.new_position = !existing_position;
+  return ErrorCode::kOk;
+}
+
+ErrorCode TradingEngine::ReserveSubmission(const model::OrderRequest& request,
+                                           Submission& transaction) noexcept {
+  auto& s = *storage_;
+  const auto futures = transaction.futures;
+  const auto notional = transaction.notional;
+  auto& position = transaction.position;
   position.instrument_id = request.instrument_id;
-  if (existing_position) {
-    position = s.positions[*existing_position];
+  if (!transaction.new_position) {
+    position = s.positions[transaction.position_index];
   }
-  auto cash = s.cash;
-  FuturesReservation futures_reservation;
+  auto& cash = transaction.cash;
+  cash = s.cash;
+  auto& futures_reservation = transaction.futures_reservation;
   if (futures && !s.broker_managed) {
     // All fallible order/request checks precede the atomic account claim.
     // After it succeeds, the remaining order publication cannot fail.
@@ -520,28 +554,23 @@ ErrorCode TradingEngine::SubmitOrder(const model::OrderRequest& request,
     position.available_qty -= request.quantity;
     position.reserved_qty += request.quantity;
   }
+  return ErrorCode::kOk;
+}
+
+void TradingEngine::CommitSubmission(const model::OrderRequest& request,
+                                     const Submission& transaction) noexcept {
+  auto& s = *storage_;
   const auto index = s.order_count;
-  model::OrderSnapshot order;
-  order.client_order_id.value = s.next_order_id;
-  order.instrument_id = request.instrument_id;
-  order.side = request.side;
-  order.limit_price = request.limit_price;
-  order.original_qty = request.quantity;
-  order.leaves_qty = request.quantity;
-  order.position_effect = request.position_effect;
-  TradingMutation fact;
-  fact.now = replaying_ ? replay_now_ : clock_.Now();
-  fact.kind = TradingMutationKind::kNewOrder;
-  fact.order_id = order.client_order_id;
-  fact.request = request;
-  const auto journal = BeforeCommit(fact);
-  if (journal != ErrorCode::kOk) {
-    return journal;
-  }
+  const auto& order = transaction.order;
+  const auto scale = transaction.scale;
+  const auto notional = transaction.notional;
+  const auto futures = transaction.futures;
+  const auto& position = transaction.position;
+  const auto& cash = transaction.cash;
+  const auto& futures_reservation = transaction.futures_reservation;
   auto& record = s.orders[index];
   record.snapshot = order;
-  record.position_index =
-      existing_position ? *existing_position : s.position_count;
+  record.position_index = transaction.position_index;
   record.price_scale = scale;
   record.reserved_cash = request.side == model::OrderSide::kBuy ? notional : 0;
   record.reserved_qty = !futures && request.side == model::OrderSide::kSell
@@ -550,7 +579,7 @@ ErrorCode TradingEngine::SubmitOrder(const model::OrderRequest& request,
   record.futures_reservation = futures_reservation;
   if (!futures) {
     s.positions[record.position_index] = position;
-    if (!existing_position) {
+    if (transaction.new_position) {
       ++s.position_count;
     }
     s.cash = cash;
@@ -569,6 +598,39 @@ ErrorCode TradingEngine::SubmitOrder(const model::OrderRequest& request,
   if (s.type == model::AccountType::kCash) {
     ++s.mutation_revision;
   }
+}
+
+ErrorCode TradingEngine::SubmitOrder(const model::OrderRequest& request,
+                                     model::ClientOrderId& out) noexcept {
+  if (!accepting_orders()) {
+    return Fail(ErrorCode::kInvalidState, "trading requests are not enabled");
+  }
+  Submission transaction;
+  auto code = ValidateSubmission(request, transaction);
+  if (code == ErrorCode::kOk) {
+    code = ReserveSubmission(request, transaction);
+  }
+  if (code != ErrorCode::kOk) {
+    return code;
+  }
+  auto& order = transaction.order;
+  order.client_order_id.value = storage_->next_order_id;
+  order.instrument_id = request.instrument_id;
+  order.side = request.side;
+  order.limit_price = request.limit_price;
+  order.original_qty = request.quantity;
+  order.leaves_qty = request.quantity;
+  order.position_effect = request.position_effect;
+  TradingMutation fact;
+  fact.now = replaying_ ? replay_now_ : clock_.Now();
+  fact.kind = TradingMutationKind::kNewOrder;
+  fact.client_order_id = order.client_order_id;
+  fact.request = request;
+  code = BeforeCommit(fact);
+  if (code != ErrorCode::kOk) {
+    return code;
+  }
+  CommitSubmission(request, transaction);
   out = order.client_order_id;
   return ErrorCode::kOk;
 }
@@ -584,7 +646,7 @@ ErrorCode TradingEngine::QueueCancel(size_t index) noexcept {
   TradingMutation fact;
   fact.now = replaying_ ? replay_now_ : clock_.Now();
   fact.kind = TradingMutationKind::kCancel;
-  fact.order_id = s.orders[index].snapshot.client_order_id;
+  fact.client_order_id = s.orders[index].snapshot.client_order_id;
   fact.cancel_id = id;
   const auto journal = BeforeCommit(fact);
   if (journal != ErrorCode::kOk) {
@@ -723,7 +785,7 @@ base::Status TradingEngine::ProcessRequests(uint64_t now,
       TradingMutation fact;
       fact.now = replaying_ ? replay_now_ : clock_.Now();
       fact.kind = TradingMutationKind::kScheduleLocalCancel;
-      fact.order_id = record.snapshot.client_order_id;
+      fact.client_order_id = record.snapshot.client_order_id;
       const auto journal = BeforeCommit(fact);
       if (journal != ErrorCode::kOk) {
         return {journal, {}};
@@ -746,7 +808,7 @@ base::Status TradingEngine::ProcessRequests(uint64_t now,
     fact.kind = request.kind == Storage::RequestKind::kNew
                     ? TradingMutationKind::kSendNew
                     : TradingMutationKind::kSendCancel;
-    fact.order_id = record.snapshot.client_order_id;
+    fact.client_order_id = record.snapshot.client_order_id;
     fact.cancel_id = request.cancel_id;
     const auto journal = BeforeCommit(fact);
     if (journal != ErrorCode::kOk) {
@@ -768,7 +830,7 @@ base::Status TradingEngine::ProcessRequests(uint64_t now,
     } else {
       record.cancel_attempted = true;
       result = adapter_.SendCancel(record.snapshot.client_order_id,
-                                   record.snapshot.broker_order_id,
+                                   record.snapshot.adapter_order_id,
                                    request.cancel_id, now);
     }
     if (!result.ok()) {
@@ -898,7 +960,7 @@ ErrorCode TradingEngine::ApplyLocalUpdate(TradingDispatch& out) noexcept {
     TradingMutation fact;
     fact.now = replaying_ ? replay_now_ : clock_.Now();
     fact.kind = TradingMutationKind::kLocalCancel;
-    fact.order_id = record.snapshot.client_order_id;
+    fact.client_order_id = record.snapshot.client_order_id;
     const auto journal = BeforeCommit(fact);
     if (journal != ErrorCode::kOk) {
       return journal;
@@ -920,108 +982,110 @@ ErrorCode TradingEngine::ApplyLocalUpdate(TradingDispatch& out) noexcept {
   return ErrorCode::kOk;
 }
 
-ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
-                                    TradingDispatch& out) noexcept {
-  error_stage_ = "trading_event";
-  const auto transaction_now = replaying_ ? replay_now_ : clock_.Now();
-  const auto index = FindIndex(event.client_order_id);
-  if (!index) {
-    return Fail(ErrorCode::kCorrupt, "report for an unknown order");
-  }
-  auto& s = *storage_;
-  auto& record = s.orders[*index];
-  const auto& old = record.snapshot;
+ErrorCode TradingEngine::ValidateReportFields(
+    const model::TradingEvent& event, const model::OrderSnapshot& old,
+    uint64_t transaction_now) noexcept {
   const bool is_fill = event.kind == OrderUpdateKind::kFill;
   const bool is_cancel = event.kind == OrderUpdateKind::kCanceled ||
                          event.kind == OrderUpdateKind::kCancelRejected;
   const bool external_cancel =
-      s.broker_managed && event.kind == OrderUpdateKind::kCanceled &&
+      storage_->broker_managed && event.kind == OrderUpdateKind::kCanceled &&
       event.cancel_request_id.value == 0 && !old.cancel_pending;
   if (!ValidKind(event.kind) || event.report_sequence == 0 ||
-      event.receive_time_ns > transaction_now || event.reason.size > 128 ||
+      event.receive_time_ns > transaction_now ||
+      event.reason.size >= sizeof(event.reason.text) ||
       event.reason.text[event.reason.size] != '\0' ||
       event.cumulative_filled_qty < 0 ||
       event.cumulative_filled_qty > old.original_qty ||
       (!external_cancel && is_cancel != (event.cancel_request_id.value != 0)) ||
       (!is_fill && !EmptyFill(event.fill)) ||
       ((is_fill || event.kind == OrderUpdateKind::kAccepted) &&
-       event.broker_order_id.empty())) {
+       event.adapter_order_id.empty())) {
     return Fail(ErrorCode::kCorrupt, "invalid report fields or timestamp");
   }
   if (is_fill) {
-    const auto& fill = event.fill;
-    model::InstrumentDefinition instrument;
-    if (fill.client_order_id != old.client_order_id ||
-        fill.broker_order_id != event.broker_order_id ||
-        fill.execution_id.empty() || fill.instrument_id != old.instrument_id ||
-        fill.side != old.side || fill.position_effect != old.position_effect ||
-        fill.price <= 0 || fill.quantity <= 0 ||
-        !instruments_.TryGetInstrument(fill.instrument_id, instrument) ||
-        instrument.price_tick <= 0 || instrument.quantity_step <= 0 ||
-        fill.price % instrument.price_tick != 0 ||
-        fill.quantity % instrument.quantity_step != 0 ||
-        fill.receive_time_ns != event.receive_time_ns ||
-        (!fill.has_event_time && fill.event_time_ns != 0) ||
-        (old.side == model::OrderSide::kBuy && fill.price > old.limit_price) ||
-        (old.side == model::OrderSide::kSell && fill.price < old.limit_price)) {
-      return Fail(ErrorCode::kCorrupt, "invalid execution fields");
-    }
+    return ValidateExecution(event, old);
   }
-  if (event.report_sequence <= old.report_sequence) {
-    out = {};
-    return ErrorCode::kOk;
+  return ErrorCode::kOk;
+}
+
+ErrorCode TradingEngine::ValidateExecution(
+    const model::TradingEvent& event,
+    const model::OrderSnapshot& old) noexcept {
+  const auto& fill = event.fill;
+  model::InstrumentDefinition instrument;
+  if (fill.client_order_id != old.client_order_id ||
+      fill.strategy_order_id.value != 0 ||
+      fill.adapter_order_id != event.adapter_order_id ||
+      fill.execution_id.empty() || fill.instrument_id != old.instrument_id ||
+      fill.side != old.side || fill.position_effect != old.position_effect ||
+      fill.price <= 0 || fill.quantity <= 0 ||
+      !instruments_.TryGetInstrument(fill.instrument_id, instrument) ||
+      instrument.price_tick <= 0 || instrument.quantity_step <= 0 ||
+      fill.price % instrument.price_tick != 0 ||
+      fill.quantity % instrument.quantity_step != 0 ||
+      fill.receive_time_ns != event.receive_time_ns ||
+      (!fill.has_event_time && fill.event_time_ns != 0) ||
+      (old.side == model::OrderSide::kBuy && fill.price > old.limit_price) ||
+      (old.side == model::OrderSide::kSell && fill.price < old.limit_price)) {
+    return Fail(ErrorCode::kCorrupt, "invalid execution fields");
   }
-  if (!record.new_attempted || record.local_cancel_pending ||
-      (old.state == OrderState::kCanceled && old.report_sequence == 0) ||
-      event.report_sequence != old.report_sequence + 1 ||
-      (!old.broker_order_id.empty() && !event.broker_order_id.empty() &&
-       old.broker_order_id != event.broker_order_id)) {
-    return Fail(ErrorCode::kCorrupt,
-                "report sequence or broker identity mismatch");
-  }
-  auto next = old;
+  return ErrorCode::kOk;
+}
+
+ErrorCode TradingEngine::PrepareOrderTransition(
+    const model::TradingEvent& event, size_t index, uint64_t transaction_now,
+    ReportTransaction& transaction) noexcept {
+  auto& s = *storage_;
+  const auto& old = s.orders[index].snapshot;
+  auto& next = transaction.next;
+  next = old;
   const bool bind_broker =
-      old.broker_order_id.empty() && !event.broker_order_id.empty();
-  size_t broker_slot = 0;
+      old.adapter_order_id.empty() && !event.adapter_order_id.empty();
+  transaction.bind_broker = bind_broker;
+  auto& broker_slot = transaction.broker_slot;
   if (bind_broker) {
-    broker_slot = TradingBrokerHash(event.broker_order_id);
+    broker_slot = TradingBrokerHash(event.adapter_order_id);
     while (s.broker_lookup[broker_slot] != 0) {
       const auto bound_index = s.broker_lookup[broker_slot] - 1;
-      if (s.orders[bound_index].snapshot.broker_order_id ==
-          event.broker_order_id) {
+      if (s.orders[bound_index].snapshot.adapter_order_id ==
+          event.adapter_order_id) {
         return Fail(ErrorCode::kCorrupt,
                     "broker order ID is already bound to another client order");
       }
       broker_slot = (broker_slot + 1) & (kBrokerLookupCapacity - 1);
     }
   }
-  if (!event.broker_order_id.empty()) {
-    next.broker_order_id = event.broker_order_id;
+  if (!event.adapter_order_id.empty()) {
+    next.adapter_order_id = event.adapter_order_id;
   }
   next.report_sequence = event.report_sequence;
   next.receive_time_ns = event.receive_time_ns;
-  TradingDispatch dispatch;
+  auto& dispatch = transaction.dispatch;
   dispatch.notify_order = true;
   dispatch.update.kind = event.kind;
   dispatch.update.cancel_request_id = event.cancel_request_id;
   dispatch.update.reason = event.reason;
-  size_t fill_slot = 0;
-  uint64_t retry = record.retry_not_before_ns;
-  if (!is_fill && event.cumulative_filled_qty != old.cumulative_filled_qty) {
+  transaction.retry = s.orders[index].retry_not_before_ns;
+  if (event.kind != OrderUpdateKind::kFill &&
+      event.cumulative_filled_qty != old.cumulative_filled_qty) {
     return Fail(ErrorCode::kCorrupt,
                 "non-fill cumulative quantity disagrees with ledger");
   }
   switch (event.kind) {
     case OrderUpdateKind::kAccepted:
-      if (old.state == OrderState::kPendingNew) {
-        next.state = OrderState::kWorking;
-      } else if (old.state == OrderState::kWorking ||
-                 old.state == OrderState::kFilled ||
-                 old.state == OrderState::kCanceled) {
-        dispatch.notify_order = false;
-      } else {
-        return Fail(ErrorCode::kCorrupt,
-                    "acceptance would reverse a terminal order");
+      switch (old.state) {
+        case OrderState::kPendingNew:
+          next.state = OrderState::kWorking;
+          break;
+        case OrderState::kWorking:
+        case OrderState::kFilled:
+        case OrderState::kCanceled:
+          dispatch.notify_order = false;
+          break;
+        case OrderState::kRejected:
+          return Fail(ErrorCode::kCorrupt,
+                      "acceptance would reverse a terminal order");
       }
       break;
     case OrderUpdateKind::kRejected:
@@ -1033,80 +1097,115 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
       next.state = OrderState::kRejected;
       next.leaves_qty = 0;
       break;
-    case OrderUpdateKind::kFill: {
-      if (model::IsTerminalOrderState(old.state) ||
-          event.fill.quantity > old.original_qty - old.cumulative_filled_qty ||
-          event.cumulative_filled_qty !=
-              old.cumulative_filled_qty + event.fill.quantity) {
-        return Fail(ErrorCode::kCorrupt,
-                    "execution reverses terminal state or overfills order");
-      }
-      if (s.fill_count == kMaxTradingFills) {
-        return Fail(ErrorCode::kResourceExhausted,
-                    "execution ledger capacity exhausted");
-      }
-      fill_slot =
-          TradingFillHash(event.client_order_id, event.fill.execution_id);
-      while (s.fill_lookup[fill_slot] != 0) {
-        const auto& previous = s.fills[s.fill_lookup[fill_slot] - 1];
-        if (previous.client_order_id == event.client_order_id &&
-            previous.execution_id == event.fill.execution_id) {
-          return Fail(ErrorCode::kCorrupt,
-                      "execution ID repeated with a new sequence");
-        }
-        fill_slot = (fill_slot + 1) & (kFillLookupCapacity - 1);
-      }
-      next.cumulative_filled_qty = event.cumulative_filled_qty;
-      next.leaves_qty = old.original_qty - next.cumulative_filled_qty;
-      next.state =
-          next.leaves_qty == 0 ? OrderState::kFilled : OrderState::kWorking;
-      dispatch.has_fill = true;
-      dispatch.fill = event.fill;
-      break;
-    }
+    case OrderUpdateKind::kFill:
+      return PrepareExecution(event, index, transaction);
     case OrderUpdateKind::kCanceled:
     case OrderUpdateKind::kCancelRejected:
-      if (!external_cancel &&
-          (!old.cancel_pending || !record.cancel_attempted ||
-           event.cancel_request_id != old.cancel_request_id ||
-           (old.state != OrderState::kWorking &&
-            old.state != OrderState::kFilled))) {
-        return Fail(ErrorCode::kCorrupt,
-                    "cancel result does not match the pending attempt");
-      }
-      if (event.kind == OrderUpdateKind::kCanceled) {
-        if (old.state != OrderState::kWorking &&
-            !(external_cancel && old.state == OrderState::kPendingNew)) {
-          return Fail(ErrorCode::kCorrupt,
-                      "cancellation would reverse a filled order");
-        }
-        next.state = OrderState::kCanceled;
-        next.leaves_qty = 0;
-      } else if (old.state == OrderState::kWorking) {
-        const auto now = transaction_now;
-        if (now > UINT64_MAX - kCancelRetryNs) {
-          return Fail(ErrorCode::kResourceExhausted,
-                      "cancel retry deadline overflows");
-        }
-        retry = now + kCancelRetryNs;
-      }
-      next.cancel_pending = false;
-      break;
+      return PrepareCancelResult(event, index, transaction_now, transaction);
     case OrderUpdateKind::kCanceledBeforeSend:
       return Fail(ErrorCode::kCorrupt,
                   "local cancellation received from adapter");
   }
-  auto cash = s.cash;
-  auto position = s.positions[record.position_index];
-  auto reserved_cash = record.reserved_cash;
-  auto reserved_qty = record.reserved_qty;
+  return ErrorCode::kOk;
+}
+
+ErrorCode TradingEngine::PrepareExecution(
+    const model::TradingEvent& event, size_t index,
+    ReportTransaction& transaction) noexcept {
+  auto& s = *storage_;
+  const auto& old = s.orders[index].snapshot;
+  auto& next = transaction.next;
+  auto& dispatch = transaction.dispatch;
+  auto& fill_slot = transaction.fill_slot;
+  if (model::IsTerminalOrderState(old.state) ||
+      event.fill.quantity > old.original_qty - old.cumulative_filled_qty ||
+      event.cumulative_filled_qty !=
+          old.cumulative_filled_qty + event.fill.quantity) {
+    return Fail(ErrorCode::kCorrupt,
+                "execution reverses terminal state or overfills order");
+  }
+  if (s.fill_count == kMaxTradingFills) {
+    return Fail(ErrorCode::kResourceExhausted,
+                "execution ledger capacity exhausted");
+  }
+  fill_slot = TradingFillHash(event.client_order_id, event.fill.execution_id);
+  while (s.fill_lookup[fill_slot] != 0) {
+    const auto& previous = s.fills[s.fill_lookup[fill_slot] - 1];
+    if (previous.client_order_id == event.client_order_id &&
+        previous.execution_id == event.fill.execution_id) {
+      return Fail(ErrorCode::kCorrupt,
+                  "execution ID repeated with a new sequence");
+    }
+    fill_slot = (fill_slot + 1) & (kFillLookupCapacity - 1);
+  }
+  next.cumulative_filled_qty = event.cumulative_filled_qty;
+  next.leaves_qty = old.original_qty - next.cumulative_filled_qty;
+  next.state =
+      next.leaves_qty == 0 ? OrderState::kFilled : OrderState::kWorking;
+  dispatch.has_fill = true;
+  dispatch.fill = event.fill;
+  return ErrorCode::kOk;
+}
+
+ErrorCode TradingEngine::PrepareCancelResult(
+    const model::TradingEvent& event, size_t index, uint64_t transaction_now,
+    ReportTransaction& transaction) noexcept {
+  const auto& record = storage_->orders[index];
+  const auto& old = record.snapshot;
+  auto& next = transaction.next;
+  auto& retry = transaction.retry;
+  const bool external_cancel =
+      storage_->broker_managed && event.kind == OrderUpdateKind::kCanceled &&
+      event.cancel_request_id.value == 0 && !old.cancel_pending;
+  if (!external_cancel && (!old.cancel_pending || !record.cancel_attempted ||
+                           event.cancel_request_id != old.cancel_request_id ||
+                           (old.state != OrderState::kWorking &&
+                            old.state != OrderState::kFilled))) {
+    return Fail(ErrorCode::kCorrupt,
+                "cancel result does not match the pending attempt");
+  }
+  if (event.kind == OrderUpdateKind::kCanceled) {
+    if (old.state != OrderState::kWorking &&
+        !(external_cancel && old.state == OrderState::kPendingNew)) {
+      return Fail(ErrorCode::kCorrupt,
+                  "cancellation would reverse a filled order");
+    }
+    next.state = OrderState::kCanceled;
+    next.leaves_qty = 0;
+  } else if (old.state == OrderState::kWorking) {
+    const auto now = transaction_now;
+    if (now > UINT64_MAX - kCancelRetryNs) {
+      return Fail(ErrorCode::kResourceExhausted,
+                  "cancel retry deadline overflows");
+    }
+    retry = now + kCancelRetryNs;
+  }
+  next.cancel_pending = false;
+  return ErrorCode::kOk;
+}
+
+ErrorCode TradingEngine::PrepareReportAccount(
+    size_t index, ReportTransaction& transaction) noexcept {
+  auto& s = *storage_;
+  auto& record = s.orders[index];
+  const auto& old = record.snapshot;
+  const auto& dispatch = transaction.dispatch;
+  const auto kind = dispatch.update.kind;
+  auto& cash = transaction.cash;
+  cash = s.cash;
+  auto& position = transaction.position;
+  position = s.positions[record.position_index];
+  auto& reserved_cash = transaction.reserved_cash;
+  reserved_cash = record.reserved_cash;
+  auto& reserved_qty = transaction.reserved_qty;
+  reserved_qty = record.reserved_qty;
   if (s.type == model::AccountType::kFutures && !s.broker_managed) {
     auto reservation = record.futures_reservation;
     ErrorCode applied = ErrorCode::kOk;
     if (dispatch.has_fill) {
       applied = s.futures.ApplyFill(old, dispatch.fill, reservation);
-    } else if (event.kind == OrderUpdateKind::kRejected ||
-               event.kind == OrderUpdateKind::kCanceled) {
+    } else if (kind == OrderUpdateKind::kRejected ||
+               kind == OrderUpdateKind::kCanceled) {
       applied = s.futures.Release(old, reservation);
     }
     if (applied != ErrorCode::kOk) {
@@ -1114,49 +1213,10 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
     }
     record.futures_reservation = reservation;
   } else if (s.type == model::AccountType::kCash && dispatch.has_fill) {
-    const auto& fill = dispatch.fill;
-    int64_t actual_cash;
-    if (!CashAmount(fill.price, fill.quantity, record.price_scale,
-                    actual_cash)) {
-      return Fail(ErrorCode::kCorrupt, "execution cash amount overflows");
-    }
-    if (old.side == model::OrderSide::kBuy) {
-      int64_t limit_cash;
-      if (!CashAmount(old.limit_price, fill.quantity, record.price_scale,
-                      limit_cash) ||
-          limit_cash > reserved_cash || actual_cash > cash.balance ||
-          fill.quantity >
-              std::numeric_limits<int64_t>::max() - position.total_qty ||
-          !ReleaseReservation(cash, position, limit_cash, 0)) {
-        return Fail(ErrorCode::kCorrupt,
-                    "buy execution violates cash or holding bounds");
-      }
-      reserved_cash -= limit_cash;
-      cash.balance -= actual_cash;
-      cash.available = cash.balance - cash.reserved;
-      // Buys become owned shares, but never replenish sellable bootstrap stock.
-      position.total_qty += fill.quantity;
-    } else {
-      if (fill.quantity > reserved_qty ||
-          fill.quantity > position.reserved_qty ||
-          fill.quantity > position.total_qty ||
-          actual_cash > std::numeric_limits<int64_t>::max() - cash.balance) {
-        return Fail(ErrorCode::kCorrupt,
-                    "sell execution violates cash or holding bounds");
-      }
-      reserved_qty -= fill.quantity;
-      position.reserved_qty -= fill.quantity;
-      position.total_qty -= fill.quantity;
-      cash.balance += actual_cash;
-      cash.available = cash.balance - cash.reserved;
-    }
-    if (next.state == OrderState::kFilled &&
-        (reserved_cash != 0 || reserved_qty != 0)) {
-      return Fail(ErrorCode::kCorrupt, "filled order retained a reservation");
-    }
+    return PrepareCashExecution(index, transaction);
   } else if (s.type == model::AccountType::kCash &&
-             (event.kind == OrderUpdateKind::kRejected ||
-              event.kind == OrderUpdateKind::kCanceled)) {
+             (kind == OrderUpdateKind::kRejected ||
+              kind == OrderUpdateKind::kCanceled)) {
     if (!ReleaseReservation(cash, position, reserved_cash, reserved_qty)) {
       return Fail(ErrorCode::kCorrupt,
                   "terminal order reservation is inconsistent");
@@ -1164,15 +1224,75 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
     reserved_cash = 0;
     reserved_qty = 0;
   }
-  TradingMutation fact;
-  fact.now = transaction_now;
-  fact.kind = TradingMutationKind::kReport;
-  fact.order_id = event.client_order_id;
-  fact.event = event;
-  const auto journal = BeforeCommit(fact);
-  if (journal != ErrorCode::kOk) {
-    return journal;
+  return ErrorCode::kOk;
+}
+
+ErrorCode TradingEngine::PrepareCashExecution(
+    size_t index, ReportTransaction& transaction) noexcept {
+  const auto& record = storage_->orders[index];
+  const auto& old = record.snapshot;
+  const auto& next = transaction.next;
+  const auto& dispatch = transaction.dispatch;
+  auto& cash = transaction.cash;
+  auto& position = transaction.position;
+  auto& reserved_cash = transaction.reserved_cash;
+  auto& reserved_qty = transaction.reserved_qty;
+  const auto& fill = dispatch.fill;
+  int64_t actual_cash;
+  if (!CashAmount(fill.price, fill.quantity, record.price_scale, actual_cash)) {
+    return Fail(ErrorCode::kCorrupt, "execution cash amount overflows");
   }
+  if (old.side == model::OrderSide::kBuy) {
+    int64_t limit_cash;
+    if (!CashAmount(old.limit_price, fill.quantity, record.price_scale,
+                    limit_cash) ||
+        limit_cash > reserved_cash || actual_cash > cash.balance ||
+        fill.quantity >
+            std::numeric_limits<int64_t>::max() - position.total_qty ||
+        !ReleaseReservation(cash, position, limit_cash, 0)) {
+      return Fail(ErrorCode::kCorrupt,
+                  "buy execution violates cash or holding bounds");
+    }
+    reserved_cash -= limit_cash;
+    cash.balance -= actual_cash;
+    cash.available = cash.balance - cash.reserved;
+    // Buys become owned shares, but never replenish sellable bootstrap stock.
+    position.total_qty += fill.quantity;
+  } else {
+    if (fill.quantity > reserved_qty || fill.quantity > position.reserved_qty ||
+        fill.quantity > position.total_qty ||
+        actual_cash > std::numeric_limits<int64_t>::max() - cash.balance) {
+      return Fail(ErrorCode::kCorrupt,
+                  "sell execution violates cash or holding bounds");
+    }
+    reserved_qty -= fill.quantity;
+    position.reserved_qty -= fill.quantity;
+    position.total_qty -= fill.quantity;
+    cash.balance += actual_cash;
+    cash.available = cash.balance - cash.reserved;
+  }
+  if (next.state == OrderState::kFilled &&
+      (reserved_cash != 0 || reserved_qty != 0)) {
+    return Fail(ErrorCode::kCorrupt, "filled order retained a reservation");
+  }
+  return ErrorCode::kOk;
+}
+
+void TradingEngine::CommitReport(const model::TradingEvent& event, size_t index,
+                                 ReportTransaction& transaction) noexcept {
+  auto& s = *storage_;
+  auto& record = s.orders[index];
+  const auto& old = record.snapshot;
+  const auto& next = transaction.next;
+  auto& dispatch = transaction.dispatch;
+  const auto fill_slot = transaction.fill_slot;
+  const auto broker_slot = transaction.broker_slot;
+  const auto bind_broker = transaction.bind_broker;
+  const auto& cash = transaction.cash;
+  const auto& position = transaction.position;
+  const auto reserved_cash = transaction.reserved_cash;
+  const auto reserved_qty = transaction.reserved_qty;
+  const auto retry = transaction.retry;
   // All failure paths precede this transaction: no partial fill, sequence or
   // request completion can escape a rejected source event.
   if (dispatch.has_fill) {
@@ -1181,7 +1301,7 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
     ++s.fill_count;
   }
   if (bind_broker) {
-    s.broker_lookup[broker_slot] = static_cast<uint16_t>(*index + 1);
+    s.broker_lookup[broker_slot] = static_cast<uint16_t>(index + 1);
   }
   if (!model::IsTerminalOrderState(old.state) &&
       model::IsTerminalOrderState(next.state)) {
@@ -1198,27 +1318,81 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
   record.reserved_cash = reserved_cash;
   record.reserved_qty = reserved_qty;
   record.retry_not_before_ns = retry;
-  if (is_cancel) {
+  if (event.kind == OrderUpdateKind::kCanceled ||
+      event.kind == OrderUpdateKind::kCancelRejected) {
     record.cancel_attempted = false;
   }
+  ScheduleReportRescan(index);
+  dispatch.update.order = next;
+  if (s.type == model::AccountType::kCash) {
+    ++s.mutation_revision;
+  }
+}
+
+void TradingEngine::ScheduleReportRescan(size_t index) noexcept {
+  auto& s = *storage_;
   if (stopping_) {
     if (!s.scan_pending) {
       s.scan_pending = true;
       s.scan_cursor = 0;
       s.next_retry.reset();
-    } else if (*index < s.scan_cursor) {
+    } else if (index < s.scan_cursor) {
       // Finish the current bounded pass instead of repeatedly restarting it
       // when reports arrive; revisit an already-scanned slot on the next pass.
       s.rescan_required = true;
     }
   }
-  dispatch.update.order = next;
-  if (s.type == model::AccountType::kCash) {
-    ++s.mutation_revision;
+}
+
+ErrorCode TradingEngine::ApplyEvent(const model::TradingEvent& event,
+                                    TradingDispatch& out) noexcept {
+  error_stage_ = "trading_event";
+  const auto transaction_now = replaying_ ? replay_now_ : clock_.Now();
+  const auto index = FindIndex(event.client_order_id);
+  if (!index) {
+    return Fail(ErrorCode::kCorrupt, "report for an unknown order");
   }
-  out = dispatch;
+  const auto& record = storage_->orders[*index];
+  const auto& old = record.snapshot;
+  auto result = ValidateReportFields(event, old, transaction_now);
+  if (result != ErrorCode::kOk) {
+    return result;
+  }
+  if (event.report_sequence <= old.report_sequence) {
+    out = {};
+    return ErrorCode::kOk;
+  }
+  if (!record.new_attempted || record.local_cancel_pending ||
+      (old.state == OrderState::kCanceled && old.report_sequence == 0) ||
+      event.report_sequence != old.report_sequence + 1 ||
+      (!old.adapter_order_id.empty() && !event.adapter_order_id.empty() &&
+       old.adapter_order_id != event.adapter_order_id)) {
+    return Fail(ErrorCode::kCorrupt,
+                "report sequence or broker identity mismatch");
+  }
+  ReportTransaction transaction;
+  result = PrepareOrderTransition(event, *index, transaction_now, transaction);
+  if (result != ErrorCode::kOk) {
+    return result;
+  }
+  result = PrepareReportAccount(*index, transaction);
+  if (result != ErrorCode::kOk) {
+    return result;
+  }
+  TradingMutation fact;
+  fact.now = transaction_now;
+  fact.kind = TradingMutationKind::kReport;
+  fact.client_order_id = event.client_order_id;
+  fact.event = event;
+  result = BeforeCommit(fact);
+  if (result != ErrorCode::kOk) {
+    return result;
+  }
+  CommitReport(event, *index, transaction);
+  out = transaction.dispatch;
   return ErrorCode::kOk;
 }
+
 base::Status TradingEngine::ReplayMutation(const TradingMutation& fact,
                                            TradingDispatch* out) noexcept {
   if (storage_ != nullptr && storage_->type != model::AccountType::kCash) {
@@ -1232,9 +1406,12 @@ base::Status TradingEngine::ReplayMutation(const TradingMutation& fact,
     return {Fail(ErrorCode::kCorrupt, "invalid replay state or revision"), {}};
   }
   auto& s = *storage_;
-  const auto index = FindIndex(fact.order_id);
+  const auto index = FindIndex(fact.client_order_id);
   if (fact.kind != TradingMutationKind::kNewOrder && !index) {
     return {Fail(ErrorCode::kCorrupt, "unknown replay order"), {}};
+  }
+  if (!IsValidTradingMutationKind(fact.kind)) {
+    return {Fail(ErrorCode::kCorrupt, "unknown replay mutation"), {}};
   }
   replaying_ = true;
   replay_now_ = fact.now;
@@ -1242,7 +1419,7 @@ base::Status TradingEngine::ReplayMutation(const TradingMutation& fact,
   TradingDispatch dispatch;
   switch (fact.kind) {
     case TradingMutationKind::kNewOrder: {
-      if (fact.order_id.value != s.next_order_id) {
+      if (fact.client_order_id.value != s.next_order_id) {
         result = Fail(ErrorCode::kCorrupt, "replay order identity mismatch");
         break;
       }
@@ -1309,14 +1486,12 @@ base::Status TradingEngine::ReplayMutation(const TradingMutation& fact,
       }
       break;
     case TradingMutationKind::kReport:
-      if (fact.event.client_order_id != fact.order_id) {
+      if (fact.event.client_order_id != fact.client_order_id) {
         result = Fail(ErrorCode::kCorrupt, "replay report identity mismatch");
       } else {
         result = ApplyEvent(fact.event, dispatch);
       }
       break;
-    default:
-      result = Fail(ErrorCode::kCorrupt, "unknown replay mutation");
   }
   replaying_ = false;
   replay_now_ = 0;
@@ -1351,8 +1526,8 @@ void TradingEngine::AbandonRecoveredRequests() noexcept {
   s.rescan_required = false;
   s.next_retry.reset();
 }
-base::Status TradingEngine::Fail(base::Status status, const char* stage,
-                                 const char* detail) noexcept {
+base::Status TradingEngine::FailStage(base::Status status, const char* stage,
+                                      const char* detail) noexcept {
   error_stage_ = stage;
   ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_), "{}", detail);
   return status;
@@ -1361,50 +1536,50 @@ base::Status TradingEngine::Fail(base::Status status, const char* stage,
 base::Status TradingEngine::Init(const TradingConfig& config,
                                  const md::MarketDataConfig&) noexcept {
   if (prepared_ || storage_ != nullptr || accept_requests_ || stopping_) {
-    return Fail({base::ErrorCode::kInvalidState, {}}, "trading_prepare",
-                "gateway engine already initialized");
+    return FailStage({base::ErrorCode::kInvalidState, {}}, "trading_prepare",
+                     "gateway engine already initialized");
   }
   if (config.adapter != TradingAdapterKind::kMock &&
       config.adapter != TradingAdapterKind::kSimulatedFutures &&
       config.adapter != TradingAdapterKind::kCtp) {
-    return Fail({base::ErrorCode::kInvalidArgument, {}}, "trading_prepare",
-                "gateway engine requires a broker configuration");
+    return FailStage({base::ErrorCode::kInvalidArgument, {}}, "trading_prepare",
+                     "gateway engine requires a broker configuration");
   }
   // Even failed Prepare may own resources; Stop must run exactly once.
   prepared_ = true;
   const auto prepared = adapter_.Prepare(config);
   if (!prepared.ok()) {
-    return Fail(prepared, "trading_prepare", adapter_.error_detail());
+    return FailStage(prepared, "trading_prepare", adapter_.error_detail());
   }
   const auto started = adapter_.Start(clock_.Now());
   if (!started.ok()) {
-    return Fail(started, "trading_start", adapter_.error_detail());
+    return FailStage(started, "trading_start", adapter_.error_detail());
   }
   if (config.adapter == TradingAdapterKind::kCtp) {
     BrokerAccountSnapshot account;
     const auto snapshot = adapter_.ReadBrokerAccountSnapshot(account);
     if (!snapshot.ok()) {
-      return Fail(snapshot, "trading_account", adapter_.error_detail());
+      return FailStage(snapshot, "trading_account", adapter_.error_detail());
     }
     const auto valid = ValidateBrokerAccount(account);
     if (valid != ErrorCode::kOk) {
       return {valid, {}};
     }
-    auto* storage = new (std::nothrow) Storage;
+    auto storage = std::unique_ptr<Storage>(new (std::nothrow) Storage);
     if (storage == nullptr) {
-      return Fail({ErrorCode::kResourceExhausted, {}}, "trading_account",
-                  "cannot allocate broker order storage");
+      return FailStage({ErrorCode::kResourceExhausted, {}}, "trading_account",
+                       "cannot allocate broker order storage");
     }
     storage->type = model::AccountType::kFutures;
     storage->broker_managed = true;
     storage->broker_account = account;
-    storage_ = storage;
+    storage_ = std::move(storage);
     return {};
   }
   TradingAccountSnapshot account;
   const auto snapshot = adapter_.ReadAccountSnapshot(account);
   if (!snapshot.ok()) {
-    return Fail(snapshot, "trading_account", adapter_.error_detail());
+    return FailStage(snapshot, "trading_account", adapter_.error_detail());
   }
   error_stage_ = "trading_account";
   return ConfigureAccount(account);
@@ -1418,7 +1593,7 @@ base::Status TradingEngine::Stop() noexcept {
   prepared_ = false;
   const auto stopped = adapter_.Stop();
   if (!stopped.ok()) {
-    return Fail(stopped, "trading_stop", adapter_.error_detail());
+    return FailStage(stopped, "trading_stop", adapter_.error_detail());
   }
   return {};
 }
@@ -1427,8 +1602,9 @@ base::Status TradingEngine::Poll(uint64_t now, TradingDispatch& out,
                                  bool& event) noexcept {
   error_stage_ = "trading_poll";
   if (!prepared_ || storage_ == nullptr || accept_requests_) {
-    return Fail({base::ErrorCode::kInvalidState, {}}, "trading_poll",
-                "polling requires an initialized runtime with requests closed");
+    return FailStage(
+        {base::ErrorCode::kInvalidState, {}}, "trading_poll",
+        "polling requires an initialized runtime with requests closed");
   }
   TradingDispatch dispatch;
   if (has_local_updates() &&
@@ -1440,32 +1616,33 @@ base::Status TradingEngine::Poll(uint64_t now, TradingDispatch& out,
     }
   } else {
     prefer_local_ = true;
-    TradingEvent input;
+    model::TradingEvent input;
     const auto polled = adapter_.Poll(now, input);
     if (!polled.status.ok() || polled.state == TradingPollState::kError) {
-      return Fail(polled.status.ok()
-                      ? base::Status{base::ErrorCode::kCorrupt, {}}
-                      : polled.status,
-                  "trading_poll", adapter_.error_detail());
+      return FailStage(polled.status.ok()
+                           ? base::Status{base::ErrorCode::kCorrupt, {}}
+                           : polled.status,
+                       "trading_poll", adapter_.error_detail());
     }
     if (polled.state == TradingPollState::kIdle) {
       if (IsDue(adapter_.next_deadline(), now)) {
-        return Fail({base::ErrorCode::kCorrupt, {}}, "trading_poll",
-                    "idle trading adapter retained an already-due deadline");
+        return FailStage(
+            {base::ErrorCode::kCorrupt, {}}, "trading_poll",
+            "idle trading adapter retained an already-due deadline");
       }
       event = false;
       return {};
     }
     if (polled.state != TradingPollState::kEvent &&
         !(broker_managed() && polled.state == TradingPollState::kAccount)) {
-      return Fail({base::ErrorCode::kCorrupt, {}}, "trading_poll",
-                  "adapter returned an unknown polling state");
+      return FailStage({base::ErrorCode::kCorrupt, {}}, "trading_poll",
+                       "adapter returned an unknown polling state");
     }
     BrokerAccountSnapshot broker;
     if (broker_managed()) {
       const auto snapshot = adapter_.ReadBrokerAccountSnapshot(broker);
       if (!snapshot.ok()) {
-        return Fail(snapshot, "trading_account", adapter_.error_detail());
+        return FailStage(snapshot, "trading_account", adapter_.error_detail());
       }
       const auto valid = ValidateBrokerAccount(broker);
       if (valid != ErrorCode::kOk) {
@@ -1478,7 +1655,7 @@ base::Status TradingEngine::Poll(uint64_t now, TradingDispatch& out,
     if (applied != base::ErrorCode::kOk) {
       char broker[kTradingIdHexSize];
       char execution[kTradingIdHexSize];
-      CopyIdHex(input.broker_order_id.view(), broker);
+      CopyIdHex(input.adapter_order_id.view(), broker);
       CopyIdHex(input.fill.execution_id.view(), execution);
       error_stage_ = "trading_event";
       char detail[kErrorDetailSize];
@@ -1491,7 +1668,7 @@ base::Status TradingEngine::Poll(uint64_t now, TradingDispatch& out,
           static_cast<unsigned>(input.kind), input.cumulative_filled_qty,
           input.fill.price, input.fill.quantity, input.cancel_request_id.value,
           broker, execution, error_detail_);
-      (void)Fail({applied, {}}, "trading_event", detail);
+      (void)FailStage({applied, {}}, "trading_event", detail);
       // Report even when the runner retains an earlier callback failure.
       ::yquant::base::Print(stderr,
                             "yquant-trading: unapplied_trading_event {}\n",

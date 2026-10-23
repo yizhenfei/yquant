@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 
+#include "yquant/model/trading_event.h"
 #include "yquant/trading/trading_adapter.h"
 
 namespace yquant::trading {
@@ -38,7 +39,7 @@ class SimulatedFuturesExchange final : public TradingAdapter {
   // already-filled orders with a rejection. Failure queues nothing and keeps
   // the previous cancel state; request inputs are borrowed for this call only.
   [[nodiscard]] base::Status SendCancel(
-      model::ClientOrderId id, const model::BrokerOrderId& broker_order_id,
+      model::ClientOrderId id, const model::AdapterOrderId& adapter_order_id,
       model::CancelRequestId cancel_request_id, uint64_t now) noexcept override;
 
   // Copies an accepted quote and matches existing orders at their limits. New
@@ -51,8 +52,8 @@ class SimulatedFuturesExchange final : public TradingAdapter {
   // Publishes one normalized event in deadline/FIFO order. Ack is delayed by
   // report_interval. Quote-triggered fills are immediately pollable after Ack;
   // they remain ordered before a later cancel result. Idle/error preserve out.
-  [[nodiscard]] TradingPollResult Poll(uint64_t now,
-                                       TradingEvent& out) noexcept override;
+  [[nodiscard]] TradingPollResult Poll(
+      uint64_t now, model::TradingEvent& out) noexcept override;
   std::optional<uint64_t> next_deadline() const noexcept override;
   bool is_drained() const noexcept override;
   [[nodiscard]] base::Status Stop() noexcept override;
