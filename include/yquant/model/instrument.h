@@ -1,6 +1,9 @@
 #ifndef YQUANT_MODEL_INSTRUMENT_H_
 #define YQUANT_MODEL_INSTRUMENT_H_
 
+// Defines immutable instrument metadata and shared price/rate scales.
+// Per-source quotes and mutable account state belong in their own models.
+
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -10,8 +13,9 @@
 
 namespace yquant::model {
 
-// Fixed-point precision and margin-rate scale shared by validation and ledgers.
+// Maximum decimal places supported by fixed-point prices.
 inline constexpr std::uint8_t kMaxPriceDecimals = 6;
+// Denominator for margin_rate_ppm; 1,000,000 represents a rate of 100%.
 inline constexpr std::int64_t kMarginRateScale = 1000000;
 
 // Determines the quantity units and accounting model.
@@ -25,19 +29,24 @@ enum class InstrumentType : std::uint8_t { kEquity, kFutures };
 struct InstrumentDefinition {
   InstrumentId id;
   Venue venue = Venue::kUnknown;
-  char symbol[kSymbolCapacity] =
-      {};  // Owned canonical code, NUL terminated by the host.
+  // Canonical venue-specific code, NUL terminated by the host.
+  char symbol[kSymbolCapacity] = {};
   // An encoded price p represents p * 10^-price_decimals yuan.
   std::uint8_t price_decimals = 0;
   InstrumentType type = InstrumentType::kEquity;
+  // Minimum price increment in the same fixed-point units as prices.
   std::int64_t price_tick = 1;
+  // Minimum order quantity increment, in shares or lots.
   std::int64_t quantity_step = 1;
+  // Multiplies price times lots to obtain futures notional; 1 for equities.
   std::int64_t contract_multiplier = 1;
   std::int64_t margin_rate_ppm = 0;
   std::int64_t open_fee_per_lot = 0;
   std::int64_t close_today_fee_per_lot = 0;
   std::int64_t close_yesterday_fee_per_lot = 0;
 
+  // Returns a view up to the first NUL or the storage bound. The view borrows
+  // this object and is invalidated by its destruction or symbol modification.
   std::string_view symbol_view() const noexcept {
     std::size_t size = 0;
     while (size < sizeof(symbol) && symbol[size] != '\0') ++size;

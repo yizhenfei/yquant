@@ -1,6 +1,9 @@
 #ifndef YQUANT_MODEL_IDENTIFIERS_H_
 #define YQUANT_MODEL_IDENTIFIERS_H_
 
+// Defines typed identities and canonical venue/symbol encoding shared across
+// market data and trading. Instrument metadata is defined in instrument.h.
+
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -30,27 +33,33 @@ enum class Venue : std::uint8_t {
   kGfex = 9,
 };
 
-// Stable encoding widths, product radix and month discriminator. These values
-// are persisted in IDs and must stay identical across hosts and plugins.
+// Internal instrument encoding constants. Persisted bit layout and radix must
+// remain identical across hosts and plugins.
 namespace identifier_detail {
+// Bit offset of the venue code above the 32-bit instrument code.
 inline constexpr unsigned kVenueShift = 32;
 inline constexpr std::uint32_t kEquitySymbolMax = 999999;
+// Distinguishes futures product/month codes from numeric equity symbols.
 inline constexpr std::uint32_t kFuturesMarker = 0x80000000U;
+// Reserves the low 14 bits for the encoded contract month.
 inline constexpr unsigned kProductShift = 14;
 inline constexpr std::uint32_t kMonthMask = 0x3fffU;
+// Encodes A..Z as 1..26, leaving zero invalid within a product code.
 inline constexpr std::uint32_t kProductRadix = 27;
 inline constexpr std::size_t kMaxProductLetters = 3;
+// Separates YYMM codes from the directly stored CZCE YMM codes.
 inline constexpr std::uint32_t kFourDigitMonthOffset = 1000;
 inline constexpr std::uint32_t kMaxThreeDigitMonth = 999;
 inline constexpr std::uint32_t kMaxFourDigitMonth = 9999;
+// Separates the year prefix from the two-digit month suffix.
 inline constexpr std::uint32_t kYearMonthRadix = 100;
 inline constexpr std::uint32_t kLastMonth = 12;
 inline constexpr std::size_t kThreeDigitMonthLength = 3;
 inline constexpr std::size_t kFourDigitMonthLength = 4;
 }  // namespace identifier_detail
 
-// Canonical exchange names used by configuration and stable identity parsing.
-// Unknown numeric values return an empty view.
+// Returns the canonical exchange name used in configuration and identity
+// parsing, or an empty view for kUnknown and unsupported numeric values.
 constexpr std::string_view VenueName(Venue venue) noexcept {
   switch (venue) {
     case Venue::kSse:
@@ -87,6 +96,7 @@ constexpr Venue ParseVenue(std::string_view name) noexcept {
   return Venue::kUnknown;
 }
 
+// Returns whether `venue` is one of the supported domestic futures venues.
 constexpr bool IsFuturesVenue(Venue venue) noexcept {
   return venue >= Venue::kShfe && venue <= Venue::kGfex;
 }
@@ -110,8 +120,9 @@ struct InstrumentId {
                                    InstrumentId) noexcept = default;
 };
 
-// Process-local order identity. Assigned monotonically by the host, never
-// reused during a run; zero is invalid.
+// Identifies an order within its host or gateway-client namespace. Assigned
+// monotonically and never reused during a run; zero is invalid. Interpret it
+// with its owning namespace, not as a globally unique broker identifier.
 struct ClientOrderId {
   std::uint64_t value = 0;
   friend constexpr bool operator==(ClientOrderId,
@@ -125,8 +136,10 @@ struct CancelRequestId {
                                    CancelRequestId) noexcept = default;
 };
 
-// Owns an opaque session-scoped identifier. Embedded NUL bytes are preserved;
-// callers compare views rather than interpreting these bytes as C strings.
+// Owns up to 64 bytes of opaque trading identity; default construction is empty.
+// Tag separates broker-order and execution IDs at compile time. Embedded NUL
+// bytes are preserved; compare views rather than treating them as C strings.
+// The adapter or persistence namespace determines identity scope.
 template <typename Tag>
 class OpaqueTradingId {
  public:
@@ -139,6 +152,7 @@ class OpaqueTradingId {
     size_ = static_cast<std::uint8_t>(value.size());
     return base::ErrorCode::kOk;
   }
+  // Returns a borrowed byte view, invalidated by destruction or assignment.
   std::string_view view() const noexcept { return {bytes_, size_}; }
   bool empty() const noexcept { return size_ == 0; }
   friend bool operator==(const OpaqueTradingId& lhs,
@@ -153,10 +167,13 @@ class OpaqueTradingId {
 
 struct BrokerOrderIdTag;
 struct ExecutionIdTag;
+// Broker-assigned order identity; empty until obtained from the broker.
 using BrokerOrderId = OpaqueTradingId<BrokerOrderIdTag>;
+// Broker execution identity, unique within its order and adapter namespace.
 using ExecutionId = OpaqueTradingId<ExecutionIdTag>;
 
-// Validates a stable identity without instrument metadata or allocation.
+// Returns whether an ID has a supported venue and valid symbol encoding,
+// without checking whether the instrument is configured or listed.
 // Futures use bit 31 of the low word, a base-27 product in bits 14..28,
 // and a month code in bits 0..13. Every product digit is 1..26 (A..Z).
 // CZCE uses YMM directly; the other futures venues use 1000 + YYMM.
@@ -195,6 +212,7 @@ constexpr bool IsValidInstrumentId(InstrumentId id) noexcept {
              identifier_detail::kLastMonth;
 }
 
+// Builds a stable ID from a canonical venue name and symbol.
 // Equity venues accept six ASCII digits, preserving their existing encoding.
 // Futures accept 1..3 product letters followed by YMM (CZCE) or YYMM (others),
 // with month 01..12. Product letters must be uppercase on CZCE/CFFEX and

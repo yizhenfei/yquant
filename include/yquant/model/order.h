@@ -1,6 +1,9 @@
 #ifndef YQUANT_MODEL_ORDER_H_
 #define YQUANT_MODEL_ORDER_H_
 
+// Defines limit-order requests and current order views shared by strategies
+// and trading services. Broker reports and executions are in trading_event.h.
+
 #include <cstdint>
 
 #include "yquant/model/futures.h"
@@ -8,23 +11,33 @@
 
 namespace yquant::model {
 
+// Describes the trade direction; PositionEffect determines opening or closing.
 enum class OrderSide : std::uint8_t { kUnknown, kBuy, kSell };
+
+// Describes the order lifecycle independently of pending cancel attempts.
 enum class OrderState : std::uint8_t {
+  // Locally accepted, awaiting broker acceptance; may still be queued to send.
   kPendingNew,
+  // Broker accepted or partially filled, with quantity still outstanding.
   kWorking,
   kFilled,
+  // Remaining quantity canceled; earlier partial fills remain effective.
   kCanceled,
   kRejected
 };
 
+// Returns whether no further fills are expected. A terminal order may still
+// have an unresolved cancel request.
 constexpr bool IsTerminalOrderState(OrderState state) noexcept {
   return state == OrderState::kFilled || state == OrderState::kCanceled ||
          state == OrderState::kRejected;
 }
 
-// Limit-order request; prices use the shared instrument precision. Equity
-// quantity is shares and requires kNone; futures quantity is lots and requires
-// an explicit opening or day-specific closing effect.
+// Requests a limit order for a configured instrument. Price and quantity must
+// be positive multiples of its price_tick and quantity_step. Prices use
+// InstrumentDefinition::price_decimals; quantities are shares or futures lots.
+// Equities require kNone. Simulated futures require kOpen or day-specific
+// closing; broker-managed futures use closing effects supported by the venue.
 struct OrderRequest {
   InstrumentId instrument_id;
   OrderSide side = OrderSide::kUnknown;
@@ -33,11 +46,13 @@ struct OrderRequest {
   PositionEffect position_effect = PositionEffect::kNone;
 };
 
-// Owned view of the latest local order state. Partial fills remain Working.
-// Local request acceptance is distinct from broker acceptance; cancel_pending
-// can remain true after Filled until the associated cancel result arrives.
+// Owns a copyable order view for queries and reports. Instrument, side, price,
+// original quantity and position effect retain the original request values.
+// Units match OrderRequest. Partial fills remain kWorking; local request
+// acceptance does not imply broker acceptance.
 struct OrderSnapshot {
   ClientOrderId client_order_id;
+  // Empty until a broker identifier has been obtained.
   BrokerOrderId broker_order_id;
   InstrumentId instrument_id;
   OrderSide side = OrderSide::kUnknown;
@@ -47,10 +62,14 @@ struct OrderSnapshot {
   // Potential future fills; zero for terminal states, otherwise original-cum.
   std::int64_t leaves_qty = 0;
   OrderState state = OrderState::kPendingNew;
+  // Remains true until the cancel result arrives, even after a full fill.
   bool cancel_pending = false;
+  // Most recent locally accepted cancel attempt; zero if none.
   CancelRequestId cancel_request_id;
+  // Last accepted normalized broker report sequence; zero before any report.
   std::uint64_t report_sequence = 0;
-  // Last accepted broker report time; local operations do not refresh this.
+  // Monotonic receive time of the last accepted broker report, in the host
+  // clock domain; zero before any report. Local operations do not refresh it.
   std::uint64_t receive_time_ns = 0;
   PositionEffect position_effect = PositionEffect::kNone;
   friend bool operator==(const OrderSnapshot&,
