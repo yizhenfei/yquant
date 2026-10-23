@@ -56,9 +56,10 @@ struct ArchiveOrderUpdate {
 // collections. A failed restore invalidates this projection; discard it.
 class ArchiveProjection {
  public:
-  // Borrows clock for this object's lifetime; callbacks never read live time
-  // during replay because each ledger fact supplies its original timestamp.
-  explicit ArchiveProjection(const base::MonotonicClock& clock) noexcept;
+  // Borrows a non-null clock for this object's lifetime; callbacks never read
+  // live time during replay because each ledger fact supplies its original
+  // timestamp.
+  explicit ArchiveProjection(const base::MonotonicClock* clock) noexcept;
   ~ArchiveProjection() noexcept;
   ArchiveProjection(const ArchiveProjection&) = delete;
   ArchiveProjection& operator=(const ArchiveProjection&) = delete;

@@ -1,6 +1,9 @@
 #ifndef YQUANT_TRADING_TRADING_STORAGE_H_
 #define YQUANT_TRADING_TRADING_STORAGE_H_
 
+// Defines private engine storage, staged transactions and lookup helpers shared
+// with the cold checkpoint codec. Public order models belong in model/.
+
 #include <array>
 
 #include "yquant/trading/futures_ledger.h"
@@ -11,6 +14,22 @@ namespace yquant::trading {
 inline constexpr std::size_t kFillLookupCapacity = 2 * kMaxTradingFills;
 inline constexpr std::size_t kBrokerLookupCapacity = 2 * kMaxTradingOrders;
 inline constexpr std::size_t kOrderLookupCapacity = 2 * kMaxTradingOrders;
+
+// Rejects unknown mutation bytes before replay or codec dispatch. Every new
+// mutation kind requires an explicit decision in this shared validation.
+inline bool IsValidTradingMutationKind(TradingMutationKind kind) noexcept {
+  switch (kind) {
+    case TradingMutationKind::kNewOrder:
+    case TradingMutationKind::kCancel:
+    case TradingMutationKind::kSendNew:
+    case TradingMutationKind::kSendCancel:
+    case TradingMutationKind::kScheduleLocalCancel:
+    case TradingMutationKind::kLocalCancel:
+    case TradingMutationKind::kReport:
+      return true;
+  }
+  return false;
+}
 
 // Integral identity hashing keeps sparse cold-leased IDs independent of slots.
 inline std::size_t TradingOrderHash(model::ClientOrderId order) noexcept {
@@ -39,6 +58,34 @@ inline std::size_t TradingFillHash(
     hash = (hash ^ byte) * 1099511628211ULL;
   return hash & (kFillLookupCapacity - 1);
 }
+
+// Holds an unpublished request and its resource claim until journal append.
+struct TradingEngine::Submission {
+  model::OrderSnapshot order;
+  model::CashSnapshot cash;
+  model::PositionSnapshot position;
+  FuturesReservation futures_reservation;
+  std::int64_t notional = 0;
+  std::int64_t scale = 1;
+  std::size_t position_index = 0;
+  bool new_position = false;
+  bool futures = false;
+};
+
+// Stages one report's order and cash effects until validation and WAL append
+// succeed. Owned on the stack; it neither borrows events nor allocates storage.
+struct TradingEngine::ReportTransaction {
+  model::OrderSnapshot next;
+  TradingDispatch dispatch;
+  model::CashSnapshot cash;
+  model::PositionSnapshot position;
+  std::int64_t reserved_cash = 0;
+  std::int64_t reserved_qty = 0;
+  std::uint64_t retry = 0;
+  std::size_t broker_slot = 0;
+  std::size_t fill_slot = 0;
+  bool bind_broker = false;
+};
 
 struct TradingEngine::Storage {
   struct OrderRecord {

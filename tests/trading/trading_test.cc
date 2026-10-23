@@ -206,7 +206,7 @@ class TradingTest : public ::testing::Test {
   md::MarketDataConfig market_config;
   md::InstrumentScope market_data;
   RecordingTradingAdapter adapter;
-  trading::TradingEngine trading{clock, market_data, adapter};
+  trading::TradingEngine trading{&clock, &market_data, &adapter};
   model::InstrumentId instrument_id;
 };
 
@@ -364,7 +364,7 @@ TEST_F(TradingTest,
   EXPECT_EQ(trading.SubmitOrder(Request(), output), ErrorCode::kInvalidState);
   trading.SetAcceptingRequests(false);
   RecordingTradingAdapter uninitialized_adapter;
-  trading::TradingEngine disabled(clock, market_data, uninitialized_adapter);
+  trading::TradingEngine disabled(&clock, &market_data, &uninitialized_adapter);
   disabled.SetAcceptingRequests(true);
   EXPECT_EQ(disabled.SubmitOrder(Request(), output), ErrorCode::kInvalidState);
   EXPECT_EQ(output.value, 99U);
@@ -676,7 +676,7 @@ TEST_F(TradingTest, ExecutionCapacityFailurePreservesLastAcceptedFacts) {
 }
 TEST_F(TradingTest, AccountQueriesPreserveOutputsForDisabledAndUnknownIds) {
   RecordingTradingAdapter uninitialized_adapter;
-  trading::TradingEngine disabled(clock, market_data, uninitialized_adapter);
+  trading::TradingEngine disabled(&clock, &market_data, &uninitialized_adapter);
   model::CashSnapshot cash{1, 2, 3};
   EXPECT_FALSE(disabled.TryGetCash(cash));
   EXPECT_EQ(cash, (model::CashSnapshot{1, 2, 3}));
@@ -729,7 +729,7 @@ TEST_F(TradingTest, InvalidBootstrapNeverPublishesAnAccount) {
         break;
     }
     RecordingTradingAdapter bootstrap_adapter;
-    trading::TradingEngine runtime(clock, market_data, bootstrap_adapter);
+    trading::TradingEngine runtime(&clock, &market_data, &bootstrap_adapter);
     trading::TradingConfig config;
     config.initial_account = invalid;
     EXPECT_EQ(runtime.Init(config, market_config).code,

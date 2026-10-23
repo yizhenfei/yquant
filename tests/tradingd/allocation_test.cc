@@ -311,7 +311,7 @@ void CheckEstablishedTradingHeap(bool persistent) {
     config.persistence.initialize = true;
     config.persistence.wal_segment_bytes = kMinWalSegmentBytes;
   }
-  Server server(clock);
+  Server server(&clock);
   ASSERT_TRUE(server.Init(config).ok()) << server.error_detail();
   trading::Endpoint endpoint;
   endpoint.port = server.port();

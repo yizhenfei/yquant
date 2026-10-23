@@ -172,7 +172,7 @@ struct MysqlArchive::Storage {
                              {baseline.get(), kJournalMaxSnapshotBytes},
                              baseline_size);
     if (!status.ok()) return status;
-    projection.reset(new (std::nothrow) ArchiveProjection(clock));
+    projection.reset(new (std::nothrow) ArchiveProjection(&clock));
     if (!projection) return {base::ErrorCode::kResourceExhausted, {}};
     status = projection->Configure(config);
     if (status.ok())

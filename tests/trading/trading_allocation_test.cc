@@ -336,7 +336,7 @@ void CheckTradingHeap(bool cancel, bool sell = false) {
   md::InstrumentScope market_data;
   ASSERT_TRUE(market_data.Configure(market_config).ok());
   trading::MockTradingAdapter adapter;
-  trading::TradingEngine trading(clock, market_data, adapter);
+  trading::TradingEngine trading(&clock, &market_data, &adapter);
   trading::TradingAccountSnapshot account;
   account.cash_balance = 1000000000000000;
   if (sell) {
@@ -391,7 +391,7 @@ TEST(TradingCppHeapTest, UnifiedRuntimePollingHasNoCppHeapActivity) {
   md::InstrumentScope instruments;
   ASSERT_TRUE(instruments.Configure(dictionary).ok());
   trading::MockTradingAdapter adapter;
-  trading::TradingEngine runtime(clock, instruments, adapter);
+  trading::TradingEngine runtime(&clock, &instruments, &adapter);
   trading::TradingConfig config;
   config.initial_account.cash_balance = 1000000000000000;
   ASSERT_TRUE(runtime.Init(config, dictionary).ok());
@@ -584,7 +584,7 @@ TEST(TradingCppHeapTest, FuturesFifoAndExchangeHotPathsHaveNoCppHeapActivity) {
   config.adapter = TradingAdapterKind::kSimulatedFutures;
   config.initial_account = account;
   SimulatedFuturesExchange exchange;
-  TradingEngine trading(clock, market, exchange);
+  TradingEngine trading(&clock, &market, &exchange);
   ASSERT_TRUE(trading.Init(config, market_config).ok());
   const char* failure = nullptr;
   std::size_t fills = 0;

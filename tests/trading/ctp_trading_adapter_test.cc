@@ -183,7 +183,7 @@ TEST(CtpTradingAdapterTest, BrokerAccountReportsAndCancelUseActualWire) {
   ASSERT_TRUE(peer.Open());
   peer.SetInstrument(scope[0].id);
   peer.Start();
-  CtpTradingAdapter adapter(scope);
+  CtpTradingAdapter adapter(&scope);
   ASSERT_TRUE(adapter.Prepare(Config(peer.port())).ok());
   ASSERT_TRUE(adapter.Start(0).ok()) << adapter.error_detail();
   BrokerAccountSnapshot account;
@@ -232,7 +232,7 @@ TEST(CtpTradingAdapterTest, MismatchedBrokerOrderFailsWithoutChangingOutput) {
   BridgePeer peer;
   ASSERT_TRUE(peer.Open());
   peer.Start(true);
-  CtpTradingAdapter adapter(scope);
+  CtpTradingAdapter adapter(&scope);
   ASSERT_TRUE(adapter.Prepare(Config(peer.port())).ok());
   ASSERT_TRUE(adapter.Start(0).ok());
   ASSERT_TRUE(adapter

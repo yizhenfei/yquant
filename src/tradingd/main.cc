@@ -72,7 +72,7 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   yquant::base::SteadyMonotonicClock clock;
-  yquant::tradingd::Server server(clock);
+  yquant::tradingd::Server server(&clock);
   auto config = loader.config();
   config.persistence.initialize = initialize;
   status = server.Init(config);

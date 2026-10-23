@@ -418,75 +418,41 @@ base::Status Parse(const base::JsonConfigDocument& source,
   return {};
 }
 
-}  // namespace
-
-base::Status ValidateTradingConfig(const TradingConfig& config,
-                                   base::ConfigError& error) noexcept {
-  error.Clear();
+// Validates loopback bridge credentials and broker-owned account startup.
+base::Status ValidateCtpConfig(const TradingConfig& config,
+                               base::ConfigError& error) noexcept {
   constexpr std::uint64_t kMinimum =
       kMinimumTradingDurationMs * kTradingNanosecondsPerMillisecond;
   constexpr std::uint64_t kMaximum =
       kMaximumTradingDurationMs * kTradingNanosecondsPerMillisecond;
-  if (config.adapter != TradingAdapterKind::kMock &&
-      config.adapter != TradingAdapterKind::kSimulatedFutures &&
-      config.adapter != TradingAdapterKind::kCtp)
-    return InvalidConfig("adapter", "must be mock, simulated_futures or ctp",
+  if (std::memchr(config.ctp.address, '\0', sizeof(config.ctp.address)) ==
+          nullptr ||
+      std::strcmp(config.ctp.address, "127.0.0.1") != 0)
+    return InvalidConfig("address", "CTP SDK bridge must use 127.0.0.1", error);
+  if (config.ctp.port == 0)
+    return InvalidConfig("port", "must be from 1 to 65535", error);
+  if (config.ctp.token[0] == '\0' ||
+      std::memchr(config.ctp.token, '\0', sizeof(config.ctp.token)) == nullptr)
+    return InvalidConfig("token", "requires 1..64 bytes", error);
+  if (config.ctp.connect_timeout_ns < kMinimum ||
+      config.ctp.connect_timeout_ns > kMaximum)
+    return InvalidConfig("connect_timeout_ms", "must be from 1 to 60000",
                          error);
-  const bool ctp = config.adapter == TradingAdapterKind::kCtp;
-  const bool futures = config.adapter != TradingAdapterKind::kMock;
-  if (config.initial_account.type !=
-      (futures ? model::AccountType::kFutures : model::AccountType::kCash))
-    return InvalidConfig("adapter", "adapter and account type must agree",
+  if (config.ctp.heartbeat_timeout_ns < kMinimum ||
+      config.ctp.heartbeat_timeout_ns > kMaximum)
+    return InvalidConfig("heartbeat_timeout_ms", "must be from 1 to 60000",
                          error);
-  if (config.shutdown_timeout_ns < kMinimum ||
-      config.shutdown_timeout_ns > kMaximum)
-    return InvalidConfig("shutdown_timeout_ms",
-                         "must be from 1 to 60000 milliseconds", error);
-  if (ctp) {
-    if (std::memchr(config.ctp.address, '\0', sizeof(config.ctp.address)) ==
-            nullptr ||
-        std::strcmp(config.ctp.address, "127.0.0.1") != 0)
-      return InvalidConfig("address", "CTP SDK bridge must use 127.0.0.1",
-                           error);
-    if (config.ctp.port == 0)
-      return InvalidConfig("port", "must be from 1 to 65535", error);
-    if (config.ctp.token[0] == '\0' ||
-        std::memchr(config.ctp.token, '\0', sizeof(config.ctp.token)) ==
-            nullptr)
-      return InvalidConfig("token", "requires 1..64 bytes", error);
-    if (config.ctp.connect_timeout_ns < kMinimum ||
-        config.ctp.connect_timeout_ns > kMaximum)
-      return InvalidConfig("connect_timeout_ms", "must be from 1 to 60000",
-                           error);
-    if (config.ctp.heartbeat_timeout_ns < kMinimum ||
-        config.ctp.heartbeat_timeout_ns > kMaximum)
-      return InvalidConfig("heartbeat_timeout_ms", "must be from 1 to 60000",
-                           error);
-    if (config.initial_account.cash_balance != 0 ||
-        config.initial_account.position_count != 0 ||
-        config.initial_account.futures_position_count != 0)
-      return InvalidConfig("initial_cash",
-                           "CTP account must come from broker queries", error);
-    return {};
-  }
-  if (config.mode != MockTradingMode::kFill &&
-      config.mode != MockTradingMode::kWorking &&
-      config.mode != MockTradingMode::kReject)
-    return InvalidConfig("mode", "must be fill, working or reject", error);
-  if (config.report_interval_ns < kMinimum ||
-      config.report_interval_ns > kMaximum)
-    return InvalidConfig("report_interval_ms",
-                         "must be from 1 to 60000 milliseconds", error);
-  const auto& account = config.initial_account;
-  if (account.cash_balance < 0) {
+  if (config.initial_account.cash_balance != 0 ||
+      config.initial_account.position_count != 0 ||
+      config.initial_account.futures_position_count != 0)
     return InvalidConfig("initial_cash",
-                         "must be a nonnegative int64 microyuan value", error);
-  }
-  if ((futures && account.position_count != 0) ||
-      (!futures && account.futures_position_count != 0))
-    return InvalidConfig(
-        futures ? "initial_positions" : "initial_futures_positions",
-        "account types cannot be mixed", error);
+                         "CTP account must come from broker queries", error);
+  return {};
+}
+
+// Validates day/direction buckets before dictionary-dependent ledger checks.
+base::Status ValidateInitialFutures(const TradingAccountSnapshot& account,
+                                    base::ConfigError& error) noexcept {
   if (account.futures_position_count > account.futures_positions.size())
     return InvalidConfig("initial_futures_positions",
                          "at most 64 positions are allowed", error);
@@ -524,6 +490,12 @@ base::Status ValidateTradingConfig(const TradingConfig& config,
         return InvalidConfig(FuturesFieldPath(index, "symbol").text,
                              "duplicate initial position", error);
   }
+  return {};
+}
+
+// Validates cash-equity quantities, identities and zero initial reservations.
+base::Status ValidateInitialPositions(const TradingAccountSnapshot& account,
+                                      base::ConfigError& error) noexcept {
   if (account.position_count > account.positions.size()) {
     return InvalidConfig("initial_positions",
                          "at most 64 positions are allowed", error);
@@ -560,6 +532,54 @@ base::Status ValidateTradingConfig(const TradingConfig& config,
     }
   }
   return {};
+}
+
+}  // namespace
+
+base::Status ValidateTradingConfig(const TradingConfig& config,
+                                   base::ConfigError& error) noexcept {
+  error.Clear();
+  constexpr std::uint64_t kMinimum =
+      kMinimumTradingDurationMs * kTradingNanosecondsPerMillisecond;
+  constexpr std::uint64_t kMaximum =
+      kMaximumTradingDurationMs * kTradingNanosecondsPerMillisecond;
+  if (config.adapter != TradingAdapterKind::kMock &&
+      config.adapter != TradingAdapterKind::kSimulatedFutures &&
+      config.adapter != TradingAdapterKind::kCtp)
+    return InvalidConfig("adapter", "must be mock, simulated_futures or ctp",
+                         error);
+  const bool ctp = config.adapter == TradingAdapterKind::kCtp;
+  const bool futures = config.adapter != TradingAdapterKind::kMock;
+  if (config.initial_account.type !=
+      (futures ? model::AccountType::kFutures : model::AccountType::kCash))
+    return InvalidConfig("adapter", "adapter and account type must agree",
+                         error);
+  if (config.shutdown_timeout_ns < kMinimum ||
+      config.shutdown_timeout_ns > kMaximum)
+    return InvalidConfig("shutdown_timeout_ms",
+                         "must be from 1 to 60000 milliseconds", error);
+  if (ctp) return ValidateCtpConfig(config, error);
+  if (config.mode != MockTradingMode::kFill &&
+      config.mode != MockTradingMode::kWorking &&
+      config.mode != MockTradingMode::kReject)
+    return InvalidConfig("mode", "must be fill, working or reject", error);
+  if (config.report_interval_ns < kMinimum ||
+      config.report_interval_ns > kMaximum)
+    return InvalidConfig("report_interval_ms",
+                         "must be from 1 to 60000 milliseconds", error);
+  const auto& account = config.initial_account;
+  if (account.cash_balance < 0) {
+    return InvalidConfig("initial_cash",
+                         "must be a nonnegative int64 microyuan value", error);
+  }
+  if ((futures && account.position_count != 0) ||
+      (!futures && account.futures_position_count != 0))
+    return InvalidConfig(
+        futures ? "initial_positions" : "initial_futures_positions",
+        "account types cannot be mixed", error);
+  auto status = ValidateInitialFutures(account, error);
+  if (status.ok()) status = ValidateInitialPositions(account, error);
+  return status;
 }
 
 base::Status TradingConfigLoader::Load(const char* path) noexcept {

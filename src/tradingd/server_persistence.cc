@@ -465,7 +465,7 @@ base::Status Server::Storage::CaptureCheckpoint(std::uint64_t now) noexcept {
   });
   if (status.ok())
     status = encode_blob([&](auto out, auto& size) noexcept {
-      return mock.EncodeState(out, size, now);
+      return mock.EncodeState(now, out, size);
     });
   if (!status.ok()) return status;
   if (!writer.ok()) return {base::ErrorCode::kResourceExhausted, {}};
@@ -572,7 +572,7 @@ base::Status Server::Storage::LoadCheckpoint(std::uint64_t& stream,
   return {};
 }
 
-base::Status Server::Storage::RecoverMock() noexcept {
+base::Status Server::Storage::ReplayMockHistory() noexcept {
   // Both histories come from the same valid local prefix. They are simulation
   // evidence only; a real adapter must use independent complete broker history.
   trading.AbandonRecoveredRequests();
@@ -596,16 +596,18 @@ base::Status Server::Storage::RecoverMock() noexcept {
     const auto code = trading.ApplyEvent(event, dispatch);
     if (code != base::ErrorCode::kOk) return {code, {}};
   }
-  const auto now = clock_.Now();
-  auto status = mock.RebaseDeadlines(last_record_time, now);
-  if (!status.ok()) return status;
+  return {};
+}
+
+base::Status Server::Storage::RejectAbsentMockOrders(
+    std::uint64_t now) noexcept {
   for (std::size_t i = 0; i < trading.order_count(); ++i) {
     model::OrderSnapshot order;
     if (!trading.TryGetOrderAt(i, order)) return CorruptState();
     bool found = false;
     for (std::size_t j = 0; j < mock.recovery_order_count(); ++j) {
       model::OrderSnapshot broker;
-      status = mock.ReadRecoveryOrder(j, broker);
+      const auto status = mock.ReadRecoveryOrder(j, broker);
       if (!status.ok()) return status;
       found |= broker.client_order_id == order.client_order_id;
     }
@@ -624,37 +626,48 @@ base::Status Server::Storage::RecoverMock() noexcept {
     }
   }
 
+  return {};
+}
+
+base::Status Server::Storage::ScheduleRecoveredCancels(
+    std::uint64_t now) noexcept {
+  for (std::size_t i = 0; i < trading.order_count(); ++i) {
+    model::OrderSnapshot order;
+    if (!trading.TryGetOrderAt(i, order)) return CorruptState();
+    if (order.cancel_pending) {
+      bool matched = false;
+      for (std::size_t j = 0; j < mock.recovery_order_count(); ++j) {
+        model::OrderSnapshot broker;
+        auto status = mock.ReadRecoveryOrder(j, broker);
+        if (!status.ok()) return status;
+        if (broker.client_order_id != order.client_order_id) continue;
+        matched = true;
+        if (!broker.cancel_pending) {
+          // The simulated broker proves that the recorded cancel attempt
+          // did not reach it. Settle that exact pending intent locally.
+          status =
+              mock.SendCancel(order.client_order_id, broker.adapter_order_id,
+                              order.cancel_request_id, now);
+          if (!status.ok()) return status;
+        }
+        break;
+      }
+      if (!matched) return CorruptState();
+    } else if (order.state == model::OrderState::kWorking) {
+      trading.SetAcceptingRequests(true);
+      const auto code = trading.CancelOrder(order.client_order_id);
+      trading.SetAcceptingRequests(false);
+      if (code != base::ErrorCode::kOk) return {code, {}};
+    }
+  }
+  return {};
+}
+
+base::Status Server::Storage::DrainRecoveredMock(std::uint64_t now) noexcept {
   std::uint64_t recovery_now = now;
   for (std::size_t step = 0; step < kRecoveryStepBudget; ++step) {
-    for (std::size_t i = 0; i < trading.order_count(); ++i) {
-      model::OrderSnapshot order;
-      if (!trading.TryGetOrderAt(i, order)) return CorruptState();
-      if (order.cancel_pending) {
-        bool matched = false;
-        for (std::size_t j = 0; j < mock.recovery_order_count(); ++j) {
-          model::OrderSnapshot broker;
-          status = mock.ReadRecoveryOrder(j, broker);
-          if (!status.ok()) return status;
-          if (broker.client_order_id != order.client_order_id) continue;
-          matched = true;
-          if (!broker.cancel_pending) {
-            // The simulated broker proves that the recorded cancel attempt
-            // did not reach it. Settle that exact pending intent locally.
-            status =
-                mock.SendCancel(order.client_order_id, broker.adapter_order_id,
-                                order.cancel_request_id, recovery_now);
-            if (!status.ok()) return status;
-          }
-          break;
-        }
-        if (!matched) return CorruptState();
-      } else if (order.state == model::OrderState::kWorking) {
-        trading.SetAcceptingRequests(true);
-        const auto code = trading.CancelOrder(order.client_order_id);
-        trading.SetAcceptingRequests(false);
-        if (code != base::ErrorCode::kOk) return {code, {}};
-      }
-    }
+    auto status = ScheduleRecoveredCancels(recovery_now);
+    if (!status.ok()) return status;
     status = trading.ProcessRequests(recovery_now);
     if (!status.ok()) return status;
     if (trading.has_local_updates()) {
@@ -680,6 +693,16 @@ base::Status Server::Storage::RecoverMock() noexcept {
     if (code != base::ErrorCode::kOk) return {code, {}};
   }
   return {base::ErrorCode::kResourceExhausted, {}};
+}
+
+base::Status Server::Storage::RecoverMock() noexcept {
+  auto status = ReplayMockHistory();
+  if (!status.ok()) return status;
+  const auto now = clock_.Now();
+  status = mock.RebaseDeadlines(last_record_time, now);
+  if (status.ok()) status = RejectAbsentMockOrders(now);
+  if (status.ok()) status = DrainRecoveredMock(now);
+  return status;
 }
 
 base::Status Server::Storage::StartPersistence() noexcept {

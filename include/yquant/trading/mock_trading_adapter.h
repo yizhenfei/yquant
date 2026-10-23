@@ -100,9 +100,9 @@ class MockTradingAdapter final : public TradingAdapter {
   // Restore requires Prepare/Start and compatible configuration, validates a
   // private candidate, and preserves existing state and saved_now on failure.
   // used changes only on success. Encoding may modify output before failure.
-  [[nodiscard]] base::Status EncodeState(std::span<std::byte> output,
-                                         std::size_t& used,
-                                         std::uint64_t now) const noexcept;
+  [[nodiscard]] base::Status EncodeState(std::uint64_t now,
+                                         std::span<std::byte> output,
+                                         std::size_t& used) const noexcept;
   [[nodiscard]] base::Status RestoreState(
       std::span<const std::byte> input, std::uint64_t now,
       std::uint64_t* saved_now = nullptr) noexcept;
@@ -132,6 +132,31 @@ class MockTradingAdapter final : public TradingAdapter {
 
  private:
   struct Storage;
+  struct PreparedReport;
+  // Builds the next scheduled event without changing orders or queued plans.
+  // A non-null replay supplies the recorded execution timestamp for validation.
+  base::Status PrepareScheduledReport(std::uint64_t now,
+                                      const model::TradingEvent* replay,
+                                      PreparedReport& report) noexcept;
+  // Builds one incremental fill and its subsequent scheduled step.
+  base::Status PrepareFillReport(std::uint64_t now,
+                                 const model::TradingEvent* replay,
+                                 PreparedReport& report) noexcept;
+  // Publishes an observer-approved event and advances the indexed plan heap.
+  void CommitScheduledReport(std::uint64_t now,
+                             const PreparedReport& report) noexcept;
+  struct RestoreCandidate;
+  // Reads and checks configuration in a private restore candidate.
+  base::Status ReadRestoreConfig(RestoreCandidate& context) noexcept;
+  // Reads orders and rebuilds their identity lookups without publishing them.
+  base::Status ReadRestoreOrders(RestoreCandidate& context) noexcept;
+  // Restores scheduled deadlines in the supplied monotonic clock domain.
+  base::Status ReadRestorePlans(std::uint64_t now,
+                                RestoreCandidate& context) noexcept;
+  // Replays emitted history to validate sequence, quantity and state facts.
+  base::Status ReadRestoreHistory(RestoreCandidate& context) noexcept;
+  // Reconciles latest order state and next steps with validated report history.
+  base::Status ValidateRestoredOrders(RestoreCandidate& context) noexcept;
   enum class State { kUnprepared, kPrepared, kActive, kFailed, kStopped };
 
   // Copies a failure without changing state or caller output.
@@ -141,8 +166,9 @@ class MockTradingAdapter final : public TradingAdapter {
                               const char* detail) noexcept;
   // Poll implementation optionally checks an exact replay event before commit;
   // replay bypasses the observer and uses its recorded UTC fill timestamp.
-  TradingPollResult PollImpl(std::uint64_t now, model::TradingEvent& out,
-                             const model::TradingEvent* replay) noexcept;
+  TradingPollResult PollImpl(std::uint64_t now,
+                             const model::TradingEvent* replay,
+                             model::TradingEvent& out) noexcept;
   base::Status Observe(const MockTradingMutation& mutation) noexcept;
 
   std::unique_ptr<Storage> storage_;

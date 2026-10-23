@@ -213,7 +213,7 @@ class ArchiveProjectionTest : public ::testing::Test {
   testing::TradingEngineHarness source{clock, market};
   trading::MockTradingAdapter mock;
   FactSink sink;
-  ArchiveProjection projection{clock};
+  ArchiveProjection projection{&clock};
 };
 
 TEST_F(ArchiveProjectionTest, ReplaysAccountingOnceAndRetainsSourceIdentity) {

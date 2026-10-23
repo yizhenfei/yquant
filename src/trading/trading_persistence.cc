@@ -8,6 +8,7 @@
 #include <memory>
 #include <new>
 #include <string_view>
+#include <utility>
 
 #include "trading/trading_storage.h"
 #include "yquant/trading/trading_engine.h"
@@ -113,11 +114,14 @@ void WriteRequest(Writer& w, const model::OrderRequest& value) noexcept {
   w.Signed(value.limit_price);
   w.Signed(value.quantity);
 }
-void ReadRequest(Reader& r, model::OrderRequest& value) noexcept {
+// Reads a OrderRequest value and records malformed input in the reader.
+model::OrderRequest ReadRequest(Reader& r) noexcept {
+  model::OrderRequest value;
   value.instrument_id.value = r.Uint();
   value.side = static_cast<model::OrderSide>(r.Uint(1));
   value.limit_price = r.Signed();
   value.quantity = r.Signed();
+  return value;
 }
 void WriteOrder(Writer& w, const model::OrderSnapshot& value) noexcept {
   w.Uint(value.client_order_id.value);
@@ -134,7 +138,9 @@ void WriteOrder(Writer& w, const model::OrderSnapshot& value) noexcept {
   w.Uint(value.report_sequence);
   w.Uint(value.receive_time_ns);
 }
-void ReadOrder(Reader& r, model::OrderSnapshot& value) noexcept {
+// Reads a OrderSnapshot value and records malformed input in the reader.
+model::OrderSnapshot ReadOrder(Reader& r) noexcept {
+  model::OrderSnapshot value;
   value.client_order_id.value = r.Uint();
   ReadId(r, value.adapter_order_id);
   value.instrument_id.value = r.Uint();
@@ -148,6 +154,7 @@ void ReadOrder(Reader& r, model::OrderSnapshot& value) noexcept {
   value.cancel_request_id.value = r.Uint();
   value.report_sequence = r.Uint();
   value.receive_time_ns = r.Uint();
+  return value;
 }
 void WriteFill(Writer& w, const model::Fill& value) noexcept {
   w.Uint(value.client_order_id.value);
@@ -161,7 +168,9 @@ void WriteFill(Writer& w, const model::Fill& value) noexcept {
   w.Uint(value.receive_time_ns);
   w.Uint(value.has_event_time, 1);
 }
-void ReadFill(Reader& r, model::Fill& value) noexcept {
+// Reads a Fill value and records malformed input in the reader.
+model::Fill ReadFill(Reader& r) noexcept {
+  model::Fill value;
   value.client_order_id.value = r.Uint();
   ReadId(r, value.adapter_order_id);
   ReadId(r, value.execution_id);
@@ -172,6 +181,7 @@ void ReadFill(Reader& r, model::Fill& value) noexcept {
   value.event_time_ns = r.Uint();
   value.receive_time_ns = r.Uint();
   value.has_event_time = r.Boolean();
+  return value;
 }
 void WriteEvent(Writer& w, const model::TradingEvent& value) noexcept {
   w.Uint(value.client_order_id.value);
@@ -192,14 +202,16 @@ void WriteEvent(Writer& w, const model::TradingEvent& value) noexcept {
   w.Uint(value.reason.size, 1);
   w.Bytes(value.reason.view());
 }
-void ReadEvent(Reader& r, model::TradingEvent& value) noexcept {
+// Reads a TradingEvent value and records malformed input in the reader.
+model::TradingEvent ReadEvent(Reader& r) noexcept {
+  model::TradingEvent value;
   value.client_order_id.value = r.Uint();
   ReadId(r, value.adapter_order_id);
   value.report_sequence = r.Uint();
   value.kind = static_cast<model::OrderUpdateKind>(r.Uint(1));
   value.cumulative_filled_qty = r.Signed();
   value.receive_time_ns = r.Uint();
-  ReadFill(r, value.fill);
+  value.fill = ReadFill(r);
   value.cancel_request_id.value = r.Uint();
   value.reason.code =
       std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(r.Uint(4)));
@@ -207,35 +219,20 @@ void ReadEvent(Reader& r, model::TradingEvent& value) noexcept {
   const auto size = r.Uint(1);
   if (size > kMaxReasonBytes) {
     r.Reject();
-    return;
+    return value;
   }
   const auto bytes = r.Bytes(size);
-  if (!r.ok()) return;
+  if (!r.ok()) return value;
   value.reason.size = static_cast<std::uint8_t>(size);
   if (size != 0) std::memcpy(value.reason.text, bytes.data(), size);
   value.reason.text[size] = '\0';
+  return value;
 }
 
-// Checks arithmetic and all cross-record reservations/queue identities before
-// publishing a restored candidate. Its bounded scratch storage lives on stack.
+// Checks position units and uniqueness without changing the candidate.
 template <typename Storage>
-bool Validate(Storage& s, const md::InstrumentScope& market) noexcept {
-  constexpr auto kMaximum = std::numeric_limits<std::int64_t>::max();
-  if (s.type != model::AccountType::kCash || s.next_order_id == 0 ||
-      s.cash.balance < 0 || s.cash.reserved < 0 ||
-      s.cash.reserved > s.cash.balance ||
-      s.cash.available != s.cash.balance - s.cash.reserved ||
-      s.scan_cursor > s.order_count)
-    return false;
-  std::array<std::int64_t, md::kMaxMarketDataInstruments> quantities = {};
-  std::array<std::int64_t, kMaxTradingOrders> filled = {};
-  std::array<bool, kMaxTradingOrders> queued_new = {};
-  std::array<bool, kMaxTradingOrders> queued_cancel = {};
-  std::array<bool, kMaxTradingOrders> local = {};
-  std::int64_t reserved_cash = 0;
-  std::size_t active = 0;
-  std::size_t pending_cancel = 0;
-  std::uint64_t previous_id = 0;
+bool ValidatePositions(const Storage& s,
+                       const md::InstrumentScope& market) noexcept {
   for (std::size_t i = 0; i < s.position_count; ++i) {
     const auto& p = s.positions[i];
     model::InstrumentDefinition instrument;
@@ -252,6 +249,19 @@ bool Validate(Storage& s, const md::InstrumentScope& market) noexcept {
     for (std::size_t j = 0; j < i; ++j)
       if (s.positions[j].instrument_id == p.instrument_id) return false;
   }
+  return true;
+}
+
+// Rebuilds order lookups and verifies aggregate reservations and activity.
+// Only a private restore candidate may be passed; failure may leave it changed.
+template <typename Storage>
+bool ValidateOrders(Storage& s, const md::InstrumentScope& market) noexcept {
+  constexpr auto kMaximum = std::numeric_limits<std::int64_t>::max();
+  std::array<std::int64_t, md::kMaxMarketDataInstruments> quantities = {};
+  std::int64_t reserved_cash = 0;
+  std::size_t active = 0;
+  std::size_t pending_cancel = 0;
+  std::uint64_t previous_id = 0;
   for (std::size_t i = 0; i < s.order_count; ++i) {
     const auto& record = s.orders[i];
     const auto& o = record.snapshot;
@@ -342,6 +352,14 @@ bool Validate(Storage& s, const md::InstrumentScope& market) noexcept {
     return false;
   for (std::size_t i = 0; i < s.position_count; ++i)
     if (quantities[i] != s.positions[i].reserved_qty) return false;
+  return true;
+}
+
+// Rebuilds execution deduplication and reconciles each order's filled quantity.
+template <typename Storage>
+bool ValidateExecutions(Storage& s,
+                        const md::InstrumentScope& market) noexcept {
+  std::array<std::int64_t, kMaxTradingOrders> filled = {};
   for (std::size_t i = 0; i < s.fill_count; ++i) {
     const auto& f = s.fills[i];
     std::size_t index = 0;
@@ -379,6 +397,15 @@ bool Validate(Storage& s, const md::InstrumentScope& market) noexcept {
   }
   for (std::size_t i = 0; i < s.order_count; ++i)
     if (filled[i] != s.orders[i].snapshot.cumulative_filled_qty) return false;
+  return true;
+}
+
+// Checks that every unsent request and local cancellation has exactly one slot.
+template <typename Storage>
+bool ValidateQueues(const Storage& s) noexcept {
+  std::array<bool, kMaxTradingOrders> queued_new = {};
+  std::array<bool, kMaxTradingOrders> queued_cancel = {};
+  std::array<bool, kMaxTradingOrders> local = {};
   for (std::size_t i = 0; i < s.request_count; ++i) {
     const auto& request = s.requests[i];
     if (request.order_index >= s.order_count) return false;
@@ -419,6 +446,19 @@ bool Validate(Storage& s, const md::InstrumentScope& market) noexcept {
   }
   return true;
 }
+
+// Validates a private cash checkpoint before publishing it to the engine.
+template <typename Storage>
+bool Validate(Storage& s, const md::InstrumentScope& market) noexcept {
+  if (s.type != model::AccountType::kCash || s.next_order_id == 0 ||
+      s.cash.balance < 0 || s.cash.reserved < 0 ||
+      s.cash.reserved > s.cash.balance ||
+      s.cash.available != s.cash.balance - s.cash.reserved ||
+      s.scan_cursor > s.order_count)
+    return false;
+  return ValidatePositions(s, market) && ValidateOrders(s, market) &&
+         ValidateExecutions(s, market) && ValidateQueues(s);
+}
 }  // namespace
 
 base::Status EncodeTradingMutation(const TradingMutation& value,
@@ -426,7 +466,8 @@ base::Status EncodeTradingMutation(const TradingMutation& value,
                                    std::size_t& size) noexcept {
   // Version 1 represents cash equities, whose position effect is implicit.
   // Reject unsupported active fields before writing instead of dropping them.
-  if (value.revision == 0 || value.client_order_id.value == 0 ||
+  if (!IsValidTradingMutationKind(value.kind) || value.revision == 0 ||
+      value.client_order_id.value == 0 ||
       (value.kind == TradingMutationKind::kNewOrder &&
        (value.request.position_effect != model::PositionEffect::kNone ||
         IsFuturesInstrument(value.request.instrument_id))) ||
@@ -455,8 +496,6 @@ base::Status EncodeTradingMutation(const TradingMutation& value,
     case TradingMutationKind::kScheduleLocalCancel:
     case TradingMutationKind::kLocalCancel:
       break;
-    default:
-      return {ErrorCode::kInvalidArgument, {}};
   }
   if (!w.ok()) return {ErrorCode::kResourceExhausted, {}};
   size = w.size();
@@ -469,16 +508,17 @@ base::Status DecodeTradingMutation(std::span<const std::byte> bytes,
   if (r.Uint(2) != kMutationVersion) return {ErrorCode::kCorrupt, {}};
   TradingMutation value;
   value.kind = static_cast<TradingMutationKind>(r.Uint(1));
+  if (!IsValidTradingMutationKind(value.kind)) return {ErrorCode::kCorrupt, {}};
   value.revision = r.Uint();
   value.now = r.Uint();
   value.client_order_id.value = r.Uint();
   value.cancel_id.value = r.Uint();
   switch (value.kind) {
     case TradingMutationKind::kNewOrder:
-      ReadRequest(r, value.request);
+      value.request = ReadRequest(r);
       break;
     case TradingMutationKind::kReport:
-      ReadEvent(r, value.event);
+      value.event = ReadEvent(r);
       break;
     case TradingMutationKind::kCancel:
     case TradingMutationKind::kSendNew:
@@ -486,8 +526,6 @@ base::Status DecodeTradingMutation(std::span<const std::byte> bytes,
     case TradingMutationKind::kScheduleLocalCancel:
     case TradingMutationKind::kLocalCancel:
       break;
-    default:
-      return {ErrorCode::kCorrupt, {}};
   }
   if (!r.done() || value.revision == 0 || value.client_order_id.value == 0 ||
       (value.kind == TradingMutationKind::kNewOrder &&
@@ -617,7 +655,7 @@ base::Status TradingEngine::RestoreCheckpoint(
     return {ErrorCode::kCorrupt, {}};
   for (std::size_t i = 0; i < s.order_count; ++i) {
     auto& record = s.orders[i];
-    ReadOrder(r, record.snapshot);
+    record.snapshot = ReadOrder(r);
     record.new_attempted = r.Boolean();
     record.cancel_attempted = r.Boolean();
     record.local_cancel_pending = r.Boolean();
@@ -627,7 +665,7 @@ base::Status TradingEngine::RestoreCheckpoint(
     record.reserved_cash = r.Signed();
     record.reserved_qty = r.Signed();
   }
-  for (std::size_t i = 0; i < s.fill_count; ++i) ReadFill(r, s.fills[i]);
+  for (std::size_t i = 0; i < s.fill_count; ++i) s.fills[i] = ReadFill(r);
   s.request_count = r.Uint(4);
   if (s.request_count > kMaxTradingRequests) return {ErrorCode::kCorrupt, {}};
   for (std::size_t i = 0; i < s.request_count; ++i) {
@@ -643,8 +681,7 @@ base::Status TradingEngine::RestoreCheckpoint(
   if (!r.done() || !Validate(s, instruments_))
     return {Fail(ErrorCode::kCorrupt, "invalid ledger checkpoint invariants"),
             {}};
-  delete storage_;
-  storage_ = candidate.release();
+  storage_ = std::move(candidate);
   stopping_ = false;
   error_detail_[0] = '\0';
   return {};
@@ -730,8 +767,7 @@ base::Status TradingEngine::RestoreReconciled(
     return {Fail(ErrorCode::kCorrupt,
                  "invalid reconciled account or execution history"),
             {}};
-  delete storage_;
-  storage_ = candidate.release();
+  storage_ = std::move(candidate);
   stopping_ = false;
   error_detail_[0] = '\0';
   return {};

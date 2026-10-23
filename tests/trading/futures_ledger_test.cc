@@ -49,7 +49,7 @@ class FuturesLedgerTest : public ::testing::Test {
   }
 
   void Configure() {
-    ASSERT_EQ(ledger.Configure(account, market), ErrorCode::kOk)
+    ASSERT_EQ(ledger.Configure(account, &market), ErrorCode::kOk)
         << ledger.error_detail();
   }
 
@@ -308,13 +308,13 @@ TEST_F(FuturesLedgerTest, BootstrapRejectsInventoryOffQuantityStep) {
   position.instrument_id = id;
   position.reference_price = 100;
   position.long_today = {3, 100};
-  EXPECT_EQ(ledger.Configure(account, market), ErrorCode::kInvalidArgument);
+  EXPECT_EQ(ledger.Configure(account, &market), ErrorCode::kInvalidArgument);
   model::FuturesAccountSnapshot untouched;
   untouched.balance = 7;
   EXPECT_FALSE(ledger.TryGetAccount(untouched));
   EXPECT_EQ(untouched.balance, 7);
   position.long_today.quantity = 5;
-  EXPECT_EQ(ledger.Configure(account, market), ErrorCode::kOk);
+  EXPECT_EQ(ledger.Configure(account, &market), ErrorCode::kOk);
   EXPECT_EQ(Position().long_today.quantity, 5);
 }
 
@@ -674,7 +674,7 @@ TEST_F(FuturesLedgerTest,
   adapter.account.positions[0].long_today = {2, 0, 2010000000};
   adapter.account.positions[0].long_yesterday = {1, 0, 1000000000};
   adapter.account.positions[0].unallocated_long_frozen = 1;
-  TradingEngine engine(clock, market, adapter);
+  TradingEngine engine(&clock, &market, &adapter);
   TradingConfig broker;
   broker.adapter = TradingAdapterKind::kCtp;
   ASSERT_TRUE(engine.Init(broker, config).ok()) << engine.error_detail();
@@ -725,7 +725,7 @@ TEST_F(FuturesLedgerTest,
 TEST_F(FuturesLedgerTest, BrokerExternalCancelNeedsNoSyntheticLocalCancel) {
   BrokerSnapshotAdapter adapter;
   adapter.account.revision = 1;
-  TradingEngine engine(clock, market, adapter);
+  TradingEngine engine(&clock, &market, &adapter);
   TradingConfig broker;
   broker.adapter = TradingAdapterKind::kCtp;
   ASSERT_TRUE(engine.Init(broker, config).ok());
@@ -761,19 +761,19 @@ TEST_F(FuturesLedgerTest,
             ErrorCode::kOk);
   TradingConfig broker;
   broker.adapter = TradingAdapterKind::kCtp;
-  TradingEngine unknown(clock, market, adapter);
+  TradingEngine unknown(&clock, &market, &adapter);
   EXPECT_FALSE(unknown.Init(broker, config).ok());
   adapter.account.positions[0].instrument_id = id;
   adapter.account.positions[0].long_today.quantity = 1;
   adapter.account.positions[0].unallocated_long_frozen = 2;
-  TradingEngine bad_freeze(clock, market, adapter);
+  TradingEngine bad_freeze(&clock, &market, &adapter);
   EXPECT_FALSE(bad_freeze.Init(broker, config).ok());
 }
 
 TEST_F(FuturesLedgerTest, BrokerEventValidatesAccountBeforeCommittingOrder) {
   BrokerSnapshotAdapter adapter;
   adapter.account.revision = 1;
-  TradingEngine engine(clock, market, adapter);
+  TradingEngine engine(&clock, &market, &adapter);
   TradingConfig broker;
   broker.adapter = TradingAdapterKind::kCtp;
   ASSERT_TRUE(engine.Init(broker, config).ok());
@@ -816,7 +816,7 @@ TEST_F(FuturesLedgerTest, BrokerGenericCloseUsesExchangeAllocationOnly) {
   ASSERT_TRUE(generic_market.Configure(generic).ok());
   BrokerSnapshotAdapter adapter;
   adapter.account.revision = 1;
-  TradingEngine engine(clock, generic_market, adapter);
+  TradingEngine engine(&clock, &generic_market, &adapter);
   TradingConfig broker;
   broker.adapter = TradingAdapterKind::kCtp;
   ASSERT_TRUE(engine.Init(broker, generic).ok());
@@ -840,7 +840,7 @@ TEST_F(FuturesLedgerTest, BrokerGenericCloseUsesExchangeAllocationOnly) {
 TEST_F(FuturesLedgerTest, BrokerShutdownAnnouncedOnceWithoutTransportWork) {
   BrokerSnapshotAdapter adapter;
   adapter.account.revision = 1;
-  TradingEngine engine(clock, market, adapter);
+  TradingEngine engine(&clock, &market, &adapter);
   TradingConfig broker;
   broker.adapter = TradingAdapterKind::kCtp;
   ASSERT_TRUE(engine.Init(broker, config).ok());

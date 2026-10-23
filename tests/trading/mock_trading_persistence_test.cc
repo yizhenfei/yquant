@@ -28,7 +28,7 @@ std::vector<std::byte> Snapshot(MockTradingAdapter& adapter,
                                 std::uint64_t now) {
   std::vector<std::byte> bytes(64 * 1024);
   std::size_t used = 0;
-  if (!adapter.EncodeState(bytes, used, now).ok()) return {};
+  if (!adapter.EncodeState(now, bytes, used).ok()) return {};
   bytes.resize(used);
   return bytes;
 }
@@ -364,7 +364,7 @@ TEST(MockTradingPersistenceTest, RejectsUnrepresentablePositionEffects) {
   // be encoded as cash-only persistence while it contains such a request.
   ASSERT_TRUE(source.SendOrder({1}, mutation.request, 0).ok());
   std::vector<std::byte> state(kMaxMockTradingStateBytes);
-  EXPECT_EQ(source.EncodeState(state, used, 0).code,
+  EXPECT_EQ(source.EncodeState(0, state, used).code,
             base::ErrorCode::kUnsupported);
   EXPECT_EQ(used, 123U);
 }
@@ -383,7 +383,7 @@ TEST(MockTradingPersistenceTest, RejectsFuturesAccountPersistence) {
   ASSERT_TRUE(futures.Start(0).ok());
   std::vector<std::byte> state(kMaxMockTradingStateBytes);
   std::size_t used = 123;
-  EXPECT_EQ(futures.EncodeState(state, used, 0).code,
+  EXPECT_EQ(futures.EncodeState(0, state, used).code,
             base::ErrorCode::kUnsupported);
   EXPECT_EQ(used, 123U);
   std::uint64_t saved_now = 456;

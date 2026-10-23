@@ -287,6 +287,8 @@ struct MysqlArchiveStore::Storage {
 #endif
 };
 
+MysqlArchiveStore::MysqlArchiveStore() noexcept = default;
+
 MysqlArchiveStore::~MysqlArchiveStore() noexcept { Close(); }
 
 base::Status MysqlArchiveStore::Fail(base::ErrorCode code, const char* detail,
@@ -321,7 +323,7 @@ base::Status MysqlArchiveStore::Connect(
   if (thread_context.status != 0)
     return Fail(base::ErrorCode::kResourceExhausted,
                 "cannot initialize MySQL client thread");
-  storage_ = new (std::nothrow) Storage;
+  storage_.reset(new (std::nothrow) Storage);
   if (storage_ == nullptr)
     return Fail(base::ErrorCode::kResourceExhausted,
                 "cannot allocate MySQL archive connection");
@@ -430,8 +432,7 @@ void MysqlArchiveStore::Close() noexcept {
 #if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
   if (storage_->connection != nullptr) mysql_close(storage_->connection);
 #endif
-  delete storage_;
-  storage_ = nullptr;
+  storage_.reset();
 }
 
 base::Status MysqlArchiveStore::GetProgress(
@@ -667,14 +668,10 @@ base::Status MysqlArchiveStore::AppendEvent(
 #endif
 }
 
-base::Status MysqlArchiveStore::WriteProjection(
+base::Status MysqlArchiveStore::WriteSessions(
     const ArchiveProjection& projection) noexcept {
 #if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
   const auto ledger = Value(storage_->ledger);
-  const auto run = Value(projection.run_id());
-  const auto sequence = Value(projection.last_lsn());
-  const bool baseline =
-      storage_->pending_run != storage_->progress.cursor.stream_id;
   for (const auto& session : projection.sessions()) {
     if (session.session_id == 0) continue;
     std::array<std::byte, 2048> metadata{};
@@ -705,6 +702,20 @@ base::Status MysqlArchiveStore::WriteProjection(
         return DatabaseFailure();
     }
   }
+  return {};
+#else
+  (void)projection;
+  return DatabaseFailure();
+#endif
+}
+
+base::Status MysqlArchiveStore::WriteOrders(
+    const ArchiveProjection& projection) noexcept {
+#if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
+  const auto ledger = Value(storage_->ledger);
+  const auto run = Value(projection.run_id());
+  const bool baseline =
+      storage_->pending_run != storage_->progress.cursor.stream_id;
   for (const auto& order : projection.orders()) {
     if (!baseline && order.source_lsn <= storage_->progress.cursor.lsn)
       continue;
@@ -784,6 +795,20 @@ base::Status MysqlArchiveStore::WriteProjection(
              session, local}))
       return DatabaseFailure();
   }
+  return {};
+#else
+  (void)projection;
+  return DatabaseFailure();
+#endif
+}
+
+base::Status MysqlArchiveStore::WriteFills(
+    const ArchiveProjection& projection) noexcept {
+#if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
+  const auto ledger = Value(storage_->ledger);
+  const auto run = Value(projection.run_id());
+  const bool baseline =
+      storage_->pending_run != storage_->progress.cursor.stream_id;
   const auto& trading = projection.trading();
   for (std::size_t i = 0; i < trading.fill_count(); ++i) {
     const auto source = projection.FillSourceLsn(i);
@@ -833,6 +858,20 @@ base::Status MysqlArchiveStore::WriteProjection(
         return DatabaseFailure();
     }
   }
+  return {};
+#else
+  (void)projection;
+  return DatabaseFailure();
+#endif
+}
+
+base::Status MysqlArchiveStore::WriteAccount(
+    const ArchiveProjection& projection) noexcept {
+#if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
+  const auto ledger = Value(storage_->ledger);
+  const auto run = Value(projection.run_id());
+  const auto sequence = Value(projection.last_lsn());
+  const auto& trading = projection.trading();
   model::CashSnapshot cash;
   if (!trading.TryGetCash(cash))
     return Fail(base::ErrorCode::kCorrupt, "archive cash projection missing");
@@ -873,6 +912,15 @@ base::Status MysqlArchiveStore::WriteProjection(
   (void)projection;
   return DatabaseFailure();
 #endif
+}
+
+base::Status MysqlArchiveStore::WriteProjection(
+    const ArchiveProjection& projection) noexcept {
+  auto status = WriteSessions(projection);
+  if (status.ok()) status = WriteOrders(projection);
+  if (status.ok()) status = WriteFills(projection);
+  if (status.ok()) status = WriteAccount(projection);
+  return status;
 }
 
 base::Status MysqlArchiveStore::FinalizeRun(const ArchiveProjection& projection,

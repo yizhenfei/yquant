@@ -454,7 +454,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
   ::yquant::testing::TradingEngineHarness source{clock, market};
   trading::MockTradingAdapter mock;
   FactSink sink;
-  ArchiveProjection projection{clock};
+  ArchiveProjection projection{&clock};
 };
 
 TEST_F(MysqlArchiveStoreTest, PublishesFactsProjectionAndWatermarkAtomically) {

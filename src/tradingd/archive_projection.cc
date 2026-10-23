@@ -102,8 +102,8 @@ struct ArchiveProjection::Storage {
   }
 };
 
-ArchiveProjection::ArchiveProjection(const base::MonotonicClock& clock) noexcept
-    : trading_(clock, instruments_, replay_adapter_) {}
+ArchiveProjection::ArchiveProjection(const base::MonotonicClock* clock) noexcept
+    : trading_(clock, &instruments_, &replay_adapter_) {}
 ArchiveProjection::~ArchiveProjection() noexcept = default;
 
 base::Status ArchiveProjection::Configure(const ServerConfig& config) noexcept {

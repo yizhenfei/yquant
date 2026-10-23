@@ -223,7 +223,7 @@ class MysqlServerTest : public ::testing::Test {
   marketd::testing::RuntimeDirectory directory;
   MysqlServerClock clock;
   ServerConfig config;
-  Server server{clock};
+  Server server{&clock};
   trading::Connection peer;
   std::uint64_t generation = 0;
   std::vector<trading::Message> updates;

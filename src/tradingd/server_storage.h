@@ -68,9 +68,9 @@ struct OrderOwner {
 struct Server::Storage final : trading::TradingMutationSink {
   explicit Storage(const base::MonotonicClock& clock) noexcept
       : clock_(clock),
-        ctp(instruments),
+        ctp(&instruments),
         adapter(*this),
-        trading(clock, instruments, adapter) {}
+        trading(&clock, &instruments, &adapter) {}
   const base::MonotonicClock& clock_;
   ServerConfig config;
   trading::Listener listener;
@@ -220,6 +220,14 @@ struct Server::Storage final : trading::TradingMutationSink {
   base::Status SaveArchiveEnd(std::uint64_t run, std::uint64_t lsn) noexcept;
   // Resolves the complete recovered simulation prefix and drains old orders.
   // No independent counter evidence exists for a lost simulation WAL tail.
+  // Applies the retained mock report prefix without sending requests.
+  base::Status ReplayMockHistory() noexcept;
+  // Rejects send intents absent from the mock's recovered history.
+  base::Status RejectAbsentMockOrders(std::uint64_t now) noexcept;
+  // Resolves cancel intents and queues cancels for recovered working orders.
+  base::Status ScheduleRecoveredCancels(std::uint64_t now) noexcept;
+  // Drains recovered orders by advancing only the mock schedule.
+  base::Status DrainRecoveredMock(std::uint64_t now) noexcept;
   base::Status RecoverMock() noexcept;
   // Owner-only coherent encoding; buffer must not be owned by the worker.
   base::Status CaptureCheckpoint(std::uint64_t now) noexcept;

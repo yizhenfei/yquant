@@ -148,7 +148,7 @@ class ServerTest : public ::testing::Test {
 
   TestClock clock;
   ServerConfig config = Config();
-  Server server{clock};
+  Server server{&clock};
   Peer first;
   Peer second;
 };

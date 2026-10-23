@@ -125,7 +125,7 @@ class TradingdPersistenceTest : public ::testing::Test {
   RuntimeDirectory directory;
   PersistenceClock clock;
   ServerConfig config;
-  Server server{clock};
+  Server server{&clock};
   PersistentPeer peer;
 };
 
@@ -198,7 +198,7 @@ TEST_F(TradingdPersistenceTest,
 
 TEST_F(TradingdPersistenceTest, UniquePublisherLockExcludesSecondServer) {
   Start();
-  Server second{clock};
+  Server second{&clock};
   config.persistence.initialize = false;
   EXPECT_FALSE(second.Init(config).ok());
   EXPECT_NE(server.port(), 0U);

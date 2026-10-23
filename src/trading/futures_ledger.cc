@@ -6,6 +6,7 @@
 #include <limits>
 #include <new>
 #include <optional>
+#include <utility>
 
 #include "yquant/md/instrument_scope.h"
 #include "yquant/trading/trading_limits.h"
@@ -96,23 +97,51 @@ bool Margin(std::int64_t notional, std::int64_t rate,
   return Add(whole, remainder / 1000000 + (remainder % 1000000 != 0), out);
 }
 
+// Returns whether the simulated ledger supports this opening/closing intent.
 bool ValidEffect(PositionEffect effect) noexcept {
-  return effect == PositionEffect::kOpen ||
-         effect == PositionEffect::kCloseToday ||
-         effect == PositionEffect::kCloseYesterday;
+  switch (effect) {
+    case PositionEffect::kOpen:
+    case PositionEffect::kCloseToday:
+    case PositionEffect::kCloseYesterday:
+      return true;
+    case PositionEffect::kNone:
+    case PositionEffect::kClose:
+      return false;
+  }
+  return false;
 }
+
+// Selects the direction/day bucket for a request with a validated effect/side.
 std::size_t OrderBucket(model::OrderSide side, PositionEffect effect) noexcept {
-  if (effect == PositionEffect::kOpen)
-    return side == model::OrderSide::kBuy ? 0 : 2;
-  return (side == model::OrderSide::kBuy ? 2 : 0) +
-         (effect == PositionEffect::kCloseYesterday ? 1 : 0);
+  switch (effect) {
+    case PositionEffect::kOpen:
+      return side == model::OrderSide::kBuy ? 0 : 2;
+    case PositionEffect::kCloseToday:
+      return side == model::OrderSide::kBuy ? 2 : 0;
+    case PositionEffect::kCloseYesterday:
+      return side == model::OrderSide::kBuy ? 3 : 1;
+    case PositionEffect::kNone:
+    case PositionEffect::kClose:
+      break;
+  }
+  return 0;
 }
+
+// Returns per-lot fees for an intent already checked by ValidEffect().
 std::int64_t Fee(const model::InstrumentDefinition& instrument,
                  PositionEffect effect) noexcept {
-  if (effect == PositionEffect::kOpen) return instrument.open_fee_per_lot;
-  return effect == PositionEffect::kCloseToday
-             ? instrument.close_today_fee_per_lot
-             : instrument.close_yesterday_fee_per_lot;
+  switch (effect) {
+    case PositionEffect::kOpen:
+      return instrument.open_fee_per_lot;
+    case PositionEffect::kCloseToday:
+      return instrument.close_today_fee_per_lot;
+    case PositionEffect::kCloseYesterday:
+      return instrument.close_yesterday_fee_per_lot;
+    case PositionEffect::kNone:
+    case PositionEffect::kClose:
+      break;
+  }
+  return 0;
 }
 
 // Initializes only a temporary position; dictionary values are copied once.
@@ -223,6 +252,8 @@ struct FuturesLedger::Storage {
   std::size_t lot_count = 0;
 };
 
+FuturesLedger::FuturesLedger() noexcept = default;
+
 FuturesLedger::~FuturesLedger() noexcept { Reset(); }
 
 ErrorCode FuturesLedger::Fail(ErrorCode code, const char* detail) noexcept {
@@ -230,15 +261,14 @@ ErrorCode FuturesLedger::Fail(ErrorCode code, const char* detail) noexcept {
   return code;
 }
 void FuturesLedger::Reset() noexcept {
-  delete storage_;
-  storage_ = nullptr;
+  storage_.reset();
   instruments_ = nullptr;
   error_detail_[0] = '\0';
 }
 
 ErrorCode FuturesLedger::Configure(
     const TradingAccountSnapshot& account,
-    const md::InstrumentScope& market_data) noexcept {
+    const md::InstrumentScope* market_data) noexcept {
   if (storage_ != nullptr)
     return Fail(ErrorCode::kInvalidState, "already configured");
   if (account.type != model::AccountType::kFutures ||
@@ -247,7 +277,7 @@ ErrorCode FuturesLedger::Configure(
     return Fail(ErrorCode::kInvalidArgument,
                 "invalid futures bootstrap account");
   }
-  auto* storage = new (std::nothrow) Storage;
+  auto storage = std::unique_ptr<Storage>(new (std::nothrow) Storage);
   if (storage == nullptr)
     return Fail(ErrorCode::kResourceExhausted, "cannot allocate FIFO ledger");
   storage->account.balance = account.cash_balance;
@@ -257,7 +287,7 @@ ErrorCode FuturesLedger::Configure(
     const auto& initial = account.futures_positions[i];
     auto& position = storage->positions[i];
     bool valid = !Find(storage->positions, i, initial.instrument_id) &&
-                 NewPosition(market_data, initial.instrument_id, position) &&
+                 NewPosition(*market_data, initial.instrument_id, position) &&
                  initial.reference_price > 0 &&
                  initial.reference_price % position.instrument.price_tick == 0;
     const std::array<const FuturesInitialBucket*, 4> buckets = {
@@ -285,14 +315,13 @@ ErrorCode FuturesLedger::Configure(
     const model::FuturesPositionSnapshot empty;
     if (!valid || !Revalue(position) ||
         !RevalueAccount(storage->account, empty, position.position)) {
-      delete storage;
       return Fail(ErrorCode::kInvalidArgument,
                   "invalid or overflowing initial futures position");
     }
     ++storage->position_count;
   }
-  storage_ = storage;
-  instruments_ = &market_data;
+  storage_ = std::move(storage);
+  instruments_ = market_data;
   error_detail_[0] = '\0';
   return ErrorCode::kOk;
 }
@@ -392,6 +421,32 @@ ErrorCode FuturesLedger::Release(const model::OrderSnapshot& order,
   return ErrorCode::kOk;
 }
 
+ErrorCode FuturesLedger::ReadOpeningCost(std::size_t position_index,
+                                         std::size_t bucket_index,
+                                         std::int64_t quantity,
+                                         std::int64_t& out) noexcept {
+  const auto& s = *storage_;
+  auto cursor = s.positions[position_index].queues[bucket_index].head;
+
+  std::int64_t opening_cost = 0;
+  std::size_t visited = 0;
+  while (quantity != 0) {
+    if (cursor >= s.lot_count || ++visited > s.lot_count ||
+        s.lots[cursor].quantity <= 0)
+      return Fail(ErrorCode::kCorrupt, "closing FIFO is inconsistent");
+    const auto& lot = s.lots[cursor];
+    const auto consumed = std::min(quantity, lot.quantity);
+    std::int64_t cost;
+    if (!Mul(lot.unit_notional, consumed, cost) ||
+        !Add(opening_cost, cost, opening_cost))
+      return Fail(ErrorCode::kCorrupt, "closing FIFO cost overflows");
+    quantity -= consumed;
+    cursor = lot.next;
+  }
+  out = opening_cost;
+  return ErrorCode::kOk;
+}
+
 ErrorCode FuturesLedger::ApplyFill(const model::OrderSnapshot& order,
                                    const model::Fill& fill,
                                    FuturesReservation& reservation) noexcept {
@@ -445,23 +500,10 @@ ErrorCode FuturesLedger::ApplyFill(const model::OrderSnapshot& order,
     if (fill.quantity > bucket.frozen_qty || fill.quantity > bucket.quantity)
       return Fail(ErrorCode::kCorrupt,
                   "closing execution exceeds frozen inventory");
-    auto cursor = candidate.queues[bucket_index].head;
-    auto quantity = fill.quantity;
-    std::int64_t opening_cost = 0;
-    std::size_t visited = 0;
-    while (quantity != 0) {
-      if (cursor >= s.lot_count || ++visited > s.lot_count ||
-          s.lots[cursor].quantity <= 0)
-        return Fail(ErrorCode::kCorrupt, "closing FIFO is inconsistent");
-      const auto& lot = s.lots[cursor];
-      const auto consumed = std::min(quantity, lot.quantity);
-      std::int64_t cost;
-      if (!Mul(lot.unit_notional, consumed, cost) ||
-          !Add(opening_cost, cost, opening_cost))
-        return Fail(ErrorCode::kCorrupt, "closing FIFO cost overflows");
-      quantity -= consumed;
-      cursor = lot.next;
-    }
+    std::int64_t opening_cost;
+    const auto cost =
+        ReadOpeningCost(*index, bucket_index, fill.quantity, opening_cost);
+    if (cost != ErrorCode::kOk) return cost;
     if (opening_cost > bucket.open_notional ||
         !(order.side == model::OrderSide::kSell
               ? Sub(actual_notional, opening_cost, realized)

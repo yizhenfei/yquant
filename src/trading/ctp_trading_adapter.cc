@@ -73,8 +73,8 @@ struct CtpTradingAdapter::Storage {
 };
 
 CtpTradingAdapter::CtpTradingAdapter(
-    const md::InstrumentScope& instruments) noexcept
-    : instruments_(instruments) {}
+    const md::InstrumentScope* instruments) noexcept
+    : instruments_(*instruments) {}
 CtpTradingAdapter::~CtpTradingAdapter() noexcept { (void)Stop(); }
 
 base::Status CtpTradingAdapter::Fail(base::ErrorCode code,
@@ -238,14 +238,8 @@ base::Status CtpTradingAdapter::SendCancel(
   return {};
 }
 
-TradingPollResult CtpTradingAdapter::Poll(std::uint64_t now,
-                                          model::TradingEvent& out) noexcept {
-  if (!storage_ || !storage_->started)
-    return {TradingPollState::kError,
-            Fail(base::ErrorCode::kInvalidState, "CTP bridge is not started")};
+base::Status CtpTradingAdapter::ServiceConnection(std::uint64_t now) noexcept {
   auto& s = *storage_;
-  if (!s.failure.ok()) return {TradingPollState::kError, s.failure};
-  if (s.bridge_drained) return {};
   if (!s.clock_started) {
     s.last_receive = s.last_send = now;
     s.clock_started = true;
@@ -256,15 +250,12 @@ TradingPollResult CtpTradingAdapter::Poll(std::uint64_t now,
     stop.type = MessageType::kStop;
     stop.generation = s.generation;
     const auto status = s.connection.Queue(stop);
-    if (!status.ok())
-      return {TradingPollState::kError,
-              Fail(status.code, s.connection.error_detail())};
+    if (!status.ok()) return Fail(status.code, s.connection.error_detail());
     s.stop_sent = true;
     s.last_send = now;
   }
   if (now - s.last_receive >= s.config.heartbeat_timeout_ns)
-    return {TradingPollState::kError,
-            Fail(base::ErrorCode::kIoError, "CTP bridge heartbeat timed out")};
+    return Fail(base::ErrorCode::kIoError, "CTP bridge heartbeat timed out");
   // Once Stop is sent the bridge may finish and close at any time. Keep
   // reading its final account/Drained frames without racing a new write
   // against that expected close. Stop itself refreshed the peer deadline.
@@ -273,11 +264,99 @@ TradingPollResult CtpTradingAdapter::Poll(std::uint64_t now,
     heartbeat.type = MessageType::kHeartbeat;
     heartbeat.generation = s.generation;
     const auto status = s.connection.Queue(heartbeat);
-    if (!status.ok())
-      return {TradingPollState::kError,
-              Fail(status.code, s.connection.error_detail())};
+    if (!status.ok()) return Fail(status.code, s.connection.error_detail());
     s.last_send = now;
   }
+  return {};
+}
+
+TradingPollResult CtpTradingAdapter::ApplyBridgeMessage(
+    const Message& message, std::uint64_t now,
+    model::TradingEvent& out) noexcept {
+  auto& s = *storage_;
+  if (message.type == MessageType::kDrained) {
+    if (!s.stop_sent || !s.LocalDrained())
+      return {TradingPollState::kError,
+              Fail(base::ErrorCode::kCorrupt,
+                   "CTP bridge drained before local orders settled")};
+    s.bridge_drained = true;
+    return {};
+  }
+  if (message.type == MessageType::kError)
+    return {TradingPollState::kError,
+            Fail(message.error_code, message.reason.text)};
+  if ((message.type != MessageType::kOrderUpdate &&
+       message.type != MessageType::kAccount) ||
+      !message.account.broker_managed ||
+      message.account.type != model::AccountType::kFutures ||
+      message.account.revision == 0)
+    return {TradingPollState::kError,
+            Fail(base::ErrorCode::kCorrupt, "unexpected CTP bridge message")};
+  BrokerAccountSnapshot next;
+  next.revision = message.account.revision;
+  next.account = message.account.futures;
+  next.positions = message.account.futures_positions;
+  next.position_count = message.account.futures_position_count;
+  if (next.revision < s.account.revision ||
+      (next.revision == s.account.revision && !SameAccount(next, s.account)))
+    return {TradingPollState::kError,
+            Fail(base::ErrorCode::kCorrupt,
+                 "CTP broker account revision regressed")};
+  if (message.type == MessageType::kAccount) {
+    s.account = next;
+    return {TradingPollState::kAccount, {}};
+  }
+  return ApplyOrderMessage(message, next, now, out);
+}
+
+TradingPollResult CtpTradingAdapter::ApplyOrderMessage(
+    const Message& message, const BrokerAccountSnapshot& next,
+    std::uint64_t now, model::TradingEvent& out) noexcept {
+  auto& s = *storage_;
+  const auto& update = message.update;
+  auto* order = s.Find(update.order.client_order_id);
+  if (order == nullptr || update.order.strategy_order_id.value != 0 ||
+      update.order.instrument_id != order->request.instrument_id ||
+      update.order.side != order->request.side ||
+      update.order.limit_price != order->request.limit_price ||
+      update.order.original_qty != order->request.quantity ||
+      update.order.position_effect != order->request.position_effect)
+    return {
+        TradingPollState::kError,
+        Fail(base::ErrorCode::kCorrupt, "CTP report order identity differs")};
+  model::TradingEvent event;
+  event.client_order_id = update.order.client_order_id;
+  event.adapter_order_id = update.order.adapter_order_id;
+  event.report_sequence = update.order.report_sequence;
+  event.kind = update.kind;
+  event.cumulative_filled_qty = update.order.cumulative_filled_qty;
+  event.receive_time_ns = now;
+  event.cancel_request_id = update.cancel_request_id;
+  event.reason = update.reason;
+  if (message.has_fill) {
+    event.fill = message.fill;
+    event.fill.receive_time_ns = now;
+  }
+  if (event.report_sequence > order->sequence) {
+    order->sequence = event.report_sequence;
+    order->active = !model::IsTerminalOrderState(update.order.state);
+    order->cancel_pending = update.order.cancel_pending;
+  }
+  s.account = next;
+  out = event;
+  return {TradingPollState::kEvent, {}};
+}
+
+TradingPollResult CtpTradingAdapter::Poll(std::uint64_t now,
+                                          model::TradingEvent& out) noexcept {
+  if (!storage_ || !storage_->started)
+    return {TradingPollState::kError,
+            Fail(base::ErrorCode::kInvalidState, "CTP bridge is not started")};
+  auto& s = *storage_;
+  if (!s.failure.ok()) return {TradingPollState::kError, s.failure};
+  if (s.bridge_drained) return {};
+  const auto status = ServiceConnection(now);
+  if (!status.ok()) return {TradingPollState::kError, status};
   for (std::size_t i = 0; i < kReceiveBudget; ++i) {
     Message message;
     const auto result = s.connection.Poll(message);
@@ -293,70 +372,7 @@ TradingPollResult CtpTradingAdapter::Poll(std::uint64_t now,
       return {TradingPollState::kError,
               Fail(base::ErrorCode::kCorrupt, "CTP bridge generation changed")};
     if (message.type == MessageType::kHeartbeat) continue;
-    if (message.type == MessageType::kDrained) {
-      if (!s.stop_sent || !s.LocalDrained())
-        return {TradingPollState::kError,
-                Fail(base::ErrorCode::kCorrupt,
-                     "CTP bridge drained before local orders settled")};
-      s.bridge_drained = true;
-      return {};
-    }
-    if (message.type == MessageType::kError)
-      return {TradingPollState::kError,
-              Fail(message.error_code, message.reason.text)};
-    if ((message.type != MessageType::kOrderUpdate &&
-         message.type != MessageType::kAccount) ||
-        !message.account.broker_managed ||
-        message.account.type != model::AccountType::kFutures ||
-        message.account.revision == 0)
-      return {TradingPollState::kError,
-              Fail(base::ErrorCode::kCorrupt, "unexpected CTP bridge message")};
-    BrokerAccountSnapshot next;
-    next.revision = message.account.revision;
-    next.account = message.account.futures;
-    next.positions = message.account.futures_positions;
-    next.position_count = message.account.futures_position_count;
-    if (next.revision < s.account.revision ||
-        (next.revision == s.account.revision && !SameAccount(next, s.account)))
-      return {TradingPollState::kError,
-              Fail(base::ErrorCode::kCorrupt,
-                   "CTP broker account revision regressed")};
-    if (message.type == MessageType::kAccount) {
-      s.account = next;
-      return {TradingPollState::kAccount, {}};
-    }
-    const auto& update = message.update;
-    auto* order = s.Find(update.order.client_order_id);
-    if (order == nullptr || update.order.strategy_order_id.value != 0 ||
-        update.order.instrument_id != order->request.instrument_id ||
-        update.order.side != order->request.side ||
-        update.order.limit_price != order->request.limit_price ||
-        update.order.original_qty != order->request.quantity ||
-        update.order.position_effect != order->request.position_effect)
-      return {
-          TradingPollState::kError,
-          Fail(base::ErrorCode::kCorrupt, "CTP report order identity differs")};
-    model::TradingEvent event;
-    event.client_order_id = update.order.client_order_id;
-    event.adapter_order_id = update.order.adapter_order_id;
-    event.report_sequence = update.order.report_sequence;
-    event.kind = update.kind;
-    event.cumulative_filled_qty = update.order.cumulative_filled_qty;
-    event.receive_time_ns = now;
-    event.cancel_request_id = update.cancel_request_id;
-    event.reason = update.reason;
-    if (message.has_fill) {
-      event.fill = message.fill;
-      event.fill.receive_time_ns = now;
-    }
-    if (event.report_sequence > order->sequence) {
-      order->sequence = event.report_sequence;
-      order->active = !model::IsTerminalOrderState(update.order.state);
-      order->cancel_pending = update.order.cancel_pending;
-    }
-    s.account = next;
-    out = event;
-    return {TradingPollState::kEvent, {}};
+    return ApplyBridgeMessage(message, now, out);
   }
   return {};
 }

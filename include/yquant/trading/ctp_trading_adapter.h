@@ -5,6 +5,7 @@
 
 #include "yquant/md/instrument_scope.h"
 #include "yquant/model/trading_event.h"
+#include "yquant/trading/protocol.h"
 #include "yquant/trading/trading_adapter.h"
 
 namespace yquant::trading {
@@ -15,9 +16,9 @@ namespace yquant::trading {
 // A lost connection or invalid report is terminal: requests are not replayed.
 class CtpTradingAdapter final : public TradingAdapter {
  public:
-  // Borrows an initialized, immutable scope until destruction. Construction
-  // does not connect or allocate transport storage.
-  explicit CtpTradingAdapter(const md::InstrumentScope& instruments) noexcept;
+  // Borrows a non-null, initialized, immutable scope until destruction.
+  // Construction does not connect or allocate transport storage.
+  explicit CtpTradingAdapter(const md::InstrumentScope* instruments) noexcept;
   ~CtpTradingAdapter() noexcept override;
   [[nodiscard]] base::Status Prepare(
       const TradingConfig& config) noexcept override;
@@ -51,6 +52,18 @@ class CtpTradingAdapter final : public TradingAdapter {
 
  private:
   struct Storage;
+  // Sends due Stop/heartbeat frames and checks the peer's receive deadline.
+  base::Status ServiceConnection(std::uint64_t now) noexcept;
+  // Validates and installs a broker account or order message; idle preserves
+  // out.
+  TradingPollResult ApplyBridgeMessage(const Message& message,
+                                       std::uint64_t now,
+                                       model::TradingEvent& out) noexcept;
+  // Normalizes one order report and publishes it with its paired account view.
+  TradingPollResult ApplyOrderMessage(const Message& message,
+                                      const BrokerAccountSnapshot& account,
+                                      std::uint64_t now,
+                                      model::TradingEvent& out) noexcept;
   // Retains the first terminal transport/protocol failure until next Prepare.
   [[nodiscard]] base::Status Fail(base::ErrorCode code,
                                   const char* detail) noexcept;

@@ -545,6 +545,27 @@ struct MockTradingAdapter::Storage {
   }
 };
 
+// Stages a scheduled report before observer approval and heap mutation.
+struct MockTradingAdapter::PreparedReport {
+  Storage::Plan plan;
+  model::TradingEvent event;
+  Storage::Step next_step = Storage::Step::kNone;
+  bool becomes_terminal = false;
+};
+
+// Owns an unpublished mock snapshot and scratch used to reconcile its history.
+// The reader borrows RestoreState's input only for that call.
+struct MockTradingAdapter::RestoreCandidate {
+  explicit RestoreCandidate(std::span<const std::byte> payload) noexcept
+      : reader(payload) {}
+  Reader reader;
+  std::unique_ptr<Storage> storage;
+  std::array<std::uint64_t, kMaxTradingOrders> sequences = {};
+  std::array<std::int64_t, kMaxTradingOrders> cumulative = {};
+  std::array<std::uint32_t, kMaxTradingOrders> fills = {};
+  std::array<model::OrderState, kMaxTradingOrders> states = {};
+};
+
 MockTradingAdapter::MockTradingAdapter() noexcept = default;
 MockTradingAdapter::~MockTradingAdapter() noexcept = default;
 
@@ -751,113 +772,113 @@ base::Status MockTradingAdapter::SendCancel(
 
 TradingPollResult MockTradingAdapter::Poll(std::uint64_t now,
                                            model::TradingEvent& out) noexcept {
-  return PollImpl(now, out, nullptr);
+  return PollImpl(now, nullptr, out);
 }
 
-TradingPollResult MockTradingAdapter::PollImpl(
-    std::uint64_t now, model::TradingEvent& out,
-    const model::TradingEvent* replay) noexcept {
-  if (state_ != State::kActive)
-    return {TradingPollState::kError,
-            Error(base::ErrorCode::kInvalidState, "counter is not active")};
+base::Status MockTradingAdapter::PrepareScheduledReport(
+    std::uint64_t now, const model::TradingEvent* replay,
+    PreparedReport& report) noexcept {
   auto& storage = *storage_;
-  if (storage.plan_count == 0 || storage.plans[0].deadline > now) return {};
-  const auto plan = storage.plans[0];
-  auto& order = storage.orders[plan.order_index];
-  if (storage.event_count == kMaxMockTradingReports)
-    return PollError(base::ErrorCode::kResourceExhausted,
-                     "mock report history capacity exhausted");
-  if (order.report_sequence == UINT64_MAX)
-    return PollError(base::ErrorCode::kResourceExhausted,
-                     "order report sequence exhausted");
-
-  model::TradingEvent event;
+  const auto& plan = report.plan;
+  const auto& order = storage.orders[plan.order_index];
+  auto& event = report.event;
   event.client_order_id = order.id;
   event.adapter_order_id = order.broker_id;
   event.report_sequence = order.report_sequence + 1;
   event.receive_time_ns = now;
   event.cumulative_filled_qty = order.cumulative_qty;
-  auto next_step = Storage::Step::kNone;
-  bool becomes_terminal = false;
-  if (plan.kind == Storage::PlanKind::kCancel) {
-    event.cancel_request_id = order.cancel_id;
-    if (order.state == model::OrderState::kWorking) {
-      event.kind = model::OrderUpdateKind::kCanceled;
+  auto& next_step = report.next_step;
+  auto& becomes_terminal = report.becomes_terminal;
+  switch (plan.kind) {
+    case Storage::PlanKind::kCancel:
+      event.cancel_request_id = order.cancel_id;
+      if (order.state == model::OrderState::kWorking) {
+        event.kind = model::OrderUpdateKind::kCanceled;
+        becomes_terminal = true;
+      } else {
+        event.kind = model::OrderUpdateKind::kCancelRejected;
+        event.reason.Set(2, "mock order has no working remainder");
+      }
+      return {};
+    case Storage::PlanKind::kOrderStep:
+      break;
+  }
+  switch (order.step) {
+    case Storage::Step::kAccept:
+      event.kind = model::OrderUpdateKind::kAccepted;
+      if (storage.config.mode == MockTradingMode::kFill) {
+        next_step = order.request.quantity > 1 ? Storage::Step::kFirstFill
+                                               : Storage::Step::kFinalFill;
+      }
+      return {};
+    case Storage::Step::kReject:
+      event.kind = model::OrderUpdateKind::kRejected;
+      event.adapter_order_id = {};
+      event.reason.Set(1, "mock counter rejected the order");
       becomes_terminal = true;
-    } else {
-      event.kind = model::OrderUpdateKind::kCancelRejected;
-      event.reason.Set(2, "mock order has no working remainder");
-    }
-  } else if (order.step == Storage::Step::kAccept) {
-    event.kind = model::OrderUpdateKind::kAccepted;
-    if (storage.config.mode == MockTradingMode::kFill) {
-      next_step = order.request.quantity > 1 ? Storage::Step::kFirstFill
-                                             : Storage::Step::kFinalFill;
-    }
-  } else if (order.step == Storage::Step::kReject) {
-    event.kind = model::OrderUpdateKind::kRejected;
-    event.adapter_order_id = {};
-    event.reason.Set(1, "mock counter rejected the order");
-    becomes_terminal = true;
-  } else if (order.step == Storage::Step::kFirstFill ||
-             order.step == Storage::Step::kFinalFill) {
-    event.kind = model::OrderUpdateKind::kFill;
-    const auto quantity = order.step == Storage::Step::kFirstFill
-                              ? order.request.quantity / 2
-                              : order.request.quantity - order.cumulative_qty;
-    if (quantity <= 0 ||
-        quantity > order.request.quantity - order.cumulative_qty)
-      return PollError(base::ErrorCode::kCorrupt, "invalid mock fill quantity");
-    auto& fill = event.fill;
-    fill.client_order_id = order.id;
-    fill.adapter_order_id = order.broker_id;
-    fill.instrument_id = order.request.instrument_id;
-    fill.side = order.request.side;
-    fill.price = order.request.limit_price;
-    fill.quantity = quantity;
-    fill.receive_time_ns = now;
-    auto code = MakeAdapterId("mock-fill-", order.id.value,
-                              order.fill_count + 1, fill.execution_id);
-    if (code != base::ErrorCode::kOk)
-      return PollError(code, "cannot encode mock execution ID");
-    if (replay) {
-      fill.event_time_ns = replay->fill.event_time_ns;
-      code = base::ErrorCode::kOk;
-    } else {
-      code = ReadUtcNanoseconds(fill.event_time_ns);
-    }
-    if (code != base::ErrorCode::kOk)
-      return PollError(code, "cannot represent mock execution UTC time");
-    fill.has_event_time = true;
-    event.cumulative_filled_qty += quantity;
-    becomes_terminal = event.cumulative_filled_qty == order.request.quantity;
-    if (!becomes_terminal) next_step = Storage::Step::kFinalFill;
-  } else {
-    return PollError(base::ErrorCode::kCorrupt,
-                     "mock order has no scheduled step");
+      return {};
+    case Storage::Step::kFirstFill:
+    case Storage::Step::kFinalFill:
+      return PrepareFillReport(now, replay, report);
+    case Storage::Step::kNone:
+      return PollError(base::ErrorCode::kCorrupt,
+                       "mock order has no scheduled step")
+          .status;
   }
-  if (next_step != Storage::Step::kNone &&
-      (now > UINT64_MAX - storage.config.report_interval_ns ||
-       storage.last_registration == UINT64_MAX)) {
-    return PollError(base::ErrorCode::kResourceExhausted,
-                     "next mock order step overflows");
-  }
-  if (becomes_terminal && storage.active_orders == 0)
-    return PollError(base::ErrorCode::kCorrupt,
-                     "mock active-order count is inconsistent");
-  if (replay && !SameEvent(event, *replay))
-    return {TradingPollState::kError,
-            Error(base::ErrorCode::kCorrupt,
-                  "recorded mock report does not match scheduled plan")};
-  if (!replay) {
-    MockTradingMutation mutation;
-    mutation.kind = MockTradingMutationKind::kReport;
-    mutation.now = now;
-    mutation.event = event;
-    const auto observed = Observe(mutation);
-    if (!observed.ok()) return {TradingPollState::kError, observed};
-  }
+  return PollError(base::ErrorCode::kCorrupt,
+                   "mock order has no scheduled step")
+      .status;
+}
 
+base::Status MockTradingAdapter::PrepareFillReport(
+    std::uint64_t now, const model::TradingEvent* replay,
+    PreparedReport& report) noexcept {
+  const auto& order = storage_->orders[report.plan.order_index];
+  auto& event = report.event;
+  auto& next_step = report.next_step;
+  auto& becomes_terminal = report.becomes_terminal;
+  event.kind = model::OrderUpdateKind::kFill;
+  const auto quantity = order.step == Storage::Step::kFirstFill
+                            ? order.request.quantity / 2
+                            : order.request.quantity - order.cumulative_qty;
+  if (quantity <= 0 || quantity > order.request.quantity - order.cumulative_qty)
+    return PollError(base::ErrorCode::kCorrupt, "invalid mock fill quantity")
+        .status;
+  auto& fill = event.fill;
+  fill.client_order_id = order.id;
+  fill.adapter_order_id = order.broker_id;
+  fill.instrument_id = order.request.instrument_id;
+  fill.side = order.request.side;
+  fill.price = order.request.limit_price;
+  fill.quantity = quantity;
+  fill.receive_time_ns = now;
+  auto code = MakeAdapterId("mock-fill-", order.id.value, order.fill_count + 1,
+                            fill.execution_id);
+  if (code != base::ErrorCode::kOk)
+    return PollError(code, "cannot encode mock execution ID").status;
+  if (replay) {
+    fill.event_time_ns = replay->fill.event_time_ns;
+    code = base::ErrorCode::kOk;
+  } else {
+    code = ReadUtcNanoseconds(fill.event_time_ns);
+  }
+  if (code != base::ErrorCode::kOk)
+    return PollError(code, "cannot represent mock execution UTC time").status;
+  fill.has_event_time = true;
+  event.cumulative_filled_qty += quantity;
+  becomes_terminal = event.cumulative_filled_qty == order.request.quantity;
+  if (!becomes_terminal) next_step = Storage::Step::kFinalFill;
+  return {};
+}
+
+void MockTradingAdapter::CommitScheduledReport(
+    std::uint64_t now, const PreparedReport& report) noexcept {
+  auto& storage = *storage_;
+  const auto& plan = report.plan;
+  auto& order = storage.orders[plan.order_index];
+  const auto& event = report.event;
+  const auto next_step = report.next_step;
+  const auto becomes_terminal = report.becomes_terminal;
   // All possible failures precede this commit. Indexed removal also cancels
   // future fills without leaving stale heap nodes for later Poll calls.
   storage.RemovePlan(0);
@@ -888,6 +909,54 @@ TradingPollResult MockTradingAdapter::PollImpl(
   if (event.kind == model::OrderUpdateKind::kFill)
     storage.fill_events[storage.fill_count++] = storage.event_count;
   storage.events[storage.event_count++] = event;
+}
+
+TradingPollResult MockTradingAdapter::PollImpl(
+    std::uint64_t now, const model::TradingEvent* replay,
+    model::TradingEvent& out) noexcept {
+  if (state_ != State::kActive)
+    return {TradingPollState::kError,
+            Error(base::ErrorCode::kInvalidState, "counter is not active")};
+  auto& storage = *storage_;
+  if (storage.plan_count == 0 || storage.plans[0].deadline > now) return {};
+  const auto& order = storage.orders[storage.plans[0].order_index];
+  if (storage.event_count == kMaxMockTradingReports)
+    return PollError(base::ErrorCode::kResourceExhausted,
+                     "mock report history capacity exhausted");
+  if (order.report_sequence == UINT64_MAX)
+    return PollError(base::ErrorCode::kResourceExhausted,
+                     "order report sequence exhausted");
+
+  PreparedReport report;
+  report.plan = storage.plans[0];
+  const auto prepared = PrepareScheduledReport(now, replay, report);
+  if (!prepared.ok()) return {TradingPollState::kError, prepared};
+  const auto next_step = report.next_step;
+  const auto becomes_terminal = report.becomes_terminal;
+  const auto& event = report.event;
+  if (next_step != Storage::Step::kNone &&
+      (now > UINT64_MAX - storage.config.report_interval_ns ||
+       storage.last_registration == UINT64_MAX)) {
+    return PollError(base::ErrorCode::kResourceExhausted,
+                     "next mock order step overflows");
+  }
+  if (becomes_terminal && storage.active_orders == 0)
+    return PollError(base::ErrorCode::kCorrupt,
+                     "mock active-order count is inconsistent");
+  if (replay && !SameEvent(event, *replay))
+    return {TradingPollState::kError,
+            Error(base::ErrorCode::kCorrupt,
+                  "recorded mock report does not match scheduled plan")};
+  if (!replay) {
+    MockTradingMutation mutation;
+    mutation.kind = MockTradingMutationKind::kReport;
+    mutation.now = now;
+    mutation.event = event;
+    const auto observed = Observe(mutation);
+    if (!observed.ok()) return {TradingPollState::kError, observed};
+  }
+
+  CommitScheduledReport(now, report);
   out = event;
   return {TradingPollState::kEvent, {}};
 }
@@ -918,7 +987,7 @@ base::Status MockTradingAdapter::ReplayMutation(
                         mutation.cancel_request_id, mutation.now);
   } else {
     model::TradingEvent event;
-    const auto result = PollImpl(mutation.now, event, &mutation.event);
+    const auto result = PollImpl(mutation.now, &mutation.event, event);
     status = result.state == TradingPollState::kEvent
                  ? base::Status{}
                  : Error(base::ErrorCode::kCorrupt,
@@ -930,9 +999,9 @@ base::Status MockTradingAdapter::ReplayMutation(
   return status;
 }
 
-base::Status MockTradingAdapter::EncodeState(std::span<std::byte> output,
-                                             std::size_t& used,
-                                             std::uint64_t now) const noexcept {
+base::Status MockTradingAdapter::EncodeState(std::uint64_t now,
+                                             std::span<std::byte> output,
+                                             std::size_t& used) const noexcept {
   if (state_ != State::kActive || !storage_)
     return {base::ErrorCode::kInvalidState, {}};
   const auto& storage = *storage_;
@@ -1002,28 +1071,10 @@ base::Status MockTradingAdapter::EncodeState(std::span<std::byte> output,
   return {};
 }
 
-base::Status MockTradingAdapter::RestoreState(
-    std::span<const std::byte> input, std::uint64_t now,
-    std::uint64_t* saved_now) noexcept {
-  if ((state_ != State::kPrepared && state_ != State::kActive) || !storage_)
-    return Error(base::ErrorCode::kInvalidState,
-                 "mock restore requires a prepared counter");
-  if (storage_->config.initial_account.type != model::AccountType::kCash ||
-      storage_->config.initial_account.futures_position_count != 0)
-    return Error(base::ErrorCode::kUnsupported,
-                 "mock restore supports cash accounts only");
-  std::span<const std::byte> payload;
-  if (input.size() > kMaxMockTradingStateBytes ||
-      !CheckedPayload(input, payload))
-    return Error(base::ErrorCode::kCorrupt, "invalid mock snapshot checksum");
-  Reader reader(payload);
-  if (reader.U32() != kStateMagic || reader.U32() != kCodecVersion)
-    return Error(base::ErrorCode::kCorrupt, "unsupported mock snapshot format");
-  const auto capture_now = reader.U64();
-  std::unique_ptr<Storage> candidate(new (std::nothrow) Storage{});
-  if (!candidate)
-    return Error(base::ErrorCode::kResourceExhausted,
-                 "cannot allocate mock restore candidate");
+base::Status MockTradingAdapter::ReadRestoreConfig(
+    RestoreCandidate& context) noexcept {
+  auto& candidate = context.storage;
+  auto& reader = context.reader;
   candidate->config = storage_->config;
   auto& config = candidate->config;
   config.mode = static_cast<MockTradingMode>(reader.U8());
@@ -1049,6 +1100,13 @@ base::Status MockTradingAdapter::RestoreState(
       config.shutdown_timeout_ns != storage_->config.shutdown_timeout_ns)
     return Error(base::ErrorCode::kCorrupt,
                  "mock snapshot configuration does not match");
+  return {};
+}
+
+base::Status MockTradingAdapter::ReadRestoreOrders(
+    RestoreCandidate& context) noexcept {
+  auto& candidate = context.storage;
+  auto& reader = context.reader;
   candidate->order_count = reader.U32();
   candidate->plan_count = reader.U32();
   candidate->last_registration = reader.U64();
@@ -1095,6 +1153,13 @@ base::Status MockTradingAdapter::RestoreState(
     }
     if (!model::IsTerminalOrderState(order.state)) ++candidate->active_orders;
   }
+  return {};
+}
+
+base::Status MockTradingAdapter::ReadRestorePlans(
+    std::uint64_t now, RestoreCandidate& context) noexcept {
+  auto& candidate = context.storage;
+  auto& reader = context.reader;
   for (std::size_t index = 0; index < candidate->plan_count; ++index) {
     auto& plan = candidate->plans[index];
     plan.order_index = reader.U32();
@@ -1123,12 +1188,19 @@ base::Status MockTradingAdapter::RestoreState(
                      "duplicate mock plan registration");
     }
   }
+  return {};
+}
+
+base::Status MockTradingAdapter::ReadRestoreHistory(
+    RestoreCandidate& context) noexcept {
+  auto& candidate = context.storage;
+  auto& reader = context.reader;
+  auto& sequences = context.sequences;
+  auto& cumulative = context.cumulative;
+  auto& fills = context.fills;
+  auto& states = context.states;
   // Validate the complete emitted prefix independently from latest order
   // fields, so an installed checkpoint cannot silently duplicate a fill.
-  std::array<std::uint64_t, kMaxTradingOrders> sequences = {};
-  std::array<std::int64_t, kMaxTradingOrders> cumulative = {};
-  std::array<std::uint32_t, kMaxTradingOrders> fills = {};
-  std::array<model::OrderState, kMaxTradingOrders> states = {};
   for (std::size_t index = 0; index < candidate->event_count; ++index) {
     const auto event = GetEvent(reader);
     const auto bucket = candidate->FindBucket(event.client_order_id);
@@ -1144,43 +1216,58 @@ base::Status MockTradingAdapter::RestoreState(
       return Error(base::ErrorCode::kCorrupt,
                    "mock report sequence or broker identity is inconsistent");
     auto& state = states[order_index];
-    if (event.kind == model::OrderUpdateKind::kAccepted) {
-      if (state != model::OrderState::kPendingNew)
-        return Error(base::ErrorCode::kCorrupt, "duplicate mock acceptance");
-      state = model::OrderState::kWorking;
-    } else if (event.kind == model::OrderUpdateKind::kRejected) {
-      if (state != model::OrderState::kPendingNew)
-        return Error(base::ErrorCode::kCorrupt, "invalid mock rejection");
-      state = model::OrderState::kRejected;
-    } else if (event.kind == model::OrderUpdateKind::kFill) {
-      const auto& fill = event.fill;
-      model::ExecutionId expected_execution;
-      if (state != model::OrderState::kWorking ||
-          fill.instrument_id != order.request.instrument_id ||
-          fill.side != order.request.side ||
-          fill.price != order.request.limit_price ||
-          fill.quantity > order.request.quantity - cumulative[order_index] ||
-          MakeAdapterId("mock-fill-", order.id.value, fills[order_index] + 1,
-                        expected_execution) != base::ErrorCode::kOk ||
-          fill.execution_id != expected_execution)
-        return Error(base::ErrorCode::kCorrupt, "invalid mock fill history");
-      cumulative[order_index] += fill.quantity;
-      ++fills[order_index];
-      if (cumulative[order_index] == order.request.quantity)
-        state = model::OrderState::kFilled;
-      candidate->fill_events[candidate->fill_count++] = index;
-    } else if (event.kind == model::OrderUpdateKind::kCanceled) {
-      if (state != model::OrderState::kWorking ||
-          event.cancel_request_id.value == 0 ||
-          event.cancel_request_id.value > order.last_cancel_id.value)
-        return Error(base::ErrorCode::kCorrupt, "invalid mock cancel history");
-      state = model::OrderState::kCanceled;
-    } else if (event.kind == model::OrderUpdateKind::kCancelRejected) {
-      if (!model::IsTerminalOrderState(state) ||
-          event.cancel_request_id.value == 0 ||
-          event.cancel_request_id.value > order.last_cancel_id.value)
+    switch (event.kind) {
+      case model::OrderUpdateKind::kAccepted: {
+        if (state != model::OrderState::kPendingNew)
+          return Error(base::ErrorCode::kCorrupt, "duplicate mock acceptance");
+        state = model::OrderState::kWorking;
+        break;
+      }
+      case model::OrderUpdateKind::kRejected: {
+        if (state != model::OrderState::kPendingNew)
+          return Error(base::ErrorCode::kCorrupt, "invalid mock rejection");
+        state = model::OrderState::kRejected;
+        break;
+      }
+      case model::OrderUpdateKind::kFill: {
+        const auto& fill = event.fill;
+        model::ExecutionId expected_execution;
+        if (state != model::OrderState::kWorking ||
+            fill.instrument_id != order.request.instrument_id ||
+            fill.side != order.request.side ||
+            fill.price != order.request.limit_price ||
+            fill.quantity > order.request.quantity - cumulative[order_index] ||
+            MakeAdapterId("mock-fill-", order.id.value, fills[order_index] + 1,
+                          expected_execution) != base::ErrorCode::kOk ||
+            fill.execution_id != expected_execution)
+          return Error(base::ErrorCode::kCorrupt, "invalid mock fill history");
+        cumulative[order_index] += fill.quantity;
+        ++fills[order_index];
+        if (cumulative[order_index] == order.request.quantity)
+          state = model::OrderState::kFilled;
+        candidate->fill_events[candidate->fill_count++] = index;
+        break;
+      }
+      case model::OrderUpdateKind::kCanceled: {
+        if (state != model::OrderState::kWorking ||
+            event.cancel_request_id.value == 0 ||
+            event.cancel_request_id.value > order.last_cancel_id.value)
+          return Error(base::ErrorCode::kCorrupt,
+                       "invalid mock cancel history");
+        state = model::OrderState::kCanceled;
+        break;
+      }
+      case model::OrderUpdateKind::kCancelRejected: {
+        if (!model::IsTerminalOrderState(state) ||
+            event.cancel_request_id.value == 0 ||
+            event.cancel_request_id.value > order.last_cancel_id.value)
+          return Error(base::ErrorCode::kCorrupt,
+                       "invalid mock cancel-rejection history");
+        break;
+      }
+      case model::OrderUpdateKind::kCanceledBeforeSend:
         return Error(base::ErrorCode::kCorrupt,
-                     "invalid mock cancel-rejection history");
+                     "local cancellation in mock report history");
     }
     if (event.cumulative_filled_qty != cumulative[order_index])
       return Error(base::ErrorCode::kCorrupt,
@@ -1190,6 +1277,17 @@ base::Status MockTradingAdapter::RestoreState(
   }
   if (!reader.done())
     return Error(base::ErrorCode::kCorrupt, "truncated mock snapshot");
+  return {};
+}
+
+base::Status MockTradingAdapter::ValidateRestoredOrders(
+    RestoreCandidate& context) noexcept {
+  const auto& candidate = context.storage;
+  const auto& config = candidate->config;
+  auto& sequences = context.sequences;
+  auto& cumulative = context.cumulative;
+  auto& fills = context.fills;
+  auto& states = context.states;
   for (std::size_t index = 0; index < candidate->order_count; ++index) {
     const auto& order = candidate->orders[index];
     if (order.report_sequence != sequences[index] ||
@@ -1214,6 +1312,39 @@ base::Status MockTradingAdapter::RestoreState(
     if (order.step != expected_step)
       return Error(base::ErrorCode::kCorrupt, "invalid next mock order step");
   }
+  return {};
+}
+
+base::Status MockTradingAdapter::RestoreState(
+    std::span<const std::byte> input, std::uint64_t now,
+    std::uint64_t* saved_now) noexcept {
+  if ((state_ != State::kPrepared && state_ != State::kActive) || !storage_)
+    return Error(base::ErrorCode::kInvalidState,
+                 "mock restore requires a prepared counter");
+  if (storage_->config.initial_account.type != model::AccountType::kCash ||
+      storage_->config.initial_account.futures_position_count != 0)
+    return Error(base::ErrorCode::kUnsupported,
+                 "mock restore supports cash accounts only");
+  std::span<const std::byte> payload;
+  if (input.size() > kMaxMockTradingStateBytes ||
+      !CheckedPayload(input, payload))
+    return Error(base::ErrorCode::kCorrupt, "invalid mock snapshot checksum");
+  RestoreCandidate context(payload);
+  auto& reader = context.reader;
+  if (reader.U32() != kStateMagic || reader.U32() != kCodecVersion)
+    return Error(base::ErrorCode::kCorrupt, "unsupported mock snapshot format");
+  const auto capture_now = reader.U64();
+  context.storage.reset(new (std::nothrow) Storage{});
+  if (!context.storage)
+    return Error(base::ErrorCode::kResourceExhausted,
+                 "cannot allocate mock restore candidate");
+  auto status = ReadRestoreConfig(context);
+  if (status.ok()) status = ReadRestoreOrders(context);
+  if (status.ok()) status = ReadRestorePlans(now, context);
+  if (status.ok()) status = ReadRestoreHistory(context);
+  if (status.ok()) status = ValidateRestoredOrders(context);
+  if (!status.ok()) return status;
+  auto& candidate = context.storage;
   // Overdue deadlines collapse to now and can change registration tie order.
   // Rebuild the candidate heap and its handles after clock normalization.
   for (std::size_t index = candidate->plan_count / 2; index != 0; --index)
