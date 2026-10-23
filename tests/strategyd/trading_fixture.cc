@@ -228,6 +228,9 @@ class TradingFixture final : public Strategy {
       case OrderUpdateKind::kCanceledBeforeSend:
         Emit('B');
         break;
+      case OrderUpdateKind::kCancelNotSent:
+        Emit('N');
+        break;
     }
     if constexpr (YQUANT_TEST_TRADING_MODE == 2) {
       return ErrorCode::kInvalidArgument;

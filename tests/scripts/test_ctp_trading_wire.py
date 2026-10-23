@@ -76,7 +76,7 @@ def update(**changes):
     return result
 
 
-def framed(kind, payload, version=4):
+def framed(kind, payload, version=5):
     # Independent framing helper for malformed and legacy payloads.
     return struct.pack("<IHHIIQQ", 0x52545159, version, kind,
                        32 + len(payload), 0, 27, 1) + payload
@@ -85,7 +85,7 @@ def framed(kind, payload, version=4):
 class GoldenLayoutTest(unittest.TestCase):
     def test_cpp_header_little_endian_and_fixed_size(self):
         expected = bytes.fromhex(
-            "59515452 0400 0900 20000000 00000000 "
+            "59515452 0500 0900 20000000 00000000 "
             "0102030405060708 1112131415161718")
         value = {"type": wire.HEARTBEAT, "generation": 0x0807060504030201,
                  "sequence": 0x1817161514131211}
@@ -95,7 +95,7 @@ class GoldenLayoutTest(unittest.TestCase):
 
     def test_cpp_new_order_layout_includes_generic_close(self):
         expected = bytes.fromhex(
-            "59515452 0400 0300 4a000000 00000000 "
+            "59515452 0500 0300 4a000000 00000000 "
             "1b00000000000000 0100000000000000 "
             "1100000000000000 f54a008005000000 01 "
             "100e000000000000 0200000000000000 04 0000000000000000")
@@ -107,7 +107,7 @@ class GoldenLayoutTest(unittest.TestCase):
 
     def test_cpp_account_v3_places_broker_identity_after_type(self):
         expected = bytes.fromhex(
-            "59515452 0400 0600 6c000000 00000000 "
+            "59515452 0500 0600 6c000000 00000000 "
             "1b00000000000000 0100000000000000 "
             "0700000000000000 01 01 "
             "e803000000000000 e303000000000000 cf03000000000000 "
@@ -205,6 +205,45 @@ class MessageValuesTest(unittest.TestCase):
             wire.CANCEL_ORDER, client_order_id=1, cancel_id=2)))
         self.assertEqual(decoded["adapter_order_id"], b"")
 
+    def test_local_cancel_not_sent_roundtrip_and_legacy_rejection(self):
+        value = update(kind=6, fill=None, order=order(
+            state=2, cumulative_filled_qty=10, leaves_qty=0,
+            cancel_pending=False))
+        encoded = wire.encode_message(value)
+        decoded = wire.decode_message(encoded)
+        self.assertEqual(decoded["kind"], 6)
+        self.assertEqual(decoded["order"], value["order"])
+        self.assertEqual(decoded["cancel_request_id"], 9)
+        self.assertFalse(decoded["has_fill"])
+        legacy = bytearray(encoded)
+        struct.pack_into("<H", legacy, 4, 4)
+        with self.assertRaises(wire.WireError):
+            wire.decode_message(legacy)
+        value["order"]["cancel_request_id"] = 0
+        value["cancel_request_id"] = 0
+        self.assertEqual(wire.decode_message(wire.encode_message(value))
+                         ["cancel_request_id"], 0)
+
+    def test_local_cancel_not_sent_requires_ended_matching_attempt(self):
+        for changes in ({"state": 1, "cumulative_filled_qty": 2,
+                         "leaves_qty": 8}, {"cancel_pending": True},
+                        {"cancel_request_id": 10}):
+            local = order(state=2, cumulative_filled_qty=10, leaves_qty=0,
+                          cancel_pending=False)
+            local.update(changes)
+            with self.subTest(changes=changes), self.assertRaises(wire.WireError):
+                wire.encode_message(update(kind=6, fill=None, order=local))
+
+    def test_version_four_keeps_strategy_identity_layout(self):
+        value = update()
+        value["order"]["strategy_order_id"] = 3
+        value["fill"]["strategy_order_id"] = 3
+        encoded = bytearray(wire.encode_message(value))
+        struct.pack_into("<H", encoded, 4, 4)
+        decoded = wire.decode_message(encoded)
+        self.assertEqual(decoded["order"], value["order"])
+        self.assertEqual(decoded["fill"], value["fill"])
+
     def test_utf8_and_maximum_opaque_and_reason_bytes(self):
         value = update()
         value["order"]["adapter_order_id"] = b"\0" * 63 + b"x"
@@ -253,7 +292,7 @@ class InvalidInputTest(unittest.TestCase):
 
     def test_header_range_reserved_sequence_and_simulation_rejection(self):
         good = wire.encode_message(message(wire.HEARTBEAT))
-        for offset, form, invalid in ((0, "I", 0), (4, "H", 0), (4, "H", 5),
+        for offset, form, invalid in ((0, "I", 0), (4, "H", 0), (4, "H", 6),
                                       (6, "H", 0), (6, "H", 11),
                                       (8, "I", 31), (8, "I", 16385),
                                       (12, "I", 1), (24, "Q", 0)):

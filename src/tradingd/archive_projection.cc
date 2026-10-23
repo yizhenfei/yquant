@@ -503,7 +503,8 @@ base::Status ArchiveProjection::Replay(
     }
     const bool cancel_report =
         dispatch.update.kind == model::OrderUpdateKind::kCanceled ||
-        dispatch.update.kind == model::OrderUpdateKind::kCancelRejected;
+        dispatch.update.kind == model::OrderUpdateKind::kCancelRejected ||
+        dispatch.update.kind == model::OrderUpdateKind::kCancelNotSent;
     dispatch.update.cancel_request_id =
         cancel_report &&
                 dispatch.update.cancel_request_id == order.core_cancel_id

@@ -203,6 +203,35 @@ class TradingServiceImplTest : public ::testing::Test {
     return message;
   }
 
+  // Builds a full execution against the current order, including any pending
+  // cancel attempt, without publishing it to the remote client.
+  trading::Message FullFill(model::StrategyOrderId id) {
+    trading::Message result;
+    result.type = MessageType::kOrderUpdate;
+    result.account = account;
+    result.account.revision = 3;
+    result.account.cash = {899900000, 0, 899900000};
+    result.account.position_count = 1;
+    result.account.positions[0] = {instrument, 10, 0, 0};
+    result.update.kind = model::OrderUpdateKind::kFill;
+    EXPECT_TRUE(remote.TryGetOrder(id, result.update.order));
+    auto& order = result.update.order;
+    ++order.report_sequence;
+    order.state = model::OrderState::kFilled;
+    order.cumulative_filled_qty = 10;
+    order.leaves_qty = 0;
+    result.has_fill = true;
+    result.fill.strategy_order_id = id;
+    result.fill.client_order_id = order.client_order_id;
+    result.fill.adapter_order_id = order.adapter_order_id;
+    EXPECT_EQ(result.fill.execution_id.Assign("execution-1"), ErrorCode::kOk);
+    result.fill.instrument_id = instrument;
+    result.fill.side = model::OrderSide::kBuy;
+    result.fill.price = 1001;
+    result.fill.quantity = 10;
+    return result;
+  }
+
   void Transmit() {
     ASSERT_TRUE(remote.ProcessRequests(clock.now).ok())
         << remote.error_detail();
@@ -529,6 +558,91 @@ TEST_F(TradingServiceImplTest, ExactDuplicateDoesNotRepeatCallbacksOrFill) {
   bool event = true;
   ASSERT_TRUE(PollMessage(dispatch, event).ok()) << remote.error_detail();
   EXPECT_FALSE(event);
+}
+
+TEST_F(TradingServiceImplTest,
+       LocalCancelNotSentEndsPendingAttemptWithoutRepeatingFill) {
+  const auto id = Submit();
+  Transmit();
+  (void)Receive();
+  (void)Accept(id);
+  remote.SetAcceptingRequests(true);
+  ASSERT_EQ(remote.CancelOrder(id), ErrorCode::kOk);
+  remote.SetAcceptingRequests(false);
+  Transmit();
+  const auto cancel = Receive();
+  ASSERT_EQ(cancel.type, MessageType::kCancelOrder);
+  auto fill = FullFill(id);
+  Send(fill);
+  trading::TradingDispatch dispatch;
+  bool event = false;
+  ASSERT_TRUE(Poll(dispatch, event).ok()) << remote.error_detail();
+  ASSERT_TRUE(event);
+  ASSERT_TRUE(dispatch.has_fill);
+  ASSERT_TRUE(dispatch.update.order.cancel_pending);
+
+  auto ended = fill;
+  ended.has_fill = false;
+  ended.update.kind = model::OrderUpdateKind::kCancelNotSent;
+  ended.update.cancel_request_id = cancel.cancel_id;
+  ended.update.order.cancel_pending = false;
+  ++ended.update.order.report_sequence;
+  ended.account.revision = 4;
+  Send(ended);
+  ASSERT_TRUE(Poll(dispatch, event).ok()) << remote.error_detail();
+  EXPECT_TRUE(event);
+  EXPECT_TRUE(dispatch.notify_order);
+  EXPECT_FALSE(dispatch.has_fill);
+  EXPECT_EQ(dispatch.update.kind, model::OrderUpdateKind::kCancelNotSent);
+  EXPECT_EQ(dispatch.update.cancel_request_id, cancel.cancel_id);
+  EXPECT_EQ(dispatch.update.order.state, model::OrderState::kFilled);
+  EXPECT_EQ(dispatch.update.order.cumulative_filled_qty, 10);
+  EXPECT_EQ(dispatch.update.order.report_sequence, 3);
+  EXPECT_FALSE(dispatch.update.order.cancel_pending);
+  model::CashSnapshot cash;
+  ASSERT_TRUE(remote.TryGetCash(cash));
+  EXPECT_EQ(cash, fill.account.cash);
+  model::PositionSnapshot position;
+  ASSERT_TRUE(remote.TryGetPosition(instrument, position));
+  EXPECT_EQ(position.total_qty, 10);
+  Send(ended);
+  ASSERT_TRUE(PollMessage(dispatch, event).ok()) << remote.error_detail();
+  EXPECT_FALSE(event);
+}
+
+TEST_F(TradingServiceImplTest,
+       LocalCancelNotSentRejectsWrongAttemptAndPreservesCommittedOrder) {
+  const auto id = Submit();
+  Transmit();
+  (void)Receive();
+  (void)Accept(id);
+  remote.SetAcceptingRequests(true);
+  ASSERT_EQ(remote.CancelOrder(id), ErrorCode::kOk);
+  remote.SetAcceptingRequests(false);
+  Transmit();
+  const auto cancel = Receive();
+  auto fill = FullFill(id);
+  Send(fill);
+  trading::TradingDispatch dispatch;
+  bool event = false;
+  ASSERT_TRUE(Poll(dispatch, event).ok());
+  const auto before = dispatch.update.order;
+  auto ended = fill;
+  ended.has_fill = false;
+  ended.update.kind = model::OrderUpdateKind::kCancelNotSent;
+  ended.update.cancel_request_id = {cancel.cancel_id.value + 1};
+  ended.update.order.cancel_request_id = ended.update.cancel_request_id;
+  ended.update.order.cancel_pending = false;
+  ++ended.update.order.report_sequence;
+  ended.account.revision = 4;
+  Send(ended);
+  EXPECT_EQ(PollMessage(dispatch, event).code, ErrorCode::kCorrupt);
+  model::OrderSnapshot after;
+  ASSERT_TRUE(remote.TryGetOrder(id, after));
+  EXPECT_EQ(after, before);
+  model::CashSnapshot cash;
+  ASSERT_TRUE(remote.TryGetCash(cash));
+  EXPECT_EQ(cash, fill.account.cash);
 }
 
 struct InvalidRemoteUpdate {

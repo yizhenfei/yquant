@@ -21,8 +21,8 @@ namespace yquant::trading {
 namespace {
 using base::ErrorCode;
 constexpr uint64_t kCheckpointMagic = 0x3154504344515955ULL;
-constexpr uint64_t kMutationVersion = 1;
-constexpr uint64_t kCheckpointVersion = 1;
+constexpr uint64_t kMutationVersion = 2;
+constexpr uint64_t kCheckpointVersion = 2;
 constexpr size_t kMaxReasonBytes = 128;
 
 bool IsFuturesInstrument(model::InstrumentId id) noexcept {
@@ -251,6 +251,54 @@ model::TradingEvent ReadEvent(Reader& r) noexcept {
   return value;
 }
 
+// Encodes request execution independently of native object layout.
+void WriteProgress(Writer& w, const OrderRequestProgress& progress) noexcept {
+  w.Uint(static_cast<uint8_t>(progress.state), 1);
+  w.Uint(progress.attempted, 1);
+  w.Uint(progress.attempted_at_ns);
+  w.Uint(progress.response_deadline_ns);
+}
+OrderRequestProgress ReadProgress(Reader& r) noexcept {
+  OrderRequestProgress value;
+  value.state = static_cast<OrderRequestState>(r.Uint(1));
+  value.attempted = r.Boolean();
+  value.attempted_at_ns = r.Uint();
+  value.response_deadline_ns = r.Uint();
+  return value;
+}
+void WriteExecution(Writer& w, const RequestExecution& value) noexcept {
+  w.Uint(value.client_order_id.value);
+  WriteProgress(w, value.new_request);
+  w.Uint(value.cancel_request_id.value);
+  WriteProgress(w, value.cancel_request);
+  w.Uint(value.new_local_result_pending, 1);
+  w.Uint(value.cancel_local_result_pending, 1);
+}
+RequestExecution ReadExecution(Reader& r) noexcept {
+  RequestExecution value;
+  value.client_order_id.value = r.Uint();
+  value.new_request = ReadProgress(r);
+  value.cancel_request_id.value = r.Uint();
+  value.cancel_request = ReadProgress(r);
+  value.new_local_result_pending = r.Boolean();
+  value.cancel_local_result_pending = r.Boolean();
+  return value;
+}
+void WriteExecutionRequest(Writer& w,
+                           const OrderExecutionRequest& value) noexcept {
+  w.Uint(static_cast<uint8_t>(value.kind), 1);
+  w.Uint(value.order_index, 4);
+  w.Uint(value.client_order_id.value);
+  w.Uint(value.cancel_request_id.value);
+}
+OrderExecutionRequest ReadExecutionRequest(Reader& r) noexcept {
+  OrderExecutionRequest value;
+  value.kind = static_cast<OrderRequestKind>(r.Uint(1));
+  value.order_index = r.Uint(4);
+  value.client_order_id.value = r.Uint();
+  value.cancel_request_id.value = r.Uint();
+  return value;
+}
 // Checks position units and uniqueness without changing the candidate.
 template <typename Storage>
 bool ValidatePositions(const Storage& s,
@@ -290,7 +338,7 @@ bool ValidateOrders(Storage& s, const md::InstrumentScope& market) noexcept {
   uint64_t previous_id = 0;
   for (size_t i = 0; i < s.order_count; ++i) {
     const auto& record = s.orders[i];
-    const auto& o = record.snapshot;
+    const auto& o = record.core.snapshot();
     model::InstrumentDefinition instrument;
     if (o.strategy_order_id.value != 0 ||
         o.client_order_id.value <= previous_id ||
@@ -333,26 +381,6 @@ bool ValidateOrders(Storage& s, const md::InstrumentScope& market) noexcept {
       return false;
     }
     const bool terminal = model::IsTerminalOrderState(o.state);
-    if (o.leaves_qty !=
-            (terminal ? 0 : o.original_qty - o.cumulative_filled_qty) ||
-        (!terminal && o.leaves_qty == 0) ||
-        (o.state == model::OrderState::kFilled &&
-         o.cumulative_filled_qty != o.original_qty) ||
-        ((o.state == model::OrderState::kRejected ||
-          o.state == model::OrderState::kPendingNew) &&
-         o.cumulative_filled_qty != 0) ||
-        (o.cancel_pending && (o.cancel_request_id.value == 0 ||
-                              (o.state != model::OrderState::kWorking &&
-                               o.state != model::OrderState::kFilled))) ||
-        (record.cancel_attempted && !o.cancel_pending) ||
-        (record.local_cancel_pending &&
-         (record.new_attempted || o.state != model::OrderState::kPendingNew)) ||
-        (!record.new_attempted && o.report_sequence != 0) ||
-        (o.report_sequence != 0 && o.adapter_order_id.empty() &&
-         o.state != model::OrderState::kRejected) ||
-        (o.state == model::OrderState::kWorking && o.report_sequence == 0)) {
-      return false;
-    }
     const auto expected_cash = !terminal && o.side == model::OrderSide::kBuy
                                    ? o.limit_price * o.leaves_qty * scale
                                    : 0;
@@ -371,8 +399,9 @@ bool ValidateOrders(Storage& s, const md::InstrumentScope& market) noexcept {
     if (!o.adapter_order_id.empty()) {
       auto slot = TradingBrokerHash(o.adapter_order_id);
       while (s.broker_lookup[slot] != 0) {
-        if (s.orders[s.broker_lookup[slot] - 1].snapshot.adapter_order_id ==
-            o.adapter_order_id) {
+        if (s.orders[s.broker_lookup[slot] - 1]
+                .core.snapshot()
+                .adapter_order_id == o.adapter_order_id) {
           return false;
         }
         slot = (slot + 1) & (kBrokerLookupCapacity - 1);
@@ -401,13 +430,14 @@ bool ValidateExecutions(Storage& s,
     const auto& f = s.fills[i];
     size_t index = 0;
     while (index < s.order_count &&
-           s.orders[index].snapshot.client_order_id != f.client_order_id) {
+           s.orders[index].core.snapshot().client_order_id !=
+               f.client_order_id) {
       ++index;
     }
     if (index == s.order_count) {
       return false;
     }
-    const auto& o = s.orders[index].snapshot;
+    const auto& o = s.orders[index].core.snapshot();
     model::InstrumentDefinition instrument;
     if (f.strategy_order_id.value != 0 ||
         !market.TryGetInstrument(f.instrument_id, instrument) ||
@@ -438,61 +468,7 @@ bool ValidateExecutions(Storage& s,
     s.fill_lookup[slot] = static_cast<uint16_t>(i + 1);
   }
   for (size_t i = 0; i < s.order_count; ++i) {
-    if (filled[i] != s.orders[i].snapshot.cumulative_filled_qty) {
-      return false;
-    }
-  }
-  return true;
-}
-
-// Checks that every unsent request and local cancellation has exactly one slot.
-template <typename Storage>
-bool ValidateQueues(const Storage& s) noexcept {
-  std::array<bool, kMaxTradingOrders> queued_new = {};
-  std::array<bool, kMaxTradingOrders> queued_cancel = {};
-  std::array<bool, kMaxTradingOrders> local = {};
-  for (size_t i = 0; i < s.request_count; ++i) {
-    const auto& request = s.requests[i];
-    if (request.order_index >= s.order_count) {
-      return false;
-    }
-    const auto index = request.order_index;
-    const auto& record = s.orders[index];
-    if (request.kind == Storage::RequestKind::kNew) {
-      if (queued_new[index] || record.new_attempted ||
-          record.local_cancel_pending ||
-          record.snapshot.state != model::OrderState::kPendingNew ||
-          request.cancel_id.value != 0) {
-        return false;
-      }
-      queued_new[index] = true;
-    } else if (request.kind == Storage::RequestKind::kCancel) {
-      if (queued_cancel[index] || record.cancel_attempted ||
-          !record.snapshot.cancel_pending ||
-          request.cancel_id != record.snapshot.cancel_request_id) {
-        return false;
-      }
-      queued_cancel[index] = true;
-    } else {
-      return false;
-    }
-  }
-  for (size_t i = 0; i < s.local_count; ++i) {
-    const auto index = s.local_updates[i];
-    if (index >= s.order_count || local[index] ||
-        !s.orders[index].local_cancel_pending) {
-      return false;
-    }
-    local[index] = true;
-  }
-  for (size_t i = 0; i < s.order_count; ++i) {
-    const auto& record = s.orders[i];
-    if (record.local_cancel_pending != local[i] ||
-        (!record.new_attempted &&
-         record.snapshot.state == model::OrderState::kPendingNew && !local[i] &&
-         !queued_new[i]) ||
-        (record.snapshot.cancel_pending && !record.cancel_attempted &&
-         !queued_cancel[i])) {
+    if (filled[i] != s.orders[i].core.snapshot().cumulative_filled_qty) {
       return false;
     }
   }
@@ -510,7 +486,7 @@ bool Validate(Storage& s, const md::InstrumentScope& market) noexcept {
     return false;
   }
   return ValidatePositions(s, market) && ValidateOrders(s, market) &&
-         ValidateExecutions(s, market) && ValidateQueues(s);
+         ValidateExecutions(s, market) && true;
 }
 }  // namespace
 
@@ -530,8 +506,17 @@ base::Status EncodeTradingMutation(const TradingMutation& value,
         IsFuturesInstrument(value.event.fill.instrument_id)))) {
     return {ErrorCode::kInvalidArgument, {}};
   }
+  if (!IsValidTradingMutation(value) ||
+      (value.format_version != 1 && value.format_version != kMutationVersion) ||
+      (value.format_version == 1 &&
+       (value.kind == TradingMutationKind::kCancelNotSent ||
+        value.kind == TradingMutationKind::kRequestUncertain)) ||
+      (value.kind == TradingMutationKind::kRequestUncertain &&
+       !IsValidTradingExecutionFailure(value.failure_code))) {
+    return {ErrorCode::kInvalidArgument, {}};
+  }
   Writer w(bytes);
-  w.Uint(kMutationVersion, 2);
+  w.Uint(value.format_version, 2);
   w.Uint(static_cast<uint8_t>(value.kind), 1);
   w.Uint(value.revision);
   w.Uint(value.now);
@@ -544,6 +529,10 @@ base::Status EncodeTradingMutation(const TradingMutation& value,
     case TradingMutationKind::kReport:
       WriteEvent(w, value.event);
       break;
+    case TradingMutationKind::kRequestUncertain:
+      w.Uint(static_cast<uint8_t>(value.failure_code), 1);
+      break;
+    case TradingMutationKind::kCancelNotSent:
     case TradingMutationKind::kCancel:
     case TradingMutationKind::kSendNew:
     case TradingMutationKind::kSendCancel:
@@ -561,10 +550,12 @@ base::Status EncodeTradingMutation(const TradingMutation& value,
 base::Status DecodeTradingMutation(std::span<const std::byte> bytes,
                                    TradingMutation& out) noexcept {
   Reader r(bytes);
-  if (r.Uint(2) != kMutationVersion) {
+  const auto version = r.Uint(2);
+  if (version != 1 && version != kMutationVersion) {
     return {ErrorCode::kCorrupt, {}};
   }
   TradingMutation value;
+  value.format_version = static_cast<uint16_t>(version);
   value.kind = static_cast<TradingMutationKind>(r.Uint(1));
   if (!IsValidTradingMutationKind(value.kind)) {
     return {ErrorCode::kCorrupt, {}};
@@ -580,6 +571,10 @@ base::Status DecodeTradingMutation(std::span<const std::byte> bytes,
     case TradingMutationKind::kReport:
       value.event = ReadEvent(r);
       break;
+    case TradingMutationKind::kRequestUncertain:
+      value.failure_code = static_cast<ErrorCode>(r.Uint(1));
+      break;
+    case TradingMutationKind::kCancelNotSent:
     case TradingMutationKind::kCancel:
     case TradingMutationKind::kSendNew:
     case TradingMutationKind::kSendCancel:
@@ -587,7 +582,13 @@ base::Status DecodeTradingMutation(std::span<const std::byte> bytes,
     case TradingMutationKind::kLocalCancel:
       break;
   }
-  if (!r.done() || value.revision == 0 || value.client_order_id.value == 0 ||
+  if (!IsValidTradingMutation(value) ||
+      (version == 1 &&
+       (value.kind == TradingMutationKind::kCancelNotSent ||
+        value.kind == TradingMutationKind::kRequestUncertain)) ||
+      (value.kind == TradingMutationKind::kRequestUncertain &&
+       !IsValidTradingExecutionFailure(value.failure_code)) ||
+      !r.done() || value.revision == 0 || value.client_order_id.value == 0 ||
       (value.kind == TradingMutationKind::kNewOrder &&
        IsFuturesInstrument(value.request.instrument_id)) ||
       (value.kind == TradingMutationKind::kReport &&
@@ -608,7 +609,8 @@ base::Status TradingEngine::ExportCheckpoint(std::span<std::byte> bytes,
     return {ErrorCode::kUnsupported, {}};
   }
   for (size_t i = 0; i < s.order_count; ++i) {
-    if (s.orders[i].snapshot.position_effect != model::PositionEffect::kNone) {
+    if (s.orders[i].core.snapshot().position_effect !=
+        model::PositionEffect::kNone) {
       return {ErrorCode::kUnsupported, {}};
     }
   }
@@ -643,12 +645,16 @@ base::Status TradingEngine::ExportCheckpoint(std::span<std::byte> bytes,
   w.Uint(s.rescan_required, 1);
   w.Uint(s.next_retry.has_value(), 1);
   w.Uint(s.next_retry.value_or(0));
+  const auto& execution = s.executor.state();
+  w.Uint(s.format_version, 2);
+  w.Uint(execution.response_timeout_ns);
   for (size_t i = 0; i < s.order_count; ++i) {
     const auto& record = s.orders[i];
-    WriteOrder(w, record.snapshot);
-    w.Uint(record.new_attempted, 1);
-    w.Uint(record.cancel_attempted, 1);
-    w.Uint(record.local_cancel_pending, 1);
+    WriteOrder(w, record.core.snapshot());
+    w.Signed(record.core.rules().price_tick);
+    w.Signed(record.core.rules().quantity_step);
+    w.Uint(record.core.rules().allow_unsolicited_cancel, 1);
+    WriteExecution(w, execution.executions[i]);
     w.Uint(record.retry_not_before_ns);
     w.Uint(record.position_index, 4);
     w.Signed(record.price_scale);
@@ -658,17 +664,20 @@ base::Status TradingEngine::ExportCheckpoint(std::span<std::byte> bytes,
   for (size_t i = 0; i < s.fill_count; ++i) {
     WriteFill(w, s.fills[i]);
   }
-  w.Uint(s.request_count, 4);
-  for (size_t i = 0; i < s.request_count; ++i) {
-    const auto& request =
-        s.requests[(s.request_head + i) % kMaxTradingRequests];
-    w.Uint(static_cast<uint8_t>(request.kind), 1);
-    w.Uint(request.order_index, 4);
-    w.Uint(request.cancel_id.value);
+  w.Uint(execution.request_count, 4);
+  for (size_t i = 0; i < execution.request_count; ++i) {
+    WriteExecutionRequest(
+        w,
+        execution.requests[(execution.request_head + i) % kMaxTradingRequests]);
   }
-  w.Uint(s.local_count, 4);
-  for (size_t i = 0; i < s.local_count; ++i) {
-    w.Uint(s.local_updates[(s.local_head + i) % kMaxLocalOrderUpdates], 4);
+  w.Uint(execution.local_count, 4);
+  for (size_t i = 0; i < execution.local_count; ++i) {
+    const auto& local =
+        execution
+            .local_results[(execution.local_head + i) % kMaxLocalOrderUpdates];
+    w.Uint(static_cast<uint8_t>(local.kind), 1);
+    WriteExecutionRequest(w, local.request);
+    w.Uint(local.time_ns);
   }
   if (!w.ok()) {
     return {ErrorCode::kResourceExhausted, {}};
@@ -696,7 +705,10 @@ base::Status TradingEngine::RestoreCheckpoint(
     return {ErrorCode::kResourceExhausted, {}};
   }
   Reader r(bytes);
-  if (r.Uint() != kCheckpointMagic || r.Uint(4) != kCheckpointVersion) {
+  const auto magic = r.Uint();
+  const auto version = r.Uint(4);
+  if (magic != kCheckpointMagic ||
+      (version != 1 && version != kCheckpointVersion)) {
     return {Fail(ErrorCode::kCorrupt, "unsupported ledger checkpoint"), {}};
   }
   auto& s = *candidate;
@@ -736,12 +748,69 @@ base::Status TradingEngine::RestoreCheckpoint(
       s.pending_cancel_count > s.order_count) {
     return {ErrorCode::kCorrupt, {}};
   }
+  OrderRequestExecutor::State execution;
+  execution.order_count = s.order_count;
+  s.format_version = version == 1 ? 1 : static_cast<uint16_t>(r.Uint(2));
+  if (version >= 2) {
+    execution.response_timeout_ns = r.Uint();
+  }
+  if (s.format_version != 1 && s.format_version != 2) {
+    return {Fail(ErrorCode::kCorrupt, "invalid checkpoint rules version"), {}};
+  }
+  std::array<model::OrderSnapshot, kMaxTradingOrders> snapshots;
   for (size_t i = 0; i < s.order_count; ++i) {
     auto& record = s.orders[i];
-    record.snapshot = ReadOrder(r);
-    record.new_attempted = r.Boolean();
-    record.cancel_attempted = r.Boolean();
-    record.local_cancel_pending = r.Boolean();
+    auto& snapshot = snapshots[i];
+    snapshot = ReadOrder(r);
+    OrderCoreRules saved_rules;
+    if (version >= 2) {
+      saved_rules.price_tick = r.Signed();
+      saved_rules.quantity_step = r.Signed();
+      saved_rules.allow_unsolicited_cancel = r.Boolean();
+    }
+    auto& progress = execution.executions[i];
+    if (version == 1) {
+      const bool sent = r.Boolean();
+      const bool cancel_sent = r.Boolean();
+      const bool local = r.Boolean();
+      progress.client_order_id = snapshot.client_order_id;
+      progress.new_request.attempted = sent;
+      progress.new_local_result_pending = local;
+      progress.new_request.state =
+          sent ? ((snapshot.report_sequence != 0 ||
+                   model::IsTerminalOrderState(snapshot.state))
+                      ? OrderRequestState::kCompleted
+                      : OrderRequestState::kUncertain)
+          : local || model::IsTerminalOrderState(snapshot.state)
+              ? OrderRequestState::kCompleted
+              : OrderRequestState::kQueued;
+      progress.cancel_request_id = snapshot.cancel_request_id;
+      progress.cancel_request.attempted =
+          cancel_sent ||
+          (snapshot.cancel_request_id.value != 0 && !snapshot.cancel_pending);
+      progress.cancel_request.state =
+          snapshot.cancel_pending ? cancel_sent ? OrderRequestState::kUncertain
+                                                : OrderRequestState::kQueued
+                                  : OrderRequestState::kCompleted;
+    } else {
+      progress = ReadExecution(r);
+    }
+    model::InstrumentDefinition instrument;
+    if (!instruments_.TryGetInstrument(snapshot.instrument_id, instrument)) {
+      return {Fail(ErrorCode::kCorrupt, "unknown checkpoint instrument"), {}};
+    }
+    const OrderCoreRules current_rules{instrument.price_tick,
+                                       instrument.quantity_step, false};
+    if (version == 1) {
+      saved_rules = current_rules;
+    } else if (saved_rules != current_rules) {
+      return {Fail(ErrorCode::kCorrupt, "checkpoint order rules changed"), {}};
+    }
+    const auto restored = OrderCore::Restore(snapshot, saved_rules);
+    if (!restored.ok()) {
+      return {Fail(ErrorCode::kCorrupt, restored.diagnostic.text), {}};
+    }
+    record.core = restored.core;
     record.retry_not_before_ns = r.Uint();
     record.position_index = r.Uint(4);
     record.price_scale = r.Signed();
@@ -751,22 +820,48 @@ base::Status TradingEngine::RestoreCheckpoint(
   for (size_t i = 0; i < s.fill_count; ++i) {
     s.fills[i] = ReadFill(r);
   }
-  s.request_count = r.Uint(4);
-  if (s.request_count > kMaxTradingRequests) {
+  execution.request_count = r.Uint(4);
+  if (execution.request_count > kMaxTradingRequests) {
     return {ErrorCode::kCorrupt, {}};
   }
-  for (size_t i = 0; i < s.request_count; ++i) {
-    auto& request = s.requests[i];
-    request.kind = static_cast<Storage::RequestKind>(r.Uint(1));
-    request.order_index = r.Uint(4);
-    request.cancel_id.value = r.Uint();
+  for (size_t i = 0; i < execution.request_count; ++i) {
+    if (version >= 2) {
+      execution.requests[i] = ReadExecutionRequest(r);
+    } else {
+      auto& request = execution.requests[i];
+      request.kind = static_cast<OrderRequestKind>(r.Uint(1));
+      request.order_index = r.Uint(4);
+      request.cancel_request_id.value = r.Uint();
+      if (request.order_index >= s.order_count) {
+        return {ErrorCode::kCorrupt, {}};
+      }
+      request.client_order_id = snapshots[request.order_index].client_order_id;
+    }
   }
-  s.local_count = r.Uint(4);
-  if (s.local_count > kMaxLocalOrderUpdates) {
+  execution.local_count = r.Uint(4);
+  if (execution.local_count > kMaxLocalOrderUpdates) {
     return {ErrorCode::kCorrupt, {}};
   }
-  for (size_t i = 0; i < s.local_count; ++i) {
-    s.local_updates[i] = r.Uint(4);
+  for (size_t i = 0; i < execution.local_count; ++i) {
+    auto& local = execution.local_results[i];
+    if (version >= 2) {
+      local.kind = static_cast<OrderLocalResultKind>(r.Uint(1));
+      local.request = ReadExecutionRequest(r);
+      local.time_ns = r.Uint();
+    } else {
+      local.request.order_index = r.Uint(4);
+      if (local.request.order_index >= s.order_count) {
+        return {ErrorCode::kCorrupt, {}};
+      }
+      local.request.client_order_id =
+          snapshots[local.request.order_index].client_order_id;
+    }
+  }
+  const auto execution_valid =
+      s.executor.RestoreState(execution, {snapshots.data(), s.order_count});
+  if (execution_valid != ErrorCode::kOk) {
+    return {Fail(ErrorCode::kCorrupt, "invalid checkpoint request execution"),
+            {}};
   }
   if (!r.done() || !Validate(s, instruments_)) {
     return {Fail(ErrorCode::kCorrupt, "invalid ledger checkpoint invariants"),
@@ -829,8 +924,7 @@ base::Status TradingEngine::RestoreReconciled(
               {}};
     }
     auto& record = s.orders[i];
-    record.snapshot = order;
-    record.new_attempted = true;
+
     model::InstrumentDefinition instrument;
     if (!instruments_.TryGetInstrument(order.instrument_id, instrument) ||
         instrument.type != model::InstrumentType::kEquity ||
@@ -839,6 +933,12 @@ base::Status TradingEngine::RestoreReconciled(
                    "unknown reconciled instrument or precision"),
               {}};
     }
+    const auto restored = OrderCore::Restore(
+        order, {instrument.price_tick, instrument.quantity_step, false});
+    if (!restored.ok()) {
+      return {Fail(ErrorCode::kCorrupt, restored.diagnostic.text), {}};
+    }
+    record.core = restored.core;
     record.price_scale = 1;
     for (size_t digit = instrument.price_decimals; digit < 6; ++digit) {
       record.price_scale *= 10;
@@ -862,12 +962,29 @@ base::Status TradingEngine::RestoreReconciled(
   }
   std::sort(s.orders.begin(), s.orders.begin() + s.order_count,
             [](const auto& left, const auto& right) noexcept {
-              return left.snapshot.client_order_id.value <
-                     right.snapshot.client_order_id.value;
+              return left.core.snapshot().client_order_id.value <
+                     right.core.snapshot().client_order_id.value;
             });
   s.fill_count = executions.size();
   for (size_t i = 0; i < s.fill_count; ++i) {
     s.fills[i] = executions[i];
+  }
+  OrderRequestExecutor::State execution;
+  execution.order_count = s.order_count;
+  std::array<model::OrderSnapshot, kMaxTradingOrders> snapshots;
+  for (size_t i = 0; i < s.order_count; ++i) {
+    const auto& order = s.orders[i].core.snapshot();
+    snapshots[i] = order;
+    auto& value = execution.executions[i];
+    value.client_order_id = order.client_order_id;
+    value.new_request.attempted = true;
+    value.cancel_request_id = order.cancel_request_id;
+    value.cancel_request.attempted = order.cancel_request_id.value != 0;
+  }
+  if (s.executor.RestoreState(execution, {snapshots.data(), s.order_count}) !=
+      ErrorCode::kOk) {
+    return {Fail(ErrorCode::kCorrupt, "invalid reconciled execution state"),
+            {}};
   }
   if (!Validate(s, instruments_)) {
     return {Fail(ErrorCode::kCorrupt,

@@ -358,6 +358,51 @@ TEST_F(ArchiveProjectionTest, CancelReportsTranslateCoreToLocalIdentity) {
   EXPECT_EQ(projection.orders()[0].local_cancel_id.value, 77);
 }
 
+TEST_F(ArchiveProjectionTest,
+       LocalCancelNotSentRetainsBrokerPositionAndDoesNotBookTwice) {
+  ASSERT_TRUE(projection.Restore(Baseline()).ok());
+  SubmitAndFill();
+  auto fill = sink.facts.back().event;
+  source.BeginCallback(strategy::CallbackPhase::kTick);
+  ASSERT_EQ(source.CancelOrder({1}), ErrorCode::kOk);
+  source.EndCallback();
+  model::OrderSnapshot pending;
+  ASSERT_TRUE(source.TryGetOrder({1}, pending));
+  ASSERT_TRUE(pending.cancel_pending);
+  fill.kind = model::OrderUpdateKind::kFill;
+  fill.report_sequence = 3;
+  fill.cumulative_filled_qty = 10;
+  fill.fill.quantity = 6;
+  ASSERT_EQ(fill.fill.execution_id.Assign("execution-2"), ErrorCode::kOk);
+  trading::TradingDispatch dispatch;
+  ASSERT_EQ(source.ApplyEvent(fill, dispatch), ErrorCode::kOk);
+  ASSERT_TRUE(source.has_local_updates());
+  ASSERT_EQ(source.ApplyLocalUpdate(dispatch), ErrorCode::kOk);
+  ASSERT_EQ(dispatch.update.kind, model::OrderUpdateKind::kCancelNotSent);
+  EXPECT_FALSE(dispatch.has_fill);
+  EXPECT_EQ(dispatch.update.order.report_sequence, 3);
+  EXPECT_EQ(dispatch.update.order.receive_time_ns, fill.receive_time_ns);
+  uint64_t lsn = 0;
+  for (const auto& fact : sink.facts) {
+    ASSERT_TRUE(projection.Replay(1, ++lsn, LedgerRecord(fact, 0, 0, 77)).ok());
+  }
+  ASSERT_TRUE(projection.has_update());
+  const auto& update = projection.last_update();
+  EXPECT_EQ(update.update.kind, model::OrderUpdateKind::kCancelNotSent);
+  EXPECT_EQ(update.update.cancel_request_id.value, 77);
+  EXPECT_EQ(update.update.order.cancel_request_id.value, 77);
+  EXPECT_EQ(update.update.order.report_sequence, 4);
+  EXPECT_FALSE(update.has_fill);
+  EXPECT_FALSE(update.update.order.cancel_pending);
+  EXPECT_EQ(update.update.order.state, model::OrderState::kFilled);
+  EXPECT_EQ(projection.orders()[0].snapshot.report_sequence, 3);
+  EXPECT_EQ(projection.trading().fill_count(), 2);
+  model::CashSnapshot expected, actual;
+  ASSERT_TRUE(source.TryGetCash(expected));
+  ASSERT_TRUE(projection.trading().TryGetCash(actual));
+  EXPECT_EQ(actual, expected);
+}
+
 TEST_F(ArchiveProjectionTest, MetadataCanAddSessionsButCannotRewriteIdentity) {
   ASSERT_TRUE(projection.Restore(Baseline()).ok());
   ASSERT_TRUE(projection.LoadIdentity(Identity(true)).ok());

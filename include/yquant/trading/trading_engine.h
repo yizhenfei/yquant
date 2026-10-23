@@ -11,6 +11,7 @@
 #include "yquant/base/monotonic_clock.h"
 #include "yquant/md/instrument_scope.h"
 #include "yquant/model/trading_event.h"
+#include "yquant/trading/order_request_executor.h"
 #include "yquant/trading/trading_adapter.h"
 #include "yquant/trading/trading_dispatch.h"
 #include "yquant/trading/trading_limits.h"
@@ -99,8 +100,8 @@ class TradingEngine final {
   // Serial access and the runtime's monotonic clock domain are required.
   [[nodiscard]] base::ErrorCode ApplyEvent(const model::TradingEvent& event,
                                            TradingDispatch& out) noexcept;
-  // Commits one queued CanceledBeforeSend event. Empty input returns
-  // kInvalidState without changing out or account/order facts.
+  // Commits one queued CanceledBeforeSend or CancelNotSent result. Empty input
+  // returns kInvalidState without changing out or account/order facts.
   [[nodiscard]] base::ErrorCode ApplyLocalUpdate(TradingDispatch& out) noexcept;
   bool has_local_updates() const noexcept;
 
@@ -171,25 +172,14 @@ class TradingEngine final {
   // Publishes an already journaled request, ownership slot and reservation.
   void CommitSubmission(const model::OrderRequest& request,
                         const Submission& transaction) noexcept;
-  // Validates report fields before duplicate suppression, preserving all state.
-  base::ErrorCode ValidateReportFields(const model::TradingEvent& event,
-                                       const model::OrderSnapshot& old,
-                                       uint64_t transaction_now) noexcept;
-  // Checks execution identity, instrument units, timestamps and limit price.
-  base::ErrorCode ValidateExecution(const model::TradingEvent& event,
-                                    const model::OrderSnapshot& old) noexcept;
-  // Stages the next order state and deduplication slots without committing.
+  // Stages a domain transition plus request, identity and execution checks.
   base::ErrorCode PrepareOrderTransition(
       const model::TradingEvent& event, size_t index, uint64_t transaction_now,
       ReportTransaction& transaction) noexcept;
-  // Stages a unique execution and verifies cumulative quantity progression.
-  base::ErrorCode PrepareExecution(const model::TradingEvent& event,
-                                   size_t index,
-                                   ReportTransaction& transaction) noexcept;
-  // Resolves a matching cancel attempt and stages any retry deadline.
-  base::ErrorCode PrepareCancelResult(const model::TradingEvent& event,
-                                      size_t index, uint64_t transaction_now,
-                                      ReportTransaction& transaction) noexcept;
+  // Journals a failed/timed-out attempted request before changing its progress.
+  base::ErrorCode RecordRequestUncertain(const OrderExecutionRequest& request,
+                                         base::ErrorCode code,
+                                         uint64_t now) noexcept;
   // Stages cash effects or applies an atomic simulated-futures transaction.
   base::ErrorCode PrepareReportAccount(size_t index,
                                        ReportTransaction& transaction) noexcept;
@@ -197,8 +187,7 @@ class TradingEngine final {
   base::ErrorCode PrepareCashExecution(size_t index,
                                        ReportTransaction& transaction) noexcept;
   // Publishes a validated, journaled report; no remaining operation can fail.
-  void CommitReport(const model::TradingEvent& event, size_t index,
-                    ReportTransaction& transaction) noexcept;
+  void CommitReport(size_t index, ReportTransaction& transaction) noexcept;
   // Revisits an already-scanned order on the next bounded stopping pass.
   void ScheduleReportRescan(size_t index) noexcept;
   // Appends a fact before publication, rejecting reentrant sink invocation.

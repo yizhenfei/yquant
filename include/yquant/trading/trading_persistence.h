@@ -21,11 +21,16 @@ enum class TradingMutationKind : uint8_t {
   kScheduleLocalCancel,
   kLocalCancel,
   kReport,
+  kCancelNotSent,
+  kRequestUncertain,
 };
 
 // Owned inputs to a deterministic transition. Only request for kNewOrder and
 // event for kReport are used; IDs identify the expected affected request.
 struct TradingMutation {
+  // Encoding/rules version. Version 1 retains historical queued-cancel sends;
+  // version 2 settles unsent cancels locally when the order finishes.
+  uint16_t format_version = 2;
   TradingMutationKind kind = TradingMutationKind::kNewOrder;
   uint64_t revision = 0;
   uint64_t now = 0;
@@ -33,6 +38,8 @@ struct TradingMutation {
   model::CancelRequestId cancel_id;
   model::OrderRequest request;
   model::TradingEvent event;
+  // Execution fault for kRequestUncertain; cancel_id zero identifies a new.
+  base::ErrorCode failure_code = base::ErrorCode::kOk;
 };
 
 // Called serially after validation and before any business-state change or

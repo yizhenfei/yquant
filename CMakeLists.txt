@@ -56,6 +56,8 @@ target_link_libraries(yquant_md PRIVATE simdjson::simdjson)
 target_compile_options(yquant_md PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(yquant_trading STATIC
+  src/trading/order_core.cc
+  src/trading/order_request_executor.cc
   src/trading/ctp_trading_adapter.cc
   src/trading/protocol.cc
   src/trading/connection.cc

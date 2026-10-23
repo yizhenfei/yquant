@@ -300,7 +300,7 @@ cmake --build --preset debug --target download_test_data
 - [行情回放与录制](docs/design/market-data-replay.md)：真实 CSV 转换、回放时序和异步录制格式。
 - [共享内存行情广播组件](docs/design/shared-memory-broadcast.md)：映射、流注册、心跳、重启隔离和行情适配。
 - [交易执行与账户账本](docs/design/trading.md)：限价委托、撤单与异步回报的执行闭环。
-- [订单核心状态机](docs/design/order-core.md)：单笔订单的事件、动作及实时与回放共用的转换边界。
+- [订单核心与请求执行](docs/design/order-core.md)：订单业务状态机、新单与撤单的 in-flight 跟踪及事务边界。
 - [共享交易网关](docs/design/tradingd.md)：多机策略共享账户、订单归属、TCP 协议和断线收尾。
 - [交易网关持久化与恢复](docs/design/tradingd-persistence.md)：mmap 日志、后台同步、快照和柜台对账设计。
 - [交易历史 MySQL 存储](docs/design/tradingd-mysql.md)：后台入库、表结构、幂等事务与查询一致性设计。

@@ -1383,6 +1383,7 @@ base::Status MockTradingAdapter::ReadRestoreHistory(
         break;
       }
       case model::OrderUpdateKind::kCanceledBeforeSend:
+      case model::OrderUpdateKind::kCancelNotSent:
         return Error(base::ErrorCode::kCorrupt,
                      "local cancellation in mock report history");
     }

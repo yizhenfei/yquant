@@ -259,6 +259,368 @@ TEST_F(TradingPersistenceTest, ReplayRestoresFactsWithoutExternalCalls) {
 }
 
 TEST_F(TradingPersistenceTest,
+       QueuedCancelLocalResultSurvivesCheckpointAndRejectedJournal) {
+  const auto id = Submit(30);
+  ASSERT_TRUE(ledger.ProcessRequests(adapter, clock.now).ok());
+  TradingDispatch dispatch;
+  ASSERT_EQ(ledger.ApplyEvent(Report(id, 1, model::OrderUpdateKind::kAccepted),
+                              dispatch),
+            ErrorCode::kOk);
+  ledger.BeginCallback(strategy::CallbackPhase::kTick);
+  ASSERT_EQ(ledger.CancelOrder(id), ErrorCode::kOk);
+  ledger.EndCallback();
+  ++clock.now;
+  ASSERT_EQ(ledger.ApplyEvent(Fill(id), dispatch), ErrorCode::kOk);
+  const auto filled = Order(ledger, id);
+  const auto cash = Cash(ledger);
+  EXPECT_EQ(filled.state, model::OrderState::kFilled);
+  EXPECT_TRUE(filled.cancel_pending);
+  EXPECT_EQ(filled.report_sequence, 2U);
+  EXPECT_EQ(filled.receive_time_ns, 1001U);
+  EXPECT_EQ(cash.balance, 700300000);
+  EXPECT_EQ(cash.reserved, 0);
+  ASSERT_TRUE(ledger.has_local_updates());
+  const auto pending = Checkpoint(ledger);
+  testing::TradingEngineHarness recovered{clock, market};
+  ASSERT_TRUE(recovered.RestoreCheckpoint(pending).ok());
+  EXPECT_EQ(Checkpoint(recovered), pending);
+  EXPECT_TRUE(recovered.has_local_updates());
+  Sink recovered_sink;
+  ASSERT_TRUE(recovered.SetMutationSink(&recovered_sink).ok());
+  recovered_sink.fail = true;
+  dispatch.notify_order = true;
+  dispatch.has_fill = true;
+  dispatch.update.order.client_order_id = {999};
+  dispatch.fill.quantity = 777;
+  EXPECT_EQ(recovered.ApplyLocalUpdate(dispatch), ErrorCode::kIoError);
+  EXPECT_EQ(Checkpoint(recovered), pending);
+  EXPECT_TRUE(recovered.has_local_updates());
+  EXPECT_TRUE(dispatch.notify_order);
+  EXPECT_TRUE(dispatch.has_fill);
+  EXPECT_EQ(dispatch.update.order.client_order_id.value, 999U);
+  EXPECT_EQ(dispatch.fill.quantity, 777);
+  EXPECT_TRUE(recovered_sink.facts.empty());
+
+  recovered_sink.fail = false;
+  clock.now += 100;
+  ASSERT_EQ(recovered.ApplyLocalUpdate(dispatch), ErrorCode::kOk);
+  EXPECT_TRUE(dispatch.notify_order);
+  EXPECT_FALSE(dispatch.has_fill);
+  EXPECT_EQ(dispatch.update.kind, model::OrderUpdateKind::kCancelNotSent);
+  EXPECT_EQ(dispatch.update.cancel_request_id, filled.cancel_request_id);
+  auto settled = filled;
+  settled.cancel_pending = false;
+  EXPECT_EQ(Order(recovered, id), settled);
+  EXPECT_EQ(dispatch.update.order, settled);
+  EXPECT_EQ(Cash(recovered), cash);
+  EXPECT_EQ(recovered.fill_count(), 1U);
+  EXPECT_FALSE(recovered.has_local_updates());
+  EXPECT_EQ(recovered.mutation_revision(), ledger.mutation_revision() + 1);
+  ASSERT_EQ(recovered_sink.facts.size(), 1U);
+  EXPECT_EQ(recovered_sink.facts[0].kind, TradingMutationKind::kCancelNotSent);
+  EXPECT_EQ(recovered_sink.facts[0].cancel_id, filled.cancel_request_id);
+  ASSERT_TRUE(recovered.ProcessRequests(adapter, clock.now).ok());
+  EXPECT_EQ(adapter.sends, 1U);
+}
+
+TEST_F(TradingPersistenceTest,
+       EveryLocalCancelResultCutMatchesContinuousCheckpoint) {
+  const auto id = Submit(30);
+  ASSERT_TRUE(ledger.ProcessRequests(adapter, clock.now).ok());
+  TradingDispatch dispatch;
+  ASSERT_EQ(ledger.ApplyEvent(Report(id, 1, model::OrderUpdateKind::kAccepted),
+                              dispatch),
+            ErrorCode::kOk);
+  ledger.BeginCallback(strategy::CallbackPhase::kTick);
+  ASSERT_EQ(ledger.CancelOrder(id), ErrorCode::kOk);
+  ledger.EndCallback();
+  ++clock.now;
+  ASSERT_EQ(ledger.ApplyEvent(Fill(id), dispatch), ErrorCode::kOk);
+  ++clock.now;
+  ASSERT_EQ(ledger.ApplyLocalUpdate(dispatch), ErrorCode::kOk);
+  const auto expected = Checkpoint(ledger);
+  ASSERT_EQ(sink.facts.size(), 6U);
+  EXPECT_EQ(sink.facts[4].kind, TradingMutationKind::kReport);
+  EXPECT_EQ(sink.facts[5].kind, TradingMutationKind::kCancelNotSent);
+  clock.now = 1;
+  for (size_t cut = 0; cut <= sink.facts.size(); ++cut) {
+    SCOPED_TRACE(cut);
+    testing::TradingEngineHarness prefix{clock, market};
+    ASSERT_TRUE(prefix.Configure(account).ok());
+    for (size_t i = 0; i < cut; ++i) {
+      ASSERT_TRUE(prefix.ReplayMutation(sink.facts[i]).ok())
+          << prefix.error_detail();
+    }
+    const auto checkpoint = Checkpoint(prefix);
+    testing::TradingEngineHarness resumed{clock, market};
+    ASSERT_TRUE(resumed.RestoreCheckpoint(checkpoint).ok())
+        << resumed.error_detail();
+    Sink replay_sink;
+    ASSERT_TRUE(resumed.SetMutationSink(&replay_sink).ok());
+    for (size_t i = cut; i < sink.facts.size(); ++i) {
+      std::array<std::byte, kMaxEncodedTradingMutation> bytes;
+      size_t size = 0;
+      ASSERT_TRUE(EncodeTradingMutation(sink.facts[i], bytes, size).ok());
+      TradingMutation decoded;
+      ASSERT_TRUE(
+          DecodeTradingMutation(std::span(bytes).first(size), decoded).ok());
+      ASSERT_TRUE(resumed.ReplayMutation(decoded, &dispatch).ok())
+          << resumed.error_detail();
+    }
+    EXPECT_EQ(Checkpoint(resumed), expected);
+    EXPECT_EQ(Order(resumed, id), Order(ledger, id));
+    EXPECT_EQ(Cash(resumed), Cash(ledger));
+    EXPECT_FALSE(resumed.has_local_updates());
+    EXPECT_TRUE(replay_sink.facts.empty());
+  }
+  EXPECT_EQ(adapter.sends, 1U);
+}
+
+TEST_F(TradingPersistenceTest,
+       LegacyFactsKeepQueuedCancelUntilHistoricalSendAndResponse) {
+  const model::ClientOrderId id{1};
+  const model::CancelRequestId cancel_id{1};
+  std::array<TradingMutation, 7> facts;
+  for (size_t i = 0; i < facts.size(); ++i) {
+    facts[i].format_version = 1;
+    facts[i].revision = i + 1;
+    facts[i].now = clock.now;
+    facts[i].client_order_id = id;
+  }
+  facts[0].kind = TradingMutationKind::kNewOrder;
+  facts[0].request = {config.instruments[0].instrument.id,
+                      model::OrderSide::kBuy, 1000, 30};
+  facts[1].kind = TradingMutationKind::kSendNew;
+  facts[2].kind = TradingMutationKind::kReport;
+  facts[2].event = Report(id, 1, model::OrderUpdateKind::kAccepted);
+  facts[3].kind = TradingMutationKind::kCancel;
+  facts[3].cancel_id = cancel_id;
+  facts[4].kind = TradingMutationKind::kReport;
+  facts[4].event = Fill(id);
+  facts[5].kind = TradingMutationKind::kSendCancel;
+  facts[5].cancel_id = cancel_id;
+  facts[6].kind = TradingMutationKind::kReport;
+  facts[6].event = Report(id, 3, model::OrderUpdateKind::kCancelRejected);
+  facts[6].event.cancel_request_id = cancel_id;
+  facts[6].event.cumulative_filled_qty = 30;
+  testing::TradingEngineHarness replay{clock, market};
+  ASSERT_TRUE(replay.Configure(account).ok());
+  TradingDispatch dispatch;
+  for (size_t i = 0; i < facts.size(); ++i) {
+    SCOPED_TRACE(i);
+    std::array<std::byte, kMaxEncodedTradingMutation> bytes;
+    size_t size = 0;
+    ASSERT_TRUE(EncodeTradingMutation(facts[i], bytes, size).ok());
+    TradingMutation decoded;
+    ASSERT_TRUE(
+        DecodeTradingMutation(std::span(bytes).first(size), decoded).ok());
+    EXPECT_EQ(decoded.format_version, 1);
+    ASSERT_TRUE(replay.ReplayMutation(decoded, &dispatch).ok())
+        << replay.error_detail();
+    if (i == 4 || i == 5) {
+      EXPECT_EQ(Order(replay, id).state, model::OrderState::kFilled);
+      EXPECT_TRUE(Order(replay, id).cancel_pending);
+      EXPECT_FALSE(replay.has_local_updates());
+    }
+  }
+  const auto settled = Order(replay, id);
+  EXPECT_EQ(settled.state, model::OrderState::kFilled);
+  EXPECT_FALSE(settled.cancel_pending);
+  EXPECT_EQ(settled.report_sequence, 3U);
+  EXPECT_EQ(settled.cancel_request_id, cancel_id);
+  EXPECT_EQ(dispatch.update.kind, model::OrderUpdateKind::kCancelRejected);
+  EXPECT_FALSE(dispatch.has_fill);
+  EXPECT_EQ(Cash(replay).balance, 700300000);
+  EXPECT_EQ(Cash(replay).reserved, 0);
+  EXPECT_EQ(replay.fill_count(), 1U);
+  EXPECT_EQ(replay.mutation_revision(), 7U);
+  EXPECT_EQ(adapter.sends, 0U);
+  testing::TradingEngineHarness restored{clock, market};
+  ASSERT_TRUE(restored.RestoreCheckpoint(Checkpoint(replay)).ok())
+      << restored.error_detail();
+  EXPECT_EQ(Order(restored, id), settled);
+  EXPECT_EQ(Checkpoint(restored), Checkpoint(replay));
+}
+
+TEST_F(TradingPersistenceTest, LegacyTerminalWithoutBrokerSequenceRestores) {
+  std::vector<std::byte> bytes;
+  auto append = [&](uint64_t value, size_t width = 8) {
+    for (size_t i = 0; i < width; ++i) {
+      bytes.push_back(static_cast<std::byte>(value & 0xffU));
+      value >>= 8;
+    }
+  };
+  // Version 1 reconciled baselines could contain terminal orders with no
+  // normalized broker sequence, while recording the new request as attempted.
+  append(0x3154504344515955ULL);  // Cash-checkpoint magic.
+  append(1, 4);                   // Format version.
+  append(0);                      // Mutation revision.
+  append(2);                      // Next order ID.
+  append(0);                      // Last cancel ID.
+  append(1000000000);             // Cash balance.
+  append(0);                      // Reserved cash.
+  append(1000000000);             // Available cash.
+  append(1, 4);                   // Position count.
+  append(config.instruments[0].instrument.id.value);
+  append(1000);  // Total shares.
+  append(1000);  // Available shares.
+  append(0);     // Reserved shares.
+  append(1, 4);  // Order count.
+  append(0, 4);  // Fill count.
+  append(0, 4);  // Active count.
+  append(0, 4);  // Pending cancel count.
+  append(0, 4);  // Stopping scan cursor.
+  append(0, 1);  // Scan pending.
+  append(0, 1);  // Rescan required.
+  append(0, 1);  // No retry deadline.
+  append(0);
+  append(1);     // ClientOrderId.
+  append(0, 1);  // Empty AdapterOrderId.
+  append(config.instruments[0].instrument.id.value);
+  append(1, 1);   // Buy.
+  append(1000);   // Limit price.
+  append(30);     // Original quantity.
+  append(0);      // Cumulative filled quantity.
+  append(0);      // Leaves quantity.
+  append(3, 1);   // Canceled.
+  append(0, 1);   // No pending cancel.
+  append(0);      // CancelRequestId.
+  append(0);      // Broker report sequence.
+  append(0);      // Broker receive time.
+  append(1, 1);   // New request attempted.
+  append(0, 1);   // Cancel not attempted.
+  append(0, 1);   // No pending local result.
+  append(0);      // Per-order retry deadline.
+  append(0, 4);   // Position index.
+  append(10000);  // Price-to-micro-yuan multiplier.
+  append(0);      // Per-order reserved cash.
+  append(0);      // Per-order reserved shares.
+  append(0, 4);   // Queued requests.
+  append(0, 4);   // Queued local results.
+  testing::TradingEngineHarness recovered{clock, market};
+  ASSERT_TRUE(recovered.RestoreCheckpoint(bytes).ok())
+      << recovered.error_detail();
+  const auto order = Order(recovered, {1});
+  EXPECT_EQ(order.state, model::OrderState::kCanceled);
+  EXPECT_EQ(order.report_sequence, 0U);
+  EXPECT_EQ(order.receive_time_ns, 0U);
+  EXPECT_EQ(order.original_qty, 30);
+  EXPECT_EQ(Cash(recovered), Cash(ledger));
+  EXPECT_EQ(recovered.next_order_id(), 2U);
+  EXPECT_FALSE(recovered.has_local_updates());
+  ASSERT_TRUE(recovered.ProcessRequests(adapter, clock.now).ok());
+  EXPECT_EQ(adapter.sends, 0U);
+  testing::TradingEngineHarness again{clock, market};
+  ASSERT_TRUE(again.RestoreCheckpoint(Checkpoint(recovered)).ok())
+      << again.error_detail();
+  EXPECT_EQ(Order(again, {1}), order);
+}
+
+TEST_F(TradingPersistenceTest, ChangedImmutableCoreRulesRejectCheckpoint) {
+  Submit(30);
+  const auto bytes = Checkpoint(ledger);
+  for (const bool change_price_tick : {true, false}) {
+    SCOPED_TRACE(change_price_tick ? "price tick" : "quantity step");
+    auto changed = config;
+    auto& instrument = changed.instruments[0].instrument;
+    if (change_price_tick) {
+      instrument.price_tick = 5;
+    } else {
+      instrument.quantity_step = 2;
+    }
+    md::InstrumentScope changed_market;
+    ASSERT_TRUE(changed_market.Configure(changed).ok());
+    testing::TradingEngineHarness recovered{clock, changed_market};
+    ASSERT_TRUE(recovered.Configure(account).ok());
+    const auto before = Checkpoint(recovered);
+    EXPECT_EQ(recovered.RestoreCheckpoint(bytes).code, ErrorCode::kCorrupt);
+    EXPECT_EQ(Checkpoint(recovered), before);
+    EXPECT_EQ(recovered.order_count(), 0U);
+  }
+}
+
+TEST_F(TradingPersistenceTest,
+       InvalidPublicReplayFactsPreserveCheckpointAndDispatch) {
+  const auto id = Submit(30);
+  ASSERT_TRUE(ledger.ProcessRequests(adapter, clock.now).ok());
+  TradingMutation fault;
+  fault.revision = ledger.mutation_revision() + 1;
+  fault.now = clock.now;
+  fault.client_order_id = id;
+  fault.kind = TradingMutationKind::kRequestUncertain;
+  fault.failure_code = ErrorCode::kIoError;
+  std::array<TradingMutation, 4> invalid = {fault, fault, fault, fault};
+  invalid[0].format_version = 1;
+  invalid[0].kind = TradingMutationKind::kCancelNotSent;
+  invalid[0].cancel_id = {1};
+  invalid[1].format_version = 1;
+  invalid[2].failure_code = ErrorCode::kOk;
+  invalid[3].failure_code = static_cast<ErrorCode>(255);
+  const auto before = Checkpoint(ledger);
+  const auto fact_count = sink.facts.size();
+  TradingDispatch dispatch;
+  dispatch.notify_order = true;
+  dispatch.has_fill = true;
+  dispatch.update.order.client_order_id = {999};
+  dispatch.update.reason.Set(91, "preserved on rejection");
+  dispatch.fill.quantity = 777;
+  for (const auto& fact : invalid) {
+    SCOPED_TRACE(static_cast<int>(fact.kind));
+    SCOPED_TRACE(fact.format_version);
+    SCOPED_TRACE(static_cast<int>(fact.failure_code));
+    EXPECT_EQ(ledger.ReplayMutation(fact, &dispatch).code, ErrorCode::kCorrupt);
+    EXPECT_EQ(Checkpoint(ledger), before);
+    EXPECT_EQ(sink.facts.size(), fact_count);
+    EXPECT_TRUE(dispatch.notify_order);
+    EXPECT_TRUE(dispatch.has_fill);
+    EXPECT_EQ(dispatch.update.order.client_order_id.value, 999U);
+    EXPECT_EQ(dispatch.update.reason.code, 91);
+    EXPECT_EQ(dispatch.update.reason.view(), "preserved on rejection");
+    EXPECT_EQ(dispatch.fill.quantity, 777);
+  }
+}
+
+TEST_F(TradingPersistenceTest, LegacySendAtFinalClockValueHasNoNewDeadline) {
+  const model::ClientOrderId id{1};
+  std::array<TradingMutation, 3> facts;
+  for (size_t i = 0; i < facts.size(); ++i) {
+    facts[i].format_version = 1;
+    facts[i].revision = i + 1;
+    facts[i].now = UINT64_MAX;
+    facts[i].client_order_id = id;
+  }
+  facts[0].kind = TradingMutationKind::kNewOrder;
+  facts[0].request = {config.instruments[0].instrument.id,
+                      model::OrderSide::kBuy, 1000, 30};
+  facts[1].kind = TradingMutationKind::kSendNew;
+  facts[2].kind = TradingMutationKind::kReport;
+  facts[2].event = Report(id, 1, model::OrderUpdateKind::kAccepted);
+  testing::TradingEngineHarness replay{clock, market};
+  ASSERT_TRUE(replay.Configure(account).ok());
+  for (size_t i = 0; i < facts.size(); ++i) {
+    SCOPED_TRACE(i);
+    std::array<std::byte, kMaxEncodedTradingMutation> bytes;
+    size_t size = 0;
+    ASSERT_TRUE(EncodeTradingMutation(facts[i], bytes, size).ok());
+    TradingMutation decoded;
+    ASSERT_TRUE(
+        DecodeTradingMutation(std::span(bytes).first(size), decoded).ok());
+    ASSERT_TRUE(replay.ReplayMutation(decoded).ok()) << replay.error_detail();
+    if (i == 1) {
+      EXPECT_EQ(Order(replay, id).state, model::OrderState::kPendingNew);
+      EXPECT_FALSE(replay.next_deadline());
+      testing::TradingEngineHarness restored{clock, market};
+      ASSERT_TRUE(restored.RestoreCheckpoint(Checkpoint(replay)).ok())
+          << restored.error_detail();
+      EXPECT_EQ(Checkpoint(restored), Checkpoint(replay));
+    }
+  }
+  EXPECT_EQ(Order(replay, id).state, model::OrderState::kWorking);
+  EXPECT_EQ(Order(replay, id).report_sequence, 1U);
+  EXPECT_EQ(adapter.sends, 0U);
+}
+
+TEST_F(TradingPersistenceTest,
        AbandonedQueuedNewRemainsUncertainWithoutResend) {
   const auto id = Submit();
   testing::TradingEngineHarness recovered{clock, market};

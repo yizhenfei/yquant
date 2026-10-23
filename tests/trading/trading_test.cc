@@ -4,14 +4,17 @@
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "gtest/gtest.h"
 #include "yquant/md/instrument_scope.h"
 #include "yquant/model/identifiers.h"
 #include "yquant/trading/trading_adapter.h"
 #include "yquant/trading/trading_engine.h"
+#include "yquant/trading/trading_persistence.h"
 
 namespace yquant::trading {
 namespace {
@@ -58,6 +61,10 @@ class RecordingTradingAdapter final : public trading::TradingAdapter {
   }
   trading::TradingPollResult Poll(uint64_t,
                                   model::TradingEvent& out) noexcept override {
+    ++poll_calls;
+    if (fail_poll) {
+      return {trading::TradingPollState::kError, {ErrorCode::kIoError, {}}};
+    }
     if (pending_event) {
       out = *pending_event;
       pending_event.reset();
@@ -71,7 +78,7 @@ class RecordingTradingAdapter final : public trading::TradingAdapter {
   bool is_drained() const noexcept override { return !pending_event; }
   base::Status Stop() noexcept override { return {}; }
   const char* error_detail() const noexcept override {
-    return "injected send failure";
+    return fail_poll ? "injected poll failure" : "injected send failure";
   }
   model::ClientOrderId last_order_id;
   model::CancelRequestId last_cancel_id;
@@ -79,7 +86,9 @@ class RecordingTradingAdapter final : public trading::TradingAdapter {
   model::OrderRequest last_order;
   size_t order_sends = 0;
   size_t cancel_sends = 0;
+  size_t poll_calls = 0;
   bool fail_send = false;
+  bool fail_poll = false;
   trading::TradingAccountSnapshot account;
   std::optional<model::TradingEvent> pending_event;
 };
@@ -470,7 +479,7 @@ TEST_F(TradingTest, InvalidReportsPreserveLedgerAndDispatch) {
   EXPECT_EQ(Position(), before_position);
 }
 
-TEST_F(TradingTest, CancelQueuedBeforeFullFillStillSendsAndSettles) {
+TEST_F(TradingTest, CancelQueuedBeforeFullFillEndsLocallyWithoutSending) {
   const auto id = Submit();
   Accept(id);
   Cancel(id);
@@ -483,15 +492,65 @@ TEST_F(TradingTest, CancelQueuedBeforeFullFillStillSendsAndSettles) {
             ErrorCode::kOk);
   EXPECT_EQ(Snapshot(id).state, OrderState::kFilled);
   EXPECT_TRUE(Snapshot(id).cancel_pending);
+  EXPECT_TRUE(trading.has_local_updates());
   EXPECT_FALSE(trading.is_drained());
+  const auto filled = Snapshot(id);
+  const auto cash = Cash();
+  const auto position = Position();
+  Send();
+  EXPECT_EQ(adapter.cancel_sends, 0U);
+  EXPECT_TRUE(Snapshot(id).cancel_pending);
+  clock.now += 10;
+  ASSERT_EQ(trading.ApplyLocalUpdate(dispatch), ErrorCode::kOk);
+  EXPECT_TRUE(dispatch.notify_order);
+  EXPECT_FALSE(dispatch.has_fill);
+  EXPECT_EQ(dispatch.update.kind, OrderUpdateKind::kCancelNotSent);
+  EXPECT_EQ(dispatch.update.cancel_request_id, cancel);
+  EXPECT_EQ(Snapshot(id).state, OrderState::kFilled);
+  EXPECT_FALSE(Snapshot(id).cancel_pending);
+  EXPECT_EQ(Snapshot(id).cancel_request_id, cancel);
+  EXPECT_EQ(Snapshot(id).report_sequence, filled.report_sequence);
+  EXPECT_EQ(Snapshot(id).receive_time_ns, filled.receive_time_ns);
+  EXPECT_EQ(Cash(), cash);
+  EXPECT_EQ(Position(), position);
+  EXPECT_EQ(trading.fill_count(), 1);
+  EXPECT_FALSE(trading.has_local_updates());
+  EXPECT_TRUE(trading.is_drained());
+}
+
+TEST_F(TradingTest, CancelSentBeforeFullFillWaitsForMatchingBrokerResult) {
+  const auto id = Submit();
+  Accept(id);
+  Cancel(id);
+  const auto cancel = Snapshot(id).cancel_request_id;
   Send();
   EXPECT_EQ(adapter.cancel_sends, 1U);
   EXPECT_EQ(adapter.last_cancel_id, cancel);
+  trading::TradingDispatch dispatch;
+  ASSERT_EQ(trading.ApplyEvent(Execution(id, 2, "full", 200, 200), dispatch),
+            ErrorCode::kOk);
+  const auto filled = Snapshot(id);
+  const auto cash = Cash();
+  const auto position = Position();
+  EXPECT_EQ(filled.state, OrderState::kFilled);
+  EXPECT_TRUE(filled.cancel_pending);
+  EXPECT_FALSE(trading.has_local_updates());
+  EXPECT_FALSE(trading.is_drained());
+  Send();
+  EXPECT_EQ(adapter.cancel_sends, 1U);
   auto rejection = Event(id, 3, OrderUpdateKind::kCancelRejected, 200);
+  rejection.cancel_request_id = {cancel.value + 1};
+  EXPECT_EQ(trading.ApplyEvent(rejection, dispatch), ErrorCode::kCorrupt);
+  EXPECT_EQ(Snapshot(id), filled);
   rejection.cancel_request_id = cancel;
   ASSERT_EQ(trading.ApplyEvent(rejection, dispatch), ErrorCode::kOk);
+  EXPECT_EQ(dispatch.update.kind, OrderUpdateKind::kCancelRejected);
   EXPECT_EQ(Snapshot(id).state, OrderState::kFilled);
   EXPECT_FALSE(Snapshot(id).cancel_pending);
+  EXPECT_EQ(Snapshot(id).report_sequence, 3);
+  EXPECT_EQ(Cash(), cash);
+  EXPECT_EQ(Position(), position);
+  EXPECT_EQ(trading.fill_count(), 1);
   EXPECT_TRUE(trading.is_drained());
 }
 
@@ -620,6 +679,160 @@ TEST_F(TradingTest, SendFailureIsNotAutomaticallyRetriedOrLocallyCanceled) {
   EXPECT_FALSE(trading.has_local_updates());
   EXPECT_EQ(Snapshot(id).state, OrderState::kPendingNew);
   EXPECT_FALSE(trading.is_drained());
+}
+
+TEST_F(TradingTest, NewOrderResponseTimeoutRetainsOrderAndReservation) {
+  const auto id = Submit();
+  Send();
+  const auto before = Snapshot(id);
+  const auto cash = Cash();
+  EXPECT_GT(cash.reserved, 0);
+  ASSERT_TRUE(trading.next_deadline());
+  EXPECT_EQ(*trading.next_deadline(), clock.now + 60000000000);
+  clock.now += 60000000001;
+  EXPECT_TRUE(trading.has_ready_event(clock.now));
+  trading::TradingDispatch dispatch;
+  dispatch.update.order.client_order_id = {99};
+  bool event = true;
+  EXPECT_EQ(trading.Poll(clock.now, dispatch, event).code, ErrorCode::kIoError);
+  EXPECT_STREQ(trading.error_stage(), "trading_response");
+  EXPECT_NE(std::strstr(trading.error_detail(), "uncertain"), nullptr);
+  EXPECT_EQ(dispatch.update.order.client_order_id.value, 99);
+  EXPECT_TRUE(event);
+  EXPECT_EQ(Snapshot(id), before);
+  EXPECT_EQ(Cash(), cash);
+  EXPECT_FALSE(trading.has_local_updates());
+  EXPECT_FALSE(trading.is_drained());
+  EXPECT_FALSE(trading.next_deadline());
+  Send();
+  EXPECT_EQ(adapter.order_sends, 1);
+  EXPECT_EQ(adapter.cancel_sends, 0);
+  ASSERT_TRUE(trading.Poll(clock.now, dispatch, event).ok());
+  EXPECT_FALSE(event);
+  EXPECT_EQ(Snapshot(id), before);
+  EXPECT_EQ(Cash(), cash);
+}
+
+TEST_F(TradingTest, CancelResponseTimeoutRetainsAttemptAndReservation) {
+  const auto id = Submit();
+  Accept(id);
+  Cancel(id);
+  Send();
+  const auto before = Snapshot(id);
+  const auto cash = Cash();
+  EXPECT_TRUE(before.cancel_pending);
+  EXPECT_GT(cash.reserved, 0);
+  clock.now += 60000000001;
+  trading::TradingDispatch dispatch;
+  bool event = false;
+  EXPECT_EQ(trading.Poll(clock.now, dispatch, event).code, ErrorCode::kIoError);
+  EXPECT_STREQ(trading.error_stage(), "trading_response");
+  EXPECT_EQ(Snapshot(id), before);
+  EXPECT_EQ(Cash(), cash);
+  EXPECT_FALSE(trading.has_local_updates());
+  EXPECT_FALSE(trading.is_drained());
+  trading.BeginStopping();
+  ASSERT_TRUE(trading.ScheduleStopping(clock.now).ok());
+  Send();
+  EXPECT_EQ(adapter.order_sends, 1);
+  EXPECT_EQ(adapter.cancel_sends, 1);
+  EXPECT_EQ(Snapshot(id), before);
+  EXPECT_EQ(Cash(), cash);
+}
+
+TEST_F(TradingTest, ExpiredRequestPreemptsUnrelatedReadyReport) {
+  const auto first = Submit();
+  Send();
+  ASSERT_TRUE(trading.next_deadline());
+  const auto first_deadline = *trading.next_deadline();
+  ++clock.now;
+  const auto second = Submit();
+  Send();
+  const auto first_before = Snapshot(first);
+  const auto second_before = Snapshot(second);
+  const auto cash = Cash();
+  clock.now = first_deadline;
+  adapter.pending_event = Event(second, 1, OrderUpdateKind::kAccepted);
+  const auto polls = adapter.poll_calls;
+  trading::TradingDispatch dispatch;
+  bool event = false;
+  EXPECT_EQ(trading.Poll(clock.now, dispatch, event).code, ErrorCode::kIoError);
+  EXPECT_STREQ(trading.error_stage(), "trading_response");
+  EXPECT_EQ(adapter.poll_calls, polls);
+  EXPECT_TRUE(adapter.pending_event);
+  EXPECT_EQ(Snapshot(first), first_before);
+  EXPECT_EQ(Snapshot(second), second_before);
+  EXPECT_EQ(Cash(), cash);
+  ASSERT_TRUE(trading.Poll(clock.now, dispatch, event).ok());
+  EXPECT_TRUE(event);
+  EXPECT_EQ(dispatch.update.order.client_order_id, second);
+  EXPECT_EQ(Snapshot(second).state, OrderState::kWorking);
+  EXPECT_EQ(Snapshot(first), first_before);
+  Send();
+  EXPECT_EQ(adapter.order_sends, 2);
+  EXPECT_EQ(adapter.cancel_sends, 0);
+}
+
+TEST_F(TradingTest, PollConnectionFailurePersistsUncertaintyWithoutResending) {
+  const auto pending_new = Submit();
+  Send();
+  const auto pending_cancel = Submit();
+  Accept(pending_cancel);
+  Cancel(pending_cancel);
+  Send();
+  const auto before_new = Snapshot(pending_new);
+  const auto before_cancel = Snapshot(pending_cancel);
+  const auto cash = Cash();
+  adapter.fail_poll = true;
+  trading::TradingDispatch dispatch;
+  bool event = false;
+  EXPECT_EQ(trading.Poll(clock.now, dispatch, event).code, ErrorCode::kIoError);
+  EXPECT_STREQ(trading.error_stage(), "trading_poll");
+  EXPECT_EQ(Snapshot(pending_new), before_new);
+  EXPECT_EQ(Snapshot(pending_cancel), before_cancel);
+  EXPECT_EQ(Cash(), cash);
+  EXPECT_FALSE(trading.next_deadline());
+
+  std::vector<std::byte> bytes(kMaxTradingCheckpointBytes);
+  size_t size = 0;
+  ASSERT_TRUE(trading.ExportCheckpoint(bytes, size).ok());
+  RecordingTradingAdapter recovered_adapter;
+  TradingEngine recovered{&clock, &market_data, &recovered_adapter};
+  TradingConfig config;
+  config.initial_account.cash_balance = std::numeric_limits<int64_t>::max();
+  ASSERT_TRUE(recovered.Init(config, market_config).ok());
+  ASSERT_TRUE(recovered.RestoreCheckpoint(std::span(bytes).first(size)).ok());
+  EXPECT_FALSE(recovered.next_deadline());
+  EXPECT_FALSE(recovered.is_drained());
+  ASSERT_TRUE(recovered.ProcessRequests(clock.now).ok());
+  EXPECT_EQ(recovered_adapter.order_sends, 0);
+  EXPECT_EQ(recovered_adapter.cancel_sends, 0);
+  model::OrderSnapshot restored;
+  ASSERT_TRUE(recovered.TryGetOrder(pending_new, restored));
+  EXPECT_EQ(restored, before_new);
+  ASSERT_TRUE(recovered.TryGetOrder(pending_cancel, restored));
+  EXPECT_EQ(restored, before_cancel);
+  model::CashSnapshot restored_cash;
+  ASSERT_TRUE(recovered.TryGetCash(restored_cash));
+  EXPECT_EQ(restored_cash, cash);
+
+  recovered_adapter.pending_event =
+      Event(pending_new, 1, OrderUpdateKind::kAccepted);
+  ASSERT_TRUE(recovered.Poll(clock.now, dispatch, event).ok());
+  EXPECT_TRUE(event);
+  EXPECT_EQ(dispatch.update.order.state, OrderState::kWorking);
+  auto rejected = Event(pending_cancel, 2, OrderUpdateKind::kCancelRejected);
+  rejected.cancel_request_id = before_cancel.cancel_request_id;
+  recovered_adapter.pending_event = rejected;
+  ASSERT_TRUE(recovered.Poll(clock.now, dispatch, event).ok());
+  EXPECT_TRUE(event);
+  EXPECT_FALSE(dispatch.update.order.cancel_pending);
+  EXPECT_EQ(dispatch.update.order.state, OrderState::kWorking);
+  ASSERT_TRUE(recovered.TryGetCash(restored_cash));
+  EXPECT_EQ(restored_cash, cash);
+  ASSERT_TRUE(recovered.ProcessRequests(clock.now).ok());
+  EXPECT_EQ(recovered_adapter.order_sends, 0);
+  EXPECT_EQ(recovered_adapter.cancel_sends, 0);
 }
 
 TEST_F(TradingTest,

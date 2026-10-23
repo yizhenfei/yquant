@@ -17,7 +17,7 @@ namespace {
 
 // The byte spelling is YQTR. All integer fields use little-endian order.
 constexpr uint32_t kMagic = 0x52545159;
-constexpr uint16_t kVersion = kOrderIdentityWireVersion;
+constexpr uint16_t kVersion = kLocalOrderResultWireVersion;
 constexpr size_t kMaxReasonBytes = sizeof(model::OrderReason{}.text) - 1;
 constexpr uint8_t kMaxPriceDecimals = 6;
 
@@ -540,7 +540,13 @@ void ReadFill(Reader& reader, model::Fill& fill) noexcept {
 bool ValidUpdate(const Message& message) noexcept {
   return ValidOrder(message.update.order) &&
          message.update.kind >= model::OrderUpdateKind::kAccepted &&
-         message.update.kind <= model::OrderUpdateKind::kCanceledBeforeSend &&
+         message.update.kind <= model::OrderUpdateKind::kCancelNotSent &&
+         (message.update.kind != model::OrderUpdateKind::kCancelNotSent ||
+          (model::IsTerminalOrderState(message.update.order.state) &&
+           !message.update.order.cancel_pending && message.notify_order &&
+           !message.has_fill &&
+           message.update.cancel_request_id ==
+               message.update.order.cancel_request_id)) &&
          (!message.has_fill ||
           (message.update.kind == model::OrderUpdateKind::kFill &&
            ValidFill(message.fill, message.update.order)));
@@ -721,7 +727,9 @@ void ReadPayload(Reader& reader, Message& message) noexcept {
         ReadFill(reader, message.fill);
       }
       ReadAccount(reader, message.account);
-      if (!ValidUpdate(message)) {
+      if (!ValidUpdate(message) ||
+          (reader.version() < kLocalOrderResultWireVersion &&
+           message.update.kind == model::OrderUpdateKind::kCancelNotSent)) {
         reader.Reject();
       }
       break;
@@ -792,7 +800,7 @@ size_t FrameSize(std::span<const std::byte> header) noexcept {
     return 0;
   }
   const auto version = reader.Uint(2);
-  if (version != 1 && version != 2 && version != 3 && version != kVersion) {
+  if (version < 1 || version > kVersion) {
     return 0;
   }
   const auto type = static_cast<MessageType>(reader.Uint(2));

@@ -506,7 +506,8 @@ base::Status Server::Dispatch(uint64_t now) noexcept {
     message.update.order.cancel_request_id = wire_cancel;
     const bool cancel_report =
         dispatch.update.kind == model::OrderUpdateKind::kCanceled ||
-        dispatch.update.kind == model::OrderUpdateKind::kCancelRejected;
+        dispatch.update.kind == model::OrderUpdateKind::kCancelRejected ||
+        dispatch.update.kind == model::OrderUpdateKind::kCancelNotSent;
     message.update.cancel_request_id =
         cancel_report && dispatch.update.cancel_request_id == local.core_cancel
             ? local.local_cancel

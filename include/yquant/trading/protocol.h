@@ -19,6 +19,8 @@ namespace yquant::trading {
 inline constexpr size_t kMaxClients = 16;
 // First wire version carrying distinct strategy and gateway order identities.
 inline constexpr uint16_t kOrderIdentityWireVersion = 4;
+// First wire version representing a cancel completed before transmission.
+inline constexpr uint16_t kLocalOrderResultWireVersion = 5;
 inline constexpr size_t kMaxInstruments = 64;
 inline constexpr size_t kMaxTokenBytes = 64;
 // A full 64-instrument futures view plus an order/fill fits in one frame.
@@ -107,8 +109,9 @@ struct Message {
   model::OrderReason reason;
 };
 
-// Wire version 4 separates strategy and gateway order identities; readers
-// retain v1-v3 support for stored frames. Legacy identity scope is resolved by
+// Wire version 5 adds CancelNotSent local order updates. Version 4 separates
+// strategy and gateway order identities; readers retain v1-v4 support for
+// stored frames. Legacy identity scope is resolved by
 // the connection owner. Version 3 adds broker-managed futures identity.
 // Simulation quote frames reuse the market-data quote codec; live gateways
 // reject them. Explicit little-endian, versioned framing. Encoding/decoding are

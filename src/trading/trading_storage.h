@@ -11,6 +11,8 @@
 #include <optional>
 
 #include "yquant/trading/futures_ledger.h"
+#include "yquant/trading/order_core.h"
+#include "yquant/trading/order_request_executor.h"
 #include "yquant/trading/trading_engine.h"
 
 namespace yquant::trading {
@@ -23,6 +25,49 @@ inline constexpr size_t kOrderLookupCapacity = 2 * kMaxTradingOrders;
 // mutation kind requires an explicit decision in this shared validation.
 inline bool IsValidTradingMutationKind(TradingMutationKind kind) noexcept {
   switch (kind) {
+    case TradingMutationKind::kNewOrder:
+    case TradingMutationKind::kCancel:
+    case TradingMutationKind::kSendNew:
+    case TradingMutationKind::kSendCancel:
+    case TradingMutationKind::kScheduleLocalCancel:
+    case TradingMutationKind::kLocalCancel:
+    case TradingMutationKind::kReport:
+    case TradingMutationKind::kCancelNotSent:
+    case TradingMutationKind::kRequestUncertain:
+      return true;
+  }
+  return false;
+}
+
+// Rejects non-failures and unknown diagnostic bytes in execution facts.
+inline bool IsValidTradingExecutionFailure(base::ErrorCode code) noexcept {
+  switch (code) {
+    case base::ErrorCode::kInvalidArgument:
+    case base::ErrorCode::kInvalidState:
+    case base::ErrorCode::kResourceExhausted:
+    case base::ErrorCode::kUnsupported:
+    case base::ErrorCode::kIoError:
+    case base::ErrorCode::kCorrupt:
+    case base::ErrorCode::kInternalError:
+      return true;
+    case base::ErrorCode::kOk:
+      return false;
+  }
+  return false;
+}
+
+// Applies the same version and payload rules to decoded and direct replay.
+inline bool IsValidTradingMutation(const TradingMutation& value) noexcept {
+  if ((value.format_version != 1 && value.format_version != 2) ||
+      !IsValidTradingMutationKind(value.kind)) {
+    return false;
+  }
+  switch (value.kind) {
+    case TradingMutationKind::kRequestUncertain:
+      return value.format_version >= 2 &&
+             IsValidTradingExecutionFailure(value.failure_code);
+    case TradingMutationKind::kCancelNotSent:
+      return value.format_version >= 2;
     case TradingMutationKind::kNewOrder:
     case TradingMutationKind::kCancel:
     case TradingMutationKind::kSendNew:
@@ -65,6 +110,8 @@ inline size_t TradingFillHash(model::ClientOrderId order,
 
 // Holds an unpublished request and its resource claim until journal append.
 struct TradingEngine::Submission {
+  OrderCore core;
+  OrderRequestExecutionTransition execution;
   model::OrderSnapshot order;
   model::CashSnapshot cash;
   model::PositionSnapshot position;
@@ -79,6 +126,8 @@ struct TradingEngine::Submission {
 // Stages one report's order and cash effects until validation and WAL append
 // succeed. Owned on the stack; it neither borrows events nor allocates storage.
 struct TradingEngine::ReportTransaction {
+  OrderCore core;
+  OrderRequestExecutionTransition execution;
   model::OrderSnapshot next;
   TradingDispatch dispatch;
   model::CashSnapshot cash;
@@ -89,14 +138,13 @@ struct TradingEngine::ReportTransaction {
   size_t broker_slot = 0;
   size_t fill_slot = 0;
   bool bind_broker = false;
+  bool ignored = false;
+  bool release_remaining = false;
 };
 
 struct TradingEngine::Storage {
   struct OrderRecord {
-    model::OrderSnapshot snapshot;
-    bool new_attempted = false;
-    bool cancel_attempted = false;
-    bool local_cancel_pending = false;
+    OrderCore core;
     uint64_t retry_not_before_ns = 0;
     size_t position_index = 0;
     int64_t price_scale = 1;
@@ -106,27 +154,18 @@ struct TradingEngine::Storage {
     int64_t reserved_qty = 0;
     FuturesReservation futures_reservation;
   };
-  enum class RequestKind { kNew, kCancel };
-  struct Request {
-    RequestKind kind = RequestKind::kNew;
-    size_t order_index = 0;
-    model::CancelRequestId cancel_id;
-  };
   std::array<OrderRecord, kMaxTradingOrders> orders = {};
   std::array<uint16_t, kOrderLookupCapacity> order_lookup = {};
   std::array<model::Fill, kMaxTradingFills> fills = {};
   std::array<uint16_t, kFillLookupCapacity> fill_lookup = {};
   std::array<uint16_t, kBrokerLookupCapacity> broker_lookup = {};
-  std::array<Request, kMaxTradingRequests> requests = {};
-  std::array<size_t, kMaxLocalOrderUpdates> local_updates = {};
+  OrderRequestExecutor executor;
+  // Historical rule version is retained until the cold recovery boundary.
+  uint16_t format_version = 2;
   size_t order_count = 0;
   size_t fill_count = 0;
   size_t active_count = 0;
   size_t pending_cancel_count = 0;
-  size_t request_head = 0;
-  size_t request_count = 0;
-  size_t local_head = 0;
-  size_t local_count = 0;
   uint64_t last_cancel_id = 0;
   uint64_t next_order_id = 1;
   uint64_t mutation_revision = 0;

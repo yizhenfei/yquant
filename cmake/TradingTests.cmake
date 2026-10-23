@@ -1,4 +1,6 @@
 add_executable(trading_test
+  tests/trading/order_core_test.cc
+  tests/trading/order_request_executor_test.cc
   tests/trading/ctp_trading_adapter_test.cc
   tests/trading/futures_exchange_test.cc
   tests/trading/futures_ledger_test.cc
