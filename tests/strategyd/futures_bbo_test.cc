@@ -1,6 +1,8 @@
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
 #include <charconv>
-#include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
@@ -29,9 +31,8 @@ std::string FuturesMarketJson(bool generic = false) {
          std::string(YQUANT_TEST_INSTRUMENT_CATALOG_PATH) +
          R"(","instruments":[)" + selected + "]}";
 }
-std::string FuturesStrategyJson(std::int64_t quantity = 1,
-                                std::int64_t limit = 1, std::int64_t gross = 2,
-                                std::uint64_t timeout_ms = 100,
+std::string FuturesStrategyJson(int64_t quantity = 1, int64_t limit = 1,
+                                int64_t gross = 2, uint64_t timeout_ms = 100,
                                 bool generic = false) {
   const std::string selected = generic ? R"("venue":"DCE","symbol":"a2701",)"
                                        : R"("venue":"SHFE","symbol":"rb2701",)";
@@ -43,28 +44,30 @@ std::string FuturesStrategyJson(std::int64_t quantity = 1,
          std::to_string(timeout_ms) + R"(,"retry_delay_ms":5}})";
 }
 struct FuturesFrame {
-  std::uint64_t at;
-  std::int64_t bid;
-  std::int64_t ask;
-  std::int64_t quantity = 1;
+  uint64_t at;
+  int64_t bid;
+  int64_t ask;
+  int64_t quantity = 1;
 };
 
 class FuturesSource final : public MarketDataSource {
  public:
   std::array<FuturesFrame, 16> frames = {};
-  std::size_t count = 0;
+  size_t count = 0;
   base::Status Prepare(const md::MarketDataConfig& config) noexcept override {
     id_ = config.instruments[0].instrument.id;
     return {};
   }
   base::Status Start(std::span<const model::InstrumentId>,
-                     std::uint64_t) noexcept override {
+                     uint64_t) noexcept override {
     active_ = true;
     return {};
   }
-  MarketDataPollResult Poll(std::uint64_t now,
+  MarketDataPollResult Poll(uint64_t now,
                             model::QuoteTick& out) noexcept override {
-    if (!active_ || next_ == count || frames[next_].at > now) return {};
+    if (!active_ || next_ == count || frames[next_].at > now) {
+      return {};
+    }
     const auto frame = frames[next_++];
     out = {};
     out.source_id = {1};
@@ -78,10 +81,9 @@ class FuturesSource final : public MarketDataSource {
     out.flags = 7;
     return {MarketDataPollState::kEvent, {}};
   }
-  std::optional<std::uint64_t> next_deadline() const noexcept override {
-    return active_ && next_ < count
-               ? std::optional<std::uint64_t>{frames[next_].at}
-               : std::nullopt;
+  std::optional<uint64_t> next_deadline() const noexcept override {
+    return active_ && next_ < count ? std::optional<uint64_t>{frames[next_].at}
+                                    : std::nullopt;
   }
   base::Status Stop() noexcept override {
     active_ = false;
@@ -93,7 +95,7 @@ class FuturesSource final : public MarketDataSource {
 
  private:
   model::InstrumentId id_;
-  std::size_t next_ = 0;
+  size_t next_ = 0;
   bool active_ = false;
 };
 
@@ -154,7 +156,7 @@ void CheckFuturesServiceScenario(bool closing, bool insufficient_cash = false,
     account.futures.available = -1;
     account.futures_positions[0].margin = 3500000000;
   }
-  for (std::uint64_t i = 1; i <= (closing ? 1U : 2U); ++i) {
+  for (uint64_t i = 1; i <= (closing ? 1U : 2U); ++i) {
     testing::MockTradingService::Event accepted;
     accepted.deadline = closing ? 5 * kMs : kMs;
     auto& d = accepted.dispatch;
@@ -182,7 +184,9 @@ void CheckFuturesServiceScenario(bool closing, bool insufficient_cash = false,
     canceled.dispatch.update.kind = model::OrderUpdateKind::kCanceled;
     canceled.dispatch.update.order.state = model::OrderState::kCanceled;
     canceled.dispatch.update.order.leaves_qty = 0;
-    if (closing) canceled.account = account;
+    if (closing) {
+      canceled.account = account;
+    }
     service.stopping_events.push_back(canceled);
   }
   StderrCapture capture;
@@ -309,7 +313,7 @@ TEST(FuturesBboServiceTest, BrokerAccountLeadingClosingReportsDoesNotReopen) {
   RunnerTestHarness runner(clock, environment, source, service);
   ASSERT_TRUE(runner
                   .LoadAndStart({YQUANT_TEST_FUTURES_BBO_PATH, strategy.path(),
-                           market.path()})
+                                 market.path()})
                   .ok())
       << runner.error_detail();
   ASSERT_TRUE(runner.Run().ok()) << runner.error_detail();

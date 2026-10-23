@@ -1,7 +1,10 @@
 #ifndef YQUANT_TRADING_CTP_TRADING_ADAPTER_H_
 #define YQUANT_TRADING_CTP_TRADING_ADAPTER_H_
 
+#include <stdint.h>
+
 #include <memory>
+#include <optional>
 
 #include "yquant/md/instrument_scope.h"
 #include "yquant/trading/trading_adapter.h"
@@ -14,6 +17,9 @@ namespace yquant::trading {
 // A lost connection or invalid report is terminal: requests are not replayed.
 class CtpTradingAdapter final : public TradingAdapter {
  public:
+  CtpTradingAdapter(const CtpTradingAdapter&) = delete;
+  CtpTradingAdapter& operator=(const CtpTradingAdapter&) = delete;
+
   // Borrows an initialized, immutable scope until destruction. Construction
   // does not connect or allocate transport storage.
   explicit CtpTradingAdapter(const md::InstrumentScope& instruments) noexcept;
@@ -22,7 +28,7 @@ class CtpTradingAdapter final : public TradingAdapter {
       const TradingConfig& config) noexcept override;
   // Bounded cold-path handshake. The external SDK must finish account queries
   // before the bridge sends Welcome; failure leaves requests disabled.
-  [[nodiscard]] base::Status Start(std::uint64_t now) noexcept override;
+  [[nodiscard]] base::Status Start(uint64_t now) noexcept override;
   [[nodiscard]] base::Status ReadAccountSnapshot(
       TradingAccountSnapshot& out) noexcept override;
   // Copies the account paired with the last welcome/report/account message.
@@ -31,17 +37,16 @@ class CtpTradingAdapter final : public TradingAdapter {
       BrokerAccountSnapshot& out) noexcept override;
   [[nodiscard]] base::Status SendOrder(model::ClientOrderId id,
                                        const model::OrderRequest& request,
-                                       std::uint64_t now) noexcept override;
+                                       uint64_t now) noexcept override;
   [[nodiscard]] base::Status SendCancel(
       model::ClientOrderId id, const model::BrokerOrderId& broker_order_id,
-      model::CancelRequestId cancel_request_id,
-      std::uint64_t now) noexcept override;
+      model::CancelRequestId cancel_request_id, uint64_t now) noexcept override;
   // Poll sends Stop only after all local orders settle, then exposes final
   // account messages before acknowledging the bridge's Drained response.
   void BeginStopping() noexcept override;
-  [[nodiscard]] TradingPollResult Poll(std::uint64_t now,
+  [[nodiscard]] TradingPollResult Poll(uint64_t now,
                                        TradingEvent& out) noexcept override;
-  std::optional<std::uint64_t> next_deadline() const noexcept override;
+  std::optional<uint64_t> next_deadline() const noexcept override;
   bool is_drained() const noexcept override;
   // Releases transport storage. Normal drain confirmation is driven by
   // BeginStopping/Poll/is_drained; a direct Stop is not that confirmation.

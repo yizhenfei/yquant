@@ -1,7 +1,9 @@
+#include <stddef.h>
+#include <stdint.h>
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <cstdint>
 #include <limits>
 
 #include "base/internal/spsc_queue_layout.h"
@@ -13,10 +15,9 @@ namespace {
 
 // Return fixed diagnostic text so successful cases do not create a GoogleTest
 // trace or message for each combination in the exhaustive loop.
-const char* CheckEmptyQueueBoundary(std::uint64_t capacity,
-                                    std::uint64_t position,
-                                    std::size_t reserved_size,
-                                    std::size_t committed_size) {
+const char* CheckEmptyQueueBoundary(uint64_t capacity, uint64_t position,
+                                    size_t reserved_size,
+                                    size_t committed_size) {
   constexpr std::byte kSentinel{0x66};
   alignas(128) std::array<std::byte, 640> memory;
   memory.fill(kSentinel);
@@ -46,19 +47,20 @@ const char* CheckEmptyQueueBoundary(std::uint64_t capacity,
     }
     result = producer.TryReserve(reserved_size);
   }
-  if (result.status != SpscStatus::kSuccess)
+  if (result.status != SpscStatus::kSuccess) {
     return "reserve after tail reclaim";
+  }
   auto output = result.reservation.payload();
-  const auto data_begin = reinterpret_cast<std::uintptr_t>(memory.data()) +
-                          internal::kSpscDataOffset;
-  const auto payload_begin = reinterpret_cast<std::uintptr_t>(output.data());
+  const auto data_begin =
+      reinterpret_cast<uintptr_t>(memory.data()) + internal::kSpscDataOffset;
+  const auto payload_begin = reinterpret_cast<uintptr_t>(output.data());
   if (output.size() != reserved_size ||
       payload_begin < data_begin + internal::kSpscFrameHeaderBytes ||
       payload_begin > data_begin + capacity ||
       output.size() > data_begin + capacity - payload_begin) {
     return "contiguous frame bounds";
   }
-  for (std::size_t i = 0; i < output.size(); ++i) {
+  for (size_t i = 0; i < output.size(); ++i) {
     output[i] = static_cast<std::byte>(i ^ 0xa5);
   }
   const std::byte* payload_address = output.data();
@@ -76,7 +78,7 @@ const char* CheckEmptyQueueBoundary(std::uint64_t capacity,
       read.lease.payload().data() != payload_address) {
     return "committed prefix and zero-copy address";
   }
-  for (std::size_t i = 0; i < committed_size; ++i) {
+  for (size_t i = 0; i < committed_size; ++i) {
     if (read.lease.payload()[i] != static_cast<std::byte>(i ^ 0xa5)) {
       return "committed payload bytes";
     }
@@ -95,17 +97,16 @@ const char* CheckEmptyQueueBoundary(std::uint64_t capacity,
 }
 
 TEST(SpscQueueExhaustiveTest, EmptyPositionsLengthsAndCounterWrap) {
-  std::uint64_t cases = 0;
-  for (std::uint64_t capacity = 4; capacity <= 256; capacity *= 2) {
+  uint64_t cases = 0;
+  for (uint64_t capacity = 4; capacity <= 256; capacity *= 2) {
     for (bool near_counter_wrap : {false, true}) {
       const auto base =
           near_counter_wrap
-              ? std::numeric_limits<std::uint64_t>::max() & ~(capacity - 1)
+              ? std::numeric_limits<uint64_t>::max() & ~(capacity - 1)
               : 0;
-      for (std::uint64_t offset = 0; offset < capacity; ++offset) {
-        for (std::size_t reserved = 0; reserved <= capacity - 4; ++reserved) {
-          for (std::size_t committed :
-               {std::size_t{0}, reserved / 2, reserved}) {
+      for (uint64_t offset = 0; offset < capacity; ++offset) {
+        for (size_t reserved = 0; reserved <= capacity - 4; ++reserved) {
+          for (size_t committed : {size_t{0}, reserved / 2, reserved}) {
             const char* failure = CheckEmptyQueueBoundary(
                 capacity, base + offset, reserved, committed);
             ASSERT_EQ(failure, nullptr)

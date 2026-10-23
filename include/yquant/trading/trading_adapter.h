@@ -1,7 +1,8 @@
 #ifndef YQUANT_TRADING_TRADING_ADAPTER_H_
 #define YQUANT_TRADING_TRADING_ADAPTER_H_
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <optional>
 
 #include "yquant/base/status.h"
@@ -17,10 +18,10 @@ namespace yquant::trading {
 struct TradingEvent {
   model::ClientOrderId client_order_id;
   model::BrokerOrderId broker_order_id;
-  std::uint64_t report_sequence = 0;
+  uint64_t report_sequence = 0;
   model::OrderUpdateKind kind = model::OrderUpdateKind::kAccepted;
-  std::int64_t cumulative_filled_qty = 0;
-  std::uint64_t receive_time_ns = 0;
+  int64_t cumulative_filled_qty = 0;
+  uint64_t receive_time_ns = 0;
   model::Fill fill;
   model::CancelRequestId cancel_request_id;
   model::OrderReason reason;
@@ -46,7 +47,7 @@ class TradingAdapter {
   // to Stop; a successful Prepare is followed by at most one Start.
   [[nodiscard]] virtual base::Status Prepare(
       const TradingConfig& config) noexcept = 0;
-  [[nodiscard]] virtual base::Status Start(std::uint64_t now) noexcept = 0;
+  [[nodiscard]] virtual base::Status Start(uint64_t now) noexcept = 0;
   // Announces irreversible gateway shutdown. This only changes adapter-local
   // control state; all transport and final broker-account work stays in Poll.
   // Called once after Prepare, including when startup was only partial.
@@ -67,7 +68,7 @@ class TradingAdapter {
   // schedule matching facts, delivered later through Poll; never calls back
   // into the strategy. Live adapters can retain this no-op implementation.
   [[nodiscard]] virtual base::Status OnQuote(const model::QuoteTick&,
-                                             std::uint64_t) noexcept {
+                                             uint64_t) noexcept {
     return {};
   }
   // Success means adapter-local acceptance, not broker acknowledgement. Inputs
@@ -75,18 +76,18 @@ class TradingAdapter {
   // uncertain attempt and never automatically resends the same request.
   [[nodiscard]] virtual base::Status SendOrder(
       model::ClientOrderId id, const model::OrderRequest& request,
-      std::uint64_t now) noexcept = 0;
+      uint64_t now) noexcept = 0;
   // Must also settle requests registered before an order finished filling;
   // such orders produce an associated rejection rather than being forgotten.
   [[nodiscard]] virtual base::Status SendCancel(
       model::ClientOrderId id, const model::BrokerOrderId& broker_order_id,
-      model::CancelRequestId cancel_request_id, std::uint64_t now) noexcept = 0;
+      model::CancelRequestId cancel_request_id, uint64_t now) noexcept = 0;
   // Nonblocking, allocation-free and bounded work; emits at most one event.
   // Idle/error preserve out. now shares the host's monotonic clock domain.
-  [[nodiscard]] virtual TradingPollResult Poll(std::uint64_t now,
+  [[nodiscard]] virtual TradingPollResult Poll(uint64_t now,
                                                TradingEvent& out) noexcept = 0;
   // Earliest pending event; empty if none. Idle must not retain a due deadline.
-  virtual std::optional<std::uint64_t> next_deadline() const noexcept = 0;
+  virtual std::optional<uint64_t> next_deadline() const noexcept = 0;
   // True only with no active orders, outstanding requests or pending events.
   virtual bool is_drained() const noexcept = 0;
   // Idempotent synchronous resource release, safe after partial preparation.

@@ -1,16 +1,19 @@
 #include <arpa/inet.h>
+#include <stdint.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <chrono>
 #include <cstdio>
 #include <string>
+#include <string_view>
 #include <thread>
 
-#include "../marketd/test_support.h"
 #include "gtest/gtest.h"
+#include "marketd/test_support.h"
 #include "process_support.h"
 #include "scoped_working_directory.h"
+#include "yquant/base/format.h"
 #include "yquant/trading/connection.h"
 
 namespace yquant::tradingd {
@@ -18,9 +21,11 @@ namespace {
 using marketd::testing::RuntimeDirectory;
 using testing::ChildProcess;
 
-std::uint16_t AvailablePort() {
+uint16_t AvailablePort() {
   const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) return 0;
+  if (fd < 0) {
+    return 0;
+  }
   sockaddr_in address{};
   address.sin_family = AF_INET;
   address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -69,7 +74,7 @@ class TradingdProcessTest : public ::testing::Test {
               R"("heartbeat_timeout_ms":3000,"shutdown_timeout_ms":2000})"));
     }
   }
-  void Broker(std::string_view mode, std::int64_t cash) {
+  void Broker(std::string_view mode, int64_t cash) {
     ASSERT_TRUE(directory_.Write(
         "broker.json",
         R"({"adapter":"mock","mode":")" + std::string(mode) +
@@ -106,7 +111,7 @@ class TradingdProcessTest : public ::testing::Test {
     trading::Message hello;
     hello.type = trading::MessageType::kHello;
     hello.client_id = 99;
-    std::snprintf(hello.token, sizeof(hello.token), "test-secret");
+    ::yquant::base::FormatTo(hello.token, sizeof(hello.token), "test-secret");
     hello.instrument_count = 1;
     ASSERT_EQ(model::MakeInstrumentId("SSE", "600000", hello.instruments[0].id),
               base::ErrorCode::kOk);
@@ -120,8 +125,12 @@ class TradingdProcessTest : public ::testing::Test {
         std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (std::chrono::steady_clock::now() < deadline) {
       const auto result = connection.Poll(message);
-      if (result.state == trading::ReceiveState::kMessage) return true;
-      if (result.state != trading::ReceiveState::kIdle) return false;
+      if (result.state == trading::ReceiveState::kMessage) {
+        return true;
+      }
+      if (result.state != trading::ReceiveState::kIdle) {
+        return false;
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     return false;
@@ -129,11 +138,11 @@ class TradingdProcessTest : public ::testing::Test {
   RuntimeDirectory directory_;
   ::yquant::testing::ScopedWorkingDirectory working_directory_{
       directory_.path()};
-  std::uint16_t port_ = 0;
+  uint16_t port_ = 0;
 };
 
 TEST_F(TradingdProcessTest, TwoStrategiesFillAgainstOneAccount) {
-  constexpr std::int64_t kCash = 100000000000000;
+  constexpr int64_t kCash = 100000000000000;
   Broker("fill", kCash);
   ChildProcess server;
   ASSERT_EQ(StartServer(server), 0);
@@ -186,7 +195,7 @@ TEST_F(TradingdProcessTest, TwoStrategiesFillAgainstOneAccount) {
 
 TEST_F(TradingdProcessTest,
        SharedCashIsReservedOnceAndDisconnectReleasesAfterCancel) {
-  constexpr std::int64_t kCash = 2002000000;
+  constexpr int64_t kCash = 2002000000;
   Broker("working", kCash);
   ChildProcess server;
   ASSERT_EQ(StartServer(server), 0);

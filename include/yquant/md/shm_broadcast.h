@@ -1,9 +1,10 @@
 #ifndef YQUANT_MD_SHM_BROADCAST_H_
 #define YQUANT_MD_SHM_BROADCAST_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <chrono>
-#include <cstddef>
-#include <cstdint>
 #include <memory>
 #include <optional>
 
@@ -25,8 +26,8 @@ using RefreshResult = base::ShmRefreshResult;
 
 struct PublishConfig {
   Endpoint endpoint;
-  std::size_t capacity = 1024;
-  std::size_t max_payload_size = 256;
+  size_t capacity = 1024;
+  size_t max_payload_size = 256;
 };
 
 // Validates endpoint spelling and the exact platform layout without opening or
@@ -49,8 +50,8 @@ enum class ReadStatus {
 struct ReadResult {
   ReadStatus status = ReadStatus::kEmpty;
   Generation generation;
-  std::uint64_t sequence = 0;
-  std::size_t attempts = 0;
+  uint64_t sequence = 0;
+  size_t attempts = 0;
   std::optional<GapToken> gap;
   base::Status error;
 };
@@ -73,12 +74,12 @@ class ShmPublisher {
   // Copies event before returning. On failure, nothing is published and the
   // optional sequence output is unchanged. No allocation occurs on this path.
   [[nodiscard]] base::Status Publish(EventView event,
-                                     std::uint64_t* sequence = nullptr);
+                                     uint64_t* sequence = nullptr);
   // Updates liveness while idle. Inherited publishers cannot publish or tick.
   [[nodiscard]] base::Status Tick();
   Generation generation() const noexcept;
-  std::size_t capacity() const noexcept;
-  std::size_t max_payload_size() const noexcept;
+  size_t capacity() const noexcept;
+  size_t max_payload_size() const noexcept;
   // Idempotent; stops the generation, retires discovery and releases the lock.
   void Close() noexcept;
 
@@ -110,8 +111,7 @@ class ShmReader {
   [[nodiscard]] ReadResult TryNext(EventBuffer& buffer, ReadBudget budget = {});
   // Requires this reader's current token. Candidate can already be stale.
   // On failure the gap, cursor and output remain unchanged.
-  [[nodiscard]] base::Status Resume(const GapToken& token,
-                                    std::uint64_t& sequence,
+  [[nodiscard]] base::Status Resume(const GapToken& token, uint64_t& sequence,
                                     ResumePosition position = {});
   // Cold-path discovery and heartbeat check. A discovered replacement makes
   // stream change sticky. Failure leaves output unchanged. No automatic attach.
@@ -119,8 +119,8 @@ class ShmReader {
       RefreshResult& result,
       std::chrono::nanoseconds stale_after = std::chrono::seconds(3));
   Generation generation() const noexcept;
-  std::uint64_t next_sequence() const noexcept;
-  std::size_t max_payload_size() const noexcept;
+  uint64_t next_sequence() const noexcept;
+  size_t max_payload_size() const noexcept;
   void Close() noexcept;
 
  private:

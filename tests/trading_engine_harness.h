@@ -1,6 +1,12 @@
 #ifndef YQUANT_TESTS_TRADING_ENGINE_HARNESS_H_
 #define YQUANT_TESTS_TRADING_ENGINE_HARNESS_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
+#include <cstddef>
+#include <optional>
+#include <span>
 #include <utility>
 
 #include "yquant/strategy/callback_phase.h"
@@ -25,7 +31,9 @@ class TradingEngineHarness {
                          : trading::TradingAdapterKind::kMock;
     auto status = engine_.Init(config, {});
     initialized_ = status.ok();
-    if (!status.ok()) engine_.Reset();
+    if (!status.ok()) {
+      engine_.Reset();
+    }
     return status;
   }
   void SetRunning(bool running) noexcept { running_ = running; }
@@ -37,16 +45,17 @@ class TradingEngineHarness {
     engine_.SetAcceptingRequests(running_ && business);
   }
   void EndCallback() noexcept { engine_.SetAcceptingRequests(false); }
-  base::Status ProcessRequests(trading::TradingAdapter& adapter,
-                               std::uint64_t now,
-                               std::size_t limit = 64) noexcept {
+  base::Status ProcessRequests(trading::TradingAdapter& adapter, uint64_t now,
+                               size_t limit = 64) noexcept {
     adapter_.target = &adapter;
     return engine_.ProcessRequests(now, limit);
   }
   base::Status RestoreCheckpoint(std::span<const std::byte> bytes) noexcept {
     if (!initialized_) {
       auto status = Configure({});
-      if (!status.ok()) return status;
+      if (!status.ok()) {
+        return status;
+      }
     }
     return engine_.RestoreCheckpoint(bytes);
   }
@@ -55,12 +64,14 @@ class TradingEngineHarness {
                                  std::span<const model::Fill> fills) noexcept {
     if (!initialized_) {
       auto status = Configure({});
-      if (!status.ok()) return status;
+      if (!status.ok()) {
+        return status;
+      }
     }
     return engine_.RestoreReconciled(account, orders, fills);
   }
 #define YQUANT_TEST_ENGINE_FORWARD(name)              \
-  template <class... Args>                            \
+  template <typename... Args>                         \
   decltype(auto) name(Args&&... args) noexcept {      \
     return engine_.name(std::forward<Args>(args)...); \
   }
@@ -77,7 +88,7 @@ class TradingEngineHarness {
   YQUANT_TEST_ENGINE_FORWARD(ApplyQuote)
   YQUANT_TEST_ENGINE_FORWARD(ScheduleStopping)
   YQUANT_TEST_ENGINE_FORWARD(SetMutationSink)
-  base::Status SetNextOrderIdAtLeast(std::uint64_t id) noexcept {
+  base::Status SetNextOrderIdAtLeast(uint64_t id) noexcept {
     return running_ ? base::Status{base::ErrorCode::kInvalidState, {}}
                     : engine_.SetNextOrderIdAtLeast(id);
   }
@@ -87,7 +98,7 @@ class TradingEngineHarness {
   YQUANT_TEST_ENGINE_FORWARD(Reset)
 #undef YQUANT_TEST_ENGINE_FORWARD
 #define YQUANT_TEST_ENGINE_QUERY(name)                 \
-  template <class... Args>                             \
+  template <typename... Args>                          \
   decltype(auto) name(Args&&... args) const noexcept { \
     return engine_.name(std::forward<Args>(args)...);  \
   }
@@ -121,7 +132,7 @@ class TradingEngineHarness {
     base::Status Prepare(const trading::TradingConfig&) noexcept override {
       return {};
     }
-    base::Status Start(std::uint64_t) noexcept override { return {}; }
+    base::Status Start(uint64_t) noexcept override { return {}; }
     base::Status ReadAccountSnapshot(
         trading::TradingAccountSnapshot& out) noexcept override {
       out = initial;
@@ -129,20 +140,20 @@ class TradingEngineHarness {
     }
     base::Status SendOrder(model::ClientOrderId id,
                            const model::OrderRequest& request,
-                           std::uint64_t now) noexcept override {
+                           uint64_t now) noexcept override {
       return target->SendOrder(id, request, now);
     }
     base::Status SendCancel(model::ClientOrderId id,
                             const model::BrokerOrderId& broker,
                             model::CancelRequestId cancel,
-                            std::uint64_t now) noexcept override {
+                            uint64_t now) noexcept override {
       return target->SendCancel(id, broker, cancel, now);
     }
     trading::TradingPollResult Poll(
-        std::uint64_t now, trading::TradingEvent& out) noexcept override {
+        uint64_t now, trading::TradingEvent& out) noexcept override {
       return target ? target->Poll(now, out) : trading::TradingPollResult{};
     }
-    std::optional<std::uint64_t> next_deadline() const noexcept override {
+    std::optional<uint64_t> next_deadline() const noexcept override {
       return target ? target->next_deadline() : std::nullopt;
     }
     bool is_drained() const noexcept override {

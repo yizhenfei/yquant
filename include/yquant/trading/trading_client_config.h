@@ -1,6 +1,8 @@
 #ifndef YQUANT_TRADING_TRADING_CLIENT_CONFIG_H_
 #define YQUANT_TRADING_TRADING_CLIENT_CONFIG_H_
 
+#include <stdint.h>
+
 #include "yquant/base/config_error.h"
 #include "yquant/trading/protocol.h"
 #include "yquant/trading/trading_limits.h"
@@ -11,11 +13,11 @@ namespace yquant::trading {
 // broker configuration belong to tradingd; the client never bootstraps them.
 struct TradingClientConfig {
   Endpoint endpoint;
-  std::uint64_t client_id = 0;
+  uint64_t client_id = 0;
   char token[kMaxTokenBytes + 1] = {};
-  std::uint64_t connect_timeout_ns = kDefaultTradingTimeoutNs;
-  std::uint64_t heartbeat_timeout_ns = kDefaultTradingTimeoutNs;
-  std::uint64_t shutdown_timeout_ns = kDefaultTradingTimeoutNs;
+  uint64_t connect_timeout_ns = kDefaultTradingTimeoutNs;
+  uint64_t heartbeat_timeout_ns = kDefaultTradingTimeoutNs;
+  uint64_t shutdown_timeout_ns = kDefaultTradingTimeoutNs;
 };
 
 // Requires a nonzero numeric IPv4 endpoint/identity, a printable ASCII token,
@@ -27,6 +29,11 @@ struct TradingClientConfig {
 // resets config() and retains owned diagnostics until the next Load.
 class TradingClientConfigLoader {
  public:
+  TradingClientConfigLoader() = default;
+  TradingClientConfigLoader(const TradingClientConfigLoader&) = default;
+  TradingClientConfigLoader& operator=(const TradingClientConfigLoader&) =
+      default;
+
   [[nodiscard]] base::Status Load(const char* path) noexcept;
   const TradingClientConfig& config() const noexcept { return config_; }
   const base::ConfigError& error() const noexcept { return error_; }

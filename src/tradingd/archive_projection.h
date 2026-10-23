@@ -1,9 +1,11 @@
 #ifndef YQUANT_TRADINGD_ARCHIVE_PROJECTION_H_
 #define YQUANT_TRADINGD_ARCHIVE_PROJECTION_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
 #include <cstddef>
-#include <cstdint>
 #include <memory>
 #include <span>
 #include <string_view>
@@ -17,34 +19,34 @@ namespace yquant::tradingd {
 
 // Retained identity in the original gateway slot. Empty slots have zero IDs.
 struct ArchiveSession {
-  std::size_t slot = 0;
-  std::uint64_t client_id = 0;
-  std::uint64_t session_id = 0;
+  size_t slot = 0;
+  uint64_t client_id = 0;
+  uint64_t session_id = 0;
   std::array<trading::InstrumentSpec, trading::kMaxInstruments> instruments{};
-  std::size_t instrument_count = 0;
+  size_t instrument_count = 0;
 };
 
 // SQL business identity is (session_id, local_order_id); core_id is zero for
 // gateway rejections. snapshot retains gateway-core order IDs for accepted
 // orders, while report_sequence and local_cancel_id use client-visible IDs.
 struct ArchiveOrder {
-  std::uint64_t client_id = 0;
-  std::uint64_t session_id = 0;
-  std::uint64_t local_order_id = 0;
+  uint64_t client_id = 0;
+  uint64_t session_id = 0;
+  uint64_t local_order_id = 0;
   model::ClientOrderId core_id;
   model::OrderSnapshot snapshot;
-  std::uint64_t report_sequence = 0;
+  uint64_t report_sequence = 0;
   model::CancelRequestId local_cancel_id;
   // Gateway ownership mapping for translating subsequent cancel callbacks.
   model::CancelRequestId core_cancel_id;
-  std::uint64_t source_lsn = 0;
+  uint64_t source_lsn = 0;
 };
 
 // Last replayed client-visible callback, valid until the next replay/restore.
 struct ArchiveOrderUpdate {
-  std::uint64_t client_id = 0;
-  std::uint64_t session_id = 0;
-  std::uint64_t local_order_id = 0;
+  uint64_t client_id = 0;
+  uint64_t session_id = 0;
+  uint64_t local_order_id = 0;
   model::OrderUpdate update;
   bool notify_order = true;
   bool has_fill = false;
@@ -78,16 +80,15 @@ class ArchiveProjection {
   // mock records are validated and advance progress without changing accounts.
   // A failed replay must stop the consumer; discard/rebuild before retrying.
   [[nodiscard]] base::Status Replay(
-      std::uint16_t type, std::uint64_t lsn,
-      std::span<const std::byte> payload) noexcept;
+      uint16_t type, uint64_t lsn, std::span<const std::byte> payload) noexcept;
 
-  const std::array<std::uint64_t, 2>& ledger_id() const noexcept {
+  const std::array<uint64_t, 2>& ledger_id() const noexcept {
     return ledger_id_;
   }
-  std::uint64_t run_id() const noexcept { return run_id_; }
+  uint64_t run_id() const noexcept { return run_id_; }
   std::string_view account_key() const noexcept { return account_key_; }
-  std::uint64_t last_lsn() const noexcept { return last_lsn_; }
-  std::uint64_t last_record_time() const noexcept { return last_record_time_; }
+  uint64_t last_lsn() const noexcept { return last_lsn_; }
+  uint64_t last_record_time() const noexcept { return last_record_time_; }
   std::span<const ArchiveSession> sessions() const noexcept;
   std::span<const trading::InstrumentSpec> instruments() const noexcept;
   std::span<const ArchiveOrder> orders() const noexcept;
@@ -97,7 +98,7 @@ class ArchiveProjection {
   // Retained fill indices share TradingEngine::TryGetFillAt's ordering.
   // Baseline fills use zero; later fills retain their introducing record LSN.
   // Invalid indices return zero.
-  std::uint64_t FillSourceLsn(std::size_t index) const noexcept;
+  uint64_t FillSourceLsn(size_t index) const noexcept;
   bool has_update() const noexcept;
   // Requires has_update(). The result lives until the next replay/restore.
   const ArchiveOrderUpdate& last_update() const noexcept;
@@ -111,10 +112,10 @@ class ArchiveProjection {
   trading::MockTradingAdapter replay_adapter_;
   trading::TradingEngine trading_;
   std::unique_ptr<Storage> storage_;
-  std::array<std::uint64_t, 2> ledger_id_{};
-  std::uint64_t run_id_ = 0;
-  std::uint64_t last_lsn_ = 0;
-  std::uint64_t last_record_time_ = 0;
+  std::array<uint64_t, 2> ledger_id_{};
+  uint64_t run_id_ = 0;
+  uint64_t last_lsn_ = 0;
+  uint64_t last_record_time_ = 0;
   char account_key_[kMaxAccountKeyBytes + 1]{};
 };
 

@@ -2,6 +2,8 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <spawn.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -9,7 +11,7 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
-#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -23,6 +25,7 @@
 #include "scoped_working_directory.h"
 #include "test_support.h"
 #include "trading_gateway.h"
+#include "yquant/base/format.h"
 #include "yquant/md/quote_codec.h"
 #include "yquant/md/shm_broadcast.h"
 
@@ -48,7 +51,9 @@ class ChildProcess {
       while (waitpid(pid_, &status_, 0) == -1 && errno == EINTR) {
       }
     }
-    if (output_fd_ >= 0) close(output_fd_);
+    if (output_fd_ >= 0) {
+      close(output_fd_);
+    }
   }
   ChildProcess(const ChildProcess&) = delete;
   ChildProcess& operator=(const ChildProcess&) = delete;
@@ -57,30 +62,40 @@ class ChildProcess {
     auto adapted = arguments;
     if (std::string_view(executable) == YQUANT_TEST_STRATEGYD_PATH) {
       const int error = gateway_.Prepare(adapted);
-      if (error) return error;
+      if (error) {
+        return error;
+      }
     }
     int output[2];
-    if (pipe(output) != 0) return errno;
+    if (pipe(output) != 0) {
+      return errno;
+    }
     std::vector<std::string> storage{executable};
     storage.insert(storage.end(), adapted.begin(), adapted.end());
     std::vector<char*> argv;
-    for (auto& argument : storage) argv.push_back(argument.data());
+    for (auto& argument : storage) {
+      argv.push_back(argument.data());
+    }
     argv.push_back(nullptr);
     posix_spawn_file_actions_t actions;
     int error = posix_spawn_file_actions_init(&actions);
     if (error == 0) {
       error =
           posix_spawn_file_actions_adddup2(&actions, output[1], STDOUT_FILENO);
-      if (error == 0)
+      if (error == 0) {
         error = posix_spawn_file_actions_adddup2(&actions, output[1],
                                                  STDERR_FILENO);
-      if (error == 0)
+      }
+      if (error == 0) {
         error = posix_spawn_file_actions_addclose(&actions, output[0]);
-      if (error == 0)
+      }
+      if (error == 0) {
         error = posix_spawn_file_actions_addclose(&actions, output[1]);
-      if (error == 0)
+      }
+      if (error == 0) {
         error = posix_spawn(&pid_, executable, &actions, nullptr, argv.data(),
                             environ);
+      }
       posix_spawn_file_actions_destroy(&actions);
     }
     close(output[1]);
@@ -90,8 +105,12 @@ class ChildProcess {
       return error;
     }
     output_fd_ = output[0];
-    if (fcntl(output_fd_, F_SETFL, O_NONBLOCK) != 0) return errno;
-    if (fcntl(output_fd_, F_SETFD, FD_CLOEXEC) != 0) return errno;
+    if (fcntl(output_fd_, F_SETFL, O_NONBLOCK) != 0) {
+      return errno;
+    }
+    if (fcntl(output_fd_, F_SETFD, FD_CLOEXEC) != 0) {
+      return errno;
+    }
     return 0;
   }
 
@@ -114,12 +133,13 @@ class ChildProcess {
     char buffer[1024];
     for (;;) {
       const auto count = read(output_fd_, buffer, sizeof(buffer));
-      if (count > 0)
-        output_.append(buffer, static_cast<std::size_t>(count));
-      else if (count < 0 && errno == EINTR)
+      if (count > 0) {
+        output_.append(buffer, static_cast<size_t>(count));
+      } else if (count < 0 && errno == EINTR) {
         continue;
-      else
+      } else {
         return;
+      }
     }
   }
 
@@ -140,16 +160,23 @@ class ChildProcess {
           return false;
         }
       }
-      if (done()) return true;
-      if (pid_ < 0) return false;
+      if (done()) {
+        return true;
+      }
+      if (pid_ < 0) {
+        return false;
+      }
       const auto remaining =
           std::chrono::duration_cast<std::chrono::milliseconds>(
               deadline - std::chrono::steady_clock::now());
-      if (remaining.count() <= 0) return false;
+      if (remaining.count() <= 0) {
+        return false;
+      }
       pollfd descriptor{output_fd_, POLLIN, 0};
       if (poll(&descriptor, 1, static_cast<int>(remaining.count())) < 0 &&
-          errno != EINTR)
+          errno != EINTR) {
         return false;
+      }
     }
   }
 
@@ -167,20 +194,26 @@ bool ReadQuote(md::ShmReader& reader, model::QuoteTick& out) {
   md::EventBuffer buffer;
   for (;;) {
     const auto result = reader.TryNext(buffer);
-    if (result.status == md::ReadStatus::kEvent)
+    if (result.status == md::ReadStatus::kEvent) {
       return md::DecodeQuoteEvent(buffer.view(), out).ok();
+    }
     if (result.status != md::ReadStatus::kEmpty &&
-        result.status != md::ReadStatus::kRetry)
+        result.status != md::ReadStatus::kRetry) {
       return false;
-    if (std::chrono::steady_clock::now() >= deadline) return false;
+    }
+    if (std::chrono::steady_clock::now() >= deadline) {
+      return false;
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 }
 
 // Reserves a kernel-selected local TCP port until this setup call returns.
-std::uint16_t AvailablePort() {
+uint16_t AvailablePort() {
   const int descriptor = socket(AF_INET, SOCK_STREAM, 0);
-  if (descriptor < 0) return 0;
+  if (descriptor < 0) {
+    return 0;
+  }
   sockaddr_in address = {};
   address.sin_family = AF_INET;
   address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -265,7 +298,7 @@ TEST_F(MarketdIntegrationTest, TwoStrategiesAndRawReadersObserveBroadcast) {
       << first_strategy.output();
   ASSERT_TRUE(second_strategy.WaitForOutput("first quote received"))
       << second_strategy.output();
-  for (std::uint64_t i = 1; i <= 16; ++i) {
+  for (uint64_t i = 1; i <= 16; ++i) {
     model::QuoteTick first;
     model::QuoteTick second;
     ASSERT_TRUE(ReadQuote(first_reader, first));
@@ -338,7 +371,8 @@ TEST_F(MarketdIntegrationTest, ShmQuotesDriveTradingAndAccountSettlement) {
           "position_reserved=0\n"),
       std::string::npos);
   Stop(marketd);
-  EXPECT_FALSE(std::filesystem::exists(directory_.File("quotes.manifest")));
+  EXPECT_FALSE(::yquant::testing::files::Exists(
+      ::yquant::testing::files::FilePath(directory_.File("quotes.manifest"))));
 }
 
 TEST_F(MarketdIntegrationTest, DuplicatePublisherFailsWhileOriginalStaysLive) {
@@ -363,8 +397,10 @@ TEST_F(MarketdIntegrationTest, CheckConfigCreatesNoDiscoveryOrWriterLock) {
   ASSERT_TRUE(child.Wait()) << child.output();
   EXPECT_EQ(child.exit_code(), 0) << child.output();
   EXPECT_NE(child.output().find("configuration valid"), std::string::npos);
-  EXPECT_FALSE(std::filesystem::exists(directory_.File("quotes.manifest")));
-  EXPECT_FALSE(std::filesystem::exists(directory_.File("quotes.lock")));
+  EXPECT_FALSE(::yquant::testing::files::Exists(
+      ::yquant::testing::files::FilePath(directory_.File("quotes.manifest"))));
+  EXPECT_FALSE(::yquant::testing::files::Exists(
+      ::yquant::testing::files::FilePath(directory_.File("quotes.lock"))));
 }
 
 TEST_F(MarketdIntegrationTest, EventLimitExitsAndRemovesDiscovery) {
@@ -373,7 +409,8 @@ TEST_F(MarketdIntegrationTest, EventLimitExitsAndRemovesDiscovery) {
   ASSERT_TRUE(child.Wait()) << child.output();
   EXPECT_EQ(child.exit_code(), 0) << child.output();
   EXPECT_NE(child.output().find("Stopped events=17"), std::string::npos);
-  EXPECT_FALSE(std::filesystem::exists(directory_.File("quotes.manifest")));
+  EXPECT_FALSE(::yquant::testing::files::Exists(
+      ::yquant::testing::files::FilePath(directory_.File("quotes.manifest"))));
   md::ShmPublisher publisher;
   EXPECT_TRUE(publisher.Create({{directory_.path(), "quotes"}, 16, 80}).ok());
 }
@@ -459,7 +496,8 @@ TEST_F(MarketdIntegrationTest, HelpAndInvalidArgumentsHaveDeterministicExit) {
   ASSERT_EQ(StartMarketd(invalid, "local.json", {"--max-events", "0"}), 0);
   ASSERT_TRUE(invalid.Wait());
   EXPECT_EQ(invalid.exit_code(), 2);
-  EXPECT_FALSE(std::filesystem::exists(directory_.File("quotes.manifest")));
+  EXPECT_FALSE(::yquant::testing::files::Exists(
+      ::yquant::testing::files::FilePath(directory_.File("quotes.manifest"))));
 }
 
 TEST_F(MarketdIntegrationTest, RealHistoryRecordsAndReplaysEveryQuote) {
@@ -496,11 +534,12 @@ TEST_F(MarketdIntegrationTest, RealHistoryRecordsAndReplaysEveryQuote) {
   EXPECT_NE(second.output().find("Stopped events=367171"), std::string::npos);
 
   ReplayConfig csv;
-  std::snprintf(csv.path, sizeof(csv.path), "%s", csv_path.c_str());
+  ::yquant::base::FormatTo(csv.path, sizeof(csv.path), "{}", csv_path.c_str());
   csv.format = ReplayFormat::kDolphinDbCsv;
   csv.source_id = {7};
-  std::snprintf(csv.instrument_catalog, sizeof(csv.instrument_catalog), "%s",
-                directory_.File("instruments.json").c_str());
+  ::yquant::base::FormatTo(csv.instrument_catalog,
+                           sizeof(csv.instrument_catalog), "{}",
+                           directory_.File("instruments.json").c_str());
   csv.max_records = 400000;
   ReplayData original;
   ReplayData recorded;
@@ -518,10 +557,12 @@ TEST_F(MarketdIntegrationTest, RealHistoryRecordsAndReplaysEveryQuote) {
   ASSERT_EQ(original.size(), 367171U);
   ASSERT_EQ(recorded.size(), original.size());
   ASSERT_EQ(replayed.size(), original.size());
-  for (std::size_t i = 0; i < original.size(); ++i) {
+  for (size_t i = 0; i < original.size(); ++i) {
     EXPECT_EQ(recorded[i].quote, original[i].quote) << "record " << i;
     EXPECT_EQ(replayed[i].quote, original[i].quote) << "replay " << i;
-    if (::testing::Test::HasFailure()) break;
+    if (::testing::Test::HasFailure()) {
+      break;
+    }
   }
 }
 
@@ -545,11 +586,11 @@ TEST_F(MarketdIntegrationTest, ReplayFeedsSharedMemoryWhileRecording) {
   md::ShmReader reader;
   ASSERT_TRUE(reader.Open({directory_.path(), "quotes"}).ok());
   model::QuoteTick quote;
-  for (std::uint64_t sequence = 1; sequence <= 2; ++sequence) {
+  for (uint64_t sequence = 1; sequence <= 2; ++sequence) {
     ASSERT_TRUE(ReadQuote(reader, quote));
     EXPECT_EQ(quote.sequence, sequence);
     EXPECT_EQ(quote.source_id.value, 42U);
-    EXPECT_EQ(quote.bid_price, 999 + static_cast<std::int64_t>(sequence));
+    EXPECT_EQ(quote.bid_price, 999 + static_cast<int64_t>(sequence));
   }
   ASSERT_TRUE(marketd.Wait()) << marketd.output();
   EXPECT_EQ(marketd.exit_code(), 0) << marketd.output();

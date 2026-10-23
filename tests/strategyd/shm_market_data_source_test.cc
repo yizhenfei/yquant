@@ -1,14 +1,20 @@
 #include "strategyd/shm_market_data_source.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
+#include <span>
 #include <string>
+#include <system_error>
 
 #include "base/internal/shared_memory_mapping.h"
 #include "base/internal/shm_broadcast_layout.h"
 #include "base/internal/shm_stream_registry.h"
+#include "file_test_support.h"
 #include "gtest/gtest.h"
 #include "yquant/md/quote_codec.h"
 
@@ -25,7 +31,7 @@ class ShmMarketDataSourceTest : public ::testing::Test {
     std::strcpy(config_.runtime_directory, directory_);
     std::strcpy(config_.stream, "quotes");
     config_.instrument_count = 2;
-    for (std::size_t i = 0; i < config_.instrument_count; ++i) {
+    for (size_t i = 0; i < config_.instrument_count; ++i) {
       auto& instrument = config_.instruments[i].instrument;
       instrument.venue = model::Venue::kSse;
       const auto* symbol = i == 0 ? "600000" : "600001";
@@ -39,18 +45,18 @@ class ShmMarketDataSourceTest : public ::testing::Test {
   void TearDown() override {
     publisher_.Close();
     std::error_code error;
-    std::filesystem::remove_all(directory_, error);
+    ::yquant::testing::files::RemoveTree(
+        ::yquant::testing::files::FilePath(directory_), error);
     EXPECT_FALSE(error) << error.message();
   }
 
-  void StartPublisher(std::size_t capacity = 8) {
+  void StartPublisher(size_t capacity = 8) {
     const md::PublishConfig config{
         {directory_, "quotes"}, capacity, md::kQuoteFrameSize};
     ASSERT_TRUE(publisher_.Create(config).ok());
   }
 
-  model::QuoteTick Quote(std::size_t instrument = 0,
-                         std::uint64_t sequence = 1) {
+  model::QuoteTick Quote(size_t instrument = 0, uint64_t sequence = 1) {
     model::QuoteTick quote;
     quote.source_id = config_.source_id;
     quote.instrument_id = config_.instruments[instrument].instrument.id;
@@ -152,8 +158,9 @@ TEST_F(ShmMarketDataSourceTest, ReportsGapWithoutSkippingOrChangingOutput) {
   ASSERT_TRUE(source.Prepare(config_).ok());
   const auto id = config_.instruments[0].instrument.id;
   ASSERT_TRUE(source.Start(std::span(&id, 1), 0).ok());
-  for (std::uint64_t sequence = 1; sequence <= 3; ++sequence)
+  for (uint64_t sequence = 1; sequence <= 3; ++sequence) {
     Publish(Quote(0, sequence));
+  }
   model::QuoteTick output = Quote(0, 999);
   const auto unchanged = output;
   EXPECT_EQ(source.Poll(10, output).state, MarketDataPollState::kError);
@@ -248,8 +255,9 @@ TEST_F(ShmMarketDataSourceTest,
   ASSERT_TRUE(source.Prepare(config_).ok());
   const auto id = config_.instruments[0].instrument.id;
   ASSERT_TRUE(source.Start(std::span(&id, 1), 0).ok());
-  for (std::uint64_t sequence = 1; sequence <= 65; ++sequence)
+  for (uint64_t sequence = 1; sequence <= 65; ++sequence) {
     Publish(Quote(1, sequence));
+  }
   Publish(Quote(0));
   model::QuoteTick output;
   EXPECT_EQ(source.Poll(100, output).state, MarketDataPollState::kIdle);

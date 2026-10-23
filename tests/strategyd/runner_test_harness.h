@@ -1,7 +1,12 @@
 #ifndef YQUANT_TESTS_STRATEGYD_RUNNER_TEST_HARNESS_H_
 #define YQUANT_TESTS_STRATEGYD_RUNNER_TEST_HARNESS_H_
 
+#include <stdint.h>
+
 #include <memory>
+#include <optional>
+#include <span>
+#include <string_view>
 
 #include "mock_trading_service.h"
 #include "strategyd/strategy_assembly.h"
@@ -17,16 +22,13 @@ class IdleTestSource final : public MarketDataSource {
     return {};
   }
   base::Status Start(std::span<const model::InstrumentId>,
-                     std::uint64_t) noexcept override {
+                     uint64_t) noexcept override {
     return {};
   }
-  MarketDataPollResult Poll(std::uint64_t,
-                            model::QuoteTick&) noexcept override {
+  MarketDataPollResult Poll(uint64_t, model::QuoteTick&) noexcept override {
     return {};
   }
-  std::optional<std::uint64_t> next_deadline() const noexcept override {
-    return {};
-  }
+  std::optional<uint64_t> next_deadline() const noexcept override { return {}; }
   base::Status Stop() noexcept override { return {}; }
   const char* error_detail() const noexcept override { return ""; }
 };
@@ -40,7 +42,7 @@ class IdleTestEnvironment final : public base::EventLoopEnvironment {
     out = stop_requested_;
     return {};
   }
-  base::Status Wait(std::optional<std::uint64_t>) noexcept override {
+  base::Status Wait(std::optional<uint64_t>) noexcept override {
     return {base::ErrorCode::kInternalError, {}};
   }
 
@@ -84,13 +86,18 @@ class RunnerTestHarness {
         assembly_(clock_) {}
 
   base::Status LoadAndStart(StrategyOptions options) noexcept {
-    if (runner_ != nullptr)
+    if (runner_ != nullptr) {
       return runner_->LoadAndStart(assembly_.start_options());
-    if (finished_) return {base::ErrorCode::kInvalidState, {}};
-    if (options.market_data_config_path == nullptr)
+    }
+    if (finished_) {
+      return {base::ErrorCode::kInvalidState, {}};
+    }
+    if (options.market_data_config_path == nullptr) {
       options.market_data_config_path = YQUANT_TEST_MARKET_DATA_CONFIG_PATH;
-    if (options.trading_config_path == nullptr)
+    }
+    if (options.trading_config_path == nullptr) {
       options.trading_config_path = YQUANT_TEST_TRADING_CLIENT_CONFIG_PATH;
+    }
     const auto loaded = assembly_.Load(options, environment_);
     if (!loaded.ok() || assembly_.cancelled()) {
       finished_ = true;
@@ -122,7 +129,7 @@ class RunnerTestHarness {
     return runner_ != nullptr ? runner_->error_detail()
                               : assembly_.error_detail();
   }
-  std::uint64_t ignored_quote_count() const noexcept {
+  uint64_t ignored_quote_count() const noexcept {
     return runner_ != nullptr ? runner_->ignored_quote_count() : 0;
   }
 

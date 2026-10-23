@@ -1,9 +1,11 @@
 #include "yquant/md/quote_codec.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <cstdint>
 #include <limits>
 #include <span>
 #include <utility>
@@ -16,7 +18,7 @@ namespace {
 model::QuoteTick Quote() {
   model::QuoteTick quote;
   quote.source_id.value = 0x12345678;
-  quote.instrument_id.value = (std::uint64_t{2} << 32) | 600001;
+  quote.instrument_id.value = (uint64_t{2} << 32) | 600001;
   quote.sequence = 0xfedcba9876543210ULL;
   quote.event_time_ns = 1'701'234'567'890'123'456;
   quote.receive_time_ns = 123456;
@@ -62,7 +64,9 @@ TEST(QuoteCodecTest, FuturesIdentitiesUseTheExistingWireLayout) {
     quote.receive_time_ns = 0;
     EXPECT_EQ(decoded, quote);
     // A marker alone has no product/month and must not pass the decoder.
-    for (std::size_t byte = 16; byte != 20; ++byte) frame[byte] = std::byte{0};
+    for (size_t byte = 16; byte != 20; ++byte) {
+      frame[byte] = std::byte{0};
+    }
     frame[19] = std::byte{0x80};
     auto sentinel = Quote();
     EXPECT_EQ(DecodeQuote(frame, sentinel).code, base::ErrorCode::kCorrupt);
@@ -74,7 +78,7 @@ TEST(QuoteCodecTest, ReceiveClockIsNeitherValidatedNorTransmitted) {
   auto quote = Quote();
   QuoteFrame first;
   ASSERT_TRUE(EncodeQuote(quote, first).ok());
-  quote.receive_time_ns = std::numeric_limits<std::uint64_t>::max();
+  quote.receive_time_ns = std::numeric_limits<uint64_t>::max();
   EXPECT_TRUE(ValidateQuote(quote).ok());
   QuoteFrame second;
   ASSERT_TRUE(EncodeQuote(quote, second).ok());
@@ -118,8 +122,8 @@ TEST(QuoteCodecTest, InvalidQuotesPreserveEncodingOutput) {
   quote = Quote();
   quote.sequence = 0;
   reject(quote);
-  for (const auto id : {std::uint64_t{0}, std::uint64_t{4} << 32,
-                        (std::uint64_t{1} << 32) | 1000000}) {
+  for (const auto id :
+       {uint64_t{0}, uint64_t{4} << 32, (uint64_t{1} << 32) | 1000000}) {
     quote = Quote();
     quote.instrument_id.value = id;
     reject(quote);
@@ -134,13 +138,13 @@ TEST(QuoteCodecTest, InvalidQuotesPreserveEncodingOutput) {
   quote.ask_qty = -1;
   reject(quote);
   quote = Quote();
-  quote.flags &= ~static_cast<std::uint8_t>(model::QuoteFlag::kBidValid);
+  quote.flags &= ~static_cast<uint8_t>(model::QuoteFlag::kBidValid);
   reject(quote);
   quote = Quote();
-  quote.flags &= ~static_cast<std::uint8_t>(model::QuoteFlag::kAskValid);
+  quote.flags &= ~static_cast<uint8_t>(model::QuoteFlag::kAskValid);
   reject(quote);
   quote = Quote();
-  quote.flags &= ~static_cast<std::uint8_t>(model::QuoteFlag::kEventTimeValid);
+  quote.flags &= ~static_cast<uint8_t>(model::QuoteFlag::kEventTimeValid);
   reject(quote);
 }
 
@@ -159,7 +163,7 @@ TEST(QuoteCodecTest, InvalidFramesPreserveDecodingOutput) {
   std::copy(valid.begin(), valid.end(), oversized.begin());
   reject(oversized);
   // Magic, schema version, declared size, flags and reserved fields.
-  for (std::size_t offset : {0, 4, 6, 13, 14, 15, 72, 79}) {
+  for (size_t offset : {0, 4, 6, 13, 14, 15, 72, 79}) {
     auto broken = valid;
     broken[offset] ^= std::byte{0xff};
     reject(broken);

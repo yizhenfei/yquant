@@ -1,5 +1,7 @@
 #include "strategyd/strategy_config_loader.h"
 
+#include <stddef.h>
+
 #include <string>
 #include <string_view>
 
@@ -136,7 +138,7 @@ TEST(StrategyConfigLoaderTest, IdLimitCountsDecodedUtf8Bytes) {
 
 TEST(StrategyConfigLoaderTest, IdLimitDoesNotCountJsonEscapeText) {
   std::string id;
-  for (std::size_t i = 0; i < strategy::kMaxStrategyIdBytes; ++i) {
+  for (size_t i = 0; i < strategy::kMaxStrategyIdBytes; ++i) {
     id += R"(\u0061)";
   }
   ConfigFile file("{\"strategy_id\":\"" + id + "\",\"parameters\":{}}");
@@ -201,12 +203,12 @@ TEST(StrategyConfigLoaderTest, LimitsFileSizeAndAllowsTheExactLimit) {
 }
 
 TEST(StrategyConfigLoaderTest, AcceptsDepth64AndRejectsDepth65) {
-  for (const std::size_t depth :
+  for (const size_t depth :
        {base::kMaxConfigDepth, base::kMaxConfigDepth + 1}) {
     SCOPED_TRACE(depth);
     std::string json = R"({"strategy_id":"x","parameters":{"nested":)";
     // Root and parameters account for two container levels.
-    const std::size_t arrays = depth - 2;
+    const size_t arrays = depth - 2;
     json.append(arrays, '[');
     json += '0';
     json.append(arrays, ']');

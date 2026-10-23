@@ -1,9 +1,11 @@
 #ifndef YQUANT_MD_QUOTE_CODEC_H_
 #define YQUANT_MD_QUOTE_CODEC_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
 #include <cstddef>
-#include <cstdint>
 #include <span>
 
 #include "yquant/base/status.h"
@@ -12,8 +14,8 @@
 
 namespace yquant::md {
 
-inline constexpr std::size_t kQuoteFrameSize = 80;
-inline constexpr std::uint32_t kQuoteEventType = 1;
+inline constexpr size_t kQuoteFrameSize = 80;
+inline constexpr uint32_t kQuoteEventType = 1;
 using QuoteFrame = std::array<std::byte, kQuoteFrameSize>;
 
 // Validates a complete quote independently of any process-relative clock.

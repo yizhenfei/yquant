@@ -1,8 +1,10 @@
 #ifndef YQUANT_BASE_SPSC_QUEUE_H_
 #define YQUANT_BASE_SPSC_QUEUE_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <cstddef>
-#include <cstdint>
 #include <span>
 
 namespace yquant::base {
@@ -37,7 +39,7 @@ class SpscQueue final {
 
   struct SizeResult {
     SpscStatus status = SpscStatus::kInvalidState;
-    std::size_t bytes = 0;
+    size_t bytes = 0;
   };
 
   class WriteReservation final {
@@ -52,17 +54,17 @@ class SpscQueue final {
 
     [[nodiscard]] bool active() const noexcept { return owner_ != nullptr; }
     [[nodiscard]] std::span<std::byte> payload() const noexcept;
-    [[nodiscard]] SpscStatus Commit(std::size_t actual_size) noexcept;
+    [[nodiscard]] SpscStatus Commit(size_t actual_size) noexcept;
     void Cancel() noexcept;
 
    private:
     friend class SpscQueue;
-    WriteReservation(SpscQueue* owner, std::uint64_t frame_pos,
-                     std::size_t reserved_size) noexcept;
+    WriteReservation(SpscQueue* owner, uint64_t frame_pos,
+                     size_t reserved_size) noexcept;
 
     SpscQueue* owner_ = nullptr;
-    std::uint64_t frame_pos_ = 0;
-    std::size_t reserved_size_ = 0;
+    uint64_t frame_pos_ = 0;
+    size_t reserved_size_ = 0;
   };
 
   class ReadLease final {
@@ -77,18 +79,18 @@ class SpscQueue final {
 
     [[nodiscard]] bool active() const noexcept { return owner_ != nullptr; }
     [[nodiscard]] std::span<const std::byte> payload() const noexcept;
-    [[nodiscard]] std::size_t size() const noexcept;
+    [[nodiscard]] size_t size() const noexcept;
     [[nodiscard]] SpscStatus Release() noexcept;
     void Cancel() noexcept;
 
    private:
     friend class SpscQueue;
-    ReadLease(SpscQueue* owner, std::uint64_t frame_pos,
-              std::size_t payload_size) noexcept;
+    ReadLease(SpscQueue* owner, uint64_t frame_pos,
+              size_t payload_size) noexcept;
 
     SpscQueue* owner_ = nullptr;
-    std::uint64_t frame_pos_ = 0;
-    std::size_t payload_size_ = 0;
+    uint64_t frame_pos_ = 0;
+    size_t payload_size_ = 0;
   };
 
   struct ReserveResult;
@@ -96,7 +98,7 @@ class SpscQueue final {
 
   struct ReadResult {
     SpscStatus status = SpscStatus::kInvalidState;
-    std::size_t payload_size = 0;
+    size_t payload_size = 0;
   };
 
   SpscQueue() noexcept = default;
@@ -108,15 +110,14 @@ class SpscQueue final {
   SpscQueue(SpscQueue&&) = delete;
   SpscQueue& operator=(SpscQueue&&) = delete;
 
-  [[nodiscard]] static constexpr std::size_t required_alignment() noexcept {
+  [[nodiscard]] static constexpr size_t required_alignment() noexcept {
     return 128;
   }
-  [[nodiscard]] static SizeResult RequiredBytes(
-      std::uint64_t capacity) noexcept;
+  [[nodiscard]] static SizeResult RequiredBytes(uint64_t capacity) noexcept;
   // Requires exclusive access. Constructs queue state but does not bind a
   // view.
   [[nodiscard]] static SpscStatus Initialize(std::span<std::byte> memory,
-                                             std::uint64_t capacity) noexcept;
+                                             uint64_t capacity) noexcept;
   // Initialization must already be visible through external synchronization.
   [[nodiscard]] SpscStatus Attach(std::span<std::byte> memory,
                                   Role role) noexcept;
@@ -124,12 +125,12 @@ class SpscQueue final {
 
   [[nodiscard]] bool attached() const noexcept { return control_ != nullptr; }
   [[nodiscard]] Role role() const noexcept { return role_; }
-  [[nodiscard]] std::uint64_t capacity() const noexcept { return capacity_; }
-  [[nodiscard]] std::size_t max_payload_size() const noexcept;
+  [[nodiscard]] uint64_t capacity() const noexcept { return capacity_; }
+  [[nodiscard]] size_t max_payload_size() const noexcept;
 
   // A coarse total-space check; it does not reserve space or publish padding.
-  [[nodiscard]] SpscStatus CheckWrite(std::size_t payload_size) const noexcept;
-  [[nodiscard]] ReserveResult TryReserve(std::size_t max_payload_size) noexcept;
+  [[nodiscard]] SpscStatus CheckWrite(size_t payload_size) const noexcept;
+  [[nodiscard]] ReserveResult TryReserve(size_t max_payload_size) noexcept;
   [[nodiscard]] AcquireResult TryAcquire() noexcept;
 
   // Copy buffers must not overlap the queue storage. These operations can
@@ -141,7 +142,7 @@ class SpscQueue final {
  private:
   internal::SpscControlBlock* control_ = nullptr;
   std::byte* data_ = nullptr;
-  std::uint64_t capacity_ = 0;
+  uint64_t capacity_ = 0;
   Role role_ = Role::kUnbound;
   bool borrow_active_ = false;
 };

@@ -1,6 +1,9 @@
 #ifndef YQUANT_TRADINGD_SERVER_H_
 #define YQUANT_TRADINGD_SERVER_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <memory>
 
 #include "tradingd/config.h"
@@ -25,12 +28,12 @@ class Server {
   [[nodiscard]] base::Status Init(const ServerConfig& config) noexcept;
   // Services bounded client requests, broker reports and automatic cancels.
   // Failure is terminal; retained account() still reflects committed events.
-  [[nodiscard]] base::Status Service(std::uint64_t now) noexcept;
+  [[nodiscard]] base::Status Service(uint64_t now) noexcept;
   // Stops new connections/orders and cancels every outstanding order. Success
   // requires is_drained(); shutdown timeout returns an error from Service.
-  void BeginStopping(std::uint64_t now) noexcept;
+  void BeginStopping(uint64_t now) noexcept;
   bool is_drained() const noexcept;
-  std::uint16_t port() const noexcept;
+  uint16_t port() const noexcept;
   const trading::AccountView& account() const noexcept;
   const char* error_detail() const noexcept { return error_detail_; }
   // Writes retained nonterminal orders and unresolved cancels to stderr. This
@@ -50,20 +53,20 @@ class Server {
                                   const char* detail) noexcept;
   // Retains authenticated identity/ownership after socket closure. Subsequent
   // service cancels working orders and waits for confirmation to release funds.
-  void Disconnect(std::size_t index) noexcept;
+  void Disconnect(size_t index) noexcept;
   // Copies committed cash/positions while retaining the current revision.
   void RefreshAccount() noexcept;
   // Queues the account to connected peers; full/failed peers disconnect alone.
   void BroadcastAccount() noexcept;
   // Protocol violations disconnect the requester; business rejections emit an
   // explicit OrderUpdate. Input is borrowed only during this call.
-  [[nodiscard]] base::Status Handle(std::size_t index,
+  [[nodiscard]] base::Status Handle(size_t index,
                                     const trading::Message& message,
-                                    std::uint64_t now) noexcept;
+                                    uint64_t now) noexcept;
   // Commits a bounded broker batch, then routes reports and committed views.
-  [[nodiscard]] base::Status Dispatch(std::uint64_t now) noexcept;
+  [[nodiscard]] base::Status Dispatch(uint64_t now) noexcept;
   // Scans a bounded round-robin batch; existing user cancels finish first.
-  void ScheduleClientCancels(std::uint64_t now) noexcept;
+  void ScheduleClientCancels(uint64_t now) noexcept;
   // Queues Drained once all client-owned orders and cancels are terminal.
   void NotifyDrained() noexcept;
   const base::MonotonicClock& clock_;

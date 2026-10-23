@@ -7,6 +7,7 @@
 #include <string_view>
 
 #include "strategyd/strategy_assembly.h"
+#include "yquant/base/format.h"
 #include "yquant/base/status.h"
 #include "yquant/base/termination_signals.h"
 
@@ -38,28 +39,30 @@ void PrintFailure(const char* stage, ErrorCode code, const char* detail,
                   std::string_view strategy_id = {},
                   const char* market_data_path = nullptr,
                   const char* trading_path = nullptr) noexcept {
-  std::fprintf(stderr, "yquant-strategyd: stage=%s code=%u", stage,
-               static_cast<unsigned>(code));
+  ::yquant::base::Print(stderr, "yquant-strategyd: stage={} code={}", stage,
+                        static_cast<unsigned>(code));
   if (strategy_path != nullptr) {
-    std::fprintf(stderr, " strategy=%s", strategy_path);
+    ::yquant::base::Print(stderr, " strategy={}", strategy_path);
   }
   if (config_path != nullptr) {
-    std::fprintf(stderr, " config=%s", config_path);
+    ::yquant::base::Print(stderr, " config={}", config_path);
   }
   if (market_data_path != nullptr) {
-    std::fprintf(stderr, " market_data_config=%s", market_data_path);
+    ::yquant::base::Print(stderr, " market_data_config={}", market_data_path);
   }
   if (trading_path != nullptr) {
-    std::fprintf(stderr, " trading_config=%s", trading_path);
+    ::yquant::base::Print(stderr, " trading_config={}", trading_path);
   }
   if (!strategy_id.empty()) {
-    std::fprintf(stderr, " strategy_id=%.*s",
-                 static_cast<int>(strategy_id.size()), strategy_id.data());
+    ::yquant::base::Print(
+        stderr, " strategy_id={}",
+        ::yquant::base::CStringPrefix(strategy_id.data(),
+                                      static_cast<int>(strategy_id.size())));
   }
-  std::fprintf(stderr, " detail=%s", detail);
+  ::yquant::base::Print(stderr, " detail={}", detail);
   if (system_error != 0) {
-    std::fprintf(stderr, " system_error=%d (%s)", system_error,
-                 std::strerror(system_error));
+    ::yquant::base::Print(stderr, " system_error={} ({})", system_error,
+                          std::strerror(system_error));
   }
   std::fputc('\n', stderr);
 }
@@ -137,7 +140,9 @@ int main(int argc, char* argv[]) {
                  assembly.strategy_id(), market_data_path, trading_path);
     return 1;
   }
-  if (assembly.cancelled()) return 0;
+  if (assembly.cancelled()) {
+    return 0;
+  }
   StrategyRunner runner(clock, environment, assembly.source(),
                         assembly.trading());
   const Status start_status = runner.LoadAndStart(assembly.start_options());
@@ -148,16 +153,18 @@ int main(int argc, char* argv[]) {
   }
 
   const auto strategy_id = runner.strategy_id();
-  std::fprintf(
-      stdout, "yquant-strategyd: Running strategy=%s strategy_id=%.*s\n",
-      library_path, static_cast<int>(strategy_id.size()), strategy_id.data());
+  ::yquant::base::Print(
+      stdout, "yquant-strategyd: Running strategy={} strategy_id={}\n",
+      library_path,
+      ::yquant::base::CStringPrefix(strategy_id.data(),
+                                    static_cast<int>(strategy_id.size())));
   // Make readiness visible immediately to supervising processes.
   std::fflush(stdout);
 
   const Status run_status = runner.Run();
   if (runner.ignored_quote_count() != 0) {
-    std::fprintf(stdout, "yquant-strategyd: ignored_quotes=%llu\n",
-                 static_cast<unsigned long long>(runner.ignored_quote_count()));
+    ::yquant::base::Print(stdout, "yquant-strategyd: ignored_quotes={}\n",
+                          runner.ignored_quote_count());
   }
   if (!run_status.ok()) {
     PrintRunnerFailure(runner, run_status, library_path, config_path,

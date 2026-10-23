@@ -2,6 +2,8 @@
 
 #include <fcntl.h>
 #include <pthread.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -12,14 +14,21 @@
 #include <atomic>
 #include <cerrno>
 #include <charconv>
+#include <cstddef>
 #include <cstring>
+#include <string>
 #include <string_view>
+#include <system_error>
+#include <utility>
+
+#include "yquant/base/file.h"
+#include "yquant/base/path.h"
 
 namespace yquant::base::internal {
 namespace {
 
-constexpr std::size_t kMaxShmManifestBytes = 256;
-using AtomicWord = std::atomic<std::uint64_t>;
+constexpr size_t kMaxShmManifestBytes = 256;
+using AtomicWord = std::atomic<uint64_t>;
 
 // Retains POSIX errno without allocating diagnostic text.
 base::Status MakeError(base::ErrorCode code, int number = 0) {
@@ -50,9 +59,12 @@ void RegisterForkGuard() noexcept {
 // epoch.
 Result<void> PrepareForkGuard() {
   const int once_error = ::pthread_once(&fork_guard_once, RegisterForkGuard);
-  if (once_error != 0) return SystemError(once_error);
-  if (fork_guard_registration_error != 0)
-    return SystemError(fork_guard_registration_error);
+  if (once_error != 0) {
+    return Result<void>{SystemError(once_error)};
+  }
+  if (fork_guard_registration_error != 0) {
+    return Result<void>{SystemError(fork_guard_registration_error)};
+  }
   return {};
 }
 
@@ -61,7 +73,9 @@ class FileDescriptor {
  public:
   explicit FileDescriptor(int fd = -1) noexcept : fd_(fd) {}
   ~FileDescriptor() {
-    if (fd_ >= 0) ::close(fd_);
+    if (fd_ >= 0) {
+      ::close(fd_);
+    }
   }
   FileDescriptor(const FileDescriptor&) = delete;
   FileDescriptor& operator=(const FileDescriptor&) = delete;
@@ -78,54 +92,72 @@ class FileDescriptor {
 
 // Normalizes the discovery root and restricts stream names to one path element.
 Result<ShmEndpoint> ValidateEndpointImpl(const ShmEndpoint& endpoint) {
-  if (endpoint.stream.empty() || endpoint.stream.size() > 64)
-    return MakeError(base::ErrorCode::kInvalidArgument);
+  if (endpoint.stream.empty() || endpoint.stream.size() > 64) {
+    return Result<ShmEndpoint>{MakeError(base::ErrorCode::kInvalidArgument)};
+  }
   const auto alnum = [](unsigned char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
            (c >= '0' && c <= '9');
   };
-  if (!alnum(static_cast<unsigned char>(endpoint.stream.front())))
-    return MakeError(base::ErrorCode::kInvalidArgument);
+  if (!alnum(static_cast<unsigned char>(endpoint.stream.front()))) {
+    return Result<ShmEndpoint>{MakeError(base::ErrorCode::kInvalidArgument)};
+  }
   for (unsigned char c : endpoint.stream) {
-    if (!alnum(c) && c != '_' && c != '-' && c != '.')
-      return MakeError(base::ErrorCode::kInvalidArgument);
+    if (!alnum(c) && c != '_' && c != '-' && c != '.') {
+      return Result<ShmEndpoint>{MakeError(base::ErrorCode::kInvalidArgument)};
+    }
   }
-  if (endpoint.runtime_directory.empty() ||
-      !endpoint.runtime_directory.is_absolute() ||
-      endpoint.runtime_directory.native().find('\0') != std::string::npos)
-    return MakeError(base::ErrorCode::kInvalidArgument);
-  for (const auto& part : endpoint.runtime_directory) {
-    if (part == "..") return MakeError(base::ErrorCode::kInvalidArgument);
+  const std::string_view directory(endpoint.runtime_directory);
+  if (!directory.starts_with('/') ||
+      directory.find('\0') != std::string_view::npos) {
+    return Result<ShmEndpoint>{MakeError(base::ErrorCode::kInvalidArgument)};
   }
-  auto path = endpoint.runtime_directory.lexically_normal();
-  while (path != path.root_path() && path.filename().empty())
-    path = path.parent_path();
-  return ShmEndpoint{std::move(path), endpoint.stream};
+  std::string_view remaining = directory;
+  while (!remaining.empty()) {
+    const auto slash = remaining.find('/');
+    if (remaining.substr(0, slash) == "..") {
+      return Result<ShmEndpoint>{MakeError(base::ErrorCode::kInvalidArgument)};
+    }
+    if (slash == std::string_view::npos) {
+      break;
+    }
+    remaining.remove_prefix(slash + 1);
+  }
+  auto path = NormalizePath(directory);
+  return Result<ShmEndpoint>{ShmEndpoint{std::move(path), endpoint.stream}};
 }
 
 // Returns ownership of a secured directory fd, or a status with no open fd.
 Result<int> OpenRuntimeDirectory(const ShmEndpoint& endpoint, bool create) {
   bool created = false;
   if (create) {
-    std::error_code ec;
-    created =
-        std::filesystem::create_directories(endpoint.runtime_directory, ec);
-    if (ec) return SystemError(ec.value());
+    const auto status = CreateDirectories(endpoint.runtime_directory, created);
+    if (!status.ok()) {
+      return Result<int>{status};
+    }
   }
   FileDescriptor fd(::open(endpoint.runtime_directory.c_str(),
                            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
-  if (fd.get() < 0) return SystemError();
+  if (fd.get() < 0) {
+    return Result<int>{SystemError()};
+  }
   struct stat info{};
-  if (::fstat(fd.get(), &info) != 0) return SystemError();
-  if (!S_ISDIR(info.st_mode) || info.st_uid != ::geteuid())
-    return MakeError(base::ErrorCode::kInvalidArgument);
-  if (created && ::fchmod(fd.get(), 0700) != 0) return SystemError();
-  if (!created && (info.st_mode & 0022) != 0)
-    return MakeError(base::ErrorCode::kInvalidArgument);
-  return fd.Release();
+  if (::fstat(fd.get(), &info) != 0) {
+    return Result<int>{SystemError()};
+  }
+  if (!S_ISDIR(info.st_mode) || info.st_uid != ::geteuid()) {
+    return Result<int>{MakeError(base::ErrorCode::kInvalidArgument)};
+  }
+  if (created && ::fchmod(fd.get(), 0700) != 0) {
+    return Result<int>{SystemError()};
+  }
+  if (!created && (info.st_mode & 0022) != 0) {
+    return Result<int>{MakeError(base::ErrorCode::kInvalidArgument)};
+  }
+  return Result<int>{fd.Release()};
 }
 
-std::string Hex(std::uint64_t value, unsigned digits = 16) {
+std::string Hex(uint64_t value, unsigned digits = 16) {
   constexpr char alphabet[] = "0123456789abcdef";
   std::string result(digits, '0');
   for (unsigned i = 0; i != digits; ++i) {
@@ -145,26 +177,39 @@ std::string SharedName(BroadcastId generation) {
 // reads.
 Result<BroadcastId> ReadRandomBroadcastId() {
   FileDescriptor fd(::open("/dev/urandom", O_RDONLY | O_CLOEXEC));
-  if (fd.get() < 0) return SystemError();
+  if (fd.get() < 0) {
+    return Result<BroadcastId>{SystemError()};
+  }
   BroadcastId generation;
   auto* target = reinterpret_cast<std::byte*>(&generation);
-  std::size_t remaining = sizeof(generation);
+  size_t remaining = sizeof(generation);
   while (remaining != 0) {
     const ssize_t count = ::read(fd.get(), target, remaining);
-    if (count < 0 && errno == EINTR) continue;
-    if (count <= 0) return SystemError(count == 0 ? EIO : errno);
+    if (count < 0 && errno == EINTR) {
+      continue;
+    }
+    if (count <= 0) {
+      return Result<BroadcastId>{SystemError(count == 0 ? EIO : errno)};
+    }
     target += count;
-    remaining -= static_cast<std::size_t>(count);
+    remaining -= static_cast<size_t>(count);
   }
   // Zero is reserved for an absent generation in client-side state.
-  if (generation == BroadcastId{}) generation.low = 1;
-  return generation;
+  if (generation == BroadcastId{}) {
+    generation.low = 1;
+  }
+  return Result<BroadcastId>{generation};
 }
 
-bool ParseHex(std::string_view value, std::uint64_t& result) noexcept {
-  if (value.size() != 16) return false;
-  for (char c : value)
-    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+bool ParseHex(std::string_view value, uint64_t& result) noexcept {
+  if (value.size() != 16) {
+    return false;
+  }
+  for (char c : value) {
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+      return false;
+    }
+  }
   const auto parsed =
       std::from_chars(value.data(), value.data() + value.size(), result, 16);
   return parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size();
@@ -175,43 +220,58 @@ Result<ShmManifest> ReadShmManifest(int directory,
                                     const std::string& filename) {
   FileDescriptor fd(::openat(directory, filename.c_str(),
                              O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
-  if (fd.get() < 0) return SystemError();
+  if (fd.get() < 0) {
+    return Result<ShmManifest>{SystemError()};
+  }
   struct stat info{};
-  if (::fstat(fd.get(), &info) != 0) return SystemError();
+  if (::fstat(fd.get(), &info) != 0) {
+    return Result<ShmManifest>{SystemError()};
+  }
   if (!S_ISREG(info.st_mode) || info.st_uid != ::geteuid() ||
       (info.st_mode & 0022) != 0 || info.st_size <= 0 ||
-      info.st_size > static_cast<off_t>(kMaxShmManifestBytes))
-    return MakeError(base::ErrorCode::kCorrupt);
+      info.st_size > static_cast<off_t>(kMaxShmManifestBytes)) {
+    return Result<ShmManifest>{MakeError(base::ErrorCode::kCorrupt)};
+  }
   std::array<char, kMaxShmManifestBytes + 1> bytes{};
-  std::size_t used = 0;
+  size_t used = 0;
   while (used < bytes.size()) {
     const ssize_t count =
         ::read(fd.get(), bytes.data() + used, bytes.size() - used);
-    if (count < 0 && errno == EINTR) continue;
-    if (count < 0) return SystemError();
-    if (count == 0) break;
-    used += static_cast<std::size_t>(count);
+    if (count < 0 && errno == EINTR) {
+      continue;
+    }
+    if (count < 0) {
+      return Result<ShmManifest>{SystemError()};
+    }
+    if (count == 0) {
+      break;
+    }
+    used += static_cast<size_t>(count);
   }
-  if (used != static_cast<std::size_t>(info.st_size) ||
-      used > kMaxShmManifestBytes)
-    return MakeError(base::ErrorCode::kCorrupt);
+  if (used != static_cast<size_t>(info.st_size) ||
+      used > kMaxShmManifestBytes) {
+    return Result<ShmManifest>{MakeError(base::ErrorCode::kCorrupt)};
+  }
   const std::string_view text(bytes.data(), used);
   constexpr std::string_view prefix = "yquant-shm-v1\n";
   if (!text.starts_with(prefix) || text.size() <= prefix.size() + 33 ||
-      text.back() != '\n')
-    return MakeError(base::ErrorCode::kCorrupt);
+      text.back() != '\n') {
+    return Result<ShmManifest>{MakeError(base::ErrorCode::kCorrupt)};
+  }
   const auto body = text.substr(prefix.size());
   ShmManifest manifest;
   if (body[32] != '\n' ||
       !ParseHex(body.substr(0, 16), manifest.generation.high) ||
       !ParseHex(body.substr(16, 16), manifest.generation.low) ||
-      manifest.generation == BroadcastId{})
-    return MakeError(base::ErrorCode::kCorrupt);
+      manifest.generation == BroadcastId{}) {
+    return Result<ShmManifest>{MakeError(base::ErrorCode::kCorrupt)};
+  }
   const auto name = body.substr(33, body.size() - 34);
-  if (name != SharedName(manifest.generation))
-    return MakeError(base::ErrorCode::kCorrupt);
+  if (name != SharedName(manifest.generation)) {
+    return Result<ShmManifest>{MakeError(base::ErrorCode::kCorrupt)};
+  }
   manifest.shm_name = std::string(name);
-  return manifest;
+  return Result<ShmManifest>{std::move(manifest)};
 }
 
 // Writes a private temporary entry then atomically replaces discovery by
@@ -228,30 +288,36 @@ Result<void> WriteShmManifest(int directory, const std::string& filename,
   FileDescriptor fd(
       ::openat(directory, temporary.c_str(),
                O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0600));
-  if (fd.get() < 0) return SystemError();
+  if (fd.get() < 0) {
+    return Result<void>{SystemError()};
+  }
   struct TemporaryEntry {
     int directory;
     const std::string& name;
     bool active{true};
     ~TemporaryEntry() {
-      if (active) ::unlinkat(directory, name.c_str(), 0);
+      if (active) {
+        ::unlinkat(directory, name.c_str(), 0);
+      }
     }
   } temporary_entry{directory, temporary};
-  std::size_t written = 0;
+  size_t written = 0;
   while (written != body.size()) {
     const ssize_t count =
         ::write(fd.get(), body.data() + written, body.size() - written);
-    if (count < 0 && errno == EINTR) continue;
+    if (count < 0 && errno == EINTR) {
+      continue;
+    }
     if (count <= 0) {
       const int number = count == 0 ? EIO : errno;
-      return SystemError(number);
+      return Result<void>{SystemError(number)};
     }
-    written += static_cast<std::size_t>(count);
+    written += static_cast<size_t>(count);
   }
   if (::renameat(directory, temporary.c_str(), directory, filename.c_str()) !=
       0) {
     const int number = errno;
-    return SystemError(number);
+    return Result<void>{SystemError(number)};
   }
   temporary_entry.active = false;
   return {};
@@ -265,31 +331,45 @@ Result<ShmEndpoint> ValidateShmEndpoint(const ShmEndpoint& endpoint) {
 
 Result<BroadcastId> RandomBroadcastId() { return ReadRandomBroadcastId(); }
 
-std::uint64_t MonotonicNs() noexcept {
+uint64_t MonotonicNs() noexcept {
   struct timespec value{};
-  if (::clock_gettime(CLOCK_MONOTONIC, &value) != 0) return 0;
-  return static_cast<std::uint64_t>(value.tv_sec) * 1'000'000'000ULL +
-         static_cast<std::uint64_t>(value.tv_nsec);
+  if (::clock_gettime(CLOCK_MONOTONIC, &value) != 0) {
+    return 0;
+  }
+  return static_cast<uint64_t>(value.tv_sec) * 1'000'000'000ULL +
+         static_cast<uint64_t>(value.tv_nsec);
 }
 
 Result<ShmManifest> Discover(const ShmEndpoint& endpoint) {
   auto validated = ValidateShmEndpoint(endpoint);
-  if (!validated) return validated.error();
+  if (!validated) {
+    return Result<ShmManifest>{validated.error()};
+  }
   auto directory = OpenRuntimeDirectory(*validated, false);
-  if (!directory) return directory.error();
+  if (!directory) {
+    return Result<ShmManifest>{directory.error()};
+  }
   FileDescriptor directory_fd(*directory);
   return ReadShmManifest(directory_fd.get(), validated->stream + ".manifest");
 }
 
 ShmStreamRegistry::~ShmStreamRegistry() { Close(); }
 Status ShmStreamRegistry::Acquire(const ShmEndpoint& endpoint) {
-  if (directory_fd_ >= 0) return MakeError(ErrorCode::kInvalidState);
+  if (directory_fd_ >= 0) {
+    return MakeError(ErrorCode::kInvalidState);
+  }
   auto checked = ValidateShmEndpoint(endpoint);
-  if (!checked) return checked.error();
+  if (!checked) {
+    return checked.error();
+  }
   auto guarded = PrepareForkGuard();
-  if (!guarded) return guarded.error();
+  if (!guarded) {
+    return guarded.error();
+  }
   auto directory = OpenRuntimeDirectory(*checked, true);
-  if (!directory) return directory.error();
+  if (!directory) {
+    return directory.error();
+  }
   endpoint_ = std::move(*checked);
   directory_fd_ = *directory;
   owner_epoch_ = process_epoch.load(std::memory_order_relaxed);
@@ -302,12 +382,17 @@ Status ShmStreamRegistry::Acquire(const ShmEndpoint& endpoint) {
     Close();
     return status;
   };
-  if (lock_fd_ < 0) return fail(SystemError());
+  if (lock_fd_ < 0) {
+    return fail(SystemError());
+  }
   struct stat info{};
-  if (::fstat(lock_fd_, &info) != 0) return fail(SystemError());
+  if (::fstat(lock_fd_, &info) != 0) {
+    return fail(SystemError());
+  }
   if (!S_ISREG(info.st_mode) || info.st_uid != ::geteuid() ||
-      info.st_nlink != 1 || (info.st_mode & 0022))
+      info.st_nlink != 1 || (info.st_mode & 0022)) {
     return fail(MakeError(ErrorCode::kInvalidArgument));
+  }
   if (::flock(lock_fd_, LOCK_EX | LOCK_NB) != 0) {
     const int number = errno;
     return fail(number == EWOULDBLOCK || number == EAGAIN
@@ -317,11 +402,13 @@ Status ShmStreamRegistry::Acquire(const ShmEndpoint& endpoint) {
   for (const auto& filename : {pending_filename_, manifest_filename_}) {
     auto old = ReadShmManifest(directory_fd_, filename);
     if (old) {
-      if (::shm_unlink(old->shm_name.c_str()) != 0 && errno != ENOENT)
+      if (::shm_unlink(old->shm_name.c_str()) != 0 && errno != ENOENT) {
         return fail(SystemError());
+      }
       if (::unlinkat(directory_fd_, filename.c_str(), 0) != 0 &&
-          errno != ENOENT)
+          errno != ENOENT) {
         return fail(SystemError());
+      }
     } else if (old.error().system_error.value() != ENOENT) {
       return fail(old.error());
     }
@@ -329,47 +416,70 @@ Status ShmStreamRegistry::Acquire(const ShmEndpoint& endpoint) {
   return {};
 }
 Status ShmStreamRegistry::Prepare() {
-  if (!owned_by_current_process()) return MakeError(ErrorCode::kInvalidState);
-  if (published_) return MakeError(ErrorCode::kInvalidState);
+  if (!owned_by_current_process()) {
+    return MakeError(ErrorCode::kInvalidState);
+  }
+  if (published_) {
+    return MakeError(ErrorCode::kInvalidState);
+  }
   auto id = RandomBroadcastId();
-  if (!id) return id.error();
+  if (!id) {
+    return id.error();
+  }
   ShmManifest manifest{*id, SharedName(*id)};
   auto status = WriteShmManifest(directory_fd_, pending_filename_, manifest);
-  if (!status) return status.error();
+  if (!status) {
+    return status.error();
+  }
   manifest_ = std::move(manifest);
   pending_ = true;
   return {};
 }
 Status ShmStreamRegistry::Publish() {
-  if (!owned_by_current_process() || !pending_ || published_)
+  if (!owned_by_current_process() || !pending_ || published_) {
     return MakeError(ErrorCode::kInvalidState);
+  }
   auto status = WriteShmManifest(directory_fd_, manifest_filename_, manifest_);
-  if (!status) return status.error();
+  if (!status) {
+    return status.error();
+  }
   published_ = true;
   if (::unlinkat(directory_fd_, pending_filename_.c_str(), 0) != 0 &&
-      errno != ENOENT)
+      errno != ENOENT) {
     return SystemError();
+  }
   pending_ = false;
   return {};
 }
 void ShmStreamRegistry::Retire() noexcept {
-  if (!owned_by_current_process()) return;
+  if (!owned_by_current_process()) {
+    return;
+  }
   const auto remove_owned = [&](const std::string& filename) {
     auto current = ReadShmManifest(directory_fd_, filename);
     if (current && current->generation == manifest_.generation &&
-        current->shm_name == manifest_.shm_name)
+        current->shm_name == manifest_.shm_name) {
       ::unlinkat(directory_fd_, filename.c_str(), 0);
+    }
   };
-  if (published_) remove_owned(manifest_filename_);
-  if (pending_) remove_owned(pending_filename_);
+  if (published_) {
+    remove_owned(manifest_filename_);
+  }
+  if (pending_) {
+    remove_owned(pending_filename_);
+  }
   published_ = false;
   pending_ = false;
 }
 void ShmStreamRegistry::Close() noexcept {
   Retire();
   // Never LOCK_UN: fork children share the parent's open file description.
-  if (lock_fd_ >= 0) ::close(lock_fd_);
-  if (directory_fd_ >= 0) ::close(directory_fd_);
+  if (lock_fd_ >= 0) {
+    ::close(lock_fd_);
+  }
+  if (directory_fd_ >= 0) {
+    ::close(directory_fd_);
+  }
   lock_fd_ = -1;
   directory_fd_ = -1;
   pending_ = false;

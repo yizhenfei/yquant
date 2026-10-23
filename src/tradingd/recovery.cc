@@ -1,19 +1,23 @@
 #include "tradingd/recovery.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
 #include <cstring>
 #include <limits>
+#include <span>
+#include <string_view>
 
 #include "tradingd/config.h"
 
 namespace yquant::tradingd {
 namespace {
 
-constexpr std::size_t kRequestIdentityBytes = 17;
-constexpr std::size_t kOrderBuckets = 2 * kMaxRecoveredBrokerOrders;
-constexpr std::size_t kFillBuckets = 2 * kMaxRecoveredBrokerFills;
-constexpr std::uint32_t kMaxSymbolValue =
-    model::identifier_detail::kEquitySymbolMax;
+constexpr size_t kRequestIdentityBytes = 17;
+constexpr size_t kOrderBuckets = 2 * kMaxRecoveredBrokerOrders;
+constexpr size_t kFillBuckets = 2 * kMaxRecoveredBrokerFills;
+constexpr uint32_t kMaxSymbolValue = model::identifier_detail::kEquitySymbolMax;
 constexpr char kBase32Alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 static_assert((kOrderBuckets & (kOrderBuckets - 1)) == 0);
 static_assert((kFillBuckets & (kFillBuckets - 1)) == 0);
@@ -25,17 +29,18 @@ bool ValidKind(ExternalRequestKind kind) noexcept {
          kind == ExternalRequestKind::kCancel;
 }
 
-std::uint64_t Hash(std::string_view value,
-                   std::uint64_t hash = 14695981039346656037ULL) noexcept {
-  for (const unsigned char byte : value)
+uint64_t Hash(std::string_view value,
+              uint64_t hash = 14695981039346656037ULL) noexcept {
+  for (const unsigned char byte : value) {
     hash = (hash ^ byte) * 1099511628211ULL;
+  }
   return hash;
 }
 
 bool ValidInstrument(model::InstrumentId id) noexcept {
   const auto venue = id.value >> 32;
-  return venue >= static_cast<std::uint64_t>(model::Venue::kSse) &&
-         venue <= static_cast<std::uint64_t>(model::Venue::kBse) &&
+  return venue >= static_cast<uint64_t>(model::Venue::kSse) &&
+         venue <= static_cast<uint64_t>(model::Venue::kBse) &&
          (id.value & UINT32_MAX) <= kMaxSymbolValue;
 }
 
@@ -46,8 +51,11 @@ bool ValidSide(model::OrderSide side) noexcept {
 const trading::InstrumentSpec* FindInstrument(
     std::span<const trading::InstrumentSpec> instruments,
     model::InstrumentId id) noexcept {
-  for (const auto& instrument : instruments)
-    if (instrument.id == id) return &instrument;
+  for (const auto& instrument : instruments) {
+    if (instrument.id == id) {
+      return &instrument;
+    }
+  }
   return nullptr;
 }
 
@@ -57,37 +65,43 @@ bool ValidAccount(
   if (account.position_count > account.positions.size() ||
       account.cash.balance < 0 || account.cash.reserved < 0 ||
       account.cash.reserved > account.cash.balance ||
-      account.cash.available != account.cash.balance - account.cash.reserved)
+      account.cash.available != account.cash.balance - account.cash.reserved) {
     return false;
-  for (std::size_t index = 0; index < account.position_count; ++index) {
+  }
+  for (size_t index = 0; index < account.position_count; ++index) {
     const auto& position = account.positions[index];
     if (FindInstrument(instruments, position.instrument_id) == nullptr ||
         position.total_qty < 0 || position.available_qty < 0 ||
         position.reserved_qty < 0 ||
         position.available_qty > position.total_qty ||
-        position.reserved_qty > position.total_qty - position.available_qty)
+        position.reserved_qty > position.total_qty - position.available_qty) {
       return false;
-    for (std::size_t previous = 0; previous < index; ++previous)
-      if (account.positions[previous].instrument_id == position.instrument_id)
+    }
+    for (size_t previous = 0; previous < index; ++previous) {
+      if (account.positions[previous].instrument_id == position.instrument_id) {
         return false;
+      }
+    }
   }
   return true;
 }
 
 // Checks exact micro-yuan representation before any product can overflow.
-bool FitsNotional(std::int64_t price, std::int64_t quantity,
-                  std::uint8_t decimals) noexcept {
-  if (price <= 0 || quantity <= 0 || decimals > model::kMaxPriceDecimals)
+bool FitsNotional(int64_t price, int64_t quantity, uint8_t decimals) noexcept {
+  if (price <= 0 || quantity <= 0 || decimals > model::kMaxPriceDecimals) {
     return false;
-  std::int64_t scale = 1;
-  for (; decimals < model::kMaxPriceDecimals; ++decimals) scale *= 10;
-  const auto maximum = std::numeric_limits<std::int64_t>::max();
+  }
+  int64_t scale = 1;
+  for (; decimals < model::kMaxPriceDecimals; ++decimals) {
+    scale *= 10;
+  }
+  const auto maximum = std::numeric_limits<int64_t>::max();
   return price <= maximum / quantity && price * quantity <= maximum / scale;
 }
 
 bool ValidOrder(const BrokerRecoveryOrder& order,
                 std::span<const trading::InstrumentSpec> instruments,
-                std::uint64_t cut) noexcept {
+                uint64_t cut) noexcept {
   const auto& request = order.request;
   const auto* instrument = FindInstrument(instruments, request.instrument_id);
   if (instrument == nullptr || !ValidSide(request.side) ||
@@ -98,11 +112,13 @@ bool ValidOrder(const BrokerRecoveryOrder& order,
       order.cumulative_filled_qty > request.quantity ||
       order.fact_sequence == 0 || order.fact_sequence > cut ||
       (order.state != model::OrderState::kRejected &&
-       order.broker_order_id.empty()))
+       order.broker_order_id.empty())) {
     return false;
+  }
   if (!FitsNotional(request.limit_price, request.quantity,
-                    instrument->price_decimals))
+                    instrument->price_decimals)) {
     return false;
+  }
   switch (order.state) {
     case model::OrderState::kPendingNew:
     case model::OrderState::kRejected:
@@ -165,26 +181,27 @@ bool ValidFill(const BrokerRecoveryFill& fill, const BrokerRecoveryOrder& order,
 // References source rows during validation. Only compact indexes/sums are
 // staged; the large caller output is untouched until all checks succeed.
 struct Workspace {
-  std::array<std::uint16_t, kOrderBuckets> order_lookup = {};
-  std::array<std::uint16_t, kOrderBuckets> broker_lookup = {};
-  std::array<std::uint16_t, kFillBuckets> fill_lookup = {};
-  std::array<std::uint32_t, kMaxRecoveredBrokerOrders> order_rows;
-  std::array<std::uint32_t, kMaxRecoveredBrokerFills> fill_rows;
-  std::array<std::uint16_t, kMaxRecoveredBrokerFills> fill_orders;
-  std::array<std::uint16_t, kMaxRecoveredBrokerOrders> owners;
+  std::array<uint16_t, kOrderBuckets> order_lookup = {};
+  std::array<uint16_t, kOrderBuckets> broker_lookup = {};
+  std::array<uint16_t, kFillBuckets> fill_lookup = {};
+  std::array<uint32_t, kMaxRecoveredBrokerOrders> order_rows;
+  std::array<uint32_t, kMaxRecoveredBrokerFills> fill_rows;
+  std::array<uint16_t, kMaxRecoveredBrokerFills> fill_orders;
+  std::array<uint16_t, kMaxRecoveredBrokerOrders> owners;
   std::array<ExternalRequestKey, kMaxRecoveredBrokerOrders> keys;
-  std::array<std::int64_t, kMaxRecoveredBrokerOrders> quantities = {};
-  std::size_t order_count = 0;
-  std::size_t fill_count = 0;
+  std::array<int64_t, kMaxRecoveredBrokerOrders> quantities = {};
+  size_t order_count = 0;
+  size_t fill_count = 0;
 
-  std::size_t OrderBucket(std::string_view key,
-                          const BrokerRecoveryView& view) const noexcept {
+  size_t OrderBucket(std::string_view key,
+                     const BrokerRecoveryView& view) const noexcept {
     auto bucket = Hash(key) & (kOrderBuckets - 1);
     while (
         order_lookup[bucket] != 0 &&
         view.orders[order_rows[order_lookup[bucket] - 1]].request_key.view() !=
-            key)
+            key) {
       bucket = (bucket + 1) & (kOrderBuckets - 1);
+    }
     return bucket;
   }
 };
@@ -193,11 +210,11 @@ static_assert(sizeof(Workspace) < 160 * 1024);
 }  // namespace
 
 base::Status EncodeExternalRequestKey(
-    std::uint64_t namespace_id, ExternalRequestKind kind,
-    std::uint64_t sequence,
+    uint64_t namespace_id, ExternalRequestKind kind, uint64_t sequence,
     char (&output)[kExternalRequestKeyBytes + 1]) noexcept {
-  if (namespace_id == 0 || sequence == 0 || !ValidKind(kind))
+  if (namespace_id == 0 || sequence == 0 || !ValidKind(kind)) {
     return {base::ErrorCode::kInvalidArgument, {}};
+  }
   std::array<unsigned char, kRequestIdentityBytes> bytes{};
   for (unsigned index = 0; index < 8; ++index) {
     bytes[index] = static_cast<unsigned char>(namespace_id >> (56 - 8 * index));
@@ -205,9 +222,9 @@ base::Status EncodeExternalRequestKey(
   }
   bytes[8] = static_cast<unsigned char>(kind);
   char result[kExternalRequestKeyBytes + 1];
-  std::uint32_t accumulator = 0;
+  uint32_t accumulator = 0;
   unsigned bits = 0;
-  std::size_t size = 0;
+  size_t size = 0;
   for (const auto byte : bytes) {
     accumulator = (accumulator << 8) | byte;
     bits += 8;
@@ -216,8 +233,9 @@ base::Status EncodeExternalRequestKey(
       result[size++] = kBase32Alphabet[(accumulator >> bits) & 31];
     }
   }
-  if (bits != 0)
+  if (bits != 0) {
     result[size++] = kBase32Alphabet[(accumulator << (5 - bits)) & 31];
+  }
   result[size] = '\0';
   std::memcpy(output, result, sizeof(result));
   return {};
@@ -225,20 +243,22 @@ base::Status EncodeExternalRequestKey(
 
 base::Status DecodeExternalRequestKey(std::string_view input,
                                       ExternalRequestKey& output) noexcept {
-  if (input.size() != kExternalRequestKeyBytes)
+  if (input.size() != kExternalRequestKeyBytes) {
     return {base::ErrorCode::kCorrupt, {}};
+  }
   std::array<unsigned char, kRequestIdentityBytes> bytes{};
-  std::uint32_t accumulator = 0;
+  uint32_t accumulator = 0;
   unsigned bits = 0;
-  std::size_t size = 0;
+  size_t size = 0;
   for (const auto character : input) {
     unsigned value;
-    if (character >= 'A' && character <= 'Z')
+    if (character >= 'A' && character <= 'Z') {
       value = static_cast<unsigned>(character - 'A');
-    else if (character >= '2' && character <= '7')
+    } else if (character >= '2' && character <= '7') {
       value = static_cast<unsigned>(character - '2') + 26;
-    else
+    } else {
       return {base::ErrorCode::kCorrupt, {}};
+    }
     accumulator = (accumulator << 5) | value;
     bits += 5;
     if (bits >= 8) {
@@ -246,16 +266,18 @@ base::Status DecodeExternalRequestKey(std::string_view input,
       bytes[size++] = static_cast<unsigned char>(accumulator >> bits);
     }
   }
-  if (size != bytes.size() || (accumulator & ((1U << bits) - 1)) != 0)
+  if (size != bytes.size() || (accumulator & ((1U << bits) - 1)) != 0) {
     return {base::ErrorCode::kCorrupt, {}};
+  }
   ExternalRequestKey key;
   for (unsigned index = 0; index < 8; ++index) {
     key.namespace_id = (key.namespace_id << 8) | bytes[index];
     key.sequence = (key.sequence << 8) | bytes[9 + index];
   }
   key.kind = static_cast<ExternalRequestKind>(bytes[8]);
-  if (key.namespace_id == 0 || key.sequence == 0 || !ValidKind(key.kind))
+  if (key.namespace_id == 0 || key.sequence == 0 || !ValidKind(key.kind)) {
     return {base::ErrorCode::kCorrupt, {}};
+  }
   output = key;
   return {};
 }
@@ -266,109 +288,136 @@ base::Status BuildRecoveredBrokerState(
     std::span<const DurableStrategyIdentity> identities,
     std::span<const trading::InstrumentSpec> instruments,
     RecoveredBrokerState& output, BrokerRecoveryError* error) noexcept {
-  if (error) *error = BrokerRecoveryError::kNone;
+  if (error) {
+    *error = BrokerRecoveryError::kNone;
+  }
   const auto fail = [&](BrokerRecoveryError reason,
                         base::ErrorCode code = base::ErrorCode::kCorrupt) {
-    if (error) *error = reason;
+    if (error) {
+      *error = reason;
+    }
     return base::Status{code, {}};
   };
   if (requirements.account_key.empty() ||
       requirements.account_key.size() > kMaxAccountKeyBytes ||
       requirements.account_key.find('\0') != std::string_view::npos ||
-      instruments.empty() || instruments.size() > trading::kMaxInstruments)
+      instruments.empty() || instruments.size() > trading::kMaxInstruments) {
     return fail(BrokerRecoveryError::kInvalidRequirements,
                 base::ErrorCode::kInvalidArgument);
-  if (requirements.account_key != view.account_key)
+  }
+  if (requirements.account_key != view.account_key) {
     return fail(BrokerRecoveryError::kAccountMismatch,
                 base::ErrorCode::kInvalidState);
-  if (!view.old_sender_fenced)
+  }
+  if (!view.old_sender_fenced) {
     return fail(BrokerRecoveryError::kSenderNotFenced,
                 base::ErrorCode::kInvalidState);
+  }
   if (!view.history_complete || !view.terminal_history_complete ||
       !view.account_at_cut || view.consistent_cut == 0 ||
       view.history_lower_bound > requirements.history_lower_bound ||
-      view.consistent_cut < requirements.history_lower_bound)
+      view.consistent_cut < requirements.history_lower_bound) {
     return fail(BrokerRecoveryError::kIncompleteHistory,
                 base::ErrorCode::kInvalidState);
+  }
   if (identities.size() > kMaxRecoveryIdentities ||
       view.orders.size() > kMaxRecoveryOrderFacts ||
-      view.fills.size() > kMaxRecoveryFillFacts)
+      view.fills.size() > kMaxRecoveryFillFacts) {
     return fail(BrokerRecoveryError::kCapacityExceeded,
                 base::ErrorCode::kResourceExhausted);
-  for (std::size_t index = 0; index < instruments.size(); ++index) {
+  }
+  for (size_t index = 0; index < instruments.size(); ++index) {
     const auto& instrument = instruments[index];
     if (!ValidInstrument(instrument.id) ||
-        instrument.price_decimals > model::kMaxPriceDecimals)
+        instrument.price_decimals > model::kMaxPriceDecimals) {
       return fail(BrokerRecoveryError::kInvalidRequirements,
                   base::ErrorCode::kInvalidArgument);
-    for (std::size_t previous = 0; previous < index; ++previous)
-      if (instruments[previous].id == instrument.id)
+    }
+    for (size_t previous = 0; previous < index; ++previous) {
+      if (instruments[previous].id == instrument.id) {
         return fail(BrokerRecoveryError::kInvalidRequirements,
                     base::ErrorCode::kInvalidArgument);
+      }
+    }
   }
-  for (std::size_t index = 0; index < identities.size(); ++index) {
-    if (identities[index].namespace_id == 0 || identities[index].client_id == 0)
+  for (size_t index = 0; index < identities.size(); ++index) {
+    if (identities[index].namespace_id == 0 ||
+        identities[index].client_id == 0) {
       return fail(BrokerRecoveryError::kInvalidIdentity);
-    for (std::size_t previous = 0; previous < index; ++previous)
-      if (identities[previous].namespace_id == identities[index].namespace_id)
+    }
+    for (size_t previous = 0; previous < index; ++previous) {
+      if (identities[previous].namespace_id == identities[index].namespace_id) {
         return fail(BrokerRecoveryError::kInvalidIdentity);
+      }
+    }
   }
-  if (!ValidAccount(view.account, instruments))
+  if (!ValidAccount(view.account, instruments)) {
     return fail(BrokerRecoveryError::kInvalidFact);
+  }
 
   Workspace work;
-  for (std::size_t row = 0; row < view.orders.size(); ++row) {
+  for (size_t row = 0; row < view.orders.size(); ++row) {
     const auto& order = view.orders[row];
     ExternalRequestKey key;
     if (!DecodeExternalRequestKey(order.request_key.view(), key).ok() ||
-        key.kind != ExternalRequestKind::kNewOrder)
+        key.kind != ExternalRequestKind::kNewOrder) {
       return fail(BrokerRecoveryError::kInvalidIdentity);
-    if (!ValidOrder(order, instruments, view.consistent_cut))
+    }
+    if (!ValidOrder(order, instruments, view.consistent_cut)) {
       return fail(BrokerRecoveryError::kInvalidFact);
-    std::size_t owner = 0;
+    }
+    size_t owner = 0;
     while (owner < identities.size() &&
-           identities[owner].namespace_id != key.namespace_id)
+           identities[owner].namespace_id != key.namespace_id) {
       ++owner;
-    if (owner == identities.size())
+    }
+    if (owner == identities.size()) {
       return fail(BrokerRecoveryError::kUnknownOwner,
                   base::ErrorCode::kInvalidState);
+    }
     const auto bucket = work.OrderBucket(order.request_key.view(), view);
     const auto slot = work.order_lookup[bucket];
     if (slot != 0) {
-      if (!SameOrder(view.orders[work.order_rows[slot - 1]], order))
+      if (!SameOrder(view.orders[work.order_rows[slot - 1]], order)) {
         return fail(BrokerRecoveryError::kConflictingOrder);
+      }
       continue;
     }
-    if (work.order_count == kMaxRecoveredBrokerOrders)
+    if (work.order_count == kMaxRecoveredBrokerOrders) {
       return fail(BrokerRecoveryError::kCapacityExceeded,
                   base::ErrorCode::kResourceExhausted);
+    }
     if (!order.broker_order_id.empty()) {
       auto broker_bucket =
           Hash(order.broker_order_id.view()) & (kOrderBuckets - 1);
       while (work.broker_lookup[broker_bucket] != 0) {
         const auto other = work.broker_lookup[broker_bucket] - 1;
         if (view.orders[work.order_rows[other]].broker_order_id ==
-            order.broker_order_id)
+            order.broker_order_id) {
           return fail(BrokerRecoveryError::kConflictingOrder);
+        }
         broker_bucket = (broker_bucket + 1) & (kOrderBuckets - 1);
       }
       work.broker_lookup[broker_bucket] =
-          static_cast<std::uint16_t>(work.order_count + 1);
+          static_cast<uint16_t>(work.order_count + 1);
     }
-    work.order_rows[work.order_count] = static_cast<std::uint32_t>(row);
+    work.order_rows[work.order_count] = static_cast<uint32_t>(row);
     work.keys[work.order_count] = key;
-    work.owners[work.order_count] = static_cast<std::uint16_t>(owner);
-    work.order_lookup[bucket] = static_cast<std::uint16_t>(++work.order_count);
+    work.owners[work.order_count] = static_cast<uint16_t>(owner);
+    work.order_lookup[bucket] = static_cast<uint16_t>(++work.order_count);
   }
-  for (std::size_t row = 0; row < view.fills.size(); ++row) {
+  for (size_t row = 0; row < view.fills.size(); ++row) {
     const auto& fill = view.fills[row];
     const auto order_bucket = work.OrderBucket(fill.request_key.view(), view);
     const auto order_slot = work.order_lookup[order_bucket];
-    if (order_slot == 0) return fail(BrokerRecoveryError::kInvalidFact);
-    const auto order_index = static_cast<std::size_t>(order_slot - 1);
-    const auto& order = view.orders[work.order_rows[order_index]];
-    if (!ValidFill(fill, order, instruments))
+    if (order_slot == 0) {
       return fail(BrokerRecoveryError::kInvalidFact);
+    }
+    const auto order_index = static_cast<size_t>(order_slot - 1);
+    const auto& order = view.orders[work.order_rows[order_index]];
+    if (!ValidFill(fill, order, instruments)) {
+      return fail(BrokerRecoveryError::kInvalidFact);
+    }
     auto bucket =
         Hash(fill.execution_id.view(), Hash(fill.request_key.view())) &
         (kFillBuckets - 1);
@@ -378,29 +427,36 @@ base::Status BuildRecoveredBrokerState(
           view.fills[work.fill_rows[work.fill_lookup[bucket] - 1]];
       if (other.request_key == fill.request_key &&
           other.execution_id == fill.execution_id) {
-        if (!SameFill(other, fill))
+        if (!SameFill(other, fill)) {
           return fail(BrokerRecoveryError::kConflictingFill);
+        }
         duplicate = true;
         break;
       }
       bucket = (bucket + 1) & (kFillBuckets - 1);
     }
-    if (duplicate) continue;
-    if (work.fill_count == kMaxRecoveredBrokerFills)
+    if (duplicate) {
+      continue;
+    }
+    if (work.fill_count == kMaxRecoveredBrokerFills) {
       return fail(BrokerRecoveryError::kCapacityExceeded,
                   base::ErrorCode::kResourceExhausted);
-    if (fill.quantity > order.request.quantity - work.quantities[order_index])
+    }
+    if (fill.quantity > order.request.quantity - work.quantities[order_index]) {
       return fail(BrokerRecoveryError::kInvalidFact);
+    }
     work.quantities[order_index] += fill.quantity;
-    work.fill_rows[work.fill_count] = static_cast<std::uint32_t>(row);
-    work.fill_orders[work.fill_count] = static_cast<std::uint16_t>(order_index);
-    work.fill_lookup[bucket] = static_cast<std::uint16_t>(++work.fill_count);
+    work.fill_rows[work.fill_count] = static_cast<uint32_t>(row);
+    work.fill_orders[work.fill_count] = static_cast<uint16_t>(order_index);
+    work.fill_lookup[bucket] = static_cast<uint16_t>(++work.fill_count);
   }
-  for (std::size_t index = 0; index < work.order_count; ++index)
+  for (size_t index = 0; index < work.order_count; ++index) {
     if (work.quantities[index] !=
-        view.orders[work.order_rows[index]].cumulative_filled_qty)
+        view.orders[work.order_rows[index]].cumulative_filled_qty) {
       return fail(BrokerRecoveryError::kIncompleteHistory,
                   base::ErrorCode::kInvalidState);
+    }
+  }
 
   // A complete broker account already includes every historical execution.
   // Install it once and retain executions solely as identity/dedup evidence.
@@ -409,13 +465,13 @@ base::Status BuildRecoveredBrokerState(
   output.consistent_cut = view.consistent_cut;
   output.order_count = work.order_count;
   output.fill_count = work.fill_count;
-  for (std::size_t index = 0; index < work.order_count; ++index) {
+  for (size_t index = 0; index < work.order_count; ++index) {
     auto& order = output.orders[index];
     order.identity = work.keys[index];
     order.client_id = identities[work.owners[index]].client_id;
     order.fact = view.orders[work.order_rows[index]];
   }
-  for (std::size_t index = 0; index < work.fill_count; ++index) {
+  for (size_t index = 0; index < work.fill_count; ++index) {
     output.fills[index].order_index = work.fill_orders[index];
     output.fills[index].fact = view.fills[work.fill_rows[index]];
   }

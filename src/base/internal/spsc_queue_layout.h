@@ -1,31 +1,32 @@
 #ifndef YQUANT_BASE_INTERNAL_SPSC_QUEUE_LAYOUT_H_
 #define YQUANT_BASE_INTERNAL_SPSC_QUEUE_LAYOUT_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <atomic>
-#include <cstddef>
-#include <cstdint>
 #include <limits>
 #include <type_traits>
 
 namespace yquant::base::internal {
 
-inline constexpr std::size_t kSpscAlignment = 128;
-inline constexpr std::uint32_t kSpscLayoutVersion = 4;
-inline constexpr std::uint64_t kSpscMagic = 0x5951535053435134ULL;
-inline constexpr std::size_t kSpscFrameHeaderBytes = 4;
-inline constexpr std::uint32_t kSpscWrapMarker =
-    std::numeric_limits<std::uint32_t>::max();
+inline constexpr size_t kSpscAlignment = 128;
+inline constexpr uint32_t kSpscLayoutVersion = 4;
+inline constexpr uint64_t kSpscMagic = 0x5951535053435134ULL;
+inline constexpr size_t kSpscFrameHeaderBytes = 4;
+inline constexpr uint32_t kSpscWrapMarker =
+    std::numeric_limits<uint32_t>::max();
 
 // Only fixed-size, pointer-free state is placed in the queue storage.
 struct alignas(kSpscAlignment) SpscMetadata {
-  std::uint64_t magic = 0;
-  std::uint32_t version = 0;
-  std::uint64_t data_offset = 0;
-  std::uint64_t capacity = 0;
+  uint64_t magic = 0;
+  uint32_t version = 0;
+  uint64_t data_offset = 0;
+  uint64_t capacity = 0;
 };
 
 struct alignas(kSpscAlignment) SpscCursor {
-  std::atomic<std::uint64_t> position{0};
+  std::atomic<uint64_t> position{0};
 };
 
 struct alignas(kSpscAlignment) SpscControlBlock {
@@ -34,7 +35,7 @@ struct alignas(kSpscAlignment) SpscControlBlock {
   SpscCursor read;
 };
 
-inline constexpr std::size_t kSpscDataOffset = 3 * kSpscAlignment;
+inline constexpr size_t kSpscDataOffset = 3 * kSpscAlignment;
 
 static_assert(std::is_standard_layout_v<SpscControlBlock>);
 static_assert(std::is_trivially_copyable_v<SpscMetadata>);

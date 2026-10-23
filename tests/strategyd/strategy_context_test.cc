@@ -1,5 +1,8 @@
 #include "strategyd/strategy_context.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include "gtest/gtest.h"
 #include "mock_trading_service.h"
 #include "strategyd/market_data.h"
@@ -14,8 +17,8 @@ using base::ErrorCode;
 
 class ContextTestClock final : public base::MonotonicClock {
  public:
-  std::uint64_t Now() const noexcept override { return now; }
-  std::uint64_t now = 1000;
+  uint64_t Now() const noexcept override { return now; }
+  uint64_t now = 1000;
 };
 
 // Two dictionary entries allow testing a known but unsubscribed instrument.
@@ -25,13 +28,13 @@ md::MarketDataConfig ContextConfig(model::SourceId source_id = {1}) {
 
   config.instrument_count = 2;
   const char* symbols[] = {"600000", "600001"};
-  for (std::size_t index = 0; index < config.instrument_count; ++index) {
+  for (size_t index = 0; index < config.instrument_count; ++index) {
     auto& item = config.instruments[index];
     EXPECT_EQ(
         model::MakeInstrumentId("SSE", symbols[index], item.instrument.id),
         ErrorCode::kOk);
     item.instrument.venue = model::Venue::kSse;
-    for (std::size_t digit = 0; digit < model::kSymbolLength; ++digit) {
+    for (size_t digit = 0; digit < model::kSymbolLength; ++digit) {
       item.instrument.symbol[digit] = symbols[index][digit];
     }
     item.instrument.price_decimals = 2;
@@ -39,7 +42,7 @@ md::MarketDataConfig ContextConfig(model::SourceId source_id = {1}) {
   return config;
 }
 
-model::QuoteTick ContextQuote(model::InstrumentId id, std::uint64_t sequence,
+model::QuoteTick ContextQuote(model::InstrumentId id, uint64_t sequence,
                               model::SourceId source_id = {1}) {
   model::QuoteTick quote;
   quote.source_id = source_id;
@@ -237,13 +240,21 @@ TEST(StrategyContextTest,
   bool accepted = false;
   ASSERT_EQ(market_data.ApplyQuote(valid, accepted), ErrorCode::kOk);
   ASSERT_TRUE(accepted);
-  for (std::size_t field = 0; field != 4; ++field) {
+  for (size_t field = 0; field != 4; ++field) {
     auto invalid = valid;
     invalid.sequence = 3;
-    if (field == 0) ++invalid.bid_price;
-    if (field == 1) ++invalid.ask_price;
-    if (field == 2) ++invalid.bid_qty;
-    if (field == 3) ++invalid.ask_qty;
+    if (field == 0) {
+      ++invalid.bid_price;
+    }
+    if (field == 1) {
+      ++invalid.ask_price;
+    }
+    if (field == 2) {
+      ++invalid.bid_qty;
+    }
+    if (field == 3) {
+      ++invalid.ask_qty;
+    }
     accepted = true;
     EXPECT_EQ(market_data.ApplyQuote(invalid, accepted), ErrorCode::kCorrupt);
     EXPECT_TRUE(accepted);

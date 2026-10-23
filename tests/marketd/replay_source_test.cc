@@ -1,15 +1,19 @@
 #include "marketd/replay_source.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
 #include <cstdio>
 #include <cstring>
-#include <filesystem>
 #include <limits>
 #include <string>
 
+#include "file_test_support.h"
 #include "gtest/gtest.h"
 #include "marketd/recording.h"
 #include "test_support.h"
+#include "yquant/base/format.h"
 
 namespace yquant::marketd {
 namespace {
@@ -22,14 +26,16 @@ constexpr char kCsv[] =
 
 ReplayConfig CsvConfig(const std::string& path, double speed = 1) {
   ReplayConfig config;
-  std::snprintf(config.path, sizeof(config.path), "%s", path.c_str());
+  ::yquant::base::FormatTo(config.path, sizeof(config.path), "{}",
+                           path.c_str());
   config.format = ReplayFormat::kDolphinDbCsv;
   config.speed = speed;
   config.max_records = 8;
   config.source_id = {77};
-  std::snprintf(
-      config.instrument_catalog, sizeof(config.instrument_catalog), "%s",
-      (std::filesystem::path(path).parent_path() / "instruments.json").c_str());
+  ::yquant::base::FormatTo(
+      config.instrument_catalog, sizeof(config.instrument_catalog), "{}",
+      (::yquant::testing::files::FilePath(path).Parent() / "instruments.json")
+          .c_str());
   return config;
 }
 
@@ -41,7 +47,7 @@ TEST(ReplaySourceTest, AnchorsAtFirstPollAndPreservesOutputUntilDue) {
   ASSERT_TRUE(source.Init(CsvConfig(directory.File("quotes.csv"))).ok())
       << source.error_detail();
 
-  constexpr std::uint64_t kStart = 9000000000;
+  constexpr uint64_t kStart = 9000000000;
   auto out = testing::Quote(999);
   ASSERT_EQ(source.Poll(kStart, out).state, PollState::kEvent);
   EXPECT_EQ(out.source_id.value, 77U);
@@ -75,7 +81,7 @@ TEST(ReplaySourceTest, ScalesArrivalGapsAndZeroSpeedDrainsImmediately) {
   ASSERT_TRUE(directory.Write("quotes.csv", kCsv));
   struct Case {
     double speed;
-    std::uint64_t gap;
+    uint64_t gap;
   };
   constexpr std::array<Case, 3> kCases = {Case{0.5, 2000000}, Case{10, 100000},
                                           Case{3, 333333}};
@@ -136,8 +142,8 @@ TEST(ReplaySourceTest, RecordingReplaysOriginalMetadataAndArrivalOffsets) {
   testing::RuntimeDirectory directory;
   ASSERT_TRUE(directory.valid());
   RecordConfig recording;
-  std::snprintf(recording.path, sizeof(recording.path), "%s",
-                directory.File("quotes.yqr").c_str());
+  ::yquant::base::FormatTo(recording.path, sizeof(recording.path), "{}",
+                           directory.File("quotes.yqr").c_str());
   recording.queue_capacity = 4096;
   RecordPublisher publisher;
   ASSERT_TRUE(publisher.Init(recording).ok()) << publisher.error_detail();
@@ -193,7 +199,7 @@ TEST(ReplaySourceTest, RelativeClockAvoidsAbsoluteDeadlineOverflow) {
   ReplaySource source;
   ASSERT_TRUE(source.Init(CsvConfig(directory.File("quotes.csv"))).ok());
   model::QuoteTick out;
-  constexpr auto kLast = std::numeric_limits<std::uint64_t>::max();
+  constexpr auto kLast = std::numeric_limits<uint64_t>::max();
   ASSERT_EQ(source.Poll(kLast - 100, out).state, PollState::kEvent);
   const auto first = out;
   EXPECT_EQ(source.Poll(kLast, out).state, PollState::kIdle);
@@ -245,7 +251,7 @@ TEST(ReplaySourceTest, RejectsInvalidOptionsAndUnrepresentableDuration) {
     EXPECT_EQ(source.Poll(1, out).state, PollState::kError);
     EXPECT_EQ(out, unchanged);
   }
-  for (const auto capacity : {std::size_t{0}, kMaxReplayRecords + 1}) {
+  for (const auto capacity : {size_t{0}, kMaxReplayRecords + 1}) {
     auto config = valid;
     config.max_records = capacity;
     EXPECT_EQ(source.Init(config).code, base::ErrorCode::kInvalidArgument);

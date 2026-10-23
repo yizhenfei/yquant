@@ -1,5 +1,14 @@
 #include <pthread.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <time.h>
+
+#include <array>
+#include <atomic>
+#include <cstddef>
+#include <span>
+#include <string_view>
+#include <system_error>
 
 #include "yquant/base/logging.h"
 #if defined(__linux__)
@@ -16,39 +25,41 @@
 namespace yquant::base {
 namespace {
 
-static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+static_assert(std::atomic<uint64_t>::is_always_lock_free);
 constexpr std::string_view kTruncatedMarker = " [truncated]";
 
-std::uint64_t ClockNanoseconds(clockid_t clock) noexcept {
+uint64_t ClockNanoseconds(clockid_t clock) noexcept {
   timespec value{};
-  if (clock_gettime(clock, &value) != 0) return 0;
-  return static_cast<std::uint64_t>(value.tv_sec) * 1000000000ULL +
-         static_cast<std::uint64_t>(value.tv_nsec);
+  if (clock_gettime(clock, &value) != 0) {
+    return 0;
+  }
+  return static_cast<uint64_t>(value.tv_sec) * 1000000000ULL +
+         static_cast<uint64_t>(value.tv_nsec);
 }
 
-std::uint64_t CurrentThreadId() noexcept {
+uint64_t CurrentThreadId() noexcept {
 #if defined(__APPLE__)
-  std::uint64_t id = 0;
+  uint64_t id = 0;
   (void)pthread_threadid_np(nullptr, &id);
   return id;
 #else
-  return static_cast<std::uint64_t>(syscall(SYS_gettid));
+  return static_cast<uint64_t>(syscall(SYS_gettid));
 #endif
 }
 
 std::string_view LevelName(LogLevel level) noexcept {
   constexpr std::array<std::string_view, 6> kNames = {
       "TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"};
-  const auto index = static_cast<std::size_t>(level);
+  const auto index = static_cast<size_t>(level);
   return index < kNames.size() ? kNames[index] : std::string_view("INVALID");
 }
 
 // Keep a complete prefix of UTF-8 characters and escaped output tokens.
-std::size_t CompletePrefix(const char* data, std::size_t limit) noexcept {
-  std::size_t position = 0;
+size_t CompletePrefix(const char* data, size_t limit) noexcept {
+  size_t position = 0;
   while (position < limit) {
     const auto value = static_cast<unsigned char>(data[position]);
-    std::size_t bytes = 1;
+    size_t bytes = 1;
     if (value == '\\') {
       bytes = position + 1 < limit && data[position + 1] == 'x' ? 4 : 2;
     } else if ((value & 0xe0) == 0xc0) {
@@ -58,7 +69,9 @@ std::size_t CompletePrefix(const char* data, std::size_t limit) noexcept {
     } else if ((value & 0xf8) == 0xf0) {
       bytes = 4;
     }
-    if (bytes > limit - position) break;
+    if (bytes > limit - position) {
+      break;
+    }
     position += bytes;
   }
   return position;
@@ -69,9 +82,11 @@ std::size_t CompletePrefix(const char* data, std::size_t limit) noexcept {
 namespace internal {
 
 void LogBufferWriter::Append(char value) noexcept {
-  if (full_) return;
+  if (full_) {
+    return;
+  }
   char escaped[4];
-  std::size_t count = 1;
+  size_t count = 1;
   escaped[0] = value;
   const auto byte = static_cast<unsigned char>(value);
   if (value == '\n' || value == '\r' || value == '\\') {
@@ -95,7 +110,7 @@ void LogBufferWriter::Append(char value) noexcept {
   size_ += count;
 }
 
-std::size_t LogBufferWriter::Finish() noexcept {
+size_t LogBufferWriter::Finish() noexcept {
   if (truncated_) {
     const auto limit =
         std::min(size_, kMaxLogBytes - 1 - kTruncatedMarker.size());
@@ -111,8 +126,8 @@ std::size_t LogBufferWriter::Finish() noexcept {
 }  // namespace internal
 
 Logger::Logger(std::string_view name, LogLevel level,
-               std::uint64_t min_interval_ns) noexcept
-    : minimum_level_(static_cast<std::uint64_t>(level)),
+               uint64_t min_interval_ns) noexcept
+    : minimum_level_(static_cast<uint64_t>(level)),
       name_size_(name.size()),
       min_interval_ns_(min_interval_ns) {
   assert(name.size() <= name_.size());
@@ -120,8 +135,7 @@ Logger::Logger(std::string_view name, LogLevel level,
 }
 
 void Logger::SetMinimumLevel(LogLevel level) noexcept {
-  minimum_level_.store(static_cast<std::uint64_t>(level),
-                       std::memory_order_relaxed);
+  minimum_level_.store(static_cast<uint64_t>(level), std::memory_order_relaxed);
 }
 
 LogLevel Logger::minimum_level() const noexcept {
@@ -161,11 +175,15 @@ LogBackendStatus Logger::backend_status() const noexcept {
 }
 
 Logger::Call::~Call() noexcept {
-  if (owner_ != nullptr) owner_->busy_ = false;
+  if (owner_ != nullptr) {
+    owner_->busy_ = false;
+  }
 }
 
 Logger::Call Logger::BeginCall(LogLevel level) noexcept {
-  if (level > LogLevel::kCritical || level < minimum_level()) return {};
+  if (level > LogLevel::kCritical || level < minimum_level()) {
+    return {};
+  }
   const auto now =
       min_interval_ns_ == 0 ? 0 : ClockNanoseconds(CLOCK_MONOTONIC);
   if (min_interval_ns_ != 0 && last_accepted_ns_ != 0 &&
@@ -214,10 +232,12 @@ void Logger::WriteHeader(internal::LogBufferWriter& writer, LogLevel level,
                        "[{}] [{}] [tid={}] [{}] {}:{} ",
                        ClockNanoseconds(CLOCK_REALTIME), LevelName(level),
                        CurrentThreadId(), name(), std::string_view(file), line);
-  if (result.size > limit) writer.MarkTruncated();
+  if (result.size > limit) {
+    writer.MarkTruncated();
+  }
 }
 
-void Logger::Publish(std::size_t size, bool truncated) noexcept {
+void Logger::Publish(size_t size, bool truncated) noexcept {
   if (active_.load(std::memory_order_acquire) == 0 ||
       (shared_state_ != nullptr &&
        (shared_state_->backend_error.load(std::memory_order_acquire) != 0 ||

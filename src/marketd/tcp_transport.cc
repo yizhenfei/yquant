@@ -4,43 +4,52 @@
 #include <fcntl.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 
 #include <array>
 #include <cerrno>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <new>
+#include <system_error>
+#include <utility>
 
+#include "yquant/base/format.h"
 #include "yquant/md/quote_codec.h"
 
 namespace yquant::marketd {
 namespace {
 
-constexpr std::size_t kMaxClients = kMaxTcpClients;
-constexpr std::size_t kClientQueueCapacity = 64;
-constexpr std::size_t kIoBudget = 16;
-constexpr std::uint64_t kConnectTimeoutNs = 3'000'000'000;
+constexpr size_t kMaxClients = kMaxTcpClients;
+constexpr size_t kClientQueueCapacity = 64;
+constexpr size_t kIoBudget = 16;
+constexpr uint64_t kConnectTimeoutNs = 3'000'000'000;
 
 // Diagnostics are written only on control/error paths and own their storage.
 base::Status Failure(char (&detail)[256], base::ErrorCode code,
                      const char* operation, int error = 0) noexcept {
   if (error != 0) {
-    std::snprintf(detail, sizeof(detail), "%s: %s", operation,
-                  std::strerror(error));
+    ::yquant::base::FormatTo(detail, sizeof(detail), "{}: {}", operation,
+                             std::strerror(error));
   } else {
-    std::snprintf(detail, sizeof(detail), "%s", operation);
+    ::yquant::base::FormatTo(detail, sizeof(detail), "{}", operation);
   }
   return {code, error ? std::error_code(error, std::generic_category())
                       : std::error_code{}};
 }
 
-std::uint64_t MonotonicNs() noexcept {
+uint64_t MonotonicNs() noexcept {
   timespec time{};
-  if (clock_gettime(CLOCK_MONOTONIC, &time) != 0) return 0;
-  return static_cast<std::uint64_t>(time.tv_sec) * 1'000'000'000 + time.tv_nsec;
+  if (clock_gettime(CLOCK_MONOTONIC, &time) != 0) {
+    return 0;
+  }
+  return static_cast<uint64_t>(time.tv_sec) * 1'000'000'000 + time.tv_nsec;
 }
 
 // Borrows an already created descriptor; failure does not close it.
@@ -69,16 +78,17 @@ base::Status ConfigureSocket(int descriptor) noexcept {
 
 // Only numeric IPv4 addresses are accepted; no DNS runs on the event thread.
 bool ParseAddress(const TcpEndpoint& endpoint, sockaddr_in& out) noexcept {
-  if (std::memchr(endpoint.address, '\0', sizeof(endpoint.address)) == nullptr)
+  if (std::memchr(endpoint.address, '\0', sizeof(endpoint.address)) ==
+      nullptr) {
     return false;
+  }
   out = {};
   out.sin_family = AF_INET;
   out.sin_port = htons(endpoint.port);
   return inet_pton(AF_INET, endpoint.address, &out.sin_addr) == 1;
 }
 
-ssize_t Send(int descriptor, const std::byte* bytes,
-             std::size_t size) noexcept {
+ssize_t Send(int descriptor, const std::byte* bytes, size_t size) noexcept {
 #ifdef MSG_NOSIGNAL
   return send(descriptor, bytes, size, MSG_NOSIGNAL);
 #else
@@ -92,27 +102,33 @@ struct TcpPublisher::Impl {
   struct Client {
     int descriptor = -1;
     std::array<md::QuoteFrame, kClientQueueCapacity> frames{};
-    std::size_t head = 0;
-    std::size_t count = 0;
-    std::size_t offset = 0;
+    size_t head = 0;
+    size_t count = 0;
+    size_t offset = 0;
   };
 
   int listener = -1;
-  std::uint16_t port = 0;
-  std::size_t max_clients = 0;
-  std::uint64_t disconnected = 0;
+  uint16_t port = 0;
+  size_t max_clients = 0;
+  uint64_t disconnected = 0;
   std::array<Client, kMaxClients> clients;
 
   ~Impl() noexcept {
-    for (auto& client : clients) CloseClient(client, false);
-    if (listener >= 0) close(listener);
+    for (auto& client : clients) {
+      CloseClient(client, false);
+    }
+    if (listener >= 0) {
+      close(listener);
+    }
   }
 
   // Dropping this connection isolates its backpressure from all other outputs.
   void CloseClient(Client& client, bool count) noexcept {
     if (client.descriptor >= 0) {
       close(client.descriptor);
-      if (count) ++disconnected;
+      if (count) {
+        ++disconnected;
+      }
     }
     client.descriptor = -1;
     client.head = client.count = client.offset = 0;
@@ -121,14 +137,14 @@ struct TcpPublisher::Impl {
   // Sends complete or partial frames within a fixed syscall budget. No other
   // client shares this queue, and a short write never drops a frame prefix.
   void Flush(Client& client) noexcept {
-    for (std::size_t attempt = 0;
+    for (size_t attempt = 0;
          attempt < kIoBudget && client.descriptor >= 0 && client.count != 0;
          ++attempt) {
       const auto& frame = client.frames[client.head];
       const auto sent = Send(client.descriptor, frame.data() + client.offset,
                              frame.size() - client.offset);
       if (sent > 0) {
-        client.offset += static_cast<std::size_t>(sent);
+        client.offset += static_cast<size_t>(sent);
         if (client.offset == frame.size()) {
           client.head = (client.head + 1) % kClientQueueCapacity;
           --client.count;
@@ -149,7 +165,7 @@ TcpPublisher::TcpPublisher() noexcept = default;
 TcpPublisher::~TcpPublisher() noexcept = default;
 
 base::Status TcpPublisher::Init(const TcpEndpoint& endpoint,
-                                std::size_t max_clients) noexcept {
+                                size_t max_clients) noexcept {
   if (impl_) {
     return Failure(error_detail_, base::ErrorCode::kInvalidState,
                    "TCP publisher is already open");
@@ -161,7 +177,9 @@ base::Status TcpPublisher::Init(const TcpEndpoint& endpoint,
                    "TCP publisher requires IPv4 and 1..16 clients");
   }
   auto impl = std::unique_ptr<Impl>(new (std::nothrow) Impl);
-  if (!impl) return {base::ErrorCode::kResourceExhausted, {}};
+  if (!impl) {
+    return {base::ErrorCode::kResourceExhausted, {}};
+  }
   impl->max_clients = max_clients;
   impl->listener = socket(AF_INET, SOCK_STREAM, 0);
   if (impl->listener < 0) {
@@ -193,17 +211,23 @@ base::Status TcpPublisher::Init(const TcpEndpoint& endpoint,
 }
 
 base::Status TcpPublisher::Publish(const model::QuoteTick& quote) noexcept {
-  if (!impl_) return {base::ErrorCode::kInvalidState, {}};
+  if (!impl_) {
+    return {base::ErrorCode::kInvalidState, {}};
+  }
   md::QuoteFrame frame;
   const auto encoded = md::EncodeQuote(quote, frame);
   if (!encoded.ok()) {
     return Failure(error_detail_, encoded.code, "invalid quote for TCP output");
   }
-  for (std::size_t index = 0; index < impl_->max_clients; ++index) {
+  for (size_t index = 0; index < impl_->max_clients; ++index) {
     auto& client = impl_->clients[index];
-    if (client.descriptor < 0) continue;
+    if (client.descriptor < 0) {
+      continue;
+    }
     impl_->Flush(client);
-    if (client.descriptor < 0) continue;
+    if (client.descriptor < 0) {
+      continue;
+    }
     if (client.count == kClientQueueCapacity) {
       impl_->CloseClient(client, true);
       continue;
@@ -216,14 +240,16 @@ base::Status TcpPublisher::Publish(const model::QuoteTick& quote) noexcept {
   return {};
 }
 
-base::Status TcpPublisher::Service(std::uint64_t) noexcept {
-  if (!impl_) return {base::ErrorCode::kInvalidState, {}};
+base::Status TcpPublisher::Service(uint64_t) noexcept {
+  if (!impl_) {
+    return {base::ErrorCode::kInvalidState, {}};
+  }
   // Retire idle disconnected peers before accepting replacements. A single
   // zero-timeout poll avoids one recv syscall per healthy idle connection.
   std::array<pollfd, kMaxClients> descriptors{};
   std::array<Impl::Client*, kMaxClients> owners{};
   nfds_t descriptor_count = 0;
-  for (std::size_t index = 0; index < impl_->max_clients; ++index) {
+  for (size_t index = 0; index < impl_->max_clients; ++index) {
     auto& client = impl_->clients[index];
     if (client.descriptor >= 0) {
       descriptors[descriptor_count] = {client.descriptor, POLLIN, 0};
@@ -253,16 +279,20 @@ base::Status TcpPublisher::Service(std::uint64_t) noexcept {
       }
     }
   }
-  for (std::size_t attempt = 0; attempt < kIoBudget; ++attempt) {
+  for (size_t attempt = 0; attempt < kIoBudget; ++attempt) {
     const int descriptor = accept(impl_->listener, nullptr, nullptr);
     if (descriptor < 0) {
-      if (errno == EINTR) continue;
-      if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+      if (errno == EINTR) {
+        continue;
+      }
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        break;
+      }
       return Failure(error_detail_, base::ErrorCode::kIoError, "accept", errno);
     }
     const auto configured = ConfigureSocket(descriptor);
     Impl::Client* free = nullptr;
-    for (std::size_t index = 0; index < impl_->max_clients; ++index) {
+    for (size_t index = 0; index < impl_->max_clients; ++index) {
       if (impl_->clients[index].descriptor < 0) {
         free = &impl_->clients[index];
         break;
@@ -275,7 +305,7 @@ base::Status TcpPublisher::Service(std::uint64_t) noexcept {
       free->descriptor = descriptor;
     }
   }
-  for (std::size_t index = 0; index < impl_->max_clients; ++index) {
+  for (size_t index = 0; index < impl_->max_clients; ++index) {
     impl_->Flush(impl_->clients[index]);
   }
   return {};
@@ -285,18 +315,20 @@ void TcpPublisher::Close() noexcept { impl_.reset(); }
 const char* TcpPublisher::error_detail() const noexcept {
   return error_detail_;
 }
-std::uint16_t TcpPublisher::port() const noexcept {
-  return impl_ ? impl_->port : 0;
-}
-std::size_t TcpPublisher::connected_clients() const noexcept {
-  if (!impl_) return 0;
-  std::size_t count = 0;
-  for (std::size_t index = 0; index < impl_->max_clients; ++index) {
-    if (impl_->clients[index].descriptor >= 0) ++count;
+uint16_t TcpPublisher::port() const noexcept { return impl_ ? impl_->port : 0; }
+size_t TcpPublisher::connected_clients() const noexcept {
+  if (!impl_) {
+    return 0;
+  }
+  size_t count = 0;
+  for (size_t index = 0; index < impl_->max_clients; ++index) {
+    if (impl_->clients[index].descriptor >= 0) {
+      ++count;
+    }
   }
   return count;
 }
-std::uint64_t TcpPublisher::disconnected_clients() const noexcept {
+uint64_t TcpPublisher::disconnected_clients() const noexcept {
   return impl_ ? impl_->disconnected : 0;
 }
 
@@ -304,13 +336,15 @@ struct TcpSource::Impl {
   int descriptor = -1;
   bool connecting = false;
   bool failed = false;
-  std::uint64_t connect_started = 0;
+  uint64_t connect_started = 0;
   md::QuoteFrame frame{};
-  std::size_t received = 0;
+  size_t received = 0;
   base::Status failure;
 
   ~Impl() noexcept {
-    if (descriptor >= 0) close(descriptor);
+    if (descriptor >= 0) {
+      close(descriptor);
+    }
   }
 };
 
@@ -318,7 +352,9 @@ TcpSource::TcpSource() noexcept = default;
 TcpSource::~TcpSource() noexcept = default;
 
 base::Status TcpSource::Init(const TcpEndpoint& endpoint) noexcept {
-  if (impl_) return {base::ErrorCode::kInvalidState, {}};
+  if (impl_) {
+    return {base::ErrorCode::kInvalidState, {}};
+  }
   sockaddr_in address{};
   if (endpoint.port == 0 || !ParseAddress(endpoint, address) ||
       address.sin_addr.s_addr == htonl(INADDR_ANY)) {
@@ -326,7 +362,9 @@ base::Status TcpSource::Init(const TcpEndpoint& endpoint) noexcept {
                    "TCP input requires a destination IPv4 and nonzero port");
   }
   auto impl = std::unique_ptr<Impl>(new (std::nothrow) Impl);
-  if (!impl) return {base::ErrorCode::kResourceExhausted, {}};
+  if (!impl) {
+    return {base::ErrorCode::kResourceExhausted, {}};
+  }
   impl->descriptor = socket(AF_INET, SOCK_STREAM, 0);
   if (impl->descriptor < 0) {
     return Failure(error_detail_, base::ErrorCode::kIoError, "socket", errno);
@@ -350,10 +388,14 @@ base::Status TcpSource::Init(const TcpEndpoint& endpoint) noexcept {
   return {};
 }
 
-PollResult TcpSource::Poll(std::uint64_t now, model::QuoteTick& out) noexcept {
-  if (!impl_) return {PollState::kError, {base::ErrorCode::kInvalidState, {}}};
+PollResult TcpSource::Poll(uint64_t now, model::QuoteTick& out) noexcept {
+  if (!impl_) {
+    return {PollState::kError, {base::ErrorCode::kInvalidState, {}}};
+  }
   auto& impl = *impl_;
-  if (impl.failed) return {PollState::kError, impl.failure};
+  if (impl.failed) {
+    return {PollState::kError, impl.failure};
+  }
   const auto fail = [&](base::ErrorCode code, const char* detail,
                         int number = 0) {
     impl.failed = true;
@@ -364,7 +406,9 @@ PollResult TcpSource::Poll(std::uint64_t now, model::QuoteTick& out) noexcept {
     pollfd descriptor{impl.descriptor, POLLOUT, 0};
     const auto ready = poll(&descriptor, 1, 0);
     if (ready < 0) {
-      if (errno == EINTR) return {};
+      if (errno == EINTR) {
+        return {};
+      }
       return fail(base::ErrorCode::kIoError, "poll connecting socket", errno);
     }
     if (ready == 0) {
@@ -389,15 +433,17 @@ PollResult TcpSource::Poll(std::uint64_t now, model::QuoteTick& out) noexcept {
     }
     impl.connecting = false;
   }
-  for (std::size_t attempt = 0; attempt < kIoBudget; ++attempt) {
+  for (size_t attempt = 0; attempt < kIoBudget; ++attempt) {
     const auto count = recv(impl.descriptor, impl.frame.data() + impl.received,
                             impl.frame.size() - impl.received, 0);
     if (count > 0) {
-      impl.received += static_cast<std::size_t>(count);
+      impl.received += static_cast<size_t>(count);
       if (impl.received == impl.frame.size()) {
         model::QuoteTick quote;
         const auto decoded = md::DecodeQuote(impl.frame, quote);
-        if (!decoded.ok()) return fail(decoded.code, "invalid TCP quote frame");
+        if (!decoded.ok()) {
+          return fail(decoded.code, "invalid TCP quote frame");
+        }
         impl.received = 0;
         quote.receive_time_ns = now;
         out = quote;

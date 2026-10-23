@@ -1,10 +1,15 @@
 #include "strategyd/strategy_runner.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <cassert>
 #include <cstdio>
 #include <limits>
+#include <optional>
 
 #include "strategyd/strategy_config_loader.h"
+#include "yquant/base/format.h"
 #include "yquant/trading/trading_client_config.h"
 
 namespace yquant::strategyd {
@@ -34,7 +39,7 @@ void StrategyRunner::ResetError() noexcept {
 }
 
 bool StrategyRunner::TryRecordFailure(base::Status status,
-                                     const char* stage) noexcept {
+                                      const char* stage) noexcept {
   assert(!status.ok());
   if (!result_.ok()) {
     return false;
@@ -52,7 +57,7 @@ void StrategyRunner::SetErrorIfNotOK(base::Status status, const char* stage,
   if (!TryRecordFailure(status, stage)) {
     return;
   }
-  std::snprintf(error_detail_, sizeof(error_detail_), "%s", detail);
+  ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_), "{}", detail);
 }
 
 void StrategyRunner::SetQuoteError(base::Status status, const char* stage,
@@ -61,11 +66,10 @@ void StrategyRunner::SetQuoteError(base::Status status, const char* stage,
   if (!TryRecordFailure(status, stage)) {
     return;
   }
-  std::snprintf(error_detail_, sizeof(error_detail_),
-                "source_id=%u instrument_id=%llu sequence=%llu: %s",
-                tick.source_id.value,
-                static_cast<unsigned long long>(tick.instrument_id.value),
-                static_cast<unsigned long long>(tick.sequence), detail);
+  ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_),
+                           "source_id={} instrument_id={} sequence={}: {}",
+                           tick.source_id.value, tick.instrument_id.value,
+                           tick.sequence, detail);
 }
 
 base::Status StrategyRunner::LoadAndStart(
@@ -142,12 +146,13 @@ base::Status StrategyRunner::LoadAndStart(
     // before destroying plugin-owned storage or unloading the library.
     char detail[kErrorDetailSize];
     const char* separator = config_error.field_path[0] == '\0' ? "" : ".";
-    std::snprintf(detail, sizeof(detail), "parameters%s%s: %s%s", separator,
-                  config_error.field_path,
-                  config_error.message[0] != '\0'
-                      ? config_error.message
-                      : "strategy configuration initialization failed",
-                  config_error.truncated ? " [truncated]" : "");
+    ::yquant::base::FormatTo(
+        detail, sizeof(detail), "parameters{}{}: {}{}", separator,
+        config_error.field_path,
+        config_error.message[0] != '\0'
+            ? config_error.message
+            : "strategy configuration initialization failed",
+        config_error.truncated ? " [truncated]" : "");
     SetErrorIfNotOK({initialize_result, {}}, "initialize", detail);
     config_loader.Reset();
     Finalize();
@@ -167,8 +172,7 @@ base::Status StrategyRunner::LoadAndStart(
     return result_;
   }
   started_ = true;
-  const auto status =
-      source_.Start(market_data_.subscriptions(), clock_.Now());
+  const auto status = source_.Start(market_data_.subscriptions(), clock_.Now());
   if (!status.ok()) {
     SetErrorIfNotOK(status, "market_data_start", source_.error_detail());
     Finalize();
@@ -183,14 +187,14 @@ base::Status StrategyRunner::LoadAndStart(
 namespace {
 
 // Returns whether an optional absolute deadline is due in host-monotonic time.
-bool IsDue(std::optional<std::uint64_t> deadline, std::uint64_t now) noexcept {
+bool IsDue(std::optional<uint64_t> deadline, uint64_t now) noexcept {
   return deadline && *deadline <= now;
 }
 
 // Lowers earliest to a present candidate, or initializes it if absent. An
 // absent candidate leaves the accumulated deadline unchanged.
-void IncludeDeadline(std::optional<std::uint64_t>& earliest,
-                     std::optional<std::uint64_t> candidate) noexcept {
+void IncludeDeadline(std::optional<uint64_t>& earliest,
+                     std::optional<uint64_t> candidate) noexcept {
   if (candidate && (!earliest || *candidate < *earliest)) {
     earliest = candidate;
   }
@@ -198,11 +202,11 @@ void IncludeDeadline(std::optional<std::uint64_t>& earliest,
 
 }  // namespace
 
-std::optional<std::uint64_t> StrategyRunner::next_deadline() const noexcept {
+std::optional<uint64_t> StrategyRunner::next_deadline() const noexcept {
   if (state_ != RunnerState::kRunning && state_ != RunnerState::kStopping) {
     return std::nullopt;
   }
-  std::optional<std::uint64_t> deadline;
+  std::optional<uint64_t> deadline;
   if (state_ == RunnerState::kRunning && source_started_) {
     IncludeDeadline(deadline, source_.next_deadline());
     IncludeDeadline(deadline, source_.next_service_deadline());
@@ -245,14 +249,13 @@ void StrategyRunner::EndCallback() noexcept {
 
 void StrategyRunner::SetOrderError(base::Status status, const char* stage,
                                    const char* detail, model::ClientOrderId id,
-                                   std::uint64_t sequence) noexcept {
+                                   uint64_t sequence) noexcept {
   if (!TryRecordFailure(status, stage)) {
     return;
   }
-  std::snprintf(error_detail_, sizeof(error_detail_),
-                "client_order_id=%llu sequence=%llu: %s",
-                static_cast<unsigned long long>(id.value),
-                static_cast<unsigned long long>(sequence), detail);
+  ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_),
+                           "client_order_id={} sequence={}: {}", id.value,
+                           sequence, detail);
 }
 
 void StrategyRunner::EnterStopping() noexcept {
@@ -263,7 +266,7 @@ void StrategyRunner::EnterStopping() noexcept {
   trading_service_.BeginStopping();
   timer_.BeginStopping();
   const auto now = clock_.Now();
-  if (shutdown_timeout_ns_ > std::numeric_limits<std::uint64_t>::max() - now) {
+  if (shutdown_timeout_ns_ > std::numeric_limits<uint64_t>::max() - now) {
     SetErrorIfNotOK({base::ErrorCode::kResourceExhausted, {}}, "trading_drain",
                     "shutdown deadline overflowed");
     drain_viable_ = false;
@@ -337,7 +340,7 @@ StrategyRunner::QuoteDispatchResult StrategyRunner::DispatchQuote(
     return {.success = false, .can_drain = true};
   }
   if (!accepted) {
-    if (ignored_quote_count_ != std::numeric_limits<std::uint64_t>::max()) {
+    if (ignored_quote_count_ != std::numeric_limits<uint64_t>::max()) {
       ++ignored_quote_count_;
     }
     return {.success = true, .can_drain = true};
@@ -460,13 +463,15 @@ bool StrategyRunner::PollTrading() noexcept {
     StopAfterError(false);
     return false;
   }
-  if (!event) return true;
+  if (!event) {
+    return true;
+  }
   return DispatchTrading(dispatch);
 }
 
 void StrategyRunner::ProcessBatch() noexcept {
   bool market_idle = false;
-  for (std::size_t count = 0; count < kMaxStrategyBatchSize; ++count) {
+  for (size_t count = 0; count < kMaxStrategyBatchSize; ++count) {
     const auto now = clock_.Now();
     const bool ready[] = {
         !market_idle && state_ == RunnerState::kRunning && source_started_ &&
@@ -474,9 +479,9 @@ void StrategyRunner::ProcessBatch() noexcept {
         trading_started_ && trading_service_.has_ready_event(now),
         state_ == RunnerState::kRunning && callbacks_enabled_ &&
             IsDue(timer_.deadline(), now)};
-    constexpr std::size_t kEventSourceCount = sizeof(ready) / sizeof(ready[0]);
-    std::size_t selected = kEventSourceCount;
-    for (std::size_t offset = 0; offset < kEventSourceCount; ++offset) {
+    constexpr size_t kEventSourceCount = sizeof(ready) / sizeof(ready[0]);
+    size_t selected = kEventSourceCount;
+    for (size_t offset = 0; offset < kEventSourceCount; ++offset) {
       const auto candidate = (next_event_source_ + offset) % kEventSourceCount;
       if (ready[candidate]) {
         selected = candidate;
@@ -487,7 +492,7 @@ void StrategyRunner::ProcessBatch() noexcept {
       return;
     }
     next_event_source_ =
-        static_cast<std::uint8_t>((selected + 1) % kEventSourceCount);
+        static_cast<uint8_t>((selected + 1) % kEventSourceCount);
     if (selected == 0) {
       const auto polled = PollQuote();
       if (polled == QuotePollResult::kError) {
@@ -549,7 +554,7 @@ base::Status StrategyRunner::Run() noexcept {
       continue;
     }
     const auto timeout =
-        deadline ? std::optional<std::uint64_t>{*deadline - now} : std::nullopt;
+        deadline ? std::optional<uint64_t>{*deadline - now} : std::nullopt;
     const auto waited = environment_.Wait(timeout);
     if (!waited.ok()) {
       SetErrorIfNotOK(waited, "wait", "could not wait for the next event");
@@ -560,7 +565,7 @@ base::Status StrategyRunner::Run() noexcept {
 
 void StrategyRunner::ReportUnconfirmed() const noexcept {
   bool reported_cash = false;
-  for (std::size_t index = 0; index < trading_service_.order_count(); ++index) {
+  for (size_t index = 0; index < trading_service_.order_count(); ++index) {
     model::OrderSnapshot order;
     if (!trading_service_.TryGetOrder({index + 1}, order)) {
       continue;
@@ -574,73 +579,55 @@ void StrategyRunner::ReportUnconfirmed() const noexcept {
     if (!reported_cash) {
       model::CashSnapshot cash;
       if (trading_service_.TryGetCash(cash)) {
-        std::fprintf(stderr,
-                     "yquant-strategyd: cash_balance=%lld reserved=%lld "
-                     "available=%lld unit=micro_yuan\n",
-                     static_cast<long long>(cash.balance),
-                     static_cast<long long>(cash.reserved),
-                     static_cast<long long>(cash.available));
+        ::yquant::base::Print(stderr,
+                              "yquant-strategyd: cash_balance={} reserved={} "
+                              "available={} unit=micro_yuan\n",
+                              cash.balance, cash.reserved, cash.available);
       }
       model::FuturesAccountSnapshot futures;
       if (trading_service_.TryGetFuturesAccount(futures)) {
-        std::fprintf(
+        ::yquant::base::Print(
             stderr,
-            "yquant-strategyd: futures_balance=%lld equity=%lld available=%lld "
-            "margin=%lld reserved=%lld realized_pnl=%lld unrealized_pnl=%lld "
-            "commission=%lld unit=micro_yuan\n",
-            static_cast<long long>(futures.balance),
-            static_cast<long long>(futures.equity),
-            static_cast<long long>(futures.available),
-            static_cast<long long>(futures.margin),
-            static_cast<long long>(futures.reserved),
-            static_cast<long long>(futures.realized_pnl),
-            static_cast<long long>(futures.unrealized_pnl),
-            static_cast<long long>(futures.commission));
+            "yquant-strategyd: futures_balance={} equity={} available={} "
+            "margin={} reserved={} realized_pnl={} unrealized_pnl={} "
+            "commission={} unit=micro_yuan\n",
+            futures.balance, futures.equity, futures.available, futures.margin,
+            futures.reserved, futures.realized_pnl, futures.unrealized_pnl,
+            futures.commission);
       }
       reported_cash = true;
     }
-    std::fprintf(stderr,
-                 "yquant-strategyd: unconfirmed_order=%llu state=%u "
-                 "instrument_id=%llu side=%u price=%lld quantity=%lld "
-                 "filled=%lld leaves=%lld cancel_pending=%u "
-                 "cancel_request=%llu effect=%u\n",
-                 static_cast<unsigned long long>(order.client_order_id.value),
-                 static_cast<unsigned>(order.state),
-                 static_cast<unsigned long long>(order.instrument_id.value),
-                 static_cast<unsigned>(order.side),
-                 static_cast<long long>(order.limit_price),
-                 static_cast<long long>(order.original_qty),
-                 static_cast<long long>(order.cumulative_filled_qty),
-                 static_cast<long long>(order.leaves_qty),
-                 static_cast<unsigned>(order.cancel_pending),
-                 static_cast<unsigned long long>(order.cancel_request_id.value),
-                 static_cast<unsigned>(order.position_effect));
+    ::yquant::base::Print(
+        stderr,
+        "yquant-strategyd: unconfirmed_order={} state={} instrument_id={} "
+        "side={} price={} quantity={} filled={} leaves={} cancel_pending={} "
+        "cancel_request={} effect={}\n",
+        order.client_order_id.value, static_cast<unsigned>(order.state),
+        order.instrument_id.value, static_cast<unsigned>(order.side),
+        order.limit_price, order.original_qty, order.cumulative_filled_qty,
+        order.leaves_qty, static_cast<unsigned>(order.cancel_pending),
+        order.cancel_request_id.value,
+        static_cast<unsigned>(order.position_effect));
     model::PositionSnapshot position;
     if (trading_service_.TryGetPosition(order.instrument_id, position)) {
-      std::fprintf(stderr,
-                   "yquant-strategyd: instrument_id=%llu total_qty=%lld "
-                   "available_qty=%lld reserved_qty=%lld\n",
-                   static_cast<unsigned long long>(order.instrument_id.value),
-                   static_cast<long long>(position.total_qty),
-                   static_cast<long long>(position.available_qty),
-                   static_cast<long long>(position.reserved_qty));
+      ::yquant::base::Print(stderr,
+                            "yquant-strategyd: instrument_id={} total_qty={} "
+                            "available_qty={} reserved_qty={}\n",
+                            order.instrument_id.value, position.total_qty,
+                            position.available_qty, position.reserved_qty);
     }
     model::FuturesPositionSnapshot futures;
     if (trading_service_.TryGetFuturesPosition(order.instrument_id, futures)) {
-      std::fprintf(stderr,
-                   "yquant-strategyd: instrument_id=%llu long_today=%lld/%lld "
-                   "long_yesterday=%lld/%lld "
-                   "short_today=%lld/%lld short_yesterday=%lld/%lld "
-                   "unit=quantity/frozen_lots\n",
-                   static_cast<unsigned long long>(order.instrument_id.value),
-                   static_cast<long long>(futures.long_today.quantity),
-                   static_cast<long long>(futures.long_today.frozen_qty),
-                   static_cast<long long>(futures.long_yesterday.quantity),
-                   static_cast<long long>(futures.long_yesterday.frozen_qty),
-                   static_cast<long long>(futures.short_today.quantity),
-                   static_cast<long long>(futures.short_today.frozen_qty),
-                   static_cast<long long>(futures.short_yesterday.quantity),
-                   static_cast<long long>(futures.short_yesterday.frozen_qty));
+      ::yquant::base::Print(
+          stderr,
+          "yquant-strategyd: instrument_id={} long_today={}/{} "
+          "long_yesterday={}/{} short_today={}/{} short_yesterday={}/{} "
+          "unit=quantity/frozen_lots\n",
+          order.instrument_id.value, futures.long_today.quantity,
+          futures.long_today.frozen_qty, futures.long_yesterday.quantity,
+          futures.long_yesterday.frozen_qty, futures.short_today.quantity,
+          futures.short_today.frozen_qty, futures.short_yesterday.quantity,
+          futures.short_yesterday.frozen_qty);
     }
   }
 }

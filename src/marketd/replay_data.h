@@ -1,8 +1,9 @@
 #ifndef YQUANT_MARKETD_REPLAY_DATA_H_
 #define YQUANT_MARKETD_REPLAY_DATA_H_
 
-#include <cstddef>
-#include <cstdint>
+#include <stddef.h>
+#include <stdint.h>
+
 #include <memory>
 #include <new>
 #include <utility>
@@ -15,7 +16,7 @@ namespace yquant::marketd {
 
 // File order is authoritative; offset_ns is a nondecreasing arrival offset.
 struct ReplayRecord {
-  std::uint64_t offset_ns = 0;
+  uint64_t offset_ns = 0;
   model::QuoteTick quote;
 };
 
@@ -37,13 +38,16 @@ class ReplayData {
   ReplayData& operator=(const ReplayData&) = delete;
 
   // Replaces storage and clears the count on success; failure preserves data.
-  [[nodiscard]] base::Status Reserve(std::size_t capacity) noexcept {
-    if (capacity > kMaxReplayRecords)
+  [[nodiscard]] base::Status Reserve(size_t capacity) noexcept {
+    if (capacity > kMaxReplayRecords) {
       return {base::ErrorCode::kInvalidArgument, {}};
+    }
     std::unique_ptr<ReplayRecord[]> records;
     if (capacity != 0) {
       records.reset(new (std::nothrow) ReplayRecord[capacity]);
-      if (!records) return {base::ErrorCode::kResourceExhausted, {}};
+      if (!records) {
+        return {base::ErrorCode::kResourceExhausted, {}};
+      }
     }
     records_ = std::move(records);
     size_ = 0;
@@ -53,17 +57,17 @@ class ReplayData {
 
   // Appends without allocation; a full buffer leaves existing records intact.
   [[nodiscard]] base::Status Append(const ReplayRecord& record) noexcept {
-    if (size_ == capacity_) return {base::ErrorCode::kResourceExhausted, {}};
+    if (size_ == capacity_) {
+      return {base::ErrorCode::kResourceExhausted, {}};
+    }
     records_[size_++] = record;
     return {};
   }
 
-  std::size_t size() const noexcept { return size_; }
-  std::size_t capacity() const noexcept { return capacity_; }
-  ReplayRecord& operator[](std::size_t index) noexcept {
-    return records_[index];
-  }
-  const ReplayRecord& operator[](std::size_t index) const noexcept {
+  size_t size() const noexcept { return size_; }
+  size_t capacity() const noexcept { return capacity_; }
+  ReplayRecord& operator[](size_t index) noexcept { return records_[index]; }
+  const ReplayRecord& operator[](size_t index) const noexcept {
     return records_[index];
   }
   void Reset() noexcept {
@@ -73,8 +77,8 @@ class ReplayData {
 
  private:
   std::unique_ptr<ReplayRecord[]> records_;
-  std::size_t size_ = 0;
-  std::size_t capacity_ = 0;
+  size_t size_ = 0;
+  size_t capacity_ = 0;
 };
 
 }  // namespace yquant::marketd

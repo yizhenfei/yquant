@@ -1,7 +1,7 @@
 #ifndef YQUANT_STRATEGY_STRATEGY_CONTEXT_H_
 #define YQUANT_STRATEGY_STRATEGY_CONTEXT_H_
 
-#include <cstdint>
+#include <stdint.h>
 
 #include "yquant/strategy/market_data.h"
 #include "yquant/strategy/timer.h"
@@ -17,7 +17,7 @@ class StrategyContext {
   virtual ~StrategyContext() noexcept = default;
 
   // Returns nanoseconds elapsed from the host's process-local monotonic base.
-  virtual std::uint64_t Now() const noexcept = 0;
+  virtual uint64_t Now() const noexcept = 0;
 
   // Both overloads return the same host-owned service throughout this strategy
   // instance's lifetime. Borrow the reference only during the current callback;

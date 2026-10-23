@@ -1,5 +1,8 @@
 #include "marketd/runner.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <cstring>
 #include <limits>
 #include <optional>
@@ -15,13 +18,13 @@ namespace {
 // Advances one mock interval per source poll; no wall-clock waiting is needed.
 class AdvancingClock final : public base::MonotonicClock {
  public:
-  std::uint64_t Now() const noexcept override {
+  uint64_t Now() const noexcept override {
     now_ += 1000000;
     return now_;
   }
 
  private:
-  mutable std::uint64_t now_ = 0;
+  mutable uint64_t now_ = 0;
 };
 
 // Requests stop at a selected batch boundary.
@@ -29,16 +32,18 @@ class Environment final : public base::EventLoopEnvironment {
  public:
   base::Status CheckStop(bool& out) noexcept override {
     ++checks;
-    if (fail) return {base::ErrorCode::kIoError, {}};
+    if (fail) {
+      return {base::ErrorCode::kIoError, {}};
+    }
     out = checks >= stop_after;
     return {};
   }
   // Marketd polls in bounded batches; a wait here would be unexpected.
-  base::Status Wait(std::optional<std::uint64_t>) noexcept override {
+  base::Status Wait(std::optional<uint64_t>) noexcept override {
     return {base::ErrorCode::kInternalError, {}};
   }
-  std::size_t checks = 0;
-  std::size_t stop_after = std::numeric_limits<std::size_t>::max();
+  size_t checks = 0;
+  size_t stop_after = std::numeric_limits<size_t>::max();
   bool fail = false;
 };
 
@@ -58,7 +63,7 @@ TEST(MarketdRunnerTest, PublishesExactlyLimitToEveryOutputAndClosesDiscovery) {
   Environment environment;
   ASSERT_TRUE(runner.Run(clock, environment, 5).ok()) << runner.error_detail();
   EXPECT_EQ(runner.event_count(), 5U);
-  for (std::uint64_t sequence = 1; sequence <= 5; ++sequence) {
+  for (uint64_t sequence = 1; sequence <= 5; ++sequence) {
     md::EventBuffer first_buffer;
     md::EventBuffer second_buffer;
     ASSERT_EQ(first.TryNext(first_buffer).status, md::ReadStatus::kEvent);
@@ -100,7 +105,8 @@ TEST(MarketdRunnerTest, ValidatesAllConfigurationBeforeCreatingOutputs) {
   MarketdRunner runner;
   EXPECT_FALSE(runner.Init(config, 0).ok());
   EXPECT_STREQ(runner.error_stage(), "config");
-  EXPECT_FALSE(std::filesystem::exists(directory.File("quotes.lock")));
+  EXPECT_FALSE(::yquant::testing::files::Exists(
+      ::yquant::testing::files::FilePath(directory.File("quotes.lock"))));
   md::ShmReader reader;
   EXPECT_FALSE(reader.Open({directory.path(), "quotes"}).ok());
 }

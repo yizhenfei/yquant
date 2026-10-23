@@ -1,10 +1,15 @@
 #include "yquant/md/instrument_scope.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
+#include <optional>
+
 #include "yquant/base/config_error.h"
 
 namespace yquant::md {
 
-std::size_t InstrumentScope::Hash(model::InstrumentId id) noexcept {
+size_t InstrumentScope::Hash(model::InstrumentId id) noexcept {
   auto value = id.value;
   value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
   value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
@@ -18,18 +23,20 @@ base::Status InstrumentScope::Configure(
   }
   base::ConfigError error;
   const auto status = ValidateMarketDataScope(config, error);
-  if (!status.ok()) return status;
+  if (!status.ok()) {
+    return status;
+  }
 
   source_id_ = config.source_id;
   instrument_count_ = config.instrument_count;
-  for (std::size_t index = 0; index < instrument_count_; ++index) {
+  for (size_t index = 0; index < instrument_count_; ++index) {
     const auto& definition = config.instruments[index].instrument;
     definitions_[index] = definition;
     auto position = Hash(definition.id);
     while (lookup_[position].index_plus_one != 0) {
       position = (position + 1) & (kLookupCapacity - 1);
     }
-    lookup_[position] = {definition.id, static_cast<std::uint8_t>(index + 1)};
+    lookup_[position] = {definition.id, static_cast<uint8_t>(index + 1)};
   }
   return {};
 }
@@ -41,14 +48,20 @@ void InstrumentScope::Reset() noexcept {
   lookup_.fill({});
 }
 
-std::optional<std::size_t> InstrumentScope::FindIndex(
+std::optional<size_t> InstrumentScope::FindIndex(
     model::InstrumentId id) const noexcept {
-  if (id.value == 0) return {};
+  if (id.value == 0) {
+    return {};
+  }
   auto position = Hash(id);
-  for (std::size_t scanned = 0; scanned < kLookupCapacity; ++scanned) {
+  for (size_t scanned = 0; scanned < kLookupCapacity; ++scanned) {
     const auto& slot = lookup_[position];
-    if (slot.index_plus_one == 0) return {};
-    if (slot.id == id) return slot.index_plus_one - 1;
+    if (slot.index_plus_one == 0) {
+      return {};
+    }
+    if (slot.id == id) {
+      return slot.index_plus_one - 1;
+    }
     position = (position + 1) & (kLookupCapacity - 1);
   }
   return {};
@@ -57,7 +70,9 @@ std::optional<std::size_t> InstrumentScope::FindIndex(
 bool InstrumentScope::TryGetInstrument(
     model::InstrumentId id, model::InstrumentDefinition& out) const noexcept {
   const auto index = FindIndex(id);
-  if (!index) return false;
+  if (!index) {
+    return false;
+  }
   out = definitions_[*index];
   return true;
 }

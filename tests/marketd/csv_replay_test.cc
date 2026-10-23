@@ -1,9 +1,10 @@
 #include "marketd/csv_replay.h"
 
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/stat.h>
 
 #include <array>
-#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -11,6 +12,7 @@
 
 #include "gtest/gtest.h"
 #include "test_support.h"
+#include "yquant/base/format.h"
 #include "yquant/md/quote_codec.h"
 
 namespace yquant::marketd {
@@ -23,19 +25,19 @@ class CsvReplayTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ASSERT_TRUE(directory_.valid());
-    std::snprintf(config_.path, sizeof(config_.path), "%s",
-                  directory_.File("quotes.csv").c_str());
+    ::yquant::base::FormatTo(config_.path, sizeof(config_.path), "{}",
+                             directory_.File("quotes.csv").c_str());
     config_.format = ReplayFormat::kDolphinDbCsv;
     config_.source_id = {42};
     config_.max_records = 32;
-    std::snprintf(config_.instrument_catalog,
-                  sizeof(config_.instrument_catalog), "%s",
-                  directory_.File("instruments.json").c_str());
+    ::yquant::base::FormatTo(config_.instrument_catalog,
+                             sizeof(config_.instrument_catalog), "{}",
+                             directory_.File("instruments.json").c_str());
     ASSERT_TRUE(SetCatalog(4));
   }
 
   // Each fixture owns the definitions used to interpret its CSV prices.
-  bool SetCatalog(std::uint8_t sse_decimals) {
+  bool SetCatalog(uint8_t sse_decimals) {
     return directory_.Write(
         "instruments.json",
         R"({"instruments":[{"venue":"SSE","symbol":"600000",)"
@@ -74,7 +76,7 @@ TEST_F(CsvReplayTest, ConvertsRealSnapshotValuesAndCanonicalizesMissingSide) {
   EXPECT_EQ(absent.bid_qty, 0);
   EXPECT_EQ(absent.ask_qty, 0);
   EXPECT_EQ(absent.flags,
-            static_cast<std::uint8_t>(model::QuoteFlag::kEventTimeValid));
+            static_cast<uint8_t>(model::QuoteFlag::kEventTimeValid));
   EXPECT_EQ(data_[1].quote.bid_price, 43000);
   EXPECT_EQ(data_[1].quote.ask_qty, 86200);
   EXPECT_EQ(data_[2].quote.bid_price, 465900);
@@ -84,8 +86,9 @@ TEST_F(CsvReplayTest, ConvertsRealSnapshotValuesAndCanonicalizesMissingSide) {
   ASSERT_EQ(model::MakeInstrumentId("SZSE", "000557", id),
             base::ErrorCode::kOk);
   EXPECT_EQ(data_[1].quote.instrument_id, id);
-  for (std::size_t i = 0; i < data_.size(); ++i)
+  for (size_t i = 0; i < data_.size(); ++i) {
     EXPECT_TRUE(md::ValidateQuote(data_[i].quote).ok());
+  }
 }
 
 TEST_F(CsvReplayTest, RoundsPricesUsingExactDecimalText) {
@@ -143,8 +146,9 @@ TEST_F(CsvReplayTest, CatalogLoadFailurePreservesPreviousOutput) {
   EXPECT_NE(std::strstr(detail_.data(), "instrument catalog"), nullptr);
   ASSERT_EQ(data_.size(), 1U);
   EXPECT_EQ(data_[0].quote, previous);
-  std::snprintf(config_.instrument_catalog, sizeof(config_.instrument_catalog),
-                "%s", directory_.File("missing.json").c_str());
+  ::yquant::base::FormatTo(config_.instrument_catalog,
+                           sizeof(config_.instrument_catalog), "{}",
+                           directory_.File("missing.json").c_str());
   EXPECT_EQ(Load(csv).code, base::ErrorCode::kIoError);
   ASSERT_EQ(data_.size(), 1U);
   EXPECT_EQ(data_[0].quote, previous);
@@ -296,8 +300,9 @@ TEST_F(CsvReplayTest,
   EXPECT_EQ(LoadDolphinDbCsv(config_, data_, {}).code,
             base::ErrorCode::kInvalidArgument);
   config_.source_id = {1};
-  std::snprintf(config_.instrument_catalog, sizeof(config_.instrument_catalog),
-                "%s", "relative.json");
+  ::yquant::base::FormatTo(config_.instrument_catalog,
+                           sizeof(config_.instrument_catalog), "{}",
+                           "relative.json");
   EXPECT_EQ(LoadDolphinDbCsv(config_, data_, {}).code,
             base::ErrorCode::kInvalidArgument);
   config_.instrument_catalog[0] = '\0';
@@ -313,7 +318,8 @@ TEST_F(CsvReplayTest, RejectsNonRegularInputWithoutWaitingForPipeWriter) {
   ASSERT_EQ(::mkfifo(config_.path, 0600), 0);
   EXPECT_EQ(LoadDolphinDbCsv(config_, data_, detail_).code,
             base::ErrorCode::kInvalidArgument);
-  std::snprintf(config_.path, sizeof(config_.path), "%s", directory_.path());
+  ::yquant::base::FormatTo(config_.path, sizeof(config_.path), "{}",
+                           directory_.path());
   EXPECT_EQ(LoadDolphinDbCsv(config_, data_, detail_).code,
             base::ErrorCode::kInvalidArgument);
 }

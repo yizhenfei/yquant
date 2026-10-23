@@ -1,8 +1,9 @@
 #ifndef YQUANT_MD_EVENT_FILTER_H_
 #define YQUANT_MD_EVENT_FILTER_H_
 
+#include <stdint.h>
+
 #include <algorithm>
-#include <cstdint>
 #include <span>
 
 #include "yquant/md/event.h"
@@ -15,14 +16,16 @@ namespace yquant::md {
 // An unrestricted dimension accepts every value; a restricted empty list
 // accepts none. Stream status always passes; instrument status bypasses types.
 struct EventFilter {
-  std::span<const std::uint64_t> instruments;
-  std::span<const std::uint32_t> event_types;
+  std::span<const uint64_t> instruments;
+  std::span<const uint32_t> event_types;
   bool all_instruments = true;
   bool all_event_types = true;
 
   // Pure header matching; does not allocate or change the event or filter.
   bool Matches(const EventHeader& header) const noexcept {
-    if (header.scope == EventScope::kStreamStatus) return true;
+    if (header.scope == EventScope::kStreamStatus) {
+      return true;
+    }
     if (!all_instruments &&
         std::find(instruments.begin(), instruments.end(),
                   header.instrument_id) == instruments.end()) {

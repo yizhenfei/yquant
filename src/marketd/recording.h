@@ -2,11 +2,11 @@
 #define YQUANT_MARKETD_RECORDING_H_
 
 #include <pthread.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/types.h>
 
 #include <atomic>
-#include <cstddef>
-#include <cstdint>
 #include <span>
 
 #include "marketd/file_config.h"
@@ -16,15 +16,15 @@
 
 namespace yquant::marketd {
 
-inline constexpr std::size_t kRecordingHeaderSize = 64;
-inline constexpr std::size_t kRecordingRecordSize = 96;
+inline constexpr size_t kRecordingHeaderSize = 64;
+inline constexpr size_t kRecordingRecordSize = 96;
 
 // Loads a sealed version-1 recording, validating every frame and checksum
 // before replacing output. Failure preserves output; optional diagnostic
 // storage may be empty and is always NUL-terminated when nonempty. Files
 // exceeding max_records are rejected before record storage is allocated.
 [[nodiscard]] base::Status LoadRecordingFile(
-    const char* path, std::size_t max_records, ReplayData& output,
+    const char* path, size_t max_records, ReplayData& output,
     std::span<char> error_detail) noexcept;
 
 // Optional backend operations for deterministic I/O failure tests. Null hooks
@@ -33,7 +33,7 @@ inline constexpr std::size_t kRecordingRecordSize = 96;
 // close hook must close its descriptor even when it reports an error.
 struct RecordIoHooks {
   void* context = nullptr;
-  ssize_t (*write)(void*, int, const void*, std::size_t) noexcept = nullptr;
+  ssize_t (*write)(void*, int, const void*, size_t) noexcept = nullptr;
   int (*sync)(void*, int) noexcept = nullptr;
   int (*close)(void*, int) noexcept = nullptr;
 };
@@ -61,7 +61,7 @@ class RecordPublisher final : public Publisher {
       const RecordIoHooks* hooks = nullptr) noexcept;
   [[nodiscard]] base::Status Publish(
       const model::QuoteTick& quote) noexcept override;
-  [[nodiscard]] base::Status Service(std::uint64_t now) noexcept override;
+  [[nodiscard]] base::Status Service(uint64_t now) noexcept override;
   [[nodiscard]] base::Status Finish() noexcept override;
   // Best-effort Finish; use Finish directly when shutdown errors matter.
   void Close() noexcept override;
@@ -88,9 +88,9 @@ class RecordPublisher final : public Publisher {
   int fd_ = -1;
   int directory_fd_ = -1;
   bool active_ = false;
-  std::uint64_t first_receive_time_ns_ = 0;
-  std::uint64_t last_offset_ns_ = 0;
-  std::uint64_t record_count_ = 0;
+  uint64_t first_receive_time_ns_ = 0;
+  uint64_t last_offset_ns_ = 0;
+  uint64_t record_count_ = 0;
   base::Status failure_;
   char error_detail_[256] = {};
 };

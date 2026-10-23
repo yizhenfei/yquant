@@ -1,7 +1,8 @@
 #include "strategyd/timer.h"
 
+#include <stdint.h>
+
 #include <array>
-#include <cstdint>
 #include <limits>
 
 #include "gtest/gtest.h"
@@ -61,12 +62,11 @@ TEST(TimerTest, CancelIsIdempotentAndReplacementHasNoStaleNotification) {
 }
 
 TEST(TimerTest, ImmediateAndMaximumDeadlinesUseTheExactMonotonicValue) {
-  constexpr auto kMaximum = std::numeric_limits<std::uint64_t>::max();
+  constexpr auto kMaximum = std::numeric_limits<uint64_t>::max();
   TimerImpl timer;
   timer.SetRunning(true);
   TimerEvent event;
-  for (const std::uint64_t deadline :
-       {std::uint64_t{0}, std::uint64_t{5}, kMaximum}) {
+  for (const uint64_t deadline : {uint64_t{0}, uint64_t{5}, kMaximum}) {
     timer.BeginCallback(strategy::CallbackPhase::kTick);
     ASSERT_EQ(timer.Arm(deadline), ErrorCode::kOk);
     timer.EndCallback();

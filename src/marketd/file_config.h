@@ -1,16 +1,16 @@
 #ifndef YQUANT_MARKETD_FILE_CONFIG_H_
 #define YQUANT_MARKETD_FILE_CONFIG_H_
 
-#include <cstddef>
-#include <cstdint>
+#include <stddef.h>
+#include <stdint.h>
 
 #include "yquant/model/identifiers.h"
 
 namespace yquant::marketd {
 
-inline constexpr std::size_t kMaxDataPathBytes = 4095;
-inline constexpr std::size_t kMaxReplayRecords = 2000000;
-inline constexpr std::size_t kMaxRecordingQueueBytes = 64 * 1024 * 1024;
+inline constexpr size_t kMaxDataPathBytes = 4095;
+inline constexpr size_t kMaxReplayRecords = 2000000;
+inline constexpr size_t kMaxRecordingQueueBytes = 64 * 1024 * 1024;
 
 enum class ReplayFormat { kRecording, kDolphinDbCsv };
 
@@ -22,8 +22,8 @@ struct ReplayConfig {
   ReplayFormat format = ReplayFormat::kRecording;
   double speed = 1.0;
   // Delay from the first Poll, allowing local readers to attach first.
-  std::uint64_t start_delay_ns = 0;
-  std::size_t max_records = 1000000;
+  uint64_t start_delay_ns = 0;
+  size_t max_records = 1000000;
   model::SourceId source_id{1};
   // Absolute catalog path, loaded only while converting the CSV input.
   char instrument_catalog[kMaxDataPathBytes + 1] = {};
@@ -33,7 +33,7 @@ struct ReplayConfig {
 // queue_capacity is the power-of-two byte capacity of the async SPSC queue.
 struct RecordConfig {
   char path[kMaxDataPathBytes + 1] = {};
-  std::size_t queue_capacity = 1024 * 1024;
+  size_t queue_capacity = 1024 * 1024;
 };
 
 }  // namespace yquant::marketd

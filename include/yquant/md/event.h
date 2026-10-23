@@ -1,29 +1,31 @@
 #ifndef YQUANT_MD_EVENT_H_
 #define YQUANT_MD_EVENT_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
 #include <cstddef>
-#include <cstdint>
 #include <span>
 
 namespace yquant::md {
 
 // Maximum payload bytes supported by event buffers and the broadcast codec;
 // excludes the event header. Individual streams may configure a smaller limit.
-inline constexpr std::size_t kMaxEventPayloadSize = 4096;
+inline constexpr size_t kMaxEventPayloadSize = 4096;
 
-enum class EventScope : std::uint8_t {
+enum class EventScope : uint8_t {
   kBusiness,
   kStreamStatus,
   kInstrumentStatus,
 };
 
 struct EventHeader {
-  std::uint64_t source_id = 0;
-  std::uint64_t instrument_id = 0;
-  std::uint64_t source_timestamp_ns = 0;
-  std::uint64_t source_sequence = 0;
-  std::uint32_t type = 0;
+  uint64_t source_id = 0;
+  uint64_t instrument_id = 0;
+  uint64_t source_timestamp_ns = 0;
+  uint64_t source_sequence = 0;
+  uint32_t type = 0;
   EventScope scope = EventScope::kBusiness;
   bool has_source_sequence = false;
 };
@@ -38,7 +40,7 @@ struct EventView {
 struct EventBuffer {
   EventHeader header;
   std::array<std::byte, kMaxEventPayloadSize> payload{};
-  std::size_t payload_size = 0;
+  size_t payload_size = 0;
   // Requires payload_size <= kMaxEventPayloadSize.
   EventView view() const noexcept {
     return {header, std::span(payload).first(payload_size)};

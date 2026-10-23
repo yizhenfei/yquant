@@ -1,7 +1,9 @@
+#include <stddef.h>
+#include <stdint.h>
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <cstdint>
 #include <cstring>
 #include <deque>
 #include <span>
@@ -17,7 +19,7 @@ namespace {
 using Role = SpscQueue::Role;
 
 TEST(SpscQueueWrapTest, ContiguousFramesSkipExplicitAndImplicitTailPadding) {
-  for (std::size_t tail : {1U, 2U, 3U, 4U, 7U}) {
+  for (size_t tail : {1U, 2U, 3U, 4U, 7U}) {
     SCOPED_TRACE(tail);
     alignas(128) std::array<std::byte, 400> memory{};
     ASSERT_EQ(SpscQueue::Initialize(memory, 16), SpscStatus::kSuccess);
@@ -27,11 +29,11 @@ TEST(SpscQueueWrapTest, ContiguousFramesSkipExplicitAndImplicitTailPadding) {
     ASSERT_EQ(consumer.Attach(memory, Role::kConsumer), SpscStatus::kSuccess);
     std::array<std::byte, 16> output{};
     // Advance an empty queue to a position with the selected tail length.
-    const std::size_t first_payload_size = 16 - tail - 4;
+    const size_t first_payload_size = 16 - tail - 4;
     ASSERT_EQ(producer.TryWrite(std::span(output).first(first_payload_size)),
               SpscStatus::kSuccess);
     ASSERT_EQ(consumer.TryRead(output).status, SpscStatus::kSuccess);
-    const std::size_t payload_size = 16 - tail - 4;
+    const size_t payload_size = 16 - tail - 4;
     auto reservation = producer.TryReserve(payload_size);
     ASSERT_EQ(reservation.status, SpscStatus::kSuccess);
     // Frame header and payload begin at the ring head after the tail jump.
@@ -53,7 +55,7 @@ TEST(SpscQueueWrapTest, ContiguousFramesSkipExplicitAndImplicitTailPadding) {
 }
 
 TEST(SpscQueueWrapTest, FullSizeFrameMakesProgressFromEveryEmptyPosition) {
-  for (std::size_t offset = 4; offset < 16; ++offset) {
+  for (size_t offset = 4; offset < 16; ++offset) {
     SCOPED_TRACE(offset);
     alignas(128) std::array<std::byte, 400> memory{};
     ASSERT_EQ(SpscQueue::Initialize(memory, 16), SpscStatus::kSuccess);
@@ -139,8 +141,8 @@ TEST(SpscQueueWrapTest, CancelAndSmallOutputRetainPublishedPaddingSemantics) {
 
 class FixedRandom {
  public:
-  explicit FixedRandom(std::uint64_t seed) : state_(seed) {}
-  std::uint64_t Next() {
+  explicit FixedRandom(uint64_t seed) : state_(seed) {}
+  uint64_t Next() {
     state_ ^= state_ << 13;
     state_ ^= state_ >> 7;
     state_ ^= state_ << 17;
@@ -148,15 +150,15 @@ class FixedRandom {
   }
 
  private:
-  std::uint64_t state_;
+  uint64_t state_;
 };
 
 TEST(SpscQueueModelTest, RandomOperationsPreserveReferenceFrameSequence) {
   using Reservation =
       decltype(std::declval<SpscQueue&>().TryReserve(0).reservation);
   using Lease = decltype(std::declval<SpscQueue&>().TryAcquire().lease);
-  for (std::uint64_t capacity : {4U, 8U, 16U, 32U, 64U}) {
-    for (std::uint64_t seed : {1U, 7U, 37U, 101U}) {
+  for (uint64_t capacity : {4U, 8U, 16U, 32U, 64U}) {
+    for (uint64_t seed : {1U, 7U, 37U, 101U}) {
       SCOPED_TRACE(capacity);
       SCOPED_TRACE(seed);
       alignas(128) std::array<std::byte, 448> memory{};

@@ -1,5 +1,6 @@
 #include "yquant/strategy/strategy_config.h"
 
+#include <concepts>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -11,7 +12,7 @@ namespace yquant::strategy {
 namespace {
 
 using base::ErrorCode;
-static_assert(std::is_same_v<ConfigError, base::ConfigError>);
+static_assert(std::same_as<ConfigError, base::ConfigError>);
 
 StrategyId MakeId(std::string_view text = "test-strategy") {
   StrategyId id;

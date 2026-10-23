@@ -1,4 +1,6 @@
 #include <arpa/inet.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -6,16 +8,18 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
-#include <filesystem>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
-#include "../marketd/test_support.h"
+#include "file_test_support.h"
 #include "gtest/gtest.h"
+#include "marketd/test_support.h"
 #include "process_support.h"
 #include "scoped_working_directory.h"
 #include "tradingd/server.h"
+#include "yquant/base/format.h"
 #include "yquant/trading/connection.h"
 
 namespace yquant::tradingd {
@@ -24,13 +28,13 @@ using marketd::testing::RuntimeDirectory;
 
 class PersistenceClock final : public base::MonotonicClock {
  public:
-  std::uint64_t Now() const noexcept override { return now; }
-  std::uint64_t now = 1000000;
+  uint64_t Now() const noexcept override { return now; }
+  uint64_t now = 1000000;
 };
 
 struct PersistentPeer {
   trading::Connection connection;
-  std::uint64_t generation = 0;
+  uint64_t generation = 0;
   std::vector<trading::Message> messages;
 };
 
@@ -41,16 +45,17 @@ class TradingdPersistenceTest : public ::testing::Test {
   void SetUp() override {
     ASSERT_TRUE(directory.valid());
     config.listen.port = 0;
-    std::snprintf(config.token, sizeof(config.token), "persistence-token");
+    ::yquant::base::FormatTo(config.token, sizeof(config.token),
+                             "persistence-token");
     config.market_data = marketd::testing::ScopeConfig();
     config.trading.mode = trading::MockTradingMode::kWorking;
     config.trading.initial_account.cash_balance = 1000000000;
-    std::snprintf(config.persistence.directory,
-                  sizeof(config.persistence.directory), "%s/state",
-                  directory.path());
-    std::snprintf(config.persistence.account_key,
-                  sizeof(config.persistence.account_key),
-                  "simulation/account-A/CNY");
+    ::yquant::base::FormatTo(config.persistence.directory,
+                             sizeof(config.persistence.directory), "{}/state",
+                             directory.path());
+    ::yquant::base::FormatTo(config.persistence.account_key,
+                             sizeof(config.persistence.account_key),
+                             "simulation/account-A/CNY");
     config.persistence.wal_segment_bytes = 4 * 1024 * 1024;
     config.persistence.initialize = true;
   }
@@ -66,7 +71,7 @@ class TradingdPersistenceTest : public ::testing::Test {
     clock.now += 1000000;
     ASSERT_TRUE(server.Init(config).ok()) << server.error_detail();
   }
-  void Connect(std::uint64_t id) {
+  void Connect(uint64_t id) {
     peer.connection.Close();
     peer.messages.clear();
     peer.generation = 0;
@@ -76,23 +81,30 @@ class TradingdPersistenceTest : public ::testing::Test {
     trading::Message hello;
     hello.type = trading::MessageType::kHello;
     hello.client_id = id;
-    std::snprintf(hello.token, sizeof(hello.token), "persistence-token");
+    ::yquant::base::FormatTo(hello.token, sizeof(hello.token),
+                             "persistence-token");
     hello.instrument_count = 1;
     hello.instruments[0] = {config.market_data.instruments[0].instrument.id, 2};
     ASSERT_TRUE(peer.connection.Queue(hello).ok());
     Pump();
-    for (const auto& message : peer.messages)
-      if (message.type == trading::MessageType::kWelcome)
+    for (const auto& message : peer.messages) {
+      if (message.type == trading::MessageType::kWelcome) {
         peer.generation = message.generation;
+      }
+    }
   }
   void Pump() {
     for (int iteration = 0; iteration < 40; ++iteration) {
-      if (peer.connection.open()) (void)peer.connection.Service();
+      if (peer.connection.open()) {
+        (void)peer.connection.Service();
+      }
       ASSERT_TRUE(server.Service(clock.now).ok()) << server.error_detail();
       for (int count = 0; count < 64 && peer.connection.open(); ++count) {
         trading::Message message;
         const auto result = peer.connection.Poll(message);
-        if (result.state != trading::ReceiveState::kMessage) break;
+        if (result.state != trading::ReceiveState::kMessage) {
+          break;
+        }
         peer.messages.push_back(message);
       }
       std::this_thread::yield();
@@ -102,7 +114,7 @@ class TradingdPersistenceTest : public ::testing::Test {
     clock.now += 1000000;
     Pump();
   }
-  void Order(std::uint64_t local_id = 1, std::int64_t quantity = 10) {
+  void Order(uint64_t local_id = 1, int64_t quantity = 10) {
     trading::Message order;
     order.type = trading::MessageType::kNewOrder;
     order.generation = peer.generation;
@@ -113,10 +125,12 @@ class TradingdPersistenceTest : public ::testing::Test {
     Pump();
   }
   const trading::Message* Update(model::OrderUpdateKind kind) const {
-    for (auto it = peer.messages.rbegin(); it != peer.messages.rend(); ++it)
+    for (auto it = peer.messages.rbegin(); it != peer.messages.rend(); ++it) {
       if (it->type == trading::MessageType::kOrderUpdate &&
-          it->update.kind == kind)
+          it->update.kind == kind) {
         return &*it;
+      }
+    }
     return nullptr;
   }
   std::string StateFile(const char* name) const {
@@ -225,9 +239,9 @@ TEST_F(TradingdPersistenceTest, AccountIdentityMismatchRefusesStartup) {
   Start();
   server.Close();
   config.persistence.initialize = false;
-  std::snprintf(config.persistence.account_key,
-                sizeof(config.persistence.account_key),
-                "simulation/account-B/CNY");
+  ::yquant::base::FormatTo(config.persistence.account_key,
+                           sizeof(config.persistence.account_key),
+                           "simulation/account-B/CNY");
   EXPECT_FALSE(server.Init(config).ok());
 }
 
@@ -292,9 +306,11 @@ TEST_F(TradingdPersistenceTest, CorruptSnapshotRefusesStartup) {
   Start();
   server.Close();
   bool changed = false;
-  for (const auto& entry :
-       std::filesystem::directory_iterator(config.persistence.directory)) {
-    if (!entry.path().filename().string().starts_with("snapshot-")) continue;
+  for (const auto& entry : ::yquant::testing::files::Entries(
+           ::yquant::testing::files::FilePath(config.persistence.directory))) {
+    if (!entry.path().Filename().string().starts_with("snapshot-")) {
+      continue;
+    }
     auto* file = std::fopen(entry.path().c_str(), "wb");
     ASSERT_NE(file, nullptr);
     ASSERT_EQ(std::fwrite("corrupt", 1, 7, file), 7U);
@@ -309,7 +325,8 @@ TEST_F(TradingdPersistenceTest, CorruptSnapshotRefusesStartup) {
 TEST_F(TradingdPersistenceTest, MissingIdentityRefusesStartup) {
   Start();
   server.Close();
-  ASSERT_TRUE(std::filesystem::remove(StateFile("IDENTITY")));
+  ASSERT_TRUE(::yquant::testing::files::RemoveFile(
+      ::yquant::testing::files::FilePath(StateFile("IDENTITY"))));
   config.persistence.initialize = false;
   EXPECT_FALSE(server.Init(config).ok());
 }
@@ -322,8 +339,9 @@ TEST_F(TradingdPersistenceTest,
   EXPECT_EQ(server.Finish().code, base::ErrorCode::kInvalidState);
   server.BeginStopping(clock.now);
   Pump();
-  for (int attempt = 0; attempt < 8 && !server.is_drained(); ++attempt)
+  for (int attempt = 0; attempt < 8 && !server.is_drained(); ++attempt) {
     Advance();
+  }
   ASSERT_TRUE(server.is_drained());
   ASSERT_TRUE(server.Finish().ok()) << server.error_detail();
   EXPECT_EQ(server.account().cash.balance, 1000000000);
@@ -339,7 +357,7 @@ TEST_F(TradingdPersistenceTest,
   config.persistence.snapshot_interval_ms = 1000;
   Start();
   Connect(11);
-  const auto checkpoint = [&](std::size_t expected) {
+  const auto checkpoint = [&](size_t expected) {
     clock.now += 1000000000;
     Pump();
     const auto deadline =
@@ -347,13 +365,17 @@ TEST_F(TradingdPersistenceTest,
     bool published = false;
     while (std::chrono::steady_clock::now() < deadline && !published) {
       Pump();
-      std::size_t count = 0;
+      size_t count = 0;
       for (const auto& entry :
-           std::filesystem::directory_iterator(config.persistence.directory))
-        count += entry.path().filename().string().starts_with("snapshot-") &&
-                 entry.path().extension() == ".bin";
+           ::yquant::testing::files::Entries(::yquant::testing::files::FilePath(
+               config.persistence.directory))) {
+        count += entry.path().Filename().string().starts_with("snapshot-") &&
+                 entry.path().Extension() == ".bin";
+      }
       published = count >= expected;
-      if (!published) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      if (!published) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
     }
     EXPECT_TRUE(published);
   };
@@ -384,58 +406,68 @@ TEST_F(TradingdPersistenceTest,
 // Simulates loss of complete trailing WAL records after process shutdown while
 // retaining immutable segment headers and file size. Each test uses a fresh
 // stream small enough to fit its records in the first segment.
-std::size_t KeepWalRecords(const char* directory, std::size_t keep) {
-  constexpr std::size_t kTestSegmentHeaderBytes = 64;
-  std::size_t records = 0;
-  for (const auto& entry :
-       std::filesystem::recursive_directory_iterator(directory)) {
-    if (entry.path().extension() != ".wal") continue;
+size_t KeepWalRecords(const char* directory, size_t keep) {
+  constexpr size_t kTestSegmentHeaderBytes = 64;
+  size_t records = 0;
+  for (const auto& entry : ::yquant::testing::files::RecursiveEntries(
+           ::yquant::testing::files::FilePath(directory))) {
+    if (entry.path().Extension() != ".wal") {
+      continue;
+    }
     auto* file = std::fopen(entry.path().c_str(), "r+b");
-    if (file == nullptr) return SIZE_MAX;
-    const auto size = std::filesystem::file_size(entry.path());
+    if (file == nullptr) {
+      return SIZE_MAX;
+    }
+    const auto size = ::yquant::testing::files::FileSize(
+        ::yquant::testing::files::FilePath(entry.path()));
     std::vector<unsigned char> bytes(size);
     if (std::fread(bytes.data(), 1, bytes.size(), file) != bytes.size()) {
       std::fclose(file);
       return SIZE_MAX;
     }
-    std::size_t offset = kTestSegmentHeaderBytes;
-    std::size_t cutoff = kTestSegmentHeaderBytes;
+    size_t offset = kTestSegmentHeaderBytes;
+    size_t cutoff = kTestSegmentHeaderBytes;
     while (offset + 4 <= bytes.size()) {
-      const auto length =
-          static_cast<std::uint32_t>(bytes[offset]) |
-          (static_cast<std::uint32_t>(bytes[offset + 1]) << 8) |
-          (static_cast<std::uint32_t>(bytes[offset + 2]) << 16) |
-          (static_cast<std::uint32_t>(bytes[offset + 3]) << 24);
-      if (length == 0) break;
+      const auto length = static_cast<uint32_t>(bytes[offset]) |
+                          (static_cast<uint32_t>(bytes[offset + 1]) << 8) |
+                          (static_cast<uint32_t>(bytes[offset + 2]) << 16) |
+                          (static_cast<uint32_t>(bytes[offset + 3]) << 24);
+      if (length == 0) {
+        break;
+      }
       if (length > bytes.size() - offset || length < 48) {
         std::fclose(file);
         return SIZE_MAX;
       }
       ++records;
       offset += length;
-      if (records <= keep) cutoff = offset;
+      if (records <= keep) {
+        cutoff = offset;
+      }
     }
     std::fill(bytes.begin() + cutoff, bytes.end(), 0);
     const bool written =
         std::fseek(file, 0, SEEK_SET) == 0 &&
         std::fwrite(bytes.data(), 1, bytes.size(), file) == bytes.size();
-    if (std::fclose(file) != 0 || !written) return SIZE_MAX;
+    if (std::fclose(file) != 0 || !written) {
+      return SIZE_MAX;
+    }
   }
   return records;
 }
 
 TEST_F(TradingdPersistenceTest,
        EveryWorkingOrderWalPrefixRecoversWithoutResend) {
-  std::size_t record_count = 64;
-  for (std::size_t keep = 0; keep <= record_count; ++keep) {
+  size_t record_count = 64;
+  for (size_t keep = 0; keep <= record_count; ++keep) {
     SCOPED_TRACE(keep);
     server.Close();
     peer.connection.Close();
     peer.messages.clear();
     peer.generation = 0;
-    std::snprintf(config.persistence.directory,
-                  sizeof(config.persistence.directory), "%s/cut-%zu",
-                  directory.path(), keep);
+    ::yquant::base::FormatTo(config.persistence.directory,
+                             sizeof(config.persistence.directory), "{}/cut-{}",
+                             directory.path(), keep);
     config.persistence.initialize = true;
     Start();
     Connect(11);
@@ -456,10 +488,11 @@ TEST_F(TradingdPersistenceTest,
     ASSERT_NE(count, SIZE_MAX);
     ASSERT_GE(count, 7U);
     ASSERT_LE(count, 64U);
-    if (keep == 0)
+    if (keep == 0) {
       record_count = count;
-    else
+    } else {
       ASSERT_EQ(count, record_count);
+    }
     config.persistence.initialize = false;
     ASSERT_TRUE(server.Init(config).ok()) << server.error_detail();
     EXPECT_EQ(server.account().cash.balance, 1000000000);
@@ -494,10 +527,13 @@ class PersistenceConfigTest : public ::testing::Test {
             R"({"listen":{"address":"127.0.0.1","port":12345},)"
             R"("market_data_config":"market.json","trading_config":"broker.json",)"
             R"("token":"test-token","persistence":)" +
-                std::string(persistence) + "}"))
+                std::string(persistence) + "}")) {
       return {base::ErrorCode::kIoError, {}};
+    }
     ::yquant::testing::ScopedWorkingDirectory cwd(directory.path());
-    if (!cwd.valid()) return {base::ErrorCode::kIoError, {}};
+    if (!cwd.valid()) {
+      return {base::ErrorCode::kIoError, {}};
+    }
     return loader.Load(directory.File("server.json").c_str());
   }
   RuntimeDirectory directory;
@@ -509,11 +545,13 @@ TEST_F(PersistenceConfigTest, ResolvesRelativeDirectoryWithoutCreatingState) {
       Load(R"({"directory":"state","account_key":"simulation/account-A/CNY"})")
           .ok())
       << loader.error().message;
-  EXPECT_EQ(
-      std::string(loader.config().persistence.directory),
-      std::filesystem::weakly_canonical(directory.File("state")).string());
+  EXPECT_EQ(std::string(loader.config().persistence.directory),
+            ::yquant::testing::files::CanonicalPath(
+                ::yquant::testing::files::FilePath(directory.File("state")))
+                .string());
   EXPECT_FALSE(loader.config().persistence.initialize);
-  EXPECT_FALSE(std::filesystem::exists(directory.File("state")));
+  EXPECT_FALSE(::yquant::testing::files::Exists(
+      ::yquant::testing::files::FilePath(directory.File("state"))));
 }
 
 TEST_F(PersistenceConfigTest, RejectsUnknownAndMissingFields) {
@@ -549,8 +587,12 @@ bool ReadProcessMessage(trading::Connection& connection,
       std::chrono::steady_clock::now() + std::chrono::seconds(5);
   while (std::chrono::steady_clock::now() < deadline) {
     const auto result = connection.Poll(message);
-    if (result.state == trading::ReceiveState::kMessage) return true;
-    if (result.state != trading::ReceiveState::kIdle) return false;
+    if (result.state == trading::ReceiveState::kMessage) {
+      return true;
+    }
+    if (result.state != trading::ReceiveState::kIdle) {
+      return false;
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   return false;
@@ -602,7 +644,8 @@ TEST(TradingdPersistenceProcessTest, SigkillRecoversFileBackedPageCache) {
   trading::Message hello;
   hello.type = trading::MessageType::kHello;
   hello.client_id = 11;
-  std::snprintf(hello.token, sizeof(hello.token), "persistence-token");
+  ::yquant::base::FormatTo(hello.token, sizeof(hello.token),
+                           "persistence-token");
   hello.instrument_count = 1;
   ASSERT_EQ(model::MakeInstrumentId("SSE", "600000", hello.instruments[0].id),
             base::ErrorCode::kOk);

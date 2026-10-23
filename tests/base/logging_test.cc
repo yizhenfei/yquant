@@ -10,8 +10,13 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include <cstddef>
+#include <span>
 
 #if defined(__linux__)
 #include <sys/syscall.h>
@@ -44,12 +49,18 @@ class LogDirectory {
 #if defined(__linux__)
     std::strcpy(name.data(), "/tmp/yquant-logging-XXXXXX");
 #endif
-    if (char* path = mkdtemp(name.data()); path != nullptr) path_ = path;
+    if (char* path = mkdtemp(name.data()); path != nullptr) {
+      path_ = path;
+    }
   }
 
   ~LogDirectory() {
-    for (const auto& filename : Files()) unlink(filename.c_str());
-    if (!path_.empty()) rmdir(path_.c_str());
+    for (const auto& filename : Files()) {
+      unlink(filename.c_str());
+    }
+    if (!path_.empty()) {
+      rmdir(path_.c_str());
+    }
   }
 
   bool valid() const { return !path_.empty(); }
@@ -61,7 +72,9 @@ class LogDirectory {
   std::vector<std::string> Files() const {
     std::vector<std::string> files;
     DIR* directory = opendir(path_.c_str());
-    if (directory == nullptr) return files;
+    if (directory == nullptr) {
+      return files;
+    }
     while (dirent* entry = readdir(directory)) {
       if (std::strcmp(entry->d_name, ".") == 0 ||
           std::strcmp(entry->d_name, "..") == 0) {
@@ -80,7 +93,9 @@ class LogDirectory {
 
 std::string ReadFile(const std::string& path) {
   FILE* file = std::fopen(path.c_str(), "rb");
-  if (file == nullptr) return {};
+  if (file == nullptr) {
+    return {};
+  }
   std::string text;
   std::array<char, 4096> buffer{};
   while (const auto count = std::fread(buffer.data(), 1, buffer.size(), file)) {
@@ -90,9 +105,9 @@ std::string ReadFile(const std::string& path) {
   return text;
 }
 
-std::size_t Occurrences(std::string_view haystack, std::string_view needle) {
-  std::size_t count = 0;
-  std::size_t offset = 0;
+size_t Occurrences(std::string_view haystack, std::string_view needle) {
+  size_t count = 0;
+  size_t offset = 0;
   while ((offset = haystack.find(needle, offset)) != std::string_view::npos) {
     ++count;
     offset += needle.size();
@@ -105,27 +120,39 @@ bool WaitFor(Predicate&& predicate) {
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(5);
   while (!predicate()) {
-    if (std::chrono::steady_clock::now() >= deadline) return false;
+    if (std::chrono::steady_clock::now() >= deadline) {
+      return false;
+    }
     sched_yield();
   }
   return true;
 }
 
 bool IsValidUtf8(std::string_view text) {
-  for (std::size_t index = 0; index < text.size();) {
+  for (size_t index = 0; index < text.size();) {
     const auto first = static_cast<unsigned char>(text[index]);
-    std::size_t continuation = 0;
+    size_t continuation = 0;
     if (first <= 0x7f) {
       ++index;
       continue;
     }
-    if (first >= 0xc2 && first <= 0xdf) continuation = 1;
-    if (first >= 0xe0 && first <= 0xef) continuation = 2;
-    if (first >= 0xf0 && first <= 0xf4) continuation = 3;
-    if (continuation == 0 || index + continuation >= text.size()) return false;
-    for (std::size_t next = 1; next <= continuation; ++next) {
+    if (first >= 0xc2 && first <= 0xdf) {
+      continuation = 1;
+    }
+    if (first >= 0xe0 && first <= 0xef) {
+      continuation = 2;
+    }
+    if (first >= 0xf0 && first <= 0xf4) {
+      continuation = 3;
+    }
+    if (continuation == 0 || index + continuation >= text.size()) {
+      return false;
+    }
+    for (size_t next = 1; next <= continuation; ++next) {
       const auto value = static_cast<unsigned char>(text[index + next]);
-      if ((value & 0xc0) != 0x80) return false;
+      if ((value & 0xc0) != 0x80) {
+        return false;
+      }
     }
     const auto second = static_cast<unsigned char>(text[index + 1]);
     if ((first == 0xe0 && second < 0xa0) || (first == 0xed && second >= 0xa0) ||
@@ -144,10 +171,10 @@ struct IoControl {
   std::atomic<bool> fail_sync{false};
   std::atomic<bool> fail_close{false};
   std::atomic<bool> interrupt_next_write{false};
-  std::atomic<std::size_t> write_calls{0};
-  std::atomic<std::size_t> sync_calls{0};
-  std::atomic<std::size_t> close_calls{0};
-  std::size_t max_write = 0;
+  std::atomic<size_t> write_calls{0};
+  std::atomic<size_t> sync_calls{0};
+  std::atomic<size_t> close_calls{0};
+  size_t max_write = 0;
   int fault_fd = -1;
   Logger* first_logger = nullptr;
   std::span<std::byte> first_queue_memory;
@@ -174,12 +201,14 @@ struct IoControl {
                   mode_t mode) noexcept {
     auto& control = *static_cast<IoControl*>(opaque);
     int fd = ::open(path, flags, mode);
-    if (std::strstr(path, "fault.log") != nullptr) control.fault_fd = fd;
+    if (std::strstr(path, "fault.log") != nullptr) {
+      control.fault_fd = fd;
+    }
     return fd;
   }
 
   static ssize_t Write(void* opaque, int fd, const void* data,
-                       std::size_t size) noexcept {
+                       size_t size) noexcept {
     auto& control = *static_cast<IoControl*>(opaque);
     control.write_calls.fetch_add(1, std::memory_order_relaxed);
     if (control.interrupt_next_write.exchange(false)) {
@@ -190,7 +219,9 @@ struct IoControl {
       errno = ENOSPC;
       return -1;
     }
-    if (control.max_write != 0) size = std::min(size, control.max_write);
+    if (control.max_write != 0) {
+      size = std::min(size, control.max_write);
+    }
     return ::write(fd, data, size);
   }
 
@@ -263,8 +294,8 @@ class ScopedHooks {
 Logger* CreateLogger(LogManager& manager, const LogDirectory& directory,
                      std::string_view name = "test",
                      LogLevel minimum_level = LogLevel::kTrace,
-                     std::uint64_t queue_capacity = 1U << 20,
-                     std::uint64_t max_file_bytes = 0) {
+                     uint64_t queue_capacity = 1U << 20,
+                     uint64_t max_file_bytes = 0) {
   const std::string path = directory.File(std::string(name) + ".log");
   LoggerConfig config;
   config.name = name;
@@ -612,8 +643,10 @@ TEST(LoggingTest, TruncationPreservesUtf8PrefixAndNewline) {
   ASSERT_NE(logger, nullptr);
   const std::string chinese = "汉字🦊";
   std::string long_text;
-  while (long_text.size() < 4 * kMaxLogBytes) long_text += chinese;
-  for (std::size_t padding = 0; padding < 8; ++padding) {
+  while (long_text.size() < 4 * kMaxLogBytes) {
+    long_text += chinese;
+  }
+  for (size_t padding = 0; padding < 8; ++padding) {
     const std::string ascii_padding(padding, 'a');
     YQ_LOG_INFO(*logger, "prefix:{}{}", std::string_view(ascii_padding),
                 std::string_view(long_text));
@@ -625,8 +658,8 @@ TEST(LoggingTest, TruncationPreservesUtf8PrefixAndNewline) {
   CheckConservation(counts);
   EXPECT_TRUE(manager.Shutdown().status.ok());
   const auto text = ReadFile(directory.File("test.log"));
-  std::size_t offset = 0;
-  for (std::size_t padding = 0; padding < 8; ++padding) {
+  size_t offset = 0;
+  for (size_t padding = 0; padding < 8; ++padding) {
     const auto newline = text.find('\n', offset);
     ASSERT_NE(newline, std::string::npos);
     const std::string_view line(text.data() + offset, newline - offset + 1);
@@ -759,7 +792,7 @@ TEST(LoggingFileTest, PartialWritesAndEintrPreserveEveryQueuedByte) {
   EXPECT_EQ(result.counters.enqueued_records_total, 50U);
   const auto text = ReadFile(directory.File("test.log"));
   EXPECT_EQ(Occurrences(text, "\n"), 50U);
-  std::size_t position = 0;
+  size_t position = 0;
   for (int index = 0; index < 50; ++index) {
     const auto token = "partial-sequence=" + std::to_string(index) + "\n";
     position = text.find(token, position);
@@ -876,10 +909,12 @@ TEST(LoggingFileTest, RotationPreservesWholeLinesAndDrainsAtShutdown) {
   const auto files = directory.Files();
   ASSERT_GT(files.size(), 1U);
   std::string all_text;
-  std::size_t lines = 0;
+  size_t lines = 0;
   for (const auto& file : files) {
     const auto text = ReadFile(file);
-    if (!text.empty()) EXPECT_EQ(text.back(), '\n') << file;
+    if (!text.empty()) {
+      EXPECT_EQ(text.back(), '\n') << file;
+    }
     lines += Occurrences(text, "\n");
     all_text += text;
   }
@@ -946,7 +981,7 @@ struct ThreadLogContext {
   int first = 0;
   int count = 100;
   pthread_t formatter_thread{};
-  std::uint64_t caller_thread_id = 0;
+  uint64_t caller_thread_id = 0;
   bool argument_called_on_caller = true;
 
   static int Argument(ThreadLogContext& context, int value) noexcept {
@@ -962,7 +997,7 @@ struct ThreadLogContext {
 #if defined(__APPLE__)
     (void)pthread_threadid_np(nullptr, &context.caller_thread_id);
 #else
-    context.caller_thread_id = static_cast<std::uint64_t>(syscall(SYS_gettid));
+    context.caller_thread_id = static_cast<uint64_t>(syscall(SYS_gettid));
 #endif
     for (int index = 0; index < context.count; ++index) {
       YQ_LOG_INFO(*context.logger, "thread-sequence={}",
@@ -990,19 +1025,21 @@ TEST(LoggingThreadTest, ConcurrentLoggersPreservePerLoggerOrder) {
       pthread_create(&threads[1], nullptr, ThreadLogContext::Run, &contexts[1]);
   EXPECT_EQ(second_status, 0);
   EXPECT_EQ(pthread_join(threads[0], nullptr), 0);
-  if (second_status == 0) EXPECT_EQ(pthread_join(threads[1], nullptr), 0);
+  if (second_status == 0) {
+    EXPECT_EQ(pthread_join(threads[1], nullptr), 0);
+  }
   EXPECT_TRUE(contexts[0].argument_called_on_caller);
   EXPECT_TRUE(contexts[1].argument_called_on_caller);
   EXPECT_TRUE(manager.Shutdown().status.ok());
   const std::array names = {"first.log", "second.log"};
-  for (std::size_t channel = 0; channel < names.size(); ++channel) {
+  for (size_t channel = 0; channel < names.size(); ++channel) {
     const auto name = names[channel];
     const auto text = ReadFile(directory.File(name));
     EXPECT_NE(
         text.find("[tid=" + std::to_string(contexts[channel].caller_thread_id) +
                   "]"),
         std::string::npos);
-    std::size_t position = 0;
+    size_t position = 0;
     for (int index = 0; index < 100; ++index) {
       const auto token = "thread-sequence=" + std::to_string(index) + "\n";
       position = text.find(token, position);
@@ -1035,7 +1072,7 @@ TEST(LoggingThreadTest, LoggerCanBeTransferredAfterJoiningItsPreviousCaller) {
         text.find("[tid=" + std::to_string(context->caller_thread_id) + "]"),
         std::string::npos);
   }
-  std::size_t position = 0;
+  size_t position = 0;
   for (int index = 0; index < 100; ++index) {
     const auto token = "thread-sequence=" + std::to_string(index) + "\n";
     position = text.find(token, position);

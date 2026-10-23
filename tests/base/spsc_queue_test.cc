@@ -1,9 +1,11 @@
 #include "yquant/base/spsc_queue.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -29,7 +31,7 @@ std::span<const std::byte> Bytes(const char* text) {
 
 class SpscQueueTest : public ::testing::Test {
  protected:
-  static constexpr std::uint64_t kCapacity = 64;
+  static constexpr uint64_t kCapacity = 64;
 
   void SetUp() override {
     ASSERT_EQ(SpscQueue::Initialize(memory_, kCapacity), SpscStatus::kSuccess);
@@ -52,17 +54,17 @@ class SpscQueueTest : public ::testing::Test {
 
 TEST(SpscQueueLayoutTest, ComputesRequiredBytesAndRejectsInvalidCapacity) {
   EXPECT_EQ(SpscQueue::required_alignment(), 128U);
-  for (std::uint64_t capacity : {4U, 8U, 16U, 64U, 1024U}) {
+  for (uint64_t capacity : {4U, 8U, 16U, 64U, 1024U}) {
     auto result = SpscQueue::RequiredBytes(capacity);
     EXPECT_EQ(result.status, SpscStatus::kSuccess);
     EXPECT_EQ(result.bytes, 384U + capacity);
   }
-  const auto largest = SpscQueue::RequiredBytes(std::uint64_t{1} << 62);
+  const auto largest = SpscQueue::RequiredBytes(uint64_t{1} << 62);
   EXPECT_EQ(largest.status, SpscStatus::kSuccess);
-  EXPECT_EQ(largest.bytes, (std::uint64_t{1} << 62) + 384);
-  for (std::uint64_t capacity : std::array<std::uint64_t, 8>{
-           0, 1, 2, 3, 5, 63, std::uint64_t{1} << 63,
-           std::numeric_limits<std::uint64_t>::max()}) {
+  EXPECT_EQ(largest.bytes, (uint64_t{1} << 62) + 384);
+  for (uint64_t capacity :
+       std::array<uint64_t, 8>{0, 1, 2, 3, 5, 63, uint64_t{1} << 63,
+                               std::numeric_limits<uint64_t>::max()}) {
     auto result = SpscQueue::RequiredBytes(capacity);
     EXPECT_EQ(result.status, SpscStatus::kInvalidArgument);
     EXPECT_EQ(result.bytes, 0U);
@@ -278,9 +280,8 @@ TEST_F(SpscQueueTest, RejectsPayloadBeyondLengthLimitWithoutBorrow) {
   auto result = producer_.TryReserve(61);
   EXPECT_EQ(result.status, SpscStatus::kTooLarge);
   EXPECT_FALSE(result.reservation.active());
-  EXPECT_EQ(
-      producer_.TryReserve(std::numeric_limits<std::size_t>::max()).status,
-      SpscStatus::kTooLarge);
+  EXPECT_EQ(producer_.TryReserve(std::numeric_limits<size_t>::max()).status,
+            SpscStatus::kTooLarge);
   ASSERT_EQ(producer_.TryWrite({}), SpscStatus::kSuccess);
   EXPECT_EQ(consumer_.TryRead({}).status, SpscStatus::kSuccess);
 }

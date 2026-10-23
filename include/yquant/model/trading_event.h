@@ -1,7 +1,9 @@
 #ifndef YQUANT_MODEL_TRADING_EVENT_H_
 #define YQUANT_MODEL_TRADING_EVENT_H_
 
-#include <cstdint>
+#include <stddef.h>
+#include <stdint.h>
+
 #include <cstring>
 #include <string_view>
 
@@ -9,7 +11,7 @@
 
 namespace yquant::model {
 
-enum class OrderUpdateKind : std::uint8_t {
+enum class OrderUpdateKind : uint8_t {
   kAccepted,
   kRejected,
   kFill,
@@ -20,23 +22,25 @@ enum class OrderUpdateKind : std::uint8_t {
 
 // Owned bounded diagnostic, preserved after an adapter buffer is reused.
 struct OrderReason {
-  std::int32_t code = 0;
+  int32_t code = 0;
   char text[129] = {};  // 128 payload bytes plus the terminator.
   bool truncated = false;
-  std::uint8_t size = 0;
+  uint8_t size = 0;
   // Copies a terminated diagnostic; oversized input is marked and shortened.
-  void Set(std::int32_t reason_code, std::string_view message) noexcept {
+  void Set(int32_t reason_code, std::string_view message) noexcept {
     code = reason_code;
     const auto count =
         message.size() < sizeof(text) ? message.size() : sizeof(text) - 1;
-    if (count != 0) std::memmove(text, message.data(), count);
+    if (count != 0) {
+      std::memmove(text, message.data(), count);
+    }
     text[count] = '\0';
-    size = static_cast<std::uint8_t>(count);
+    size = static_cast<uint8_t>(count);
     truncated = count != message.size();
   }
   std::string_view view() const noexcept {
     const auto count = size <= 128 ? size : 128;
-    return {text, static_cast<std::size_t>(count)};
+    return {text, static_cast<size_t>(count)};
   }
   friend bool operator==(const OrderReason& lhs,
                          const OrderReason& rhs) noexcept {
@@ -62,10 +66,10 @@ struct Fill {
   ExecutionId execution_id;
   InstrumentId instrument_id;
   OrderSide side = OrderSide::kUnknown;
-  std::int64_t price = 0;
-  std::int64_t quantity = 0;
-  std::uint64_t event_time_ns = 0;
-  std::uint64_t receive_time_ns = 0;
+  int64_t price = 0;
+  int64_t quantity = 0;
+  uint64_t event_time_ns = 0;
+  uint64_t receive_time_ns = 0;
   bool has_event_time = false;
   PositionEffect position_effect = PositionEffect::kNone;
 };

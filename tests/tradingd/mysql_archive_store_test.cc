@@ -1,7 +1,15 @@
 #include "tradingd/mysql_archive_store.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
+#include <cstddef>
+#include <span>
+#include <string>
+
 #include "trading_engine_harness.h"
 #include "tradingd/archive_projection.h"
+#include "yquant/base/format.h"
 
 #if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
 #include <arpa/inet.h>
@@ -21,8 +29,8 @@
 #include <thread>
 #include <vector>
 
-#include "../marketd/test_support.h"
 #include "gtest/gtest.h"
+#include "marketd/test_support.h"
 #include "tradingd/state_codec.h"
 #include "yquant/trading/mock_trading_adapter.h"
 
@@ -32,7 +40,7 @@ using base::ErrorCode;
 
 class ArchiveClock final : public base::MonotonicClock {
  public:
-  std::uint64_t Now() const noexcept override { return 1000; }
+  uint64_t Now() const noexcept override { return 1000; }
 };
 
 // Captures the same owned facts that gateway WAL carries.
@@ -52,56 +60,74 @@ class FactSink final : public trading::TradingMutationSink {
 // This exercises a successful server commit with an unknown client outcome.
 class CommitReplyProxy {
  public:
-  explicit CommitReplyProxy(std::uint16_t upstream_port) {
+  explicit CommitReplyProxy(uint16_t upstream_port) {
     listener_ = socket(AF_INET, SOCK_STREAM, 0);
-    if (listener_ < 0) return;
+    if (listener_ < 0) {
+      return;
+    }
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (bind(listener_, reinterpret_cast<sockaddr*>(&address),
              sizeof(address)) != 0 ||
-        listen(listener_, 1) != 0)
+        listen(listener_, 1) != 0) {
       return;
+    }
     socklen_t length = sizeof(address);
     if (getsockname(listener_, reinterpret_cast<sockaddr*>(&address),
-                    &length) != 0)
+                    &length) != 0) {
       return;
+    }
     port_ = ntohs(address.sin_port);
     worker_ = std::thread([this, upstream_port] { Run(upstream_port); });
   }
   ~CommitReplyProxy() {
-    if (listener_ >= 0) shutdown(listener_, SHUT_RDWR);
+    if (listener_ >= 0) {
+      shutdown(listener_, SHUT_RDWR);
+    }
     const auto client = client_.load();
     const auto server = server_.load();
-    if (client >= 0) shutdown(client, SHUT_RDWR);
-    if (server >= 0) shutdown(server, SHUT_RDWR);
-    if (worker_.joinable()) worker_.join();
-    if (listener_ >= 0) close(listener_);
+    if (client >= 0) {
+      shutdown(client, SHUT_RDWR);
+    }
+    if (server >= 0) {
+      shutdown(server, SHUT_RDWR);
+    }
+    if (worker_.joinable()) {
+      worker_.join();
+    }
+    if (listener_ >= 0) {
+      close(listener_);
+    }
   }
-  std::uint16_t port() const { return port_; }
+  uint16_t port() const { return port_; }
   bool dropped_commit_ok() const { return dropped_.load(); }
 
  private:
-  static bool Read(int fd, void* storage, std::size_t length) {
+  static bool Read(int fd, void* storage, size_t length) {
     auto* bytes = static_cast<char*>(storage);
-    for (std::size_t offset = 0; offset < length;) {
+    for (size_t offset = 0; offset < length;) {
       const auto count = recv(fd, bytes + offset, length - offset, 0);
-      if (count <= 0) return false;
+      if (count <= 0) {
+        return false;
+      }
       offset += count;
     }
     return true;
   }
   static bool Packet(int fd, std::vector<unsigned char>& packet) {
     std::array<unsigned char, 4> header;
-    if (!Read(fd, header.data(), header.size())) return false;
-    const std::size_t length = header[0] | (std::size_t(header[1]) << 8) |
-                               (std::size_t(header[2]) << 16);
+    if (!Read(fd, header.data(), header.size())) {
+      return false;
+    }
+    const size_t length =
+        header[0] | (size_t(header[1]) << 8) | (size_t(header[2]) << 16);
     packet.resize(4 + length);
     std::memcpy(packet.data(), header.data(), 4);
     return Read(fd, packet.data() + 4, length);
   }
   static bool Send(int fd, const std::vector<unsigned char>& packet) {
-    for (std::size_t offset = 0; offset < packet.size();) {
+    for (size_t offset = 0; offset < packet.size();) {
 #ifdef MSG_NOSIGNAL
       constexpr int kSendFlags = MSG_NOSIGNAL;
 #else
@@ -109,15 +135,19 @@ class CommitReplyProxy {
 #endif
       const auto count =
           send(fd, packet.data() + offset, packet.size() - offset, kSendFlags);
-      if (count <= 0) return false;
+      if (count <= 0) {
+        return false;
+      }
       offset += count;
     }
     return true;
   }
-  void Run(std::uint16_t upstream_port) {
+  void Run(uint16_t upstream_port) {
     const int client = accept(listener_, nullptr, nullptr);
     client_.store(client);
-    if (client < 0) return;
+    if (client < 0) {
+      return;
+    }
     const int server = socket(AF_INET, SOCK_STREAM, 0);
     server_.store(server);
     timeval timeout{5, 0};
@@ -140,18 +170,27 @@ class CommitReplyProxy {
     client_.store(-1);
     server_.store(-1);
     close(client);
-    if (server >= 0) close(server);
+    if (server >= 0) {
+      close(server);
+    }
   }
   void Relay(int client, int server) {
     std::vector<unsigned char> packet;
-    if (!Packet(server, packet)) return;
-    std::size_t version_end = 5;
-    while (version_end < packet.size() && packet[version_end] != 0)
+    if (!Packet(server, packet)) {
+      return;
+    }
+    size_t version_end = 5;
+    while (version_end < packet.size() && packet[version_end] != 0) {
       ++version_end;
+    }
     const auto capabilities = version_end + 14;
-    if (capabilities + 1 >= packet.size()) return;
+    if (capabilities + 1 >= packet.size()) {
+      return;
+    }
     packet[capabilities + 1] &= static_cast<unsigned char>(~0x08);
-    if (!Send(client, packet)) return;
+    if (!Send(client, packet)) {
+      return;
+    }
     bool committing = false;
     for (;;) {
       fd_set ready;
@@ -160,28 +199,38 @@ class CommitReplyProxy {
       FD_SET(server, &ready);
       timeval timeout{5, 0};
       if (select(std::max(client, server) + 1, &ready, nullptr, nullptr,
-                 &timeout) <= 0)
+                 &timeout) <= 0) {
         return;
+      }
       if (FD_ISSET(client, &ready)) {
-        if (!Packet(client, packet)) return;
+        if (!Packet(client, packet)) {
+          return;
+        }
         if (packet.size() >= 11 && packet[4] == 3 &&
-            std::memcmp(packet.data() + packet.size() - 6, "COMMIT", 6) == 0)
+            std::memcmp(packet.data() + packet.size() - 6, "COMMIT", 6) == 0) {
           committing = true;
-        if (!Send(server, packet)) return;
+        }
+        if (!Send(server, packet)) {
+          return;
+        }
       }
       if (FD_ISSET(server, &ready)) {
-        if (!Packet(server, packet)) return;
+        if (!Packet(server, packet)) {
+          return;
+        }
         if (committing) {
           dropped_.store(packet.size() > 4 && packet[4] == 0);
           return;
         }
-        if (!Send(client, packet)) return;
+        if (!Send(client, packet)) {
+          return;
+        }
       }
     }
   }
   int listener_ = -1;
   std::atomic<int> client_{-1}, server_{-1};
-  std::uint16_t port_ = 0;
+  uint16_t port_ = 0;
   std::atomic<bool> dropped_{false};
   std::thread worker_;
 };
@@ -190,17 +239,19 @@ class MysqlArchiveStoreTest : public ::testing::Test {
  protected:
   void SetUp() override {
     const char* database = std::getenv("YQUANT_MYSQL_TEST_DATABASE");
-    if (database == nullptr)
+    if (database == nullptr) {
       GTEST_SKIP() << "MySQL integration database is unset";
-    std::snprintf(options.database, sizeof(options.database), "%s", database);
-    std::snprintf(options.user, sizeof(options.user), "%s",
-                  std::getenv("YQUANT_MYSQL_TEST_USER") != nullptr
-                      ? std::getenv("YQUANT_MYSQL_TEST_USER")
-                      : "root");
+    }
+    ::yquant::base::FormatTo(options.database, sizeof(options.database), "{}",
+                             database);
+    ::yquant::base::FormatTo(options.user, sizeof(options.user), "{}",
+                             std::getenv("YQUANT_MYSQL_TEST_USER") != nullptr
+                                 ? std::getenv("YQUANT_MYSQL_TEST_USER")
+                                 : "root");
     const char* port = std::getenv("YQUANT_MYSQL_TEST_PORT");
     options.port = port == nullptr ? 33306 : std::strtoul(port, nullptr, 10);
-    std::snprintf(options.password_env, sizeof(options.password_env),
-                  "YQUANT_MYSQL_TEST_PASSWORD");
+    ::yquant::base::FormatTo(options.password_env, sizeof(options.password_env),
+                             "YQUANT_MYSQL_TEST_PASSWORD");
     admin = mysql_init(nullptr);
     ASSERT_NE(admin, nullptr);
     const char* password = std::getenv(options.password_env);
@@ -209,21 +260,21 @@ class MysqlArchiveStoreTest : public ::testing::Test {
                                  options.database, options.port, nullptr, 0),
               nullptr)
         << mysql_error(admin);
-    static std::atomic<std::uint64_t> sequence{1};
-    ledger_hi = std::uint64_t(getpid());
+    static std::atomic<uint64_t> sequence{1};
+    ledger_hi = static_cast<uint64_t>(getpid());
     ledger_lo = sequence.fetch_add(1);
     char encoded[33];
-    std::snprintf(encoded, sizeof(encoded), "%016llx%016llx",
-                  static_cast<unsigned long long>(ledger_hi),
-                  static_cast<unsigned long long>(ledger_lo));
+    ::yquant::base::FormatTo(encoded, sizeof(encoded), "{:016x}{:016x}",
+                             ledger_hi, ledger_lo);
     key = std::string("UNHEX('") + encoded + "')";
     ASSERT_TRUE(store.Connect(options).ok()) << store.error_detail();
     config.market_data = marketd::testing::ScopeConfig();
     config.trading.initial_account.cash_balance = 1000000000;
-    std::snprintf(config.persistence.directory,
-                  sizeof(config.persistence.directory), "/unused");
-    std::snprintf(config.persistence.account_key,
-                  sizeof(config.persistence.account_key), "mock/account");
+    ::yquant::base::FormatTo(config.persistence.directory,
+                             sizeof(config.persistence.directory), "/unused");
+    ::yquant::base::FormatTo(config.persistence.account_key,
+                             sizeof(config.persistence.account_key),
+                             "mock/account");
     ASSERT_TRUE(market.Configure(config.market_data).ok());
     ASSERT_TRUE(source.Configure(config.trading.initial_account).ok());
     ASSERT_TRUE(source.SetMutationSink(&sink).ok());
@@ -233,7 +284,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
 
   // Mirrors identity v2's explicit fields, independently of projection code.
   std::vector<std::byte> Identity(bool second = false,
-                                  std::uint64_t first_client = 41) {
+                                  uint64_t first_client = 41) {
     std::vector<std::byte> bytes(32768);
     StateWriter out(bytes);
     out.U64(2);
@@ -244,7 +295,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
     out.U64(1024);
     out.U64(8192);
     out.U64(config.market_data.instrument_count);
-    for (std::size_t i = 0; i < config.market_data.instrument_count; ++i) {
+    for (size_t i = 0; i < config.market_data.instrument_count; ++i) {
       const auto& d = config.market_data.instruments[i].instrument;
       out.U64(d.id.value);
       out.U64(static_cast<unsigned>(d.venue));
@@ -261,7 +312,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
     }
     out.U64(static_cast<unsigned>(config.trading.mode));
     out.U64(config.trading.report_interval_ns);
-    for (std::size_t i = 0; i < trading::kMaxClients; ++i) {
+    for (size_t i = 0; i < trading::kMaxClients; ++i) {
       const bool present = i == 0 || (second && i == 1);
       out.U64(present ? (i == 0 ? first_client : 42) : 0);
       out.U64(present ? (i == 0 ? 2 : 4) : 0);
@@ -276,8 +327,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
     return bytes;
   }
 
-  std::vector<std::byte> Baseline(bool has_order = false,
-                                  std::uint64_t run = 1) {
+  std::vector<std::byte> Baseline(bool has_order = false, uint64_t run = 1) {
     std::vector<std::byte> checkpoint(8 * 1024 * 1024);
     StateWriter out(checkpoint);
     out.U64(1);
@@ -288,7 +338,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
     out.U64(1);
     out.U64(64);
     out.U64(clock.Now());
-    for (std::size_t i = 0; i < trading::kMaxClients; ++i) {
+    for (size_t i = 0; i < trading::kMaxClients; ++i) {
       out.U64(i == 0 ? 41 : 0);
       out.U64(i == 0 ? 2 : 0);
       out.U64(i == 0 && has_order ? 1 : 0);
@@ -302,7 +352,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
       }
     }
     std::vector<std::byte> ledger(trading::kMaxTradingCheckpointBytes);
-    std::size_t size = 0;
+    size_t size = 0;
     EXPECT_TRUE(source.ExportCheckpoint(ledger, size).ok());
     out.U64(size);
     out.Bytes(std::span(ledger).first(size));
@@ -361,15 +411,14 @@ class MysqlArchiveStoreTest : public ::testing::Test {
   }
 
   std::vector<std::byte> LedgerRecord(const trading::TradingMutation& mutation,
-                                      std::size_t slot = 0,
-                                      std::size_t local = 0,
-                                      std::uint64_t cancel = 0) {
+                                      size_t slot = 0, size_t local = 0,
+                                      uint64_t cancel = 0) {
     std::vector<std::byte> bytes(2048);
     StateWriter writer(bytes);
     writer.U64(slot);
     writer.U64(local);
     writer.U64(cancel);
-    std::size_t size = 0;
+    size_t size = 0;
     EXPECT_TRUE(
         trading::EncodeTradingMutation(mutation, writer.tail(), size).ok());
     writer.Advance(size);
@@ -378,13 +427,13 @@ class MysqlArchiveStoreTest : public ::testing::Test {
   }
 
   std::vector<std::byte> RejectionRecord(const trading::Message& message,
-                                         std::size_t local = 0) {
+                                         size_t local = 0) {
     std::vector<std::byte> bytes(8192);
     StateWriter writer(bytes);
     writer.U64(0);
     writer.U64(local);
     std::array<std::byte, trading::kMaxFrameSize> encoded{};
-    std::size_t size = 0;
+    size_t size = 0;
     EXPECT_TRUE(trading::EncodeMessage(message, encoded, size).ok());
     writer.U64(size);
     writer.Bytes(std::span(encoded).first(size));
@@ -394,7 +443,9 @@ class MysqlArchiveStoreTest : public ::testing::Test {
 
   void TearDown() override {
     store.Close();
-    if (admin == nullptr) return;
+    if (admin == nullptr) {
+      return;
+    }
     for (const char* table :
          {"archive_progress", "archive_runs", "archive_gaps",
           "strategy_sessions", "trade_events", "orders", "fills",
@@ -405,11 +456,13 @@ class MysqlArchiveStoreTest : public ::testing::Test {
     }
     mysql_close(admin);
   }
-  std::uint64_t Scalar(std::string sql) {
+  uint64_t Scalar(std::string sql) {
     sql += " WHERE ledger_id=" + key;
     EXPECT_EQ(mysql_query(admin, sql.c_str()), 0) << mysql_error(admin);
     MYSQL_RES* result = mysql_store_result(admin);
-    if (result == nullptr) return UINT64_MAX;
+    if (result == nullptr) {
+      return UINT64_MAX;
+    }
     MYSQL_ROW row = mysql_fetch_row(result);
     const auto value = row == nullptr || row[0] == nullptr
                            ? UINT64_MAX
@@ -431,7 +484,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
   void Consume() {
     MysqlArchiveProgress progress;
     ASSERT_TRUE(store.Begin(projection, progress).ok()) << store.error_detail();
-    std::uint64_t lsn = 0;
+    uint64_t lsn = 0;
     for (const auto& fact : sink.facts) {
       const auto record = LedgerRecord(fact);
       ASSERT_TRUE(projection.Replay(1, ++lsn, record).ok());
@@ -444,7 +497,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
   MysqlArchiveOptions options;
   MysqlArchiveStore store;
   MYSQL* admin = nullptr;
-  std::uint64_t ledger_hi = 0, ledger_lo = 0;
+  uint64_t ledger_hi = 0, ledger_lo = 0;
   std::string key;
   std::vector<std::byte> baseline;
 
@@ -521,7 +574,9 @@ TEST_F(MysqlArchiveStoreTest, CompetingWriterReadsCommittedProgressAfterLock) {
   auto competing = std::async(std::launch::async, [this] {
     MysqlArchiveStore other;
     auto status = other.Connect(options);
-    if (!status.ok()) return false;
+    if (!status.ok()) {
+      return false;
+    }
     MysqlArchiveProgress locked;
     status = other.Begin(projection, locked);
     const bool matches = status.ok() && locked.cursor.lsn == sink.facts.size();
@@ -530,7 +585,7 @@ TEST_F(MysqlArchiveStoreTest, CompetingWriterReadsCommittedProgressAfterLock) {
   });
   EXPECT_EQ(competing.wait_for(std::chrono::milliseconds(100)),
             std::future_status::timeout);
-  std::uint64_t lsn = 0;
+  uint64_t lsn = 0;
   for (const auto& fact : sink.facts) {
     const auto record = LedgerRecord(fact);
     ASSERT_TRUE(projection.Replay(1, ++lsn, record).ok());
@@ -559,7 +614,9 @@ TEST_F(MysqlArchiveStoreTest, WaitingWriterSeesNewRunInstalledAfterBegin) {
   auto competing = std::async(std::launch::async, [this, &statements] {
     MysqlArchiveStore other;
     auto status = other.Connect(options);
-    if (!status.ok()) return false;
+    if (!status.ok()) {
+      return false;
+    }
     other.SetCancellation(
         [](void* context) noexcept {
           static_cast<std::atomic<unsigned>*>(context)->fetch_add(1);
@@ -574,8 +631,9 @@ TEST_F(MysqlArchiveStoreTest, WaitingWriterSeesNewRunInstalledAfterBegin) {
   });
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(2);
-  while (statements.load() < 4 && std::chrono::steady_clock::now() < deadline)
+  while (statements.load() < 4 && std::chrono::steady_clock::now() < deadline) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
   EXPECT_GE(statements.load(), 4);
   const auto new_baseline = Baseline(false, 3);
   std::string encoded;
@@ -615,8 +673,9 @@ TEST_F(MysqlArchiveStoreTest, CancellationRollsBackUnpublishedEvents) {
 
 TEST_F(MysqlArchiveStoreTest,
        LostCommitReplyResumesFromActuallyCommittedWatermark) {
-  if (std::strlen(std::getenv(options.password_env)) != 0)
+  if (std::strlen(std::getenv(options.password_env)) != 0) {
     GTEST_SKIP() << "the plaintext test relay requires an empty test password";
+  }
   Install();
   SubmitAndFill();
   store.Close();
@@ -627,7 +686,7 @@ TEST_F(MysqlArchiveStoreTest,
   ASSERT_TRUE(store.Connect(proxied).ok()) << store.error_detail();
   MysqlArchiveProgress progress;
   ASSERT_TRUE(store.Begin(projection, progress).ok()) << store.error_detail();
-  std::uint64_t lsn = 0;
+  uint64_t lsn = 0;
   for (const auto& fact : sink.facts) {
     const auto record = LedgerRecord(fact);
     ASSERT_TRUE(projection.Replay(1, ++lsn, record).ok());

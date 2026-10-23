@@ -1,9 +1,10 @@
 #ifndef YQUANT_STRATEGYD_MARKET_DATA_H_
 #define YQUANT_STRATEGYD_MARKET_DATA_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
-#include <cstddef>
-#include <cstdint>
 #include <span>
 #include <string_view>
 
@@ -23,6 +24,9 @@ namespace yquant::strategyd {
 // and snapshot storage remains fixed during subscription and quote processing.
 class MarketDataImpl final : public strategy::MarketData {
  public:
+  MarketDataImpl(const MarketDataImpl&) = delete;
+  MarketDataImpl& operator=(const MarketDataImpl&) = delete;
+
   // Borrows clock until destruction to reject quotes with future receive times.
   explicit MarketDataImpl(const base::MonotonicClock& clock) noexcept
       : clock_(clock) {}
@@ -78,7 +82,7 @@ class MarketDataImpl final : public strategy::MarketData {
   std::array<InstrumentSlot, md::kMaxMarketDataInstruments> snapshots_ = {};
   std::array<model::InstrumentId, md::kMaxMarketDataInstruments>
       subscriptions_ = {};
-  std::size_t subscription_count_ = 0;  // Populated prefix of subscriptions_.
+  size_t subscription_count_ = 0;  // Populated prefix of subscriptions_.
   strategy::CallbackPhase phase_ = strategy::CallbackPhase::kNone;
 };
 

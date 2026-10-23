@@ -1,16 +1,19 @@
 #include "yquant/base/json_config_document.h"
 
-#include <simdjson.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #include <cerrno>
-#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
 #include "base/internal/json_config_parser.h"
+#include "simdjson.h"
+#include "yquant/base/format.h"
 
 namespace yquant::base {
 namespace {
@@ -32,14 +35,13 @@ std::string_view TrimEnd(std::string_view value) noexcept {
 
 struct ConfigPath {
   char text[sizeof(ConfigError::field_path)] = {};
-  std::size_t size = 0;
+  size_t size = 0;
   bool truncated = false;
 
   // Appends what fits and remembers truncation across subsequent components.
   void Append(std::string_view value) noexcept {
-    const std::size_t remaining = sizeof(text) - 1 - size;
-    const std::size_t copied =
-        value.size() < remaining ? value.size() : remaining;
+    const size_t remaining = sizeof(text) - 1 - size;
+    const size_t copied = value.size() < remaining ? value.size() : remaining;
     if (copied != 0) {
       std::memcpy(text + size, value.data(), copied);
     }
@@ -73,12 +75,13 @@ ConfigPath FieldPath(std::string_view parent, std::string_view key) noexcept {
 }
 
 // Appends an array index without allocating; 32 bytes fit any 64-bit index.
-ConfigPath IndexPath(std::string_view parent, std::size_t index) noexcept {
+ConfigPath IndexPath(std::string_view parent, size_t index) noexcept {
   ConfigPath path;
   path.Append(parent);
   char suffix[32];
-  const int length = std::snprintf(suffix, sizeof(suffix), "[%zu]", index);
-  path.Append({suffix, static_cast<std::size_t>(length)});
+  const int length =
+      ::yquant::base::FormatTo(suffix, sizeof(suffix), "[{}]", index);
+  path.Append({suffix, static_cast<size_t>(length)});
   return path;
 }
 
@@ -86,7 +89,7 @@ ConfigPath IndexPath(std::string_view parent, std::size_t index) noexcept {
 // range. The schema parser converts the unchanged token to its chosen type.
 bool IsJsonNumber(std::string_view value) noexcept {
   value = TrimEnd(value);
-  std::size_t offset = 0;
+  size_t offset = 0;
   if (offset < value.size() && value[offset] == '-') {
     ++offset;
   }
@@ -105,7 +108,7 @@ bool IsJsonNumber(std::string_view value) noexcept {
              value[offset] <= '9');
   }
   if (offset < value.size() && value[offset] == '.') {
-    const std::size_t fraction_start = ++offset;
+    const size_t fraction_start = ++offset;
     while (offset < value.size() && value[offset] >= '0' &&
            value[offset] <= '9') {
       ++offset;
@@ -120,7 +123,7 @@ bool IsJsonNumber(std::string_view value) noexcept {
         (value[offset] == '+' || value[offset] == '-')) {
       ++offset;
     }
-    const std::size_t exponent_start = offset;
+    const size_t exponent_start = offset;
     while (offset < value.size() && value[offset] >= '0' &&
            value[offset] <= '9') {
       ++offset;
@@ -136,8 +139,8 @@ struct KeyEntry {
   // Empty slots have key_data == nullptr; even an empty decoded key has a
   // non-null pointer into simdjson's string storage.
   const char* key_data;
-  std::size_t key_size;
-  std::size_t object_id;
+  size_t key_size;
+  size_t object_id;
 };
 
 // Traverses one parser document, retaining decoded key views only while that
@@ -152,11 +155,11 @@ class JsonValidator {
   JsonValidator& operator=(const JsonValidator&) = delete;
 
   // Allocates once using a source-size bound. Failure remains safe to destroy.
-  Status Allocate(std::size_t input_size) noexcept {
+  Status Allocate(size_t input_size) noexcept {
     // Every member consumes at least four distinct source bytes: two quotes,
     // a colon, and at least one value byte. Keep the table below half full.
-    const std::size_t member_bound = input_size / 4;
-    const std::size_t min_capacity = member_bound == 0 ? 2 : 2 * member_bound;
+    const size_t member_bound = input_size / 4;
+    const size_t min_capacity = member_bound == 0 ? 2 : 2 * member_bound;
     key_capacity_ = 1;
     while (key_capacity_ < min_capacity) {
       key_capacity_ *= 2;
@@ -180,9 +183,9 @@ class JsonValidator {
   // remain in the parser's storage; this validator never retains them beyond
   // the complete traversal. Failed diagnostics are copied into error_.
   Status ValidateObject(simdjson::ondemand::object object,
-                        std::string_view path, std::size_t depth) noexcept {
+                        std::string_view path, size_t depth) noexcept {
     simdjson::error_code json_error;
-    const std::size_t object_id = next_object_id_++;
+    const size_t object_id = next_object_id_++;
     for (auto field_result : object) {
       simdjson::ondemand::field field;
       json_error = std::move(field_result).get(field);
@@ -213,13 +216,13 @@ class JsonValidator {
 
   // Returns false only for a duplicate decoded key in the same object. The
   // allocation bound ensures the probe always encounters an empty table slot.
-  bool InsertKey(std::size_t object_id, std::string_view key) noexcept {
-    std::uint64_t hash = 14695981039346656037ULL;
+  bool InsertKey(size_t object_id, std::string_view key) noexcept {
+    uint64_t hash = 14695981039346656037ULL;
     for (const unsigned char byte : key) {
       hash = (hash ^ byte) * 1099511628211ULL;
     }
     hash = (hash ^ object_id) * 1099511628211ULL;
-    std::size_t slot = hash & (key_capacity_ - 1);
+    size_t slot = hash & (key_capacity_ - 1);
     for (;;) {
       KeyEntry& entry = keys_[slot];
       if (entry.key_data == nullptr) {
@@ -237,7 +240,7 @@ class JsonValidator {
   // Fully decodes strings/containers. Numbers are lexically checked without
   // range conversion and consumed when the enclosing iterator advances.
   Status ValidateValue(simdjson::ondemand::value value, std::string_view path,
-                       std::size_t depth) noexcept {
+                       size_t depth) noexcept {
     JsonType type;
     simdjson::error_code json_error = value.type().get(type);
     if (json_error) {
@@ -262,7 +265,7 @@ class JsonValidator {
         if (json_error) {
           return JsonError(json_error, path, error_);
         }
-        std::size_t index = 0;
+        size_t index = 0;
         for (auto value_result : array) {
           simdjson::ondemand::value child;
           json_error = std::move(value_result).get(child);
@@ -308,8 +311,8 @@ class JsonValidator {
 
   ConfigError& error_;
   KeyEntry* keys_ = nullptr;
-  std::size_t key_capacity_ = 0;
-  std::size_t next_object_id_ = 1;
+  size_t key_capacity_ = 0;
+  size_t next_object_id_ = 1;
 };
 
 // Validates the entire root object, including values that schemas may later
@@ -364,7 +367,7 @@ Status JsonConfigDocument::Load(const char* path) noexcept {
             {saved_errno, std::generic_category()}};
   }
   // One extra byte detects oversized input; padding is required by simdjson.
-  constexpr std::size_t kSourceCapacity =
+  constexpr size_t kSourceCapacity =
       kMaxConfigFileBytes + 1 + simdjson::SIMDJSON_PADDING;
   source_ = static_cast<char*>(std::malloc(kSourceCapacity));
   if (source_ == nullptr) {
@@ -372,8 +375,7 @@ Status JsonConfigDocument::Load(const char* path) noexcept {
     error_.Set("$", "cannot allocate configuration file buffer");
     return {ErrorCode::kResourceExhausted, {}};
   }
-  const std::size_t size =
-      std::fread(source_, 1, kMaxConfigFileBytes + 1, file);
+  const size_t size = std::fread(source_, 1, kMaxConfigFileBytes + 1, file);
   const bool read_error = std::ferror(file) != 0;
   const int read_errno = errno;
   const int close_result = std::fclose(file);

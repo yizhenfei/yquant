@@ -1,14 +1,18 @@
 #include "yquant/md/mock_quote_source.h"
 
+#include <stdint.h>
+
 #include <chrono>
 #include <cstdio>
 #include <limits>
+
+#include "yquant/base/format.h"
 
 namespace yquant::md {
 
 base::Status MockQuoteSource::Error(base::ErrorCode code,
                                     const char* detail) noexcept {
-  std::snprintf(error_detail_, sizeof(error_detail_), "%s", detail);
+  ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_), "{}", detail);
   return {code, {}};
 }
 
@@ -27,8 +31,8 @@ base::Status MockQuoteSource::Prepare(const MockQuoteConfig& config) noexcept {
   base::ConfigError error;
   const auto result = ValidateMockQuoteConfig(config, error);
   if (!result.ok()) {
-    std::snprintf(error_detail_, sizeof(error_detail_), "%s: %s",
-                  error.field_path, error.message);
+    ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_), "{}: {}",
+                             error.field_path, error.message);
     return result;
   }
   config_ = config;
@@ -37,13 +41,15 @@ base::Status MockQuoteSource::Prepare(const MockQuoteConfig& config) noexcept {
   return {};
 }
 
-base::Status MockQuoteSource::Start(std::uint64_t now) noexcept {
-  if (state_ != State::kPrepared)
+base::Status MockQuoteSource::Start(uint64_t now) noexcept {
+  if (state_ != State::kPrepared) {
     return Error(base::ErrorCode::kInvalidState,
                  "source must be prepared before activation");
-  if (now > std::numeric_limits<std::uint64_t>::max() - config_.interval_ns)
+  }
+  if (now > std::numeric_limits<uint64_t>::max() - config_.interval_ns) {
     return Error(base::ErrorCode::kResourceExhausted,
                  "initial market data deadline overflows");
+  }
   next_index_ = 0;
   shifted_batch_ = false;
   sequences_.fill(0);
@@ -53,23 +59,25 @@ base::Status MockQuoteSource::Start(std::uint64_t now) noexcept {
   return {};
 }
 
-MockQuotePollResult MockQuoteSource::Poll(std::uint64_t now,
+MockQuotePollResult MockQuoteSource::Poll(uint64_t now,
                                           model::QuoteTick& out) noexcept {
   if (state_ != State::kActive) {
     return {MockQuotePollState::kError,
             Error(base::ErrorCode::kInvalidState,
                   "source must be active when polling")};
   }
-  if (!deadline_.has_value() || now < *deadline_) return {};
+  if (!deadline_.has_value() || now < *deadline_) {
+    return {};
+  }
   const auto index = next_index_;
   const auto& item = config_.instruments[index];
-  if (sequences_[index] == std::numeric_limits<std::uint64_t>::max()) {
+  if (sequences_[index] == std::numeric_limits<uint64_t>::max()) {
     return PollError(base::ErrorCode::kResourceExhausted,
                      "market data sequence exhausted");
   }
   const bool last = next_index_ + 1 == config_.instrument_count;
   if (last &&
-      now > std::numeric_limits<std::uint64_t>::max() - config_.interval_ns) {
+      now > std::numeric_limits<uint64_t>::max() - config_.interval_ns) {
     return PollError(base::ErrorCode::kResourceExhausted,
                      "next market data deadline overflows");
   }
@@ -85,9 +93,9 @@ MockQuotePollResult MockQuoteSource::Poll(std::uint64_t now,
     return PollError(base::ErrorCode::kUnsupported,
                      "system clock precedes the Unix epoch");
   }
-  const auto seconds = static_cast<std::uint64_t>(utc_seconds.count());
-  const auto fraction = static_cast<std::uint64_t>(fraction_ns);
-  constexpr std::uint64_t kNanosecondsPerSecond = 1000000000;
+  const auto seconds = static_cast<uint64_t>(utc_seconds.count());
+  const auto fraction = static_cast<uint64_t>(fraction_ns);
+  constexpr uint64_t kNanosecondsPerSecond = 1000000000;
   if (seconds > (UINT64_MAX - fraction) / kNanosecondsPerSecond) {
     return PollError(base::ErrorCode::kResourceExhausted,
                      "system clock exceeds the UTC nanosecond range");

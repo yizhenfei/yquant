@@ -1,7 +1,7 @@
 #include "yquant/md/instrument_scope.h"
 
-#include <cstddef>
-#include <cstdint>
+#include <stddef.h>
+#include <stdint.h>
 
 #include "gtest/gtest.h"
 #include "yquant/model/identifiers.h"
@@ -10,15 +10,15 @@ namespace yquant::md {
 namespace {
 
 // Builds valid identities without requiring a catalog or receive endpoint.
-md::MarketDataConfig MakeConfig(std::size_t count = 3) {
+md::MarketDataConfig MakeConfig(size_t count = 3) {
   md::MarketDataConfig config;
   config.source_id = {17};
   config.instrument_count = count;
-  for (std::size_t index = 0; index < count; ++index) {
+  for (size_t index = 0; index < count; ++index) {
     auto& definition = config.instruments[index].instrument;
     definition.venue = model::Venue::kSse;
     auto numeric_symbol = 600000 + index;
-    for (std::size_t digit = model::kSymbolLength; digit != 0; --digit) {
+    for (size_t digit = model::kSymbolLength; digit != 0; --digit) {
       definition.symbol[digit - 1] = '0' + numeric_symbol % 10;
       numeric_symbol /= 10;
     }
@@ -55,7 +55,7 @@ TEST(InstrumentScopeTest, OwnsDefinitionsInConfigurationOrder) {
   EXPECT_EQ(scope.source_id().value, 17U);
   config = {};
 
-  for (std::size_t index = 0; index < 3; ++index) {
+  for (size_t index = 0; index < 3; ++index) {
     const auto& definition = expected.instruments[index].instrument;
     EXPECT_EQ(scope[index], definition);
     EXPECT_TRUE(scope.HasInstrument(definition.id));
@@ -76,7 +76,7 @@ TEST(InstrumentScopeTest,
     model::Venue venue;
     const char* venue_name;
     const char* symbol;
-    std::uint8_t price_decimals;
+    uint8_t price_decimals;
   };
   constexpr Entry kEntries[] = {
       {model::Venue::kSzse, "SZSE", "000001", 6},
@@ -87,11 +87,11 @@ TEST(InstrumentScopeTest,
   md::MarketDataConfig config;
   config.source_id = {17};
   config.instrument_count = 4;
-  for (std::size_t index = 0; index < 4; ++index) {
+  for (size_t index = 0; index < 4; ++index) {
     const auto& entry = kEntries[index];
     auto& definition = config.instruments[index].instrument;
     definition.venue = entry.venue;
-    for (std::size_t digit = 0; digit < model::kSymbolLength; ++digit) {
+    for (size_t digit = 0; digit < model::kSymbolLength; ++digit) {
       definition.symbol[digit] = entry.symbol[digit];
     }
     ASSERT_EQ(
@@ -102,7 +102,7 @@ TEST(InstrumentScopeTest,
   InstrumentScope scope;
   ASSERT_TRUE(scope.Configure(config).ok());
   ASSERT_EQ(scope.size(), 4U);
-  for (std::size_t index = 0; index < 4; ++index) {
+  for (size_t index = 0; index < 4; ++index) {
     SCOPED_TRACE(index);
     const auto& entry = kEntries[index];
     const auto id = config.instruments[index].instrument.id;
@@ -123,7 +123,7 @@ TEST(InstrumentScopeTest, ResolvesEveryInstrumentAtCapacity) {
   InstrumentScope scope;
   ASSERT_TRUE(scope.Configure(config).ok());
   ASSERT_EQ(scope.size(), 64U);
-  for (std::size_t index = 0; index < 64; ++index) {
+  for (size_t index = 0; index < 64; ++index) {
     const auto& definition = config.instruments[index].instrument;
     ASSERT_EQ(scope.FindIndex(definition.id), index);
     model::InstrumentDefinition output;
@@ -139,7 +139,7 @@ TEST(InstrumentScopeTest, ResolvesEveryInstrumentAtCapacity) {
 
 TEST(InstrumentScopeTest, RejectsInvalidDefinitionsBeforeChangingState) {
   const auto valid = MakeConfig();
-  for (std::size_t invalid_case = 0; invalid_case < 7; ++invalid_case) {
+  for (size_t invalid_case = 0; invalid_case < 7; ++invalid_case) {
     SCOPED_TRACE(invalid_case);
     auto config = valid;
     switch (invalid_case) {

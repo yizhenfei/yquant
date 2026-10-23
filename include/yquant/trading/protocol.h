@@ -1,9 +1,11 @@
 #ifndef YQUANT_TRADING_PROTOCOL_H_
 #define YQUANT_TRADING_PROTOCOL_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
 #include <cstddef>
-#include <cstdint>
 #include <span>
 
 #include "yquant/base/status.h"
@@ -15,23 +17,23 @@
 
 namespace yquant::trading {
 
-inline constexpr std::size_t kMaxClients = 16;
-inline constexpr std::size_t kMaxInstruments = 64;
-inline constexpr std::size_t kMaxTokenBytes = 64;
+inline constexpr size_t kMaxClients = 16;
+inline constexpr size_t kMaxInstruments = 64;
+inline constexpr size_t kMaxTokenBytes = 64;
 // A full 64-instrument futures view plus an order/fill fits in one frame.
-inline constexpr std::size_t kMaxFrameSize = 16384;
-inline constexpr std::size_t kConnectionQueueFrames = 64;
+inline constexpr size_t kMaxFrameSize = 16384;
+inline constexpr size_t kConnectionQueueFrames = 64;
 
 struct Endpoint {
   // NUL-terminated numeric IPv4. DNS is not used by the wire transport.
   char address[16] = "127.0.0.1";
-  std::uint16_t port = 19200;
+  uint16_t port = 19200;
 };
 
 // A complete authoritative account view. Its revision never decreases within
 // a daemon generation. Omitted configured instruments have zero holdings.
 struct AccountView {
-  std::uint64_t revision = 0;
+  uint64_t revision = 0;
   model::CashSnapshot cash;
   model::AccountType type = model::AccountType::kCash;
   // True only for futures financially managed by an external broker. Such
@@ -40,19 +42,19 @@ struct AccountView {
   model::FuturesAccountSnapshot futures;
   std::array<model::FuturesPositionSnapshot, kMaxInstruments>
       futures_positions = {};
-  std::size_t futures_position_count = 0;
+  size_t futures_position_count = 0;
   std::array<model::PositionSnapshot, kMaxInstruments> positions = {};
-  std::size_t position_count = 0;
+  size_t position_count = 0;
 };
 
 struct InstrumentSpec {
   model::InstrumentId id;
-  std::uint8_t price_decimals = 0;
+  uint8_t price_decimals = 0;
 };
 
 // Message meanings are direction-specific and checked by the session owner.
 // The codec validates only framing and the selected payload's invariants.
-enum class MessageType : std::uint16_t {
+enum class MessageType : uint16_t {
   kHello = 1,
   kWelcome,
   kNewOrder,
@@ -80,12 +82,12 @@ enum class MessageType : std::uint16_t {
 // cancel commands require a nonzero cancel_id. Inactive fields are ignored.
 struct Message {
   MessageType type = MessageType::kHeartbeat;
-  std::uint64_t generation = 0;
-  std::uint64_t sequence = 0;
-  std::uint64_t client_id = 0;
+  uint64_t generation = 0;
+  uint64_t sequence = 0;
+  uint64_t client_id = 0;
   char token[kMaxTokenBytes + 1] = {};
   std::array<InstrumentSpec, kMaxInstruments> instruments = {};
-  std::size_t instrument_count = 0;
+  size_t instrument_count = 0;
   model::ClientOrderId order_id;
   model::OrderRequest request;
   model::QuoteTick quote;
@@ -107,13 +109,13 @@ struct Message {
 // allocation-free, reject noncanonical data and preserve outputs on failure.
 [[nodiscard]] base::Status EncodeMessage(const Message& message,
                                          std::span<std::byte> output,
-                                         std::size_t& size) noexcept;
+                                         size_t& size) noexcept;
 [[nodiscard]] base::Status DecodeMessage(std::span<const std::byte> input,
                                          Message& output) noexcept;
 // Returns the full frame size from an exact fixed-size header, or zero for an
 // invalid header. Used only to delimit a stream before DecodeMessage.
-inline constexpr std::size_t kFrameHeaderSize = 32;
-std::size_t FrameSize(std::span<const std::byte> header) noexcept;
+inline constexpr size_t kFrameHeaderSize = 32;
+size_t FrameSize(std::span<const std::byte> header) noexcept;
 
 }  // namespace yquant::trading
 #endif  // YQUANT_TRADING_PROTOCOL_H_

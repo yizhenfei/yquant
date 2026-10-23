@@ -1,7 +1,11 @@
 #ifndef YQUANT_STRATEGYD_TRADING_SERVICE_IMPL_H_
 #define YQUANT_STRATEGYD_TRADING_SERVICE_IMPL_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <memory>
+#include <optional>
 
 #include "yquant/base/monotonic_clock.h"
 #include "yquant/md/instrument_scope.h"
@@ -23,6 +27,9 @@ namespace yquant::strategyd {
 // releases them. Shutdown must drain through the runner before Stop closes TCP.
 class TradingServiceImpl final : public trading::TradingService {
  public:
+  TradingServiceImpl(const TradingServiceImpl&) = delete;
+  TradingServiceImpl& operator=(const TradingServiceImpl&) = delete;
+
   // Borrows clock and instruments until destruction. The configured scope must
   // stay unchanged while the client is initialized.
   TradingServiceImpl(const base::MonotonicClock& clock,
@@ -86,16 +93,16 @@ class TradingServiceImpl final : public trading::TradingService {
   // local cancellations and a Stop message follows the request queue. Errors
   // retain earlier progress; transport/heartbeat failures disable the session.
   [[nodiscard]] base::Status ProcessRequests(
-      std::uint64_t now, std::size_t limit = 64) noexcept override;
+      uint64_t now, size_t limit = 64) noexcept override;
   // Returns an absolute host-monotonic deadline: zero for queued work or an
   // unsent Stop, the next poll time otherwise, or nullopt without storage.
-  std::optional<std::uint64_t> next_deadline() const noexcept override;
-  bool has_ready_event(std::uint64_t now) const noexcept override;
+  std::optional<uint64_t> next_deadline() const noexcept override;
+  bool has_ready_event(uint64_t now) const noexcept override;
   // Requires the gateway's Drained acknowledgement, empty local/transport
   // queues, and terminal orders with no pending cancels. Without session
   // storage there is no work to drain, so returns true.
   bool is_drained() const noexcept override;
-  std::size_t order_count() const noexcept override;
+  size_t order_count() const noexcept override;
   // Returns non-null client-owned diagnostics. Later operations may replace
   // detail or stage; Stop preserves both and Reset clears only detail.
   const char* error_detail() const noexcept override { return error_detail_; }
@@ -106,8 +113,7 @@ class TradingServiceImpl final : public trading::TradingService {
   // empty transport instead preserves out, sets event=false, and defers
   // polling. Failure preserves both outputs. Peer/transport errors disable the
   // session; invalid lifecycle or request-window calls update only diagnostics.
-  [[nodiscard]] base::Status Poll(std::uint64_t now,
-                                  trading::TradingDispatch& out,
+  [[nodiscard]] base::Status Poll(uint64_t now, trading::TradingDispatch& out,
                                   bool& event) noexcept override;
 
   // Queues configured futures quotes for the gateway's simulator; other quotes
@@ -137,7 +143,7 @@ class TradingServiceImpl final : public trading::TradingService {
   // receive times. Exact duplicates update the account but produce no dispatch.
   // Failure preserves those views and out, updating only diagnostics.
   [[nodiscard]] base::ErrorCode ApplyUpdate(
-      const trading::Message& message, std::uint64_t now,
+      const trading::Message& message, uint64_t now,
       trading::TradingDispatch& out) noexcept;
   // Copies non-null C-string detail into bounded storage and returns code.
   // Does not change the operation stage or mark the session failed.

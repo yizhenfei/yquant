@@ -10,11 +10,16 @@ namespace yquant::base::internal {
 
 // Internal, allocation-free result used to assemble resources before committing
 // them to the public object. A failed result has no value.
-template <class T>
+template <typename T>
 class Result {
  public:
-  Result(T value) : value_(std::move(value)) {}
-  Result(base::Status error) : error_(error) {}
+  Result(const Result&) = default;
+  Result& operator=(const Result&) = default;
+  Result(Result&&) = default;
+  Result& operator=(Result&&) = default;
+
+  explicit Result(T value) : value_(std::move(value)) {}
+  explicit Result(base::Status error) : error_(error) {}
   explicit operator bool() const noexcept { return value_.has_value(); }
   T& operator*() { return *value_; }
   const T& operator*() const { return *value_; }
@@ -31,7 +36,9 @@ template <>
 class Result<void> {
  public:
   Result() = default;
-  Result(base::Status error) : error_(error) {}
+  Result(const Result&) = default;
+  Result& operator=(const Result&) = default;
+  explicit Result(base::Status error) : error_(error) {}
   explicit operator bool() const noexcept { return error_.ok(); }
   base::Status error() const noexcept { return error_; }
 

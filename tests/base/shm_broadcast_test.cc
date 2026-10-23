@@ -2,27 +2,33 @@
 
 #include <fcntl.h>
 #include <poll.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <cstddef>
 #include <cstring>
-#include <filesystem>
+#include <span>
+#include <system_error>
 #include <thread>
 
 #include "base/internal/broadcast_layout.h"
 #include "base/internal/shared_memory_mapping.h"
 #include "base/internal/shm_broadcast_layout.h"
 #include "base/internal/shm_stream_registry.h"
+#include "file_test_support.h"
 #include "gtest/gtest.h"
 
 namespace yquant::base {
 namespace {
-using namespace std::chrono_literals;
 class Pipe {
  public:
   Pipe() { EXPECT_EQ(::pipe(fds_), 0); }
@@ -48,7 +54,7 @@ class Pipe {
 // Child-side GoogleTest failures become a nonzero exit status in the parent.
 class Child {
  public:
-  template <class Function>
+  template <typename Function>
   explicit Child(Function function) {
     pid_ = ::fork();
     EXPECT_GE(pid_, 0);
@@ -67,7 +73,8 @@ class Child {
   }
   void Kill() { ASSERT_EQ(::kill(pid_, SIGKILL), 0); }
   int Wait() {
-    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (std::chrono::steady_clock::now() < deadline) {
       int status = 0;
       const auto result = ::waitpid(pid_, &status, WNOHANG);
@@ -75,8 +82,10 @@ class Child {
         pid_ = -1;
         return status;
       }
-      if (result < 0 && errno != EINTR) break;
-      std::this_thread::sleep_for(1ms);
+      if (result < 0 && errno != EINTR) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     ADD_FAILURE() << "child wait timed out";
     return -1;
@@ -99,9 +108,12 @@ class ShmByteBroadcastTest : public ::testing::Test {
   }
   void TearDown() override {
     auto stale = internal::Discover(endpoint_);
-    if (stale) ::shm_unlink(stale->shm_name.c_str());
+    if (stale) {
+      ::shm_unlink(stale->shm_name.c_str());
+    }
     std::error_code error;
-    std::filesystem::remove_all(directory_, error);
+    ::yquant::testing::files::RemoveTree(
+        ::yquant::testing::files::FilePath(directory_), error);
   }
   char directory_[64] = "/tmp/yquant-byte-broadcast-XXXXXX";
   ShmEndpoint endpoint_;
@@ -185,13 +197,13 @@ TEST_F(ShmByteBroadcastTest, ValidatesEnvelopeAndQueueIndependently) {
   rejected();
   control->layout.queue_offset = 1;
   rejected();
-  control->layout.queue_bytes = ~std::uint64_t{};
+  control->layout.queue_bytes = ~uint64_t{};
   rejected();
   control->layout.generation = {9, 9};
   rejected();
   queue->layout.abi ^= 1;
   rejected();
-  queue->layout.slot_stride = ~std::uint64_t{};
+  queue->layout.slot_stride = ~uint64_t{};
   rejected();
   queue->layout.generation = {9, 9};
   rejected();
@@ -213,7 +225,9 @@ TEST_F(ShmByteBroadcastTest,
   ShmBroadcastReader reader;
   std::array<std::byte, 32> scratch;
   ASSERT_TRUE(reader.Open(endpoint_, scratch).ok());
-  for (int i = 0; i < 4; ++i) ASSERT_TRUE(writer.TryWrite({}).ok());
+  for (int i = 0; i < 4; ++i) {
+    ASSERT_TRUE(writer.TryWrite({}).ok());
+  }
   auto gap = reader.TryRead();
   ASSERT_TRUE(gap.read.gap);
   writer.Close();
@@ -223,7 +237,7 @@ TEST_F(ShmByteBroadcastTest,
   ASSERT_TRUE(reader.Refresh(refresh).ok());
   EXPECT_EQ(refresh.status, ShmRefreshStatus::kStreamChanged);
   EXPECT_TRUE(reader.TryRead().stream_changed);
-  std::uint64_t sequence = 99;
+  uint64_t sequence = 99;
   EXPECT_FALSE(reader.Resume(*gap.read.gap, sequence).ok());
   EXPECT_EQ(sequence, 99U);
 }
@@ -231,7 +245,9 @@ TEST_F(ShmByteBroadcastTest,
 TEST_F(ShmByteBroadcastTest, ReaderTokensDifferAcrossForkChildren) {
   ShmBroadcastWriter writer;
   ASSERT_TRUE(writer.Create({endpoint_, {2, 32}}).ok());
-  for (int i = 0; i < 4; ++i) ASSERT_TRUE(writer.TryWrite({}).ok());
+  for (int i = 0; i < 4; ++i) {
+    ASSERT_TRUE(writer.TryWrite({}).ok());
+  }
   int descriptors[2];
   ASSERT_EQ(::pipe(descriptors), 0);
   const auto send_token = [&] {
@@ -264,7 +280,7 @@ TEST_F(ShmByteBroadcastTest, ReaderTokensDifferAcrossForkChildren) {
 TEST_F(ShmByteBroadcastTest, FailureDoesNotPublishAndAllowsRetry) {
   ShmBroadcastWriter first, duplicate;
   EXPECT_FALSE(first.Create({endpoint_, {3, 32}}).ok());
-  EXPECT_FALSE(first.Create({endpoint_, {2, std::size_t{1} << 30}}).ok());
+  EXPECT_FALSE(first.Create({endpoint_, {2, size_t{1} << 30}}).ok());
   EXPECT_FALSE(internal::Discover(endpoint_));
   ASSERT_TRUE(first.Create({endpoint_, {2, 32}}).ok());
   EXPECT_FALSE(duplicate.Create({endpoint_, {2, 32}}).ok());
@@ -276,7 +292,7 @@ TEST_F(ShmByteBroadcastTest, FailureDoesNotPublishAndAllowsRetry) {
   ASSERT_TRUE(reader.Open(endpoint_, scratch).ok());
   ShmRefreshResult refresh;
   refresh.health = ShmWriterHealth::kStale;
-  EXPECT_FALSE(reader.Refresh(refresh, -1ns).ok());
+  EXPECT_FALSE(reader.Refresh(refresh, -std::chrono::nanoseconds(1)).ok());
   EXPECT_EQ(refresh.health, ShmWriterHealth::kStale);
 }
 }  // namespace

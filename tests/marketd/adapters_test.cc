@@ -1,5 +1,9 @@
 #include "marketd/adapters.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
+#include <cstddef>
 #include <string>
 
 #include "gtest/gtest.h"
@@ -17,7 +21,7 @@ TEST(MockSourceTest, SubscribesAllInstrumentsAndUsesLocalReceiveTime) {
   const auto unchanged = quote;
   EXPECT_EQ(source.Poll(50, quote).state, PollState::kIdle);
   EXPECT_EQ(quote, unchanged);
-  for (std::size_t i = 0; i < 2; ++i) {
+  for (size_t i = 0; i < 2; ++i) {
     ASSERT_EQ(source.Poll(1000050, quote).state, PollState::kEvent);
     EXPECT_EQ(quote.instrument_id, config.instruments[i].instrument.id);
     EXPECT_EQ(quote.source_id, config.source_id);
@@ -64,8 +68,9 @@ TEST(ShmAdapterTest, GapIsTerminalAndDiagnosticSurvivesClose) {
   ASSERT_TRUE(publisher.Init({endpoint, 2, 80}).ok());
   ShmSource source;
   ASSERT_TRUE(source.Init(endpoint).ok());
-  for (std::uint64_t i = 1; i <= 3; ++i)
+  for (uint64_t i = 1; i <= 3; ++i) {
     ASSERT_TRUE(publisher.Publish(testing::Quote(i)).ok());
+  }
   auto out = testing::Quote(999);
   const auto unchanged = out;
   auto result = source.Poll(100, out);
@@ -135,7 +140,8 @@ TEST(ShmAdapterTest, MissingDiscoveryDrainsCommittedEventsBeforeError) {
   ASSERT_TRUE(source.Init(endpoint).ok());
   ASSERT_TRUE(publisher.Publish(testing::Quote(1)).ok());
   ASSERT_TRUE(publisher.Publish(testing::Quote(2)).ok());
-  ASSERT_TRUE(std::filesystem::remove(directory.File("quotes.manifest")));
+  ASSERT_TRUE(::yquant::testing::files::RemoveFile(
+      ::yquant::testing::files::FilePath(directory.File("quotes.manifest"))));
   model::QuoteTick out;
   ASSERT_EQ(source.Poll(1, out).state, PollState::kEvent);
   EXPECT_EQ(out.sequence, 1U);

@@ -45,22 +45,32 @@ TEST_P(TerminationSignalWaitTest, PendingStopWakesWaitAndRestoresCallingMask) {
     // Bound a lost-wakeup regression without timing-based readiness guesses.
     alarm(3);
     TerminationSignals signals;
-    if (!signals.Prepare().ok()) _exit(1);
+    if (!signals.Prepare().ok()) {
+      _exit(1);
+    }
     sigset_t unrelated;
     if (sigemptyset(&unrelated) != 0 || sigaddset(&unrelated, SIGUSR1) != 0 ||
-        pthread_sigmask(SIG_BLOCK, &unrelated, nullptr) != 0)
+        pthread_sigmask(SIG_BLOCK, &unrelated, nullptr) != 0) {
       _exit(2);
-    if (raise(GetParam()) != 0) _exit(3);
+    }
+    if (raise(GetParam()) != 0) {
+      _exit(3);
+    }
     EventLoopEnvironment& environment = signals;
-    if (!environment.Wait(std::nullopt).ok()) _exit(4);
+    if (!environment.Wait(std::nullopt).ok()) {
+      _exit(4);
+    }
     sigset_t restored;
     if (pthread_sigmask(SIG_SETMASK, nullptr, &restored) != 0 ||
         sigismember(&restored, SIGINT) != 1 ||
         sigismember(&restored, SIGTERM) != 1 ||
-        sigismember(&restored, SIGUSR1) != 1)
+        sigismember(&restored, SIGUSR1) != 1) {
       _exit(5);
+    }
     bool stop = false;
-    if (!environment.CheckStop(stop).ok() || !stop) _exit(6);
+    if (!environment.CheckStop(stop).ok() || !stop) {
+      _exit(6);
+    }
     _exit(0);
   }
   ExpectSuccessfulChild(child);
@@ -75,15 +85,22 @@ TEST(TerminationSignalsTest, TimeoutsDoNotRequestStopOrChangeTheCallingMask) {
   if (child == 0) {
     alarm(3);
     TerminationSignals signals;
-    if (!signals.Prepare().ok()) _exit(1);
+    if (!signals.Prepare().ok()) {
+      _exit(1);
+    }
     EventLoopEnvironment& environment = signals;
-    if (!environment.Wait(0).ok() || !environment.Wait(1).ok()) _exit(2);
+    if (!environment.Wait(0).ok() || !environment.Wait(1).ok()) {
+      _exit(2);
+    }
     sigset_t mask;
     if (pthread_sigmask(SIG_SETMASK, nullptr, &mask) != 0 ||
-        sigismember(&mask, SIGINT) != 1 || sigismember(&mask, SIGTERM) != 1)
+        sigismember(&mask, SIGINT) != 1 || sigismember(&mask, SIGTERM) != 1) {
       _exit(3);
+    }
     bool stop = true;
-    if (!environment.CheckStop(stop).ok() || stop) _exit(4);
+    if (!environment.CheckStop(stop).ok() || stop) {
+      _exit(4);
+    }
     _exit(0);
   }
   ExpectSuccessfulChild(child);

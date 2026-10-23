@@ -5,6 +5,7 @@
 
 #include "tradingd/config.h"
 #include "tradingd/server.h"
+#include "yquant/base/format.h"
 #include "yquant/base/monotonic_clock.h"
 #include "yquant/base/termination_signals.h"
 
@@ -20,8 +21,8 @@ void Usage(FILE* output) noexcept {
 
 void Failure(const char* stage, const yquant::base::Status& status,
              const char* detail) noexcept {
-  std::fprintf(stderr, "yquant-tradingd: stage=%s code=%u detail=%s\n", stage,
-               static_cast<unsigned>(status.code), detail);
+  ::yquant::base::Print(stderr, "yquant-tradingd: stage={} code={} detail={}\n",
+                        stage, static_cast<unsigned>(status.code), detail);
 }
 
 }  // namespace
@@ -56,8 +57,8 @@ int main(int argc, char* argv[]) {
   auto status = loader.Load(path);
   if (!status.ok()) {
     char detail[768];
-    std::snprintf(detail, sizeof(detail), "%s: %s", loader.error().field_path,
-                  loader.error().message);
+    ::yquant::base::FormatTo(detail, sizeof(detail), "{}: {}",
+                             loader.error().field_path, loader.error().message);
     Failure("config", status, detail);
     return 1;
   }
@@ -80,7 +81,8 @@ int main(int argc, char* argv[]) {
     Failure("initialize", status, server.error_detail());
     return 1;
   }
-  std::fprintf(stdout, "yquant-tradingd: Running port=%u\n", server.port());
+  ::yquant::base::Print(stdout, "yquant-tradingd: Running port={}\n",
+                        server.port());
   std::fflush(stdout);
   bool stopping = false;
   for (;;) {
@@ -102,7 +104,9 @@ int main(int argc, char* argv[]) {
       server.ReportUnconfirmed();
       return 1;
     }
-    if (stopping && server.is_drained()) break;
+    if (stopping && server.is_drained()) {
+      break;
+    }
     std::this_thread::yield();
   }
   status = server.Finish();

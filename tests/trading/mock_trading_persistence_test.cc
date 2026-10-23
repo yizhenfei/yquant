@@ -1,6 +1,8 @@
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
 #include <cstddef>
-#include <cstdint>
 #include <span>
 #include <string>
 #include <vector>
@@ -11,9 +13,9 @@
 namespace yquant::trading {
 namespace {
 
-constexpr std::uint64_t kInterval = 1000000;
+constexpr uint64_t kInterval = 1000000;
 
-model::OrderRequest Request(std::int64_t quantity = 9) {
+model::OrderRequest Request(int64_t quantity = 9) {
   return {{(1ULL << 32) | 600000}, model::OrderSide::kBuy, 1000, quantity};
 }
 
@@ -24,26 +26,30 @@ bool Start(MockTradingAdapter& adapter,
   return adapter.Prepare(config).ok() && adapter.Start(0).ok();
 }
 
-std::vector<std::byte> Snapshot(MockTradingAdapter& adapter,
-                                std::uint64_t now) {
+std::vector<std::byte> Snapshot(MockTradingAdapter& adapter, uint64_t now) {
   std::vector<std::byte> bytes(64 * 1024);
-  std::size_t used = 0;
-  if (!adapter.EncodeState(bytes, used, now).ok()) return {};
+  size_t used = 0;
+  if (!adapter.EncodeState(bytes, used, now).ok()) {
+    return {};
+  }
   bytes.resize(used);
   return bytes;
 }
 
 struct Observer {
   std::array<MockTradingMutation, 16> mutations;
-  std::size_t size = 0;
+  size_t size = 0;
   bool fail = false;
 
   static base::Status Observe(void* context,
                               const MockTradingMutation& mutation) noexcept {
     auto& self = *static_cast<Observer*>(context);
-    if (self.fail) return {base::ErrorCode::kIoError, {}};
-    if (self.size == self.mutations.size())
+    if (self.fail) {
+      return {base::ErrorCode::kIoError, {}};
+    }
+    if (self.size == self.mutations.size()) {
       return {base::ErrorCode::kResourceExhausted, {}};
+    }
     self.mutations[self.size++] = mutation;
     return {};
   }
@@ -52,12 +58,12 @@ struct Observer {
 // Recomputes the snapshot trailer when exercising typed validation rather
 // than merely checksum detection. The file format's checksum is FNV-1a/64.
 void RefreshChecksum(std::span<std::byte> bytes) {
-  std::uint64_t checksum = 14695981039346656037ULL;
+  uint64_t checksum = 14695981039346656037ULL;
   for (const auto byte : bytes.first(bytes.size() - 8)) {
-    checksum ^= std::to_integer<std::uint8_t>(byte);
+    checksum ^= std::to_integer<uint8_t>(byte);
     checksum *= 1099511628211ULL;
   }
-  for (std::size_t index = 0; index < 8; ++index) {
+  for (size_t index = 0; index < 8; ++index) {
     bytes[bytes.size() - 8 + index] = static_cast<std::byte>(checksum & 0xffU);
     checksum >>= 8;
   }
@@ -83,7 +89,7 @@ TEST(MockTradingPersistenceTest, SnapshotRestoresPartialFillAndPendingCancel) {
 
   MockTradingAdapter recovered;
   ASSERT_TRUE(Start(recovered));
-  std::uint64_t saved_now = 0;
+  uint64_t saved_now = 0;
   ASSERT_TRUE(recovered.RestoreState(bytes, 100 * kInterval, &saved_now).ok());
   EXPECT_EQ(saved_now, 2 * kInterval);
   EXPECT_EQ(recovered.next_deadline(), 100 * kInterval);
@@ -139,9 +145,9 @@ TEST(MockTradingPersistenceTest, ReplayPreservesExactEventsAndSuppressesSink) {
   Observer rejected_observer;
   rejected_observer.fail = true;
   replay.SetMutationObserver(Observer::Observe, &rejected_observer);
-  for (std::size_t index = 0; index < source_observer.size; ++index) {
+  for (size_t index = 0; index < source_observer.size; ++index) {
     std::array<std::byte, kMaxMockTradingMutationBytes> bytes;
-    std::size_t size = 0;
+    size_t size = 0;
     ASSERT_TRUE(
         EncodeMockTradingMutation(source_observer.mutations[index], bytes, size)
             .ok());
@@ -218,7 +224,7 @@ TEST(MockTradingPersistenceTest, RejectsDamagedAndInvalidSnapshotAtomically) {
   ASSERT_FALSE(before.empty());
   auto damaged = before;
   damaged[0] ^= std::byte{1};
-  std::uint64_t saved_now = 999;
+  uint64_t saved_now = 999;
   EXPECT_EQ(adapter.RestoreState(damaged, kInterval, &saved_now).code,
             base::ErrorCode::kCorrupt);
   EXPECT_EQ(saved_now, 999U);
@@ -240,11 +246,11 @@ TEST(MockTradingPersistenceTest, RejectsDamagedAndInvalidSnapshotAtomically) {
 
   // The first order's state follows variable-length broker/key fields.
   damaged = before;
-  constexpr std::size_t kFirstOrderOffset = 65;
+  constexpr size_t kFirstOrderOffset = 65;
   const auto broker_size =
-      std::to_integer<std::uint8_t>(damaged[kFirstOrderOffset + 8]);
+      std::to_integer<uint8_t>(damaged[kFirstOrderOffset + 8]);
   const auto key_size_offset = kFirstOrderOffset + 9 + broker_size;
-  const auto key_size = std::to_integer<std::uint8_t>(damaged[key_size_offset]);
+  const auto key_size = std::to_integer<uint8_t>(damaged[key_size_offset]);
   const auto state_offset = key_size_offset + 1 + key_size + 25;
   damaged[state_offset] = std::byte{255};
   RefreshChecksum(damaged);
@@ -266,7 +272,7 @@ TEST(MockTradingPersistenceTest, ValidatesMutationAndExternalIdentity) {
   mutation.client_order_id = {2};
   mutation.request = Request();
   std::array<std::byte, kMaxMockTradingMutationBytes> bytes;
-  std::size_t used = 123;
+  size_t used = 123;
   EXPECT_FALSE(
       EncodeMockTradingMutation(mutation, std::span(bytes).first(1), used)
           .ok());
@@ -344,7 +350,7 @@ TEST(MockTradingPersistenceTest, RejectsUnrepresentablePositionEffects) {
   mutation.request = Request();
   mutation.request.position_effect = model::PositionEffect::kOpen;
   std::array<std::byte, kMaxMockTradingMutationBytes> bytes;
-  std::size_t used = 123;
+  size_t used = 123;
   EXPECT_EQ(EncodeMockTradingMutation(mutation, bytes, used).code,
             base::ErrorCode::kInvalidArgument);
   EXPECT_EQ(used, 123U);
@@ -382,11 +388,11 @@ TEST(MockTradingPersistenceTest, RejectsFuturesAccountPersistence) {
   ASSERT_TRUE(futures.Prepare(config).ok());
   ASSERT_TRUE(futures.Start(0).ok());
   std::vector<std::byte> state(kMaxMockTradingStateBytes);
-  std::size_t used = 123;
+  size_t used = 123;
   EXPECT_EQ(futures.EncodeState(state, used, 0).code,
             base::ErrorCode::kUnsupported);
   EXPECT_EQ(used, 123U);
-  std::uint64_t saved_now = 456;
+  uint64_t saved_now = 456;
   EXPECT_EQ(futures.RestoreState(cash_snapshot, 0, &saved_now).code,
             base::ErrorCode::kUnsupported);
   EXPECT_EQ(saved_now, 456U);
@@ -413,7 +419,7 @@ TEST(MockTradingPersistenceTest, ReportCodecRejectsFuturesExecutionEffect) {
   auto mutation = observer.mutations[2];
   mutation.event.fill.position_effect = model::PositionEffect::kCloseToday;
   std::array<std::byte, kMaxMockTradingMutationBytes> bytes;
-  std::size_t used = 123;
+  size_t used = 123;
   EXPECT_EQ(EncodeMockTradingMutation(mutation, bytes, used).code,
             base::ErrorCode::kInvalidArgument);
   EXPECT_EQ(used, 123U);

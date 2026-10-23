@@ -1,6 +1,6 @@
 #include "yquant/base/monotonic_clock.h"
 
-#include <cstdint>
+#include <stdint.h>
 
 #include "gtest/gtest.h"
 
@@ -20,7 +20,7 @@ TEST(MonotonicClockTest, ConsecutiveReadingsNeverDecrease) {
 
 TEST(MonotonicClockTest, EachInstanceMeasuresFromItsOwnConstruction) {
   const base::SteadyMonotonicClock first;
-  std::uint64_t age_before_second = 0;
+  uint64_t age_before_second = 0;
   for (int i = 0; i < 1000; ++i) {
     age_before_second = first.Now();
   }

@@ -1,6 +1,7 @@
 #ifndef YQUANT_TESTS_TEST_CONFIG_FILE_H_
 #define YQUANT_TESTS_TEST_CONFIG_FILE_H_
 
+#include <stddef.h>
 #include <unistd.h>
 
 #include <cerrno>
@@ -16,12 +17,12 @@ class ConfigFile {
     if (fd < 0) {
       return;
     }
-    std::size_t written = 0;
+    size_t written = 0;
     while (written < contents.size()) {
       const ssize_t count =
           write(fd, contents.data() + written, contents.size() - written);
       if (count > 0) {
-        written += static_cast<std::size_t>(count);
+        written += static_cast<size_t>(count);
       } else if (count < 0 && errno == EINTR) {
         continue;
       } else {

@@ -13,11 +13,14 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
-#include <filesystem>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <thread>
 #include <vector>
 
+#include "file_test_support.h"
+#include "yquant/base/format.h"
 #include "yquant/md/market_data_config.h"
 #include "yquant/trading/trading_config.h"
 
@@ -50,10 +53,13 @@ class TradingGateway {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
     }
-    if (output_) std::fclose(output_);
+    if (output_) {
+      std::fclose(output_);
+    }
     if (directory_[0]) {
       std::error_code error;
-      std::filesystem::remove_all(directory_, error);
+      ::yquant::testing::files::RemoveTree(
+          ::yquant::testing::files::FilePath(directory_), error);
     }
   }
 
@@ -65,15 +71,19 @@ class TradingGateway {
     const auto market =
         std::find(arguments.begin(), arguments.end(), "--market-data-config");
     if (trading == arguments.end() || trading + 1 == arguments.end() ||
-        market == arguments.end() || market + 1 == arguments.end())
+        market == arguments.end() || market + 1 == arguments.end()) {
       return 0;
+    }
     trading::TradingConfigLoader broker;
     md::MarketDataConfigLoader dictionary;
     if (!broker.Load((trading + 1)->c_str()).ok() ||
-        !dictionary.Load((market + 1)->c_str()).ok())
+        !dictionary.Load((market + 1)->c_str()).ok()) {
       return 0;
+    }
     const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return errno;
+    if (fd < 0) {
+      return errno;
+    }
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -83,10 +93,14 @@ class TradingGateway {
         ::getsockname(fd, reinterpret_cast<sockaddr*>(&address), &size) == 0;
     const int bind_error = errno;
     ::close(fd);
-    if (!bound) return bind_error;
+    if (!bound) {
+      return bind_error;
+    }
     char pattern[] = "/tmp/yquant-test-gateway-XXXXXX";
-    if (!::mkdtemp(pattern)) return errno;
-    std::snprintf(directory_, sizeof(directory_), "%s", pattern);
+    if (!::mkdtemp(pattern)) {
+      return errno;
+    }
+    ::yquant::base::FormatTo(directory_, sizeof(directory_), "{}", pattern);
     const auto port = std::to_string(ntohs(address.sin_port));
     const std::string server_path = std::string(directory_) + "/server.json";
     client_path_ = std::string(directory_) + "/client.json";
@@ -100,24 +114,34 @@ class TradingGateway {
         ",\"client_id\":1,\"token\":\"test-gateway\",\"connect_timeout_ms\":"
         "2000,"
         "\"heartbeat_timeout_ms\":5000,\"shutdown_timeout_ms\":1000}";
-    if (!Write(server_path, server) || !Write(client_path_, client)) return EIO;
+    if (!Write(server_path, server) || !Write(client_path_, client)) {
+      return EIO;
+    }
     output_ = std::tmpfile();
-    if (!output_) return errno;
+    if (!output_) {
+      return errno;
+    }
     const int output_fd = ::fileno(output_);
-    if (::fcntl(output_fd, F_SETFD, FD_CLOEXEC) < 0) return errno;
+    if (::fcntl(output_fd, F_SETFD, FD_CLOEXEC) < 0) {
+      return errno;
+    }
     posix_spawn_file_actions_t actions;
     int error = posix_spawn_file_actions_init(&actions);
-    if (error) return error;
+    if (error) {
+      return error;
+    }
     error =
         posix_spawn_file_actions_adddup2(&actions, output_fd, STDOUT_FILENO);
-    if (!error)
+    if (!error) {
       error =
           posix_spawn_file_actions_adddup2(&actions, output_fd, STDERR_FILENO);
+    }
     const char* argv[] = {YQUANT_TEST_TRADINGD_PATH, "--config",
                           server_path.c_str(), nullptr};
-    if (!error)
+    if (!error) {
       error = ::posix_spawn(&pid_, argv[0], &actions, nullptr,
                             const_cast<char* const*>(argv), environ);
+    }
     posix_spawn_file_actions_destroy(&actions);
     if (error) {
       pid_ = -1;
@@ -147,14 +171,18 @@ class TradingGateway {
   static std::string Escape(std::string_view text) {
     std::string result;
     for (const char byte : text) {
-      if (byte == '\\' || byte == '"') result += '\\';
+      if (byte == '\\' || byte == '"') {
+        result += '\\';
+      }
       result += byte;
     }
     return result;
   }
   static bool Write(const std::string& path, const std::string& text) {
     auto* file = std::fopen(path.c_str(), "wb");
-    if (!file) return false;
+    if (!file) {
+      return false;
+    }
     const bool written =
         std::fwrite(text.data(), 1, text.size(), file) == text.size();
     return std::fclose(file) == 0 && written;

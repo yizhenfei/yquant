@@ -1,7 +1,9 @@
 #include "yquant/trading/mock_trading_adapter.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
-#include <cstdint>
 #include <limits>
 
 #include "gtest/gtest.h"
@@ -10,10 +12,10 @@
 namespace yquant::trading {
 namespace {
 
-constexpr std::uint64_t kInterval = 1000000;
+constexpr uint64_t kInterval = 1000000;
 static_assert(sizeof(trading::MockTradingAdapter) < 1024);
 
-model::OrderRequest Request(std::int64_t quantity = 200) {
+model::OrderRequest Request(int64_t quantity = 200) {
   return {{(1ULL << 32) | 600000}, model::OrderSide::kBuy, 1000, quantity};
 }
 
@@ -106,8 +108,8 @@ TEST(MockTradingAdapterTest, FillsInTwoStepsWithOwnedIdsAndContinuousSequence) {
 }
 
 TEST(MockTradingAdapterTest, OneShareSkipsZeroFillAndOddQuantityUsesFloor) {
-  constexpr std::array<std::int64_t, 3> kQuantities = {
-      1, 3, std::numeric_limits<std::int64_t>::max()};
+  constexpr std::array<int64_t, 3> kQuantities = {
+      1, 3, std::numeric_limits<int64_t>::max()};
   for (const auto quantity : kQuantities) {
     trading::MockTradingAdapter adapter;
     ASSERT_TRUE(Start(adapter));
@@ -291,31 +293,31 @@ TEST(MockTradingAdapterTest, FullOrderAndPlanCapacityDrainsWithoutStaleNodes) {
   trading::MockTradingAdapter adapter;
   ASSERT_TRUE(Start(adapter));
   std::array<model::BrokerOrderId, trading::kMaxTradingOrders> brokers;
-  for (std::size_t index = 0; index < trading::kMaxTradingOrders; ++index) {
+  for (size_t index = 0; index < trading::kMaxTradingOrders; ++index) {
     ASSERT_TRUE(adapter.SendOrder({index + 1}, Request(), 0).ok());
   }
   EXPECT_EQ(
       adapter.SendOrder({trading::kMaxTradingOrders + 1}, Request(), 0).code,
       base::ErrorCode::kResourceExhausted);
   trading::TradingEvent event;
-  for (std::size_t index = 0; index < trading::kMaxTradingOrders; ++index) {
+  for (size_t index = 0; index < trading::kMaxTradingOrders; ++index) {
     ASSERT_EQ(adapter.Poll(kInterval, event).state,
               trading::TradingPollState::kEvent);
     ASSERT_EQ(event.client_order_id.value, index + 1);
     brokers[index] = event.broker_order_id;
   }
-  for (std::size_t index = 0; index < trading::kMaxTradingOrders; ++index) {
+  for (size_t index = 0; index < trading::kMaxTradingOrders; ++index) {
     ASSERT_TRUE(
         adapter.SendCancel({index + 1}, brokers[index], {index + 1}, kInterval)
             .ok());
   }
-  for (std::size_t index = 0; index < trading::kMaxTradingOrders; ++index) {
+  for (size_t index = 0; index < trading::kMaxTradingOrders; ++index) {
     ASSERT_EQ(adapter.Poll(2 * kInterval, event).state,
               trading::TradingPollState::kEvent);
     ASSERT_EQ(event.kind, model::OrderUpdateKind::kFill);
     EXPECT_EQ(event.client_order_id.value, index + 1);
   }
-  for (std::size_t index = 0; index < trading::kMaxTradingOrders; ++index) {
+  for (size_t index = 0; index < trading::kMaxTradingOrders; ++index) {
     ASSERT_EQ(adapter.Poll(2 * kInterval, event).state,
               trading::TradingPollState::kEvent);
     ASSERT_EQ(event.kind, model::OrderUpdateKind::kCanceled);

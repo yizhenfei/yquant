@@ -1,10 +1,12 @@
 #include "base/internal/spsc_queue_layout.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
-#include <cstdint>
 #include <limits>
 #include <span>
 
@@ -17,7 +19,7 @@ namespace {
 using Role = SpscQueue::Role;
 using internal::SpscControlBlock;
 
-void SetHeader(std::byte* destination, std::uint32_t value) {
+void SetHeader(std::byte* destination, uint32_t value) {
   for (unsigned int index = 0; index < 4; ++index) {
     destination[index] = static_cast<std::byte>((value >> (8 * index)) & 0xff);
   }
@@ -108,9 +110,9 @@ TEST(SpscQueueCounterTest, CoarseWriteCheckDoesNotPublishPaddingOrReserve) {
 
 TEST(SpscQueueCorruptionTest, RejectsMalformedFramesWithoutConsumingThem) {
   struct Case {
-    std::uint64_t read;
-    std::uint64_t write;
-    std::uint32_t header;
+    uint64_t read;
+    uint64_t write;
+    uint32_t header;
   };
   constexpr std::array<Case, 7> kCases{{
       {0, 1, 0},             // Incomplete frame header.
@@ -145,7 +147,7 @@ TEST(SpscQueueCorruptionTest, RejectsMalformedFramesWithoutConsumingThem) {
 
 TEST(SpscQueueCorruptionTest,
      PreservesReclaimedPaddingOnFollowingCorruptFrame) {
-  for (std::uint64_t published_after_padding : {2U, 4U}) {
+  for (uint64_t published_after_padding : {2U, 4U}) {
     SCOPED_TRACE(published_after_padding);
     alignas(128) std::array<std::byte, 400> memory{};
     ASSERT_EQ(SpscQueue::Initialize(memory, 16), SpscStatus::kSuccess);
@@ -163,10 +165,10 @@ TEST(SpscQueueCorruptionTest,
 }
 
 TEST(SpscQueueCounterTest, FramesAndPaddingWorkAcrossUint64Wrap) {
-  constexpr auto kMax = std::numeric_limits<std::uint64_t>::max();
-  for (std::uint64_t capacity : {4U, 8U, 16U, 32U}) {
-    for (std::uint64_t offset = 0; offset < capacity; ++offset) {
-      for (std::size_t size = 0; size <= capacity - 4; ++size) {
+  constexpr auto kMax = std::numeric_limits<uint64_t>::max();
+  for (uint64_t capacity : {4U, 8U, 16U, 32U}) {
+    for (uint64_t offset = 0; offset < capacity; ++offset) {
+      for (size_t size = 0; size <= capacity - 4; ++size) {
         SCOPED_TRACE(capacity);
         SCOPED_TRACE(offset);
         SCOPED_TRACE(size);
@@ -196,7 +198,7 @@ TEST(SpscQueueCounterTest, FramesAndPaddingWorkAcrossUint64Wrap) {
           }
         }
         ASSERT_EQ(result.status, SpscStatus::kSuccess);
-        for (std::size_t index = 0; index < size; ++index) {
+        for (size_t index = 0; index < size; ++index) {
           result.reservation.payload()[index] = static_cast<std::byte>(index);
         }
         EXPECT_GE(result.reservation.payload().data(), memory.data() + 384);
@@ -207,7 +209,7 @@ TEST(SpscQueueCounterTest, FramesAndPaddingWorkAcrossUint64Wrap) {
         auto acquired = consumer.TryAcquire();
         ASSERT_EQ(acquired.status, SpscStatus::kSuccess);
         EXPECT_EQ(acquired.lease.size(), size);
-        for (std::size_t index = 0; index < size; ++index) {
+        for (size_t index = 0; index < size; ++index) {
           EXPECT_EQ(acquired.lease.payload()[index],
                     static_cast<std::byte>(index));
         }

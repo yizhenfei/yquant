@@ -1,14 +1,15 @@
 #include "yquant/base/json_config_document.h"
 
-#include <simdjson.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #include <array>
-#include <cstdint>
 #include <string>
 #include <string_view>
 
 #include "base/internal/json_config_parser.h"
 #include "gtest/gtest.h"
+#include "simdjson.h"
 #include "test_config_file.h"
 
 namespace yquant::base {
@@ -27,7 +28,7 @@ TEST(JsonConfigDocumentTest, OwnsUnchangedPaddedSourceUntilReset) {
   }
   EXPECT_EQ(source.source(), json);
   ASSERT_GE(source.capacity(), json.size() + simdjson::SIMDJSON_PADDING);
-  for (std::size_t i = 0; i < simdjson::SIMDJSON_PADDING; ++i) {
+  for (size_t i = 0; i < simdjson::SIMDJSON_PADDING; ++i) {
     EXPECT_EQ(source.source().data()[json.size() + i], '\0');
   }
   source.Reset();
@@ -173,7 +174,7 @@ TEST(JsonConfigDocumentTest, AcceptsOneMiBAndRejectsOneAdditionalByte) {
 }
 
 TEST(JsonConfigDocumentTest, AcceptsDepth64AndRejectsDepth65) {
-  for (const std::size_t depth : {64U, 65U}) {
+  for (const size_t depth : {64U, 65U}) {
     SCOPED_TRACE(depth);
     std::string json = R"({"nested":)";
     // The root object accounts for the first container level.
@@ -201,7 +202,7 @@ TEST(JsonConfigDocumentTest, ParserHelperStartsIndependentSchemaTraversal) {
   ASSERT_TRUE(
       internal::ParseConfigObject(source, parser, document, object, error).ok())
       << error.message;
-  std::uint64_t value = 0;
+  uint64_t value = 0;
   ASSERT_EQ(object["value"].get_uint64().get(value), simdjson::SUCCESS);
   EXPECT_EQ(value, 42U);
   EXPECT_EQ(source.source(), R"({"value":42})");

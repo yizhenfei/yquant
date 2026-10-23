@@ -1,7 +1,8 @@
+#include <stdint.h>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cstdint>
 #include <optional>
 #include <string>
 #include <thread>
@@ -17,8 +18,8 @@ namespace {
 
 using trading::Message;
 using trading::MessageType;
-constexpr std::uint64_t kGeneration = 77;
-constexpr std::int64_t kInitialCash = 1000000000;
+constexpr uint64_t kGeneration = 77;
+constexpr int64_t kInitialCash = 1000000000;
 
 // Stops only after the peer has acknowledged cancellation. The wall deadline
 // bounds failure paths; yielding lets the real socket peer make progress.
@@ -32,7 +33,7 @@ class RemoteTimerEnvironment final : public base::EventLoopEnvironment {
     out = canceled_.load() || std::chrono::steady_clock::now() >= deadline_;
     return {};
   }
-  base::Status Wait(std::optional<std::uint64_t>) noexcept override {
+  base::Status Wait(std::optional<uint64_t>) noexcept override {
     std::this_thread::yield();
     return {};
   }
@@ -53,7 +54,7 @@ class TimerPeer {
     endpoint.port = 0;
     return listener_.Open(endpoint).ok();
   }
-  std::uint16_t port() const { return listener_.port(); }
+  uint16_t port() const { return listener_.port(); }
   void Abort() noexcept { aborted_.store(true); }
   const std::atomic<bool>& canceled() const { return canceled_; }
 
@@ -61,24 +62,32 @@ class TimerPeer {
     deadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(3);
     bool accepted = false;
     while (!accepted && Active()) {
-      if (!listener_.Accept(connection_, accepted).ok()) return;
+      if (!listener_.Accept(connection_, accepted).ok()) {
+        return;
+      }
       std::this_thread::yield();
     }
-    if (!accepted) return;
+    if (!accepted) {
+      return;
+    }
     Message hello;
     if (!Receive(hello) || hello.type != MessageType::kHello ||
-        hello.client_id != 19 || hello.instrument_count != 1)
+        hello.client_id != 19 || hello.instrument_count != 1) {
       return;
+    }
     Message welcome;
     welcome.type = MessageType::kWelcome;
     welcome.instruments = hello.instruments;
     welcome.instrument_count = hello.instrument_count;
     welcome.account.revision = 1;
     welcome.account.cash = {kInitialCash, 0, kInitialCash};
-    if (!Send(welcome)) return;
-    Message request;
-    if (!ReceiveBusiness(request) || request.type != MessageType::kNewOrder)
+    if (!Send(welcome)) {
       return;
+    }
+    Message request;
+    if (!ReceiveBusiness(request) || request.type != MessageType::kNewOrder) {
+      return;
+    }
     ++orders;
     Message report;
     report.type = MessageType::kOrderUpdate;
@@ -98,13 +107,15 @@ class TimerPeer {
     order.state = model::OrderState::kWorking;
     order.report_sequence = 1;
     if (order.broker_order_id.Assign("timer-order") != base::ErrorCode::kOk ||
-        !Send(report))
+        !Send(report)) {
       return;
+    }
     Message cancel;
     if (!ReceiveBusiness(cancel) || cancel.type != MessageType::kCancelOrder ||
         cancel.order_id != order.client_order_id ||
-        cancel.broker_order_id != order.broker_order_id)
+        cancel.broker_order_id != order.broker_order_id) {
       return;
+    }
     ++cancels;
     report.account.revision = 3;
     report.account.cash = {kInitialCash, 0, kInitialCash};
@@ -114,10 +125,14 @@ class TimerPeer {
     order.leaves_qty = 0;
     order.cancel_request_id = cancel.cancel_id;
     order.report_sequence = 2;
-    if (!Send(report)) return;
+    if (!Send(report)) {
+      return;
+    }
     canceled_.store(true);
     Message stop;
-    if (!ReceiveBusiness(stop) || stop.type != MessageType::kStop) return;
+    if (!ReceiveBusiness(stop) || stop.type != MessageType::kStop) {
+      return;
+    }
     Message drained;
     drained.type = MessageType::kDrained;
     completed = Send(drained);
@@ -134,8 +149,12 @@ class TimerPeer {
   bool Receive(Message& message) {
     while (Active()) {
       const auto result = connection_.Poll(message);
-      if (result.state == trading::ReceiveState::kMessage) return true;
-      if (result.state != trading::ReceiveState::kIdle) return false;
+      if (result.state == trading::ReceiveState::kMessage) {
+        return true;
+      }
+      if (result.state != trading::ReceiveState::kIdle) {
+        return false;
+      }
       std::this_thread::yield();
     }
     return false;
@@ -144,15 +163,21 @@ class TimerPeer {
   // ordering or the server facts synthesized by this peer.
   bool ReceiveBusiness(Message& message) {
     while (Receive(message)) {
-      if (message.type != MessageType::kHeartbeat) return true;
+      if (message.type != MessageType::kHeartbeat) {
+        return true;
+      }
     }
     return false;
   }
   bool Send(Message message) {
     message.generation = kGeneration;
-    if (!connection_.Queue(message).ok()) return false;
+    if (!connection_.Queue(message).ok()) {
+      return false;
+    }
     while (!connection_.empty() && Active()) {
-      if (!connection_.Service().ok()) return false;
+      if (!connection_.Service().ok()) {
+        return false;
+      }
       std::this_thread::yield();
     }
     return connection_.empty();

@@ -1,5 +1,9 @@
+#include <stddef.h>
+#include <stdint.h>
+
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -17,8 +21,8 @@ using model::OrderUpdateKind;
 
 class LedgerClock final : public base::MonotonicClock {
  public:
-  std::uint64_t Now() const noexcept override { return now; }
-  std::uint64_t now = 1000;
+  uint64_t Now() const noexcept override { return now; }
+  uint64_t now = 1000;
 };
 
 // Records sends without generating callbacks; tests explicitly drive reports.
@@ -28,7 +32,7 @@ class RecordingTradingAdapter final : public trading::TradingAdapter {
     account = config.initial_account;
     return {};
   }
-  base::Status Start(std::uint64_t) noexcept override { return {}; }
+  base::Status Start(uint64_t) noexcept override { return {}; }
   base::Status ReadAccountSnapshot(
       trading::TradingAccountSnapshot& out) noexcept override {
     out = account;
@@ -36,7 +40,7 @@ class RecordingTradingAdapter final : public trading::TradingAdapter {
   }
   base::Status SendOrder(model::ClientOrderId id,
                          const model::OrderRequest& request,
-                         std::uint64_t) noexcept override {
+                         uint64_t) noexcept override {
     ++order_sends;
     last_order_id = id;
     last_order = request;
@@ -45,7 +49,7 @@ class RecordingTradingAdapter final : public trading::TradingAdapter {
   base::Status SendCancel(model::ClientOrderId id,
                           const model::BrokerOrderId& broker,
                           model::CancelRequestId cancel,
-                          std::uint64_t) noexcept override {
+                          uint64_t) noexcept override {
     ++cancel_sends;
     last_order_id = id;
     last_broker = broker;
@@ -53,7 +57,7 @@ class RecordingTradingAdapter final : public trading::TradingAdapter {
     return {fail_send ? ErrorCode::kIoError : ErrorCode::kOk, {}};
   }
   trading::TradingPollResult Poll(
-      std::uint64_t, trading::TradingEvent& out) noexcept override {
+      uint64_t, trading::TradingEvent& out) noexcept override {
     if (pending_event) {
       out = *pending_event;
       pending_event.reset();
@@ -61,8 +65,8 @@ class RecordingTradingAdapter final : public trading::TradingAdapter {
     }
     return {};
   }
-  std::optional<std::uint64_t> next_deadline() const noexcept override {
-    return pending_event ? std::optional<std::uint64_t>{0} : std::nullopt;
+  std::optional<uint64_t> next_deadline() const noexcept override {
+    return pending_event ? std::optional<uint64_t>{0} : std::nullopt;
   }
   bool is_drained() const noexcept override { return !pending_event; }
   base::Status Stop() noexcept override { return {}; }
@@ -73,8 +77,8 @@ class RecordingTradingAdapter final : public trading::TradingAdapter {
   model::CancelRequestId last_cancel_id;
   model::BrokerOrderId last_broker;
   model::OrderRequest last_order;
-  std::size_t order_sends = 0;
-  std::size_t cancel_sends = 0;
+  size_t order_sends = 0;
+  size_t cancel_sends = 0;
   bool fail_send = false;
   trading::TradingAccountSnapshot account;
   std::optional<trading::TradingEvent> pending_event;
@@ -97,7 +101,7 @@ class TradingTest : public ::testing::Test {
 
     ASSERT_TRUE(market_data.Configure(config).ok());
     trading::TradingAccountSnapshot account;
-    account.cash_balance = std::numeric_limits<std::int64_t>::max();
+    account.cash_balance = std::numeric_limits<int64_t>::max();
     ASSERT_TRUE(InitializeAccount(account).ok());
   }
 
@@ -108,10 +112,10 @@ class TradingTest : public ::testing::Test {
     return trading.Init(config, market_config);
   }
 
-  model::OrderRequest Request(std::int64_t quantity = 200) const {
+  model::OrderRequest Request(int64_t quantity = 200) const {
     return {instrument_id, model::OrderSide::kBuy, 1001, quantity};
   }
-  model::ClientOrderId Submit(std::int64_t quantity = 200) {
+  model::ClientOrderId Submit(int64_t quantity = 200) {
     model::ClientOrderId id;
     trading.SetAcceptingRequests(true);
     EXPECT_EQ(trading.SubmitOrder(Request(quantity), id), ErrorCode::kOk);
@@ -124,8 +128,8 @@ class TradingTest : public ::testing::Test {
     return result;
   }
   void Send() { ASSERT_TRUE(trading.ProcessRequests(clock.now).ok()); }
-  void Bootstrap(std::int64_t cash, std::int64_t total = 0,
-                 std::int64_t available = 0, bool include_position = false) {
+  void Bootstrap(int64_t cash, int64_t total = 0, int64_t available = 0,
+                 bool include_position = false) {
     trading.Reset();
     trading::TradingAccountSnapshot account;
     account.cash_balance = cash;
@@ -135,7 +139,7 @@ class TradingTest : public ::testing::Test {
     }
     ASSERT_TRUE(InitializeAccount(account).ok());
   }
-  void Precision(std::uint8_t decimals) {
+  void Precision(uint8_t decimals) {
     trading.Reset();
     market_data.Reset();
     market_config.instruments[0].instrument.price_decimals = decimals;
@@ -158,9 +162,9 @@ class TradingTest : public ::testing::Test {
     trading.SetAcceptingRequests(false);
     return id;
   }
-  trading::TradingEvent Event(model::ClientOrderId id, std::uint64_t sequence,
+  trading::TradingEvent Event(model::ClientOrderId id, uint64_t sequence,
                               OrderUpdateKind kind,
-                              std::int64_t cumulative = 0) const {
+                              int64_t cumulative = 0) const {
     trading::TradingEvent event;
     event.client_order_id = id;
     EXPECT_EQ(event.broker_order_id.Assign("broker-order-" +
@@ -172,11 +176,9 @@ class TradingTest : public ::testing::Test {
     event.receive_time_ns = clock.now;
     return event;
   }
-  trading::TradingEvent Execution(model::ClientOrderId id,
-                                  std::uint64_t sequence,
+  trading::TradingEvent Execution(model::ClientOrderId id, uint64_t sequence,
                                   std::string_view execution_id,
-                                  std::int64_t quantity,
-                                  std::int64_t cumulative) const {
+                                  int64_t quantity, int64_t cumulative) const {
     auto event = Event(id, sequence, OrderUpdateKind::kFill, cumulative);
     event.fill.client_order_id = id;
     event.fill.broker_order_id = event.broker_order_id;
@@ -581,14 +583,16 @@ TEST_F(TradingTest, CancelFailureCannotSettleAnotherAttemptAndRetryWaits) {
 }
 
 TEST_F(TradingTest, StopNeverSendsNewOrdersBeyondTheScanBudget) {
-  for (std::size_t i = 0; i < 200; ++i) (void)Submit();
+  for (size_t i = 0; i < 200; ++i) {
+    (void)Submit();
+  }
   trading.BeginStopping();
   trading::TradingDispatch dispatch;
-  std::size_t updates = 0;
+  size_t updates = 0;
   while (!trading.is_drained()) {
     ASSERT_TRUE(trading.ScheduleStopping(clock.now).ok());
     ASSERT_TRUE(trading.ProcessRequests(clock.now).ok());
-    std::size_t batch = 0;
+    size_t batch = 0;
     while (trading.has_local_updates() && batch++ < 64) {
       ASSERT_EQ(trading.ApplyLocalUpdate(dispatch), ErrorCode::kOk);
       EXPECT_EQ(dispatch.update.kind, OrderUpdateKind::kCanceledBeforeSend);
@@ -620,7 +624,9 @@ TEST_F(TradingTest, SendFailureIsNotAutomaticallyRetriedOrLocallyCanceled) {
 
 TEST_F(TradingTest,
        FixedRequestAndOrderLimitsRejectWithoutPartialRegistration) {
-  for (std::size_t i = 0; i < trading::kMaxTradingRequests; ++i) (void)Submit();
+  for (size_t i = 0; i < trading::kMaxTradingRequests; ++i) {
+    (void)Submit();
+  }
   trading.SetAcceptingRequests(true);
   model::ClientOrderId out{99999};
   const auto request_cash = Cash();
@@ -633,7 +639,7 @@ TEST_F(TradingTest,
   EXPECT_EQ(trading.order_count(), trading::kMaxTradingRequests);
   ASSERT_TRUE(
       trading.ProcessRequests(clock.now, trading::kMaxTradingRequests).ok());
-  for (std::size_t count = trading::kMaxTradingRequests;
+  for (size_t count = trading::kMaxTradingRequests;
        count < trading::kMaxTradingOrders; ++count) {
     (void)Submit();
     Send();
@@ -650,26 +656,23 @@ TEST_F(TradingTest,
 }
 
 TEST_F(TradingTest, ExecutionCapacityFailurePreservesLastAcceptedFacts) {
-  const auto id =
-      Submit(static_cast<std::int64_t>(trading::kMaxTradingFills + 1));
+  const auto id = Submit(static_cast<int64_t>(trading::kMaxTradingFills + 1));
   Accept(id);
   trading::TradingDispatch dispatch;
-  for (std::size_t count = 0; count < trading::kMaxTradingFills; ++count) {
-    ASSERT_EQ(
-        trading.ApplyEvent(Execution(id, count + 2, std::to_string(count), 1,
-                                     static_cast<std::int64_t>(count + 1)),
-                           dispatch),
-        ErrorCode::kOk);
+  for (size_t count = 0; count < trading::kMaxTradingFills; ++count) {
+    ASSERT_EQ(trading.ApplyEvent(Execution(id, count + 2, std::to_string(count),
+                                           1, static_cast<int64_t>(count + 1)),
+                                 dispatch),
+              ErrorCode::kOk);
   }
   const auto before = Snapshot(id);
   const auto before_cash = Cash();
   const auto before_position = Position();
-  EXPECT_EQ(
-      trading.ApplyEvent(
-          Execution(id, trading::kMaxTradingFills + 2, "overflow", 1,
-                    static_cast<std::int64_t>(trading::kMaxTradingFills + 1)),
-          dispatch),
-      ErrorCode::kResourceExhausted);
+  EXPECT_EQ(trading.ApplyEvent(
+                Execution(id, trading::kMaxTradingFills + 2, "overflow", 1,
+                          static_cast<int64_t>(trading::kMaxTradingFills + 1)),
+                dispatch),
+            ErrorCode::kResourceExhausted);
   EXPECT_EQ(Snapshot(id), before);
   EXPECT_EQ(Snapshot(id).leaves_qty, 1);
   EXPECT_EQ(Cash(), before_cash);
@@ -752,7 +755,7 @@ TEST_F(TradingTest, InvalidBootstrapNeverPublishesAnAccount) {
 
 TEST_F(TradingTest,
        SharedCashReservationsPreventOvercommitAndFailuresAreAtomic) {
-  constexpr std::int64_t kUnitCash = 1001 * 10000;
+  constexpr int64_t kUnitCash = 1001 * 10000;
   Bootstrap(3 * kUnitCash);
   (void)Submit(2);
   EXPECT_EQ(Cash(),
@@ -805,7 +808,7 @@ TEST_F(TradingTest, TwoInstrumentsShareCashButKeepHoldingsIndependent) {
   other.instrument.venue = model::Venue::kSzse;
   std::memcpy(other.instrument.symbol, "000001", model::kSymbolLength);
   ASSERT_TRUE(market_data.Configure(market_config).ok());
-  constexpr std::int64_t kUnitCash = 10010000;
+  constexpr int64_t kUnitCash = 10010000;
   Bootstrap(3 * kUnitCash);
   const auto first = Submit(2);
   auto request = Request(1);
@@ -840,9 +843,9 @@ TEST_F(TradingTest, TwoInstrumentsShareCashButKeepHoldingsIndependent) {
 
 TEST_F(TradingTest,
        BuyImprovementIsImmediatelyAvailableAndNewSharesCannotBeSold) {
-  constexpr std::int64_t kInitial = 3000000000;
-  constexpr std::int64_t kLimitPart = 1001 * 100 * 10000;
-  constexpr std::int64_t kActual = 1000 * 100 * 10000;
+  constexpr int64_t kInitial = 3000000000;
+  constexpr int64_t kLimitPart = 1001 * 100 * 10000;
+  constexpr int64_t kActual = 1000 * 100 * 10000;
   Bootstrap(kInitial);
   const auto id = Submit(200);
   Accept(id);
@@ -972,11 +975,11 @@ TEST_F(TradingTest, ZeroAccountCannotBuyOrSellAndSendFailureKeepsReservations) {
 }
 
 TEST_F(TradingTest, PricePrecisionZeroAndSixConvertExactlyWithoutRounding) {
-  for (const std::uint8_t decimals : {std::uint8_t{0}, std::uint8_t{6}}) {
+  for (const uint8_t decimals : {uint8_t{0}, uint8_t{6}}) {
     SCOPED_TRACE(decimals);
     Precision(decimals);
     Bootstrap(100000000);
-    const std::int64_t scale = decimals == 0 ? 1000000 : 1;
+    const int64_t scale = decimals == 0 ? 1000000 : 1;
     auto request = Request(3);
     request.limit_price = 7;
     const auto id = SubmitRequest(request);
@@ -993,11 +996,11 @@ TEST_F(TradingTest, PricePrecisionZeroAndSixConvertExactlyWithoutRounding) {
 }
 
 TEST_F(TradingTest, SubmitNotionalOverflowPreservesEveryOutput) {
-  for (const std::uint8_t decimals : {std::uint8_t{0}, std::uint8_t{6}}) {
+  for (const uint8_t decimals : {uint8_t{0}, uint8_t{6}}) {
     Precision(decimals);
-    Bootstrap(std::numeric_limits<std::int64_t>::max());
+    Bootstrap(std::numeric_limits<int64_t>::max());
     auto request = Request(decimals == 0 ? 1 : 2);
-    request.limit_price = std::numeric_limits<std::int64_t>::max();
+    request.limit_price = std::numeric_limits<int64_t>::max();
     const auto before = Cash();
     model::ClientOrderId out{8};
     trading.SetAcceptingRequests(true);
@@ -1011,7 +1014,7 @@ TEST_F(TradingTest, SubmitNotionalOverflowPreservesEveryOutput) {
 }
 
 TEST_F(TradingTest, SellCashOverflowDoesNotCommitOrderHashOrAccount) {
-  constexpr auto kMaximum = std::numeric_limits<std::int64_t>::max();
+  constexpr auto kMaximum = std::numeric_limits<int64_t>::max();
   Bootstrap(kMaximum - 20000000, 1, 1, true);
   auto request = Request(1);
   request.side = model::OrderSide::kSell;
@@ -1044,7 +1047,7 @@ TEST_F(TradingTest, FillAmountAndBoughtHoldingOverflowAreAtomic) {
   const auto sell = SubmitRequest(request);
   Accept(sell);
   auto fill = Execution(sell, 2, "overflow", 2, 2);
-  fill.fill.price = std::numeric_limits<std::int64_t>::max();
+  fill.fill.price = std::numeric_limits<int64_t>::max();
   const auto cash = Cash();
   const auto position = Position();
   trading::TradingDispatch dispatch;
@@ -1054,7 +1057,7 @@ TEST_F(TradingTest, FillAmountAndBoughtHoldingOverflowAreAtomic) {
   fill.fill.price = 1;
   ASSERT_EQ(trading.ApplyEvent(fill, dispatch), ErrorCode::kOk);
   EXPECT_EQ(Cash().balance, 2);
-  Bootstrap(10, std::numeric_limits<std::int64_t>::max(), 0, true);
+  Bootstrap(10, std::numeric_limits<int64_t>::max(), 0, true);
   request = Request(1);
   request.limit_price = 1;
   const auto buy = SubmitRequest(request);

@@ -4,9 +4,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <string>
+#include <string_view>
+#include <system_error>
 
+#include "file_test_support.h"
 #include "gtest/gtest.h"
 #include "scoped_working_directory.h"
 
@@ -20,7 +22,7 @@ TEST(PathTest, ResolvesRelativePathsFromWorkingDirectoryWithoutOpeningFiles) {
     ASSERT_TRUE(cwd.valid());
     std::array<char, 4096> output{};
     std::error_code error;
-    const auto current = std::filesystem::current_path(error);
+    const auto current = ::yquant::testing::files::CurrentPath(error);
     ASSERT_FALSE(error);
     ASSERT_TRUE(ResolvePath("missing/subdir/file.json", output).ok());
     EXPECT_EQ(output.data(), (current / "missing/subdir/file.json").string());
@@ -28,7 +30,8 @@ TEST(PathTest, ResolvesRelativePathsFromWorkingDirectoryWithoutOpeningFiles) {
     EXPECT_EQ(output.data(), (current / "../outside.json").string());
   }
   std::error_code error;
-  std::filesystem::remove_all(directory, error);
+  ::yquant::testing::files::RemoveTree(
+      ::yquant::testing::files::FilePath(directory), error);
 }
 
 TEST(PathTest, PreservesAbsoluteSpellingAndSupportsAliasedOutput) {
@@ -37,7 +40,8 @@ TEST(PathTest, PreservesAbsoluteSpellingAndSupportsAliasedOutput) {
   EXPECT_STREQ(output.data(), "/missing/../file.json");
   std::strcpy(output.data(), "catalog.json");
   std::error_code error;
-  const auto expected = std::filesystem::current_path(error) / "catalog.json";
+  const auto expected =
+      ::yquant::testing::files::CurrentPath(error) / "catalog.json";
   ASSERT_FALSE(error);
   ASSERT_TRUE(ResolvePath(output.data(), output).ok());
   EXPECT_EQ(output.data(), expected.string());

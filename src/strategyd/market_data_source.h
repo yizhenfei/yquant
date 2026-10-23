@@ -5,7 +5,8 @@
 // provide owned quote values and scheduling hints; strategy callbacks and
 // subscription registration belong to the runner and its market-data view.
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <optional>
 #include <span>
 
@@ -45,16 +46,16 @@ class MarketDataSource {
   // origin now. Failure preserves prepared state. Retains no input references.
   [[nodiscard]] virtual base::Status Start(
       std::span<const model::InstrumentId> subscriptions,
-      std::uint64_t now) noexcept = 0;
+      uint64_t now) noexcept = 0;
   // Polls an active source once, overwriting out only for kEvent. kIdle yields
   // without a quote; kError supplies a non-OK status. The host stops the source
   // after an error. Call only after successful Start and before Stop.
   [[nodiscard]] virtual MarketDataPollResult Poll(
-      std::uint64_t now, model::QuoteTick& out) noexcept = 0;
+      uint64_t now, model::QuoteTick& out) noexcept = 0;
   // Returns the next absolute polling deadline, or nullopt if none is
   // scheduled. A deadline at or before now makes Poll eligible for the next
   // batch.
-  virtual std::optional<std::uint64_t> next_deadline() const noexcept = 0;
+  virtual std::optional<uint64_t> next_deadline() const noexcept = 0;
   // Returns whether an idle Poll may leave an already-due deadline. Otherwise
   // an idle source must advance its deadline or remove it. Poll-driven sources
   // are retried in a later batch so the host can check termination first.
@@ -65,12 +66,10 @@ class MarketDataSource {
   // Performs maintenance between event batches. May allocate or perform I/O,
   // but must not wait for new data or invoke callbacks. Failure ends the
   // current source session; the host calls Stop during error shutdown.
-  [[nodiscard]] virtual base::Status Service(std::uint64_t) noexcept {
-    return {};
-  }
+  [[nodiscard]] virtual base::Status Service(uint64_t) noexcept { return {}; }
   // Returns the next absolute maintenance deadline, or nullopt if unscheduled.
   // The host includes it in its wait even when no instruments are subscribed.
-  virtual std::optional<std::uint64_t> next_service_deadline() const noexcept {
+  virtual std::optional<uint64_t> next_service_deadline() const noexcept {
     return std::nullopt;
   }
   // Releases source resources synchronously, including after partial startup.

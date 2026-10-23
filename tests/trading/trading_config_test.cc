@@ -1,13 +1,17 @@
 #include "yquant/trading/trading_config.h"
 
+#include <stddef.h>
+
 #include <cstdio>
 #include <cstring>
 #include <limits>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "gtest/gtest.h"
 #include "test_config_file.h"
+#include "yquant/base/format.h"
 #include "yquant/base/json_config_document.h"
 #include "yquant/model/identifiers.h"
 
@@ -25,7 +29,9 @@ constexpr std::string_view kJson =
 std::string Replace(std::string_view from, std::string_view to) {
   std::string json(kJson);
   const auto offset = json.find(from);
-  if (offset != std::string::npos) json.replace(offset, from.size(), to);
+  if (offset != std::string::npos) {
+    json.replace(offset, from.size(), to);
+  }
   return json;
 }
 
@@ -223,8 +229,9 @@ constexpr std::string_view kPosition =
 std::string PositionJson(std::string_view before, std::string_view after) {
   std::string position(kPosition);
   const auto offset = position.find(before);
-  if (offset != std::string::npos)
+  if (offset != std::string::npos) {
     position.replace(offset, before.size(), after);
+  }
   return Replace("[]", '[' + position + ']');
 }
 
@@ -315,13 +322,15 @@ TEST(TradingConfigTest, ParsesInitialAccountWithoutFloatingPointOrBorrowing) {
 }
 
 TEST(TradingConfigTest, PositionCapacityAndVenueScopedIdentityAreValidated) {
-  for (const std::size_t count : {64U, 65U}) {
+  for (const size_t count : {64U, 65U}) {
     std::string positions = "[";
-    for (std::size_t index = 0; index < count; ++index) {
-      if (index != 0) positions += ',';
+    for (size_t index = 0; index < count; ++index) {
+      if (index != 0) {
+        positions += ',';
+      }
       char symbol[model::kSymbolLength + 1];
-      std::snprintf(symbol, sizeof(symbol), "%0*zu",
-                    static_cast<int>(model::kSymbolLength), index);
+      ::yquant::base::FormatTo(symbol, sizeof(symbol), "{:0{}}", index,
+                               static_cast<int>(model::kSymbolLength));
       std::string item(kPosition);
       item.replace(item.find("600000"), model::kSymbolLength, symbol);
       positions += item;
@@ -332,8 +341,9 @@ TEST(TradingConfigTest, PositionCapacityAndVenueScopedIdentityAreValidated) {
     trading::TradingConfigLoader loader;
     EXPECT_EQ(loader.Load(file.path()).ok(), count == 64)
         << loader.error().message;
-    if (count == 64)
+    if (count == 64) {
       EXPECT_EQ(loader.config().initial_account.position_count, 64U);
+    }
   }
   trading::TradingConfigLoader loader;
   ConfigFile duplicate(Replace(
@@ -513,14 +523,16 @@ TEST(FuturesTradingConfigTest, HonorsPositionCapacityWithoutAliasingContracts) {
   auto json = FuturesPositionJson();
   const auto begin = json.find("[{"), end = json.find("}]") + 1;
   const auto position = json.substr(begin + 1, end - begin - 1);
-  for (const std::size_t count : {64U, 65U}) {
+  for (const size_t count : {64U, 65U}) {
     std::string positions = "[";
-    for (std::size_t index = 0; index < count; ++index) {
-      if (index) positions += ',';
+    for (size_t index = 0; index < count; ++index) {
+      if (index) {
+        positions += ',';
+      }
       auto entry = position;
       char symbol[8];
-      std::snprintf(symbol, sizeof(symbol), "rb%02zu%02zu", index / 12,
-                    index % 12 + 1);
+      ::yquant::base::FormatTo(symbol, sizeof(symbol), "rb{:02}{:02}",
+                               index / 12, index % 12 + 1);
       entry.replace(entry.find("rb2701"), 6, symbol);
       positions += entry;
     }

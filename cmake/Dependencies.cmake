@@ -12,6 +12,10 @@ set(FMT_INSTALL OFF CACHE BOOL "" FORCE)
 set(FMT_TEST OFF CACHE BOOL "" FORCE)
 set(FMT_OS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(fmt)
+set_target_properties(fmt PROPERTIES
+  POSITION_INDEPENDENT_CODE ON
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN YES)
 target_link_libraries(fmt PUBLIC yquant_compile_options)
 target_compile_definitions(fmt PUBLIC FMT_USE_EXCEPTIONS=0)
 
@@ -44,6 +48,8 @@ if(BUILD_TESTING)
   set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
   set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(googletest)
+
+  target_include_directories(gtest INTERFACE "${PROJECT_SOURCE_DIR}/tests")
 
   foreach(target gtest gtest_main)
     target_link_libraries(${target} PUBLIC yquant_compile_options)

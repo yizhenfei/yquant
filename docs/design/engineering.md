@@ -46,7 +46,9 @@ fmt 与包含其公开模板的调用方统一设置 `FMT_USE_EXCEPTIONS=0` 并�
 
 日志入口使用项目的 `consteval LogFormat<Args...>` 检查格式和参数类型，初版开放 `{}`、`{{`、`}}`。允许基本整数、`bool`、`char`、默认格式的 `float`、`double`、有长度的字符串视图和字符串字面量。枚举显式转为底层整数，业务类型先转换为受支持的标量或定长文本。
 
-格式入口在编译期拒绝运行期格式字符串、宽度和精度规格、locale 及任意自定义 formatter；裸 `const char*` 先转为有长度的视图。字符串输入规模在调用 fmt 前检查，拒绝时计数。`fmt::format_string` 的类型检查由封装复用，项目入口不开放 `fmt::runtime` 转换。默认格式的基本类型与字符串适合作为无分配格式化的验证范围。[fmt 格式检查与内存分配](https://fmt.dev/latest/api/)
+日志格式入口在编译期拒绝运行期格式字符串、宽度和精度规格、locale 及任意自定义 formatter；裸 `const char*` 先转为有长度的视图。字符串输入规模在调用 fmt 前检查，拒绝时计数。`fmt::format_string` 的类型检查由封装复用，日志入口不开放 `fmt::runtime` 转换。默认格式的基本类型与字符串适合作为无分配格式化的验证范围。[fmt 格式检查与内存分配](https://fmt.dev/latest/api/)
+
+`base::FormatTo` 将类型检查的文本直接写入调用方缓冲区，保留 NUL 终止、截断前总长度和容量不足的判断方式。`base::Print` 使用栈上缓冲向指定标准流输出，返回写入长度或 I/O 失败；同一调用的输出保持连续。这两个接口用于进程输出和诊断文本，接受编译期检查的格式规格；日志仍使用上述受限入口。示例策略私有链接 fmt，策略 SDK 本身不依赖 fmt。
 
 fmt 内部格式错误属于程序契约违例，不作为可恢复的格式化失败计数。日志的具体检查、截断和丢弃规则见 [日志选型与设计](logging.md)。
 
@@ -79,7 +81,7 @@ CMakePresets.json
 
 | 模块 | CMake target | 职责与依赖 |
 | --- | --- | --- |
-| `yquant::base` | `yquant_base`，别名 `yquant::base` | 日志、队列、共享内存、路径、JSON 文档、单调时钟及进程等待和退出信号；队列不依赖日志或 fmt |
+| `yquant::base` | `yquant_base`，别名 `yquant::base` | 日志、队列、共享内存、路径与文件操作、文本格式化、JSON 文档、单调时钟及进程等待和退出信号；队列不依赖日志或 fmt |
 | `yquant::model` | `yquant_model`，别名 `yquant::model`，`INTERFACE` 目标 | 标识、标的、行情、委托和账户等领域类型 |
 | `yquant::md` | `yquant_md`，别名 `yquant::md` | 标的字典、运行标的范围、接收配置、模拟报价、编解码及行情广播适配；依赖 `base` 和 `model` |
 | `yquant::trading` | `yquant_trading`，别名 `yquant::trading` | 网关交易引擎、账本、客户端服务接口、配置、模拟柜台、协议及连接；依赖 `base`、`md`、`model` 和策略服务接口 |
@@ -134,7 +136,7 @@ CMakePresets.json
 | `yquant_marketd_objects` | `yquant_marketd` | `yquant-marketd` |
 | `yquant_tradingd_objects` | `yquant_tradingd` | `yquant-tradingd` |
 
-编译选项按 target 配置：C++20、公开 include 路径和日志编译级别向调用方传播；项目警告选项设为私有，不强加给依赖。日志公开模板使用 fmt，因此 `fmt::fmt` 为公开依赖。异常开关和 fmt 配置同时应用于依赖自身及相关调用方，避免不同编译单元采用不同配置。
+编译选项按 target 配置：C++20、公开 include 路径和日志编译级别向调用方传播；项目警告选项设为私有，不强加给依赖。基础库的日志与文本格式化模板使用 fmt，因此 `fmt::fmt` 为公开依赖。异常开关和 fmt 配置同时应用于依赖自身及相关调用方，避免不同编译单元采用不同配置。
 
 第三方依赖由 `cmake/` 中的 `FetchContent` 声明集中管理，固定完整 Git commit 或归档 URL 与 SHA256。fmt 和 simdjson 为生产依赖，GoogleTest 仅由测试程序使用。依赖不跟随浮动分支，不自动切换到未固定版本的系统安装。[FetchContent](https://cmake.org/cmake/help/latest/module/FetchContent.html)
 

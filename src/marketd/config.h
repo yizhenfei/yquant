@@ -1,8 +1,9 @@
 #ifndef YQUANT_MARKETD_CONFIG_H_
 #define YQUANT_MARKETD_CONFIG_H_
 
+#include <stddef.h>
+
 #include <array>
-#include <cstddef>
 
 #include "marketd/file_config.h"
 #include "marketd/tcp_transport.h"
@@ -11,9 +12,9 @@
 
 namespace yquant::marketd {
 
-inline constexpr std::size_t kMaxPublishers = 8;
-inline constexpr std::size_t kMaxRuntimePathBytes = 1023;
-inline constexpr std::size_t kMaxStreamBytes = 64;
+inline constexpr size_t kMaxPublishers = 8;
+inline constexpr size_t kMaxRuntimePathBytes = 1023;
+inline constexpr size_t kMaxStreamBytes = 64;
 
 enum class Adapter { kMock, kShm, kTcp, kReplay, kRecord };
 
@@ -32,10 +33,10 @@ struct PublisherConfig {
   Adapter adapter = Adapter::kShm;
   char runtime_directory[kMaxRuntimePathBytes + 1] = {};
   char stream[kMaxStreamBytes + 1] = {};
-  std::size_t capacity = 1024;
-  std::size_t max_payload_size = 256;
+  size_t capacity = 1024;
+  size_t max_payload_size = 256;
   TcpEndpoint tcp;
-  std::size_t max_clients = 16;
+  size_t max_clients = 16;
   RecordConfig record;
 };
 
@@ -44,7 +45,7 @@ struct PublisherConfig {
 struct MarketdConfig {
   SourceConfig source;
   std::array<PublisherConfig, kMaxPublishers> publishers;
-  std::size_t publisher_count = 0;
+  size_t publisher_count = 0;
 };
 
 // Validates typed configuration without acquiring output resources. Rejects
@@ -58,6 +59,10 @@ struct MarketdConfig {
 // replay data or the CSV catalog and does not create files.
 class ConfigLoader {
  public:
+  ConfigLoader() = default;
+  ConfigLoader(const ConfigLoader&) = default;
+  ConfigLoader& operator=(const ConfigLoader&) = default;
+
   // Replaces prior configuration. Failure empties config() and owns its
   // diagnostic until the next call. No transport or discovery is created.
   [[nodiscard]] base::Status Load(const char* path) noexcept;

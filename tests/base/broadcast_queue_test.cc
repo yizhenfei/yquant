@@ -1,10 +1,15 @@
 #include "yquant/base/broadcast_queue.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstring>
 #include <limits>
+#include <span>
 #include <thread>
 
 #include "base/internal/broadcast_layout.h"
@@ -27,7 +32,7 @@ class BroadcastQueueTest : public ::testing::Test {
   BroadcastHeader& header() {
     return *reinterpret_cast<BroadcastHeader*>(memory_.data());
   }
-  AtomicWord& slot(std::uint64_t sequence, std::size_t word = 0) {
+  AtomicWord& slot(uint64_t sequence, size_t word = 0) {
     const auto& layout = header().layout;
     return BroadcastSlot(memory_.data() + layout.slots_offset,
                          layout.slot_stride, layout.capacity, sequence, word);
@@ -48,11 +53,11 @@ TEST_F(BroadcastQueueTest, InitializationChecksSizesAndDoesNotMutateOnFailure) {
           .ok());
   EXPECT_EQ(memory_, before);
   EXPECT_FALSE(BroadcastQueue::RequiredBytes({0, 32}).status.ok());
-  EXPECT_FALSE(BroadcastQueue::RequiredBytes(
-                   {4, std::numeric_limits<std::size_t>::max()})
-                   .status.ok());
   EXPECT_FALSE(
-      BroadcastQueue::RequiredBytes({std::size_t{1} << 63, 32}).status.ok());
+      BroadcastQueue::RequiredBytes({4, std::numeric_limits<size_t>::max()})
+          .status.ok());
+  EXPECT_FALSE(
+      BroadcastQueue::RequiredBytes({size_t{1} << 63, 32}).status.ok());
 }
 
 TEST_F(BroadcastQueueTest, RejectsUntrustedLayoutBeforeAccessingAtomics) {
@@ -67,7 +72,7 @@ TEST_F(BroadcastQueueTest, RejectsUntrustedLayoutBeforeAccessingAtomics) {
   rejected();
   header().layout.bytes += 1;
   rejected();
-  header().layout.slot_stride = ~std::uint64_t{};
+  header().layout.slot_stride = ~uint64_t{};
   rejected();
   header().layout.slots_offset = 1;
   rejected();
@@ -75,7 +80,7 @@ TEST_F(BroadcastQueueTest, RejectsUntrustedLayoutBeforeAccessingAtomics) {
   rejected();
   header().layout.word_count += 1;
   rejected();
-  header().layout.max_record_size = ~std::uint64_t{};
+  header().layout.max_record_size = ~uint64_t{};
   rejected();
   header().layout.generation = {};
   rejected();
@@ -93,7 +98,7 @@ TEST_F(BroadcastQueueTest,
   BroadcastWriter writer;
   ASSERT_TRUE(writer.Attach(memory_).ok());
   const std::byte bytes[] = {std::byte{1}, std::byte{2}, std::byte{3}};
-  std::uint64_t sequence = 99;
+  uint64_t sequence = 99;
   ASSERT_TRUE(writer.TryWrite(bytes, &sequence).ok());
   EXPECT_EQ(sequence, 1U);
   BroadcastReader first, second, live;
@@ -162,7 +167,7 @@ TEST_F(BroadcastQueueTest, AttachAndWriteFailuresPreserveState) {
   BroadcastWriter writer;
   EXPECT_FALSE(writer.TryWrite({}).ok());
   ASSERT_TRUE(writer.Attach(memory_).ok());
-  std::uint64_t sequence = 99;
+  uint64_t sequence = 99;
   EXPECT_FALSE(writer.TryWrite(std::array<std::byte, 33>{}, &sequence).ok());
   EXPECT_FALSE(writer.TryWrite(std::span(memory_).first(1), &sequence).ok());
   EXPECT_EQ(sequence, 99U);
@@ -176,7 +181,7 @@ TEST_F(BroadcastQueueTest, FinishDrainsAndDetachTransfersWriterOwnership) {
   ASSERT_TRUE(writer.TryWrite({}).ok());
   writer.Detach();
   ASSERT_TRUE(writer.Attach(memory_).ok());
-  std::uint64_t sequence = 0;
+  uint64_t sequence = 0;
   ASSERT_TRUE(writer.TryWrite({}, &sequence).ok());
   EXPECT_EQ(sequence, 2U);
   ASSERT_TRUE(writer.Finish().ok());
@@ -202,7 +207,9 @@ TEST_F(BroadcastQueueTest, GapIsStickyAndTokensBelongToOneAttachSession) {
   ASSERT_TRUE(writer.Attach(memory_).ok());
   ASSERT_TRUE(reader.Attach(memory_, a).ok());
   ASSERT_TRUE(other.Attach(memory_, b).ok());
-  for (int i = 0; i < 8; ++i) ASSERT_TRUE(writer.TryWrite({}).ok());
+  for (int i = 0; i < 8; ++i) {
+    ASSERT_TRUE(writer.TryWrite({}).ok());
+  }
   const auto gap = reader.TryRead();
   ASSERT_EQ(gap.status, Read::kGap);
   ASSERT_TRUE(gap.gap);
@@ -210,7 +217,7 @@ TEST_F(BroadcastQueueTest, GapIsStickyAndTokensBelongToOneAttachSession) {
   EXPECT_EQ(gap.gap->resume_candidate, 2U);
   EXPECT_EQ(reader.TryRead().gap, gap.gap);
   EXPECT_EQ(other.TryRead().status, Read::kGap);
-  std::uint64_t sequence = 99;
+  uint64_t sequence = 99;
   EXPECT_FALSE(other.Resume(*gap.gap, sequence).ok());
   EXPECT_FALSE(
       reader.Resume(*gap.gap, sequence, BroadcastResumePosition::At(0)).ok());
@@ -264,9 +271,9 @@ TEST_F(BroadcastQueueTest, SequenceExhaustionDoesNotWrap) {
   header().published_sequence.store(kMaxBroadcastSequence - 1);
   BroadcastWriter writer;
   ASSERT_TRUE(writer.Attach(memory_).ok());
-  std::uint64_t sequence = 0;
+  uint64_t sequence = 0;
   ASSERT_TRUE(writer.TryWrite({}, &sequence).ok());
-  EXPECT_EQ(sequence, (std::uint64_t{1} << 63) - 1);
+  EXPECT_EQ(sequence, (uint64_t{1} << 63) - 1);
   EXPECT_EQ(writer.TryWrite({}).code, ErrorCode::kResourceExhausted);
   EXPECT_EQ(header().published_sequence.load(), sequence);
 }
@@ -277,7 +284,7 @@ TEST_F(BroadcastQueueTest, ConcurrentOverwriteNeverDeliversMixedRecord) {
   ASSERT_TRUE(writer.Attach(memory_).ok());
   std::atomic<bool> valid{true};
   std::atomic<unsigned> ready{0};
-  std::atomic<std::size_t> received{0};
+  std::atomic<size_t> received{0};
   const auto consume = [&] {
     BroadcastReader reader;
     std::array<std::byte, 257> scratch{};
@@ -290,32 +297,40 @@ TEST_F(BroadcastQueueTest, ConcurrentOverwriteNeverDeliversMixedRecord) {
     for (;;) {
       auto result = reader.TryRead({16});
       if (result.status == Read::kRecord) {
-        for (std::size_t i = 0; i < result.record.size(); ++i)
-          if (result.record[i] != std::byte((result.sequence + i) & 255))
+        for (size_t i = 0; i < result.record.size(); ++i) {
+          if (result.record[i] != std::byte((result.sequence + i) & 255)) {
             valid = false;
-        if (result.record.size() != 1 + result.sequence % 257) valid = false;
+          }
+        }
+        if (result.record.size() != 1 + result.sequence % 257) {
+          valid = false;
+        }
         ++received;
       } else if (result.status == Read::kGap) {
-        std::uint64_t sequence = 0;
+        uint64_t sequence = 0;
         if (!reader.Resume(*result.gap, sequence).ok()) {
           valid = false;
           return;
         }
-      } else if (result.status == Read::kEnd)
+      } else if (result.status == Read::kEnd) {
         return;
-      else if (result.status != Read::kRetry && result.status != Read::kEmpty) {
+      } else if (result.status != Read::kRetry &&
+                 result.status != Read::kEmpty) {
         valid = false;
         return;
       }
     }
   };
   std::thread first(consume), second(consume);
-  while (ready.load() != 2) std::this_thread::yield();
+  while (ready.load() != 2) {
+    std::this_thread::yield();
+  }
   std::array<std::byte, 257> record;
-  for (std::uint64_t sequence = 1; sequence <= 20000; ++sequence) {
+  for (uint64_t sequence = 1; sequence <= 20000; ++sequence) {
     const auto length = 1 + sequence % record.size();
-    for (std::size_t i = 0; i < length; ++i)
+    for (size_t i = 0; i < length; ++i) {
       record[i] = std::byte((sequence + i) & 255);
+    }
     ASSERT_TRUE(writer.TryWrite(std::span(record).first(length)).ok());
   }
   EXPECT_TRUE(writer.Finish().ok());

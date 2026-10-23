@@ -1,12 +1,13 @@
 #ifndef YQUANT_BASE_INTERNAL_JSON_CONFIG_PARSER_H_
 #define YQUANT_BASE_INTERNAL_JSON_CONFIG_PARSER_H_
 
-#include <simdjson.h>
+#include <stddef.h>
 
 #include <cstring>
 #include <span>
 #include <string_view>
 
+#include "simdjson.h"
 #include "yquant/base/config_error.h"
 #include "yquant/base/json_config_document.h"
 
@@ -52,7 +53,7 @@ namespace yquant::base::internal {
     simdjson::ondemand::document& document, simdjson::ondemand::object& root,
     ConfigError& error) noexcept {
   // Leave parser traversal room beyond the explicitly checked container depth.
-  constexpr std::size_t kParserDepth = kMaxConfigDepth + 4;
+  constexpr size_t kParserDepth = kMaxConfigDepth + 4;
   simdjson::error_code json_error =
       parser.allocate(source.source().size(), kParserDepth);
   if (json_error) {

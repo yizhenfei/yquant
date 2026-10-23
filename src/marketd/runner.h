@@ -1,8 +1,10 @@
 #ifndef YQUANT_MARKETD_RUNNER_H_
 #define YQUANT_MARKETD_RUNNER_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
-#include <cstdint>
 #include <memory>
 
 #include "marketd/config.h"
@@ -27,7 +29,7 @@ class MarketdRunner {
   // resources acquired by this attempt and preserves an owned diagnostic.
   // now uses the same process-relative clock later passed to Run().
   [[nodiscard]] base::Status Init(const MarketdConfig& config,
-                                  std::uint64_t now) noexcept;
+                                  uint64_t now) noexcept;
   // Requires successful Init. max_events=0 means unlimited; otherwise stops
   // after publishing exactly that many quotes to every output. Any source or
   // publisher failure terminates the pipeline. Replay EOF is a normal stop.
@@ -35,11 +37,11 @@ class MarketdRunner {
   // failures make otherwise normal exits fail.
   [[nodiscard]] base::Status Run(const base::MonotonicClock& clock,
                                  base::EventLoopEnvironment& environment,
-                                 std::uint64_t max_events = 0) noexcept;
+                                 uint64_t max_events = 0) noexcept;
   // Best-effort, idempotent cleanup; use Run to observe delayed output errors.
   // Preserves counters and existing failure diagnostics.
   void Close() noexcept;
-  std::uint64_t event_count() const noexcept { return event_count_; }
+  uint64_t event_count() const noexcept { return event_count_; }
   const char* error_stage() const noexcept { return error_stage_; }
   const char* error_detail() const noexcept { return error_detail_; }
 
@@ -53,8 +55,8 @@ class MarketdRunner {
 
   std::unique_ptr<Source> source_;
   std::array<std::unique_ptr<Publisher>, kMaxPublishers> publishers_;
-  std::size_t publisher_count_ = 0;
-  std::uint64_t event_count_ = 0;
+  size_t publisher_count_ = 0;
+  uint64_t event_count_ = 0;
   char error_stage_[64] = {};
   char error_detail_[768] = {};
 };

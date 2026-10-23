@@ -1,8 +1,10 @@
 #ifndef YQUANT_TRADINGD_MYSQL_ARCHIVE_STORE_H_
 #define YQUANT_TRADINGD_MYSQL_ARCHIVE_STORE_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <cstddef>
-#include <cstdint>
 #include <span>
 
 #include "tradingd/journal.h"
@@ -17,18 +19,18 @@ class ArchiveProjection;
 struct MysqlArchiveOptions {
   bool enabled = false;
   char host[256] = "127.0.0.1";
-  std::uint16_t port = 3306;
+  uint16_t port = 3306;
   char database[65] = {};
   char user[65] = {};
   char password_env[129] = {};
   char tls_ca[4097] = {};
-  std::uint32_t timeout_seconds = 2;
-  std::uint32_t batch_records = 256;
-  std::size_t batch_bytes = 1024 * 1024;
-  std::uint32_t poll_ms = 100;
-  std::uint32_t retry_ms = 1000;
-  std::uint32_t shutdown_ms = 5000;
-  std::uint64_t min_free_bytes = 64 * 1024 * 1024;
+  uint32_t timeout_seconds = 2;
+  uint32_t batch_records = 256;
+  size_t batch_bytes = 1024 * 1024;
+  uint32_t poll_ms = 100;
+  uint32_t retry_ms = 1000;
+  uint32_t shutdown_ms = 5000;
+  uint64_t min_free_bytes = 64 * 1024 * 1024;
 };
 
 // No progress exists before the first baseline transaction commits. A present
@@ -73,18 +75,18 @@ class MysqlArchiveStore {
   // history.
   [[nodiscard]] base::Status InstallRun(std::span<const std::byte> baseline,
                                         const ArchiveProjection& projection,
-                                        std::uint64_t previous_run,
-                                        std::uint64_t previous_end,
+                                        uint64_t previous_run,
+                                        uint64_t previous_end,
                                         bool history_gap) noexcept;
   // Inserts or checks an exact event fact. Requires projection after Replay;
   // records must follow locked progress continuously within one run.
   [[nodiscard]] base::Status AppendEvent(
-      std::uint16_t type, std::uint64_t lsn, std::span<const std::byte> payload,
+      uint16_t type, uint64_t lsn, std::span<const std::byte> payload,
       const ArchiveProjection& projection) noexcept;
   // Records a known final boundary under the existing progress lock. Repeated
   // calls accept only identical boundaries and never shorten archived history.
   [[nodiscard]] base::Status FinalizeRun(const ArchiveProjection& projection,
-                                         std::uint64_t final_lsn) noexcept;
+                                         uint64_t final_lsn) noexcept;
   // Publishes the supplied fully decoded projection and cursor, then commits.
   // A failed COMMIT is retryable with unknown outcome; reconnect and
   // GetProgress before replaying. Successful return alone acknowledges

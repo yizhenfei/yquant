@@ -1,6 +1,8 @@
+#include <stddef.h>
+#include <stdint.h>
+
 #include <algorithm>
 #include <array>
-#include <cstddef>
 #include <cstdlib>
 #include <new>
 #include <span>
@@ -17,19 +19,21 @@
 namespace {
 
 struct CppHeapActivity {
-  std::size_t allocation_calls = 0;
-  std::size_t deallocation_calls = 0;
+  size_t allocation_calls = 0;
+  size_t deallocation_calls = 0;
 };
 
-thread_local bool g_track_cpp_heap = false;
-thread_local CppHeapActivity g_cpp_heap_activity;
+constinit thread_local bool g_track_cpp_heap = false;
+constinit thread_local CppHeapActivity g_cpp_heap_activity;
 
 // This executable counts replacement C++ allocation/deallocation functions.
 // Direct calls to malloc, realloc, free, or OS mapping APIs are not counted.
-void* AllocateCppHeap(std::size_t size, std::size_t alignment,
+void* AllocateCppHeap(size_t size, size_t alignment,
                       bool abort_on_failure) noexcept {
-  if (g_track_cpp_heap) ++g_cpp_heap_activity.allocation_calls;
-  size = std::max<std::size_t>(size, 1);
+  if (g_track_cpp_heap) {
+    ++g_cpp_heap_activity.allocation_calls;
+  }
+  size = std::max<size_t>(size, 1);
   void* result = nullptr;
   if (alignment == 0) {
     result = std::malloc(size);
@@ -37,12 +41,16 @@ void* AllocateCppHeap(std::size_t size, std::size_t alignment,
                             size) != 0) {
     result = nullptr;
   }
-  if (result == nullptr && abort_on_failure) std::abort();
+  if (result == nullptr && abort_on_failure) {
+    std::abort();
+  }
   return result;
 }
 
 void DeallocateCppHeap(void* memory) noexcept {
-  if (g_track_cpp_heap) ++g_cpp_heap_activity.deallocation_calls;
+  if (g_track_cpp_heap) {
+    ++g_cpp_heap_activity.deallocation_calls;
+  }
   std::free(memory);
 }
 
@@ -57,47 +65,45 @@ CppHeapActivity ObserveCppHeap(Action&& action) noexcept {
 
 }  // namespace
 
-void* operator new(std::size_t size) { return AllocateCppHeap(size, 0, true); }
+void* operator new(size_t size) { return AllocateCppHeap(size, 0, true); }
 
-void* operator new[](std::size_t size) {
-  return AllocateCppHeap(size, 0, true);
-}
+void* operator new[](size_t size) { return AllocateCppHeap(size, 0, true); }
 
-void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
+void* operator new(size_t size, const std::nothrow_t&) noexcept {
   return AllocateCppHeap(size, 0, false);
 }
 
-void* operator new[](std::size_t size, const std::nothrow_t&) noexcept {
+void* operator new[](size_t size, const std::nothrow_t&) noexcept {
   return AllocateCppHeap(size, 0, false);
 }
 
-void* operator new(std::size_t size, std::align_val_t alignment) {
-  return AllocateCppHeap(size, static_cast<std::size_t>(alignment), true);
+void* operator new(size_t size, std::align_val_t alignment) {
+  return AllocateCppHeap(size, static_cast<size_t>(alignment), true);
 }
 
-void* operator new[](std::size_t size, std::align_val_t alignment) {
-  return AllocateCppHeap(size, static_cast<std::size_t>(alignment), true);
+void* operator new[](size_t size, std::align_val_t alignment) {
+  return AllocateCppHeap(size, static_cast<size_t>(alignment), true);
 }
 
-void* operator new(std::size_t size, std::align_val_t alignment,
+void* operator new(size_t size, std::align_val_t alignment,
                    const std::nothrow_t&) noexcept {
-  return AllocateCppHeap(size, static_cast<std::size_t>(alignment), false);
+  return AllocateCppHeap(size, static_cast<size_t>(alignment), false);
 }
 
-void* operator new[](std::size_t size, std::align_val_t alignment,
+void* operator new[](size_t size, std::align_val_t alignment,
                      const std::nothrow_t&) noexcept {
-  return AllocateCppHeap(size, static_cast<std::size_t>(alignment), false);
+  return AllocateCppHeap(size, static_cast<size_t>(alignment), false);
 }
 
 void operator delete(void* memory) noexcept { DeallocateCppHeap(memory); }
 
 void operator delete[](void* memory) noexcept { DeallocateCppHeap(memory); }
 
-void operator delete(void* memory, std::size_t) noexcept {
+void operator delete(void* memory, size_t) noexcept {
   DeallocateCppHeap(memory);
 }
 
-void operator delete[](void* memory, std::size_t) noexcept {
+void operator delete[](void* memory, size_t) noexcept {
   DeallocateCppHeap(memory);
 }
 
@@ -117,11 +123,11 @@ void operator delete[](void* memory, std::align_val_t) noexcept {
   DeallocateCppHeap(memory);
 }
 
-void operator delete(void* memory, std::size_t, std::align_val_t) noexcept {
+void operator delete(void* memory, size_t, std::align_val_t) noexcept {
   DeallocateCppHeap(memory);
 }
 
-void operator delete[](void* memory, std::size_t, std::align_val_t) noexcept {
+void operator delete[](void* memory, size_t, std::align_val_t) noexcept {
   DeallocateCppHeap(memory);
 }
 
@@ -140,8 +146,8 @@ namespace {
 
 class TradingHeapClock final : public base::MonotonicClock {
  public:
-  std::uint64_t Now() const noexcept override { return now; }
-  std::uint64_t now = 0;
+  uint64_t Now() const noexcept override { return now; }
+  uint64_t now = 0;
 };
 
 // Runs accepted requests, idle checks, normalized reports and callback-side
@@ -150,18 +156,18 @@ const char* ExerciseOrders(trading::TradingEngine& trading,
                            trading::MockTradingAdapter& adapter,
                            TradingHeapClock& clock,
                            model::InstrumentId instrument, bool cancel,
-                           bool sell, std::size_t& fill_count) noexcept {
-  constexpr std::size_t kOrders = 128;
-  constexpr std::int64_t kUnitCash = 10010000;
-  constexpr std::int64_t kReservation = kUnitCash * 201;
+                           bool sell, size_t& fill_count) noexcept {
+  constexpr size_t kOrders = 128;
+  constexpr int64_t kUnitCash = 10010000;
+  constexpr int64_t kReservation = kUnitCash * 201;
   model::CashSnapshot initial_cash;
   model::PositionSnapshot initial_position;
   if (!trading.TryGetCash(initial_cash) ||
       !trading.TryGetPosition(instrument, initial_position)) {
     return "configured account was not queryable";
   }
-  std::int64_t filled_qty = 0;
-  for (std::size_t count = 0; count < kOrders; ++count) {
+  int64_t filled_qty = 0;
+  for (size_t count = 0; count < kOrders; ++count) {
     model::CashSnapshot before_cash;
     model::PositionSnapshot before_position;
     if (!trading.TryGetCash(before_cash) ||
@@ -203,7 +209,7 @@ const char* ExerciseOrders(trading::TradingEngine& trading,
       return "accepted request was not sent";
     }
     bool finished = false;
-    for (std::size_t step = 0; step < 6; ++step) {
+    for (size_t step = 0; step < 6; ++step) {
       const auto deadline = adapter.next_deadline();
       if (!deadline || *deadline <= clock.Now()) {
         return "mock did not schedule a future event";
@@ -348,7 +354,7 @@ void CheckTradingHeap(bool cancel, bool sell = false) {
                        : trading::MockTradingMode::kFill;
   config.initial_account = account;
   ASSERT_TRUE(trading.Init(config, market_config).ok());
-  std::size_t fills = 0;
+  size_t fills = 0;
   const char* failure = nullptr;
   const auto activity = ObserveCppHeap([&]() noexcept {
     failure = ExerciseOrders(trading, adapter, clock, item.instrument.id,
@@ -396,9 +402,9 @@ TEST(TradingCppHeapTest, UnifiedRuntimePollingHasNoCppHeapActivity) {
   config.initial_account.cash_balance = 1000000000000000;
   ASSERT_TRUE(runtime.Init(config, dictionary).ok());
   bool succeeded = true;
-  std::size_t fills = 0;
+  size_t fills = 0;
   const auto activity = ObserveCppHeap([&]() noexcept {
-    for (std::size_t count = 0; count < 128 && succeeded; ++count) {
+    for (size_t count = 0; count < 128 && succeeded; ++count) {
       runtime.SetAcceptingRequests(true);
       model::ClientOrderId id;
       succeeded =
@@ -406,8 +412,8 @@ TEST(TradingCppHeapTest, UnifiedRuntimePollingHasNoCppHeapActivity) {
                               id) == base::ErrorCode::kOk;
       runtime.SetAcceptingRequests(false);
       succeeded = succeeded && runtime.ProcessRequests(clock.Now()).ok();
-      for (std::size_t polls = 0;
-           polls < 3 && succeeded && !runtime.is_drained(); ++polls) {
+      for (size_t polls = 0; polls < 3 && succeeded && !runtime.is_drained();
+           ++polls) {
         const auto deadline = runtime.next_deadline();
         if (!deadline) {
           succeeded = false;
@@ -417,7 +423,9 @@ TEST(TradingCppHeapTest, UnifiedRuntimePollingHasNoCppHeapActivity) {
         trading::TradingDispatch dispatch;
         bool event = false;
         succeeded = runtime.Poll(clock.Now(), dispatch, event).ok() && event;
-        if (dispatch.has_fill) ++fills;
+        if (dispatch.has_fill) {
+          ++fills;
+        }
       }
       succeeded = succeeded && runtime.is_drained();
     }
@@ -434,25 +442,30 @@ const char* ExerciseFuturesOrder(TradingEngine& trading,
                                  SimulatedFuturesExchange& exchange,
                                  TradingHeapClock& clock,
                                  const model::OrderRequest& request,
-                                 bool cancel, std::size_t& fills) noexcept {
+                                 bool cancel, size_t& fills) noexcept {
   model::ClientOrderId id;
   trading.SetAcceptingRequests(true);
   const auto submitted = trading.SubmitOrder(request, id);
   trading.SetAcceptingRequests(false);
   if (submitted != base::ErrorCode::kOk ||
-      !trading.ProcessRequests(clock.Now()).ok())
+      !trading.ProcessRequests(clock.Now()).ok()) {
     return "futures request failed";
-  for (std::size_t step = 0; step != 8; ++step) {
+  }
+  for (size_t step = 0; step != 8; ++step) {
     const auto deadline = exchange.next_deadline();
-    if (!deadline) return "futures exchange lost a pending event";
+    if (!deadline) {
+      return "futures exchange lost a pending event";
+    }
     clock.now = std::max(clock.now, *deadline);
     TradingEvent event;
     const auto polled = exchange.Poll(clock.Now(), event);
-    if (!polled.status.ok() || polled.state != TradingPollState::kEvent)
+    if (!polled.status.ok() || polled.state != TradingPollState::kEvent) {
       return "futures exchange failed to publish a due event";
+    }
     TradingDispatch dispatch;
-    if (trading.ApplyEvent(event, dispatch) != base::ErrorCode::kOk)
+    if (trading.ApplyEvent(event, dispatch) != base::ErrorCode::kOk) {
       return "futures ledger rejected a valid report";
+    }
     trading.SetAcceptingRequests(true);
     model::OrderSnapshot order;
     model::FuturesAccountSnapshot account;
@@ -460,12 +473,14 @@ const char* ExerciseFuturesOrder(TradingEngine& trading,
     if (!trading.TryGetOrder(id, order) ||
         !trading.TryGetFuturesAccount(account) ||
         !trading.TryGetFuturesPosition(request.instrument_id, position) ||
-        order != dispatch.update.order)
+        order != dispatch.update.order) {
       return "futures callback query differs from committed facts";
+    }
     if (cancel && order.state == model::OrderState::kWorking &&
         !order.cancel_pending &&
-        trading.CancelOrder(id) != base::ErrorCode::kOk)
+        trading.CancelOrder(id) != base::ErrorCode::kOk) {
       return "futures cancel request failed";
+    }
     trading.SetAcceptingRequests(false);
     if (dispatch.has_fill) {
       trading.SetAcceptingRequests(true);
@@ -473,21 +488,26 @@ const char* ExerciseFuturesOrder(TradingEngine& trading,
           trading.TryGetFuturesAccount(account) &&
           trading.TryGetFuturesPosition(request.instrument_id, position);
       trading.SetAcceptingRequests(false);
-      if (!queried || dispatch.fill.position_effect != request.position_effect)
+      if (!queried ||
+          dispatch.fill.position_effect != request.position_effect) {
         return "futures fill did not preserve its effect or account";
+      }
       ++fills;
     }
     TradingDispatch duplicate;
     if (trading.ApplyEvent(event, duplicate) != base::ErrorCode::kOk ||
-        duplicate.has_fill || duplicate.notify_order)
+        duplicate.has_fill || duplicate.notify_order) {
       return "duplicate futures report was applied twice";
+    }
     if (!trading.ProcessRequests(clock.Now()).ok() ||
-        !trading.TryGetOrder(id, order))
+        !trading.TryGetOrder(id, order)) {
       return "futures post-callback request or query failed";
+    }
     if (model::IsTerminalOrderState(order.state) && !order.cancel_pending) {
-      if (order.state !=
-          (cancel ? model::OrderState::kCanceled : model::OrderState::kFilled))
+      if (order.state != (cancel ? model::OrderState::kCanceled
+                                 : model::OrderState::kFilled)) {
         return "futures order terminated in the wrong state";
+      }
       return nullptr;
     }
   }
@@ -500,45 +520,53 @@ const char* ExerciseFuturesOrder(TradingEngine& trading,
 const char* ExerciseFutures(TradingEngine& trading,
                             SimulatedFuturesExchange& exchange,
                             TradingHeapClock& clock, model::InstrumentId id,
-                            std::size_t& fills) noexcept {
+                            size_t& fills) noexcept {
   model::QuoteTick quote;
   quote.source_id = {1};
   quote.instrument_id = id;
   quote.bid_qty = quote.ask_qty = 10;
-  quote.flags = static_cast<std::uint8_t>(model::QuoteFlag::kBidValid) |
-                static_cast<std::uint8_t>(model::QuoteFlag::kAskValid) |
-                static_cast<std::uint8_t>(model::QuoteFlag::kTradable);
-  for (std::size_t round = 0; round != 128; ++round) {
+  quote.flags = static_cast<uint8_t>(model::QuoteFlag::kBidValid) |
+                static_cast<uint8_t>(model::QuoteFlag::kAskValid) |
+                static_cast<uint8_t>(model::QuoteFlag::kTradable);
+  for (size_t round = 0; round != 128; ++round) {
     quote.sequence = 2 * round + 1;
     quote.bid_price = 100;
     quote.ask_price = 101;
     quote.receive_time_ns = clock.Now();
     if (trading.ApplyQuote(quote) != base::ErrorCode::kOk ||
-        !exchange.OnQuote(quote, clock.Now()).ok())
+        !exchange.OnQuote(quote, clock.Now()).ok()) {
       return "opening quote failed";
+    }
     const auto opened = ExerciseFuturesOrder(
         trading, exchange, clock,
         {id, model::OrderSide::kBuy, 101, 2, model::PositionEffect::kOpen},
         false, fills);
-    if (opened != nullptr) return opened;
+    if (opened != nullptr) {
+      return opened;
+    }
     quote.sequence = 2 * round + 2;
     quote.bid_price = 102;
     quote.ask_price = 103;
     quote.receive_time_ns = clock.Now();
     if (trading.ApplyQuote(quote) != base::ErrorCode::kOk ||
-        !exchange.OnQuote(quote, clock.Now()).ok())
+        !exchange.OnQuote(quote, clock.Now()).ok()) {
       return "closing mark/quote failed";
+    }
     const auto closed =
         ExerciseFuturesOrder(trading, exchange, clock,
                              {id, model::OrderSide::kSell, 102, 2,
                               model::PositionEffect::kCloseToday},
                              false, fills);
-    if (closed != nullptr) return closed;
+    if (closed != nullptr) {
+      return closed;
+    }
     const auto canceled = ExerciseFuturesOrder(
         trading, exchange, clock,
         {id, model::OrderSide::kBuy, 100, 1, model::PositionEffect::kOpen},
         true, fills);
-    if (canceled != nullptr) return canceled;
+    if (canceled != nullptr) {
+      return canceled;
+    }
     model::FuturesAccountSnapshot account;
     model::FuturesPositionSnapshot position;
     if (!trading.TryGetFuturesAccount(account) ||
@@ -546,10 +574,10 @@ const char* ExerciseFutures(TradingEngine& trading,
         account.margin != 0 || account.unrealized_pnl != 0 ||
         position.long_today.quantity != 0 ||
         position.short_today.quantity != 0 ||
-        account.realized_pnl !=
-            static_cast<std::int64_t>(round + 1) * 20000000 ||
-        account.commission != static_cast<std::int64_t>(round + 1) * 10000000)
+        account.realized_pnl != static_cast<int64_t>(round + 1) * 20000000 ||
+        account.commission != static_cast<int64_t>(round + 1) * 10000000) {
       return "futures round did not settle FIFO, margin and fees";
+    }
   }
   return trading.is_drained() && exchange.is_drained()
              ? nullptr
@@ -587,7 +615,7 @@ TEST(TradingCppHeapTest, FuturesFifoAndExchangeHotPathsHaveNoCppHeapActivity) {
   TradingEngine trading(clock, market, exchange);
   ASSERT_TRUE(trading.Init(config, market_config).ok());
   const char* failure = nullptr;
-  std::size_t fills = 0;
+  size_t fills = 0;
   const auto activity = ObserveCppHeap([&]() noexcept {
     failure =
         ExerciseFutures(trading, exchange, clock, item.instrument.id, fills);

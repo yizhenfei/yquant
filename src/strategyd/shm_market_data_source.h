@@ -1,8 +1,10 @@
 #ifndef YQUANT_STRATEGYD_SHM_MARKET_DATA_SOURCE_H_
 #define YQUANT_STRATEGYD_SHM_MARKET_DATA_SOURCE_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
-#include <cstdint>
 #include <optional>
 #include <span>
 
@@ -12,7 +14,7 @@
 namespace yquant::strategyd {
 
 // Discovery and heartbeat inspection interval: 250 ms in host nanoseconds.
-inline constexpr std::uint64_t kShmHealthCheckIntervalNs = 250000000;
+inline constexpr uint64_t kShmHealthCheckIntervalNs = 250000000;
 
 // Receives subscribed quotes from a shared-memory broadcast stream. Prepare
 // copies configuration; Start attaches at Live after subscription registration.
@@ -24,6 +26,10 @@ inline constexpr std::uint64_t kShmHealthCheckIntervalNs = 250000000;
 // subscriptions. Stop releases the reader and preserves failure diagnostics.
 class ShmMarketDataSource final : public MarketDataSource {
  public:
+  ShmMarketDataSource() = default;
+  ShmMarketDataSource(const ShmMarketDataSource&) = delete;
+  ShmMarketDataSource& operator=(const ShmMarketDataSource&) = delete;
+
   // Validates and copies an adapter=shm configuration without attaching. May
   // succeed only once; failure leaves state and stored configuration unchanged.
   [[nodiscard]] base::Status Prepare(
@@ -33,14 +39,14 @@ class ShmMarketDataSource final : public MarketDataSource {
   // attaches and schedules health checks, but has no quote-polling deadline.
   [[nodiscard]] base::Status Start(
       std::span<const model::InstrumentId> subscriptions,
-      std::uint64_t now) noexcept override;
+      uint64_t now) noexcept override;
   // Sets delivered receive_time_ns to now. Empty reads defer the next attempt
   // by poll_interval_ns; retry or exhausted scan budgets remain immediately
   // eligible but yield the current host batch. Terminal failures are retained
   // for later Poll and Service calls until Stop; non-events preserve out.
   [[nodiscard]] MarketDataPollResult Poll(
-      std::uint64_t now, model::QuoteTick& out) noexcept override;
-  std::optional<std::uint64_t> next_deadline() const noexcept override {
+      uint64_t now, model::QuoteTick& out) noexcept override;
+  std::optional<uint64_t> next_deadline() const noexcept override {
     return deadline_;
   }
   bool is_poll_driven() const noexcept override { return true; }
@@ -48,8 +54,8 @@ class ShmMarketDataSource final : public MarketDataSource {
   // replacement generation fails immediately. Missing, stale, or stopped
   // publishers make Poll eligible; it reports health failure only when a read
   // yields no event, allowing retained quotes to be delivered first.
-  [[nodiscard]] base::Status Service(std::uint64_t now) noexcept override;
-  std::optional<std::uint64_t> next_service_deadline() const noexcept override {
+  [[nodiscard]] base::Status Service(uint64_t now) noexcept override;
+  std::optional<uint64_t> next_service_deadline() const noexcept override {
     return service_deadline_;
   }
   // Closes the reader and clears polling/maintenance deadlines. Repeated calls
@@ -74,11 +80,10 @@ class ShmMarketDataSource final : public MarketDataSource {
   md::ShmReader reader_;
   md::EventBuffer buffer_;
   // Populated prefix is the subscription selection copied at Start.
-  std::array<std::uint64_t, md::kMaxMarketDataInstruments> instruments_{};
-  std::size_t instrument_count_ = 0;
-  std::optional<std::uint64_t> deadline_;  // Absolute quote-poll time, or idle.
-  std::optional<std::uint64_t>
-      service_deadline_;  // Absolute health-check time.
+  std::array<uint64_t, md::kMaxMarketDataInstruments> instruments_{};
+  size_t instrument_count_ = 0;
+  std::optional<uint64_t> deadline_;  // Absolute quote-poll time, or idle.
+  std::optional<uint64_t> service_deadline_;  // Absolute health-check time.
   md::RefreshResult
       health_;  // Last observation; Poll drains before reporting it.
   base::Status terminal_status_;  // Non-OK while state_ is kFailed.

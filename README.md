@@ -70,7 +70,7 @@ YQuant 是一个支持多策略运行的低延迟量化交易系统，使用 C++
 
 ## 构建与测试
 
-需要 CMake 3.21 或更高版本、Ninja 和支持 C++20 的编译器。日志依赖 fmt，配置解析依赖 simdjson，测试依赖 GoogleTest；依赖由 CMake 获取固定版本，项目及依赖均以无异常配置构建。
+需要 CMake 3.21 或更高版本、Ninja 和支持 C++20 的编译器。类型检查的文本格式化与日志依赖 fmt，配置解析依赖 simdjson，测试依赖 GoogleTest；依赖由 CMake 获取固定版本，项目及依赖均以无异常配置构建。
 
 ```sh
 cmake --preset debug
@@ -91,6 +91,16 @@ cmake -P cmake/DownloadTestData.cmake
 当前数据集是 [DolphinDB 股票回放样本](https://github.com/dolphindb/Tutorials_CN/blob/master/stock_market_replay.md)中的快照文件，保存为 `test_data/dolphindb/2020-12-31/snapshot.csv`。实际文件包含 2020-12-31 的 100 只深市 A 股、367,171 条十档盘口快照，买卖一价量字段为 `BidPX1`、`BidSize1`、`OfferPX1`、`OfferSize1`。下载来源与归档、CSV 的 SHA256 固定在 `cmake/TestDataManifest.cmake`；已有归档可用于离线恢复缺失或损坏的 CSV。
 
 日志接口位于 `yquant/base/logging.h`。Debug 默认编译保留 DEBUG 及以上级别，其他构建保留 INFO 及以上；可在配置时使用 `-DYQUANT_LOG_COMPILED_LEVEL=TRACE` 等选项调整。
+
+### 编码规范检查
+
+C++ 代码遵循 [C++ 编码规范](docs/coding-styles.md)。使用 clang-format 23.1.3；格式配置由仓库根目录的 `.clang-format` 维护。提交前执行：
+
+```sh
+python3 scripts/check_cpp_style.py
+```
+
+CTest 的 `Project.HeaderSelfContainment` 使用编译数据库逐个检查项目头文件能否独立编译。生产代码与测试均使用 `yquant/base/path.h` 和 `yquant/base/file.h` 中的路径及文件操作；定长缓冲区格式化和标准流输出使用 `yquant/base/format.h`，保留显式错误返回。
 
 ### 路径解析
 

@@ -1,4 +1,5 @@
-#include <cstdint>
+#include <stdint.h>
+
 #include <new>
 #include <string_view>
 
@@ -25,8 +26,8 @@ ErrorCode ParseError(simdjson::error_code result, std::string_view path,
 
 class ParameterizedConfig final : public StrategyConfig {
  public:
-  std::int64_t quote_qty() const noexcept { return quote_qty_; }
-  std::int64_t max_position() const noexcept { return max_position_; }
+  int64_t quote_qty() const noexcept { return quote_qty_; }
+  int64_t max_position() const noexcept { return max_position_; }
 
  protected:
   ErrorCode LoadParameters(std::string_view parameters_json,
@@ -54,8 +55,8 @@ class ParameterizedConfig final : public StrategyConfig {
       return ParseError(result, "", error);
     }
 
-    std::int64_t quote_qty = 0;
-    std::int64_t max_position = 0;
+    int64_t quote_qty = 0;
+    int64_t max_position = 0;
     bool has_quote_qty = false;
     bool has_max_position = false;
     for (const auto field : object) {
@@ -110,8 +111,8 @@ class ParameterizedConfig final : public StrategyConfig {
   }
 
  private:
-  std::int64_t quote_qty_ = 0;
-  std::int64_t max_position_ = 0;
+  int64_t quote_qty_ = 0;
+  int64_t max_position_ = 0;
 };
 
 class ParameterizedStrategy final : public Strategy {
@@ -158,10 +159,9 @@ ErrorCode CreateStrategy(Strategy*& output) noexcept {
 
 void DestroyStrategy(Strategy* strategy) noexcept { delete strategy; }
 
-const StrategyPlugin kPlugin = {
-    yquant::strategy::kStrategyPluginAbiVersion,
-    static_cast<std::uint32_t>(sizeof(StrategyPlugin)), CreateStrategy,
-    DestroyStrategy};
+const StrategyPlugin kPlugin = {yquant::strategy::kStrategyPluginAbiVersion,
+                                static_cast<uint32_t>(sizeof(StrategyPlugin)),
+                                CreateStrategy, DestroyStrategy};
 
 }  // namespace
 

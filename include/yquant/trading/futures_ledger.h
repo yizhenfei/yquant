@@ -1,7 +1,7 @@
 #ifndef YQUANT_TRADING_FUTURES_LEDGER_H_
 #define YQUANT_TRADING_FUTURES_LEDGER_H_
 
-#include <cstdint>
+#include <stdint.h>
 
 #include "yquant/base/status.h"
 #include "yquant/md/instrument_scope.h"
@@ -17,8 +17,8 @@ namespace yquant::trading {
 // through FuturesLedger; definitive cancellation releases it, uncertain sends
 // retain it. Closing quantities freeze the selected direction/day bucket.
 struct FuturesReservation {
-  std::int64_t quantity = 0;
-  std::int64_t cash = 0;
+  int64_t quantity = 0;
+  int64_t cash = 0;
 };
 
 // Single-thread simulated futures account with bounded FIFO opening fills.

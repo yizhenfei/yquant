@@ -17,7 +17,9 @@ class ScopedWorkingDirectory {
   }
   ~ScopedWorkingDirectory() {
     if (original_ >= 0) {
-      if (valid_) EXPECT_EQ(::fchdir(original_), 0);
+      if (valid_) {
+        EXPECT_EQ(::fchdir(original_), 0);
+      }
       ::close(original_);
     }
   }

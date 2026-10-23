@@ -1,7 +1,8 @@
 #ifndef YQUANT_BASE_EVENT_LOOP_ENVIRONMENT_H_
 #define YQUANT_BASE_EVENT_LOOP_ENVIRONMENT_H_
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <optional>
 
 #include "yquant/base/status.h"
@@ -26,7 +27,7 @@ class EventLoopEnvironment {
   // it does not itself mean that stopping was requested. Zero permits an
   // immediate return. Failures are reported without invoking loop callbacks.
   [[nodiscard]] virtual Status Wait(
-      std::optional<std::uint64_t> timeout_ns) noexcept = 0;
+      std::optional<uint64_t> timeout_ns) noexcept = 0;
 };
 
 }  // namespace yquant::base

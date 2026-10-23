@@ -1,8 +1,10 @@
 #ifndef YQUANT_TRADING_TRADING_PERSISTENCE_H_
 #define YQUANT_TRADING_TRADING_PERSISTENCE_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <cstddef>
-#include <cstdint>
 #include <span>
 
 #include "yquant/trading/trading_adapter.h"
@@ -11,7 +13,7 @@ namespace yquant::trading {
 
 // Each fact describes one validated ledger transition. Sending is represented
 // by a fact committed before the external call, so replay never sends again.
-enum class TradingMutationKind : std::uint8_t {
+enum class TradingMutationKind : uint8_t {
   kNewOrder = 1,
   kCancel,
   kSendNew,
@@ -25,8 +27,8 @@ enum class TradingMutationKind : std::uint8_t {
 // event for kReport are used; IDs identify the expected affected request.
 struct TradingMutation {
   TradingMutationKind kind = TradingMutationKind::kNewOrder;
-  std::uint64_t revision = 0;
-  std::uint64_t now = 0;
+  uint64_t revision = 0;
+  uint64_t now = 0;
   model::ClientOrderId order_id;
   model::CancelRequestId cancel_id;
   model::OrderRequest request;
@@ -45,15 +47,15 @@ class TradingMutationSink {
       const TradingMutation& mutation) noexcept = 0;
 };
 
-inline constexpr std::size_t kMaxEncodedTradingMutation = 1024;
-inline constexpr std::size_t kMaxTradingCheckpointBytes = 4 * 1024 * 1024;
+inline constexpr size_t kMaxEncodedTradingMutation = 1024;
+inline constexpr size_t kMaxTradingCheckpointBytes = 4 * 1024 * 1024;
 
 // Explicit versioned little-endian encoding; no native layouts or padding.
 // Encode failure preserves size; decode failure preserves out. Neither
 // operation allocates. The enclosing journal/checkpoint supplies its checksum.
 [[nodiscard]] base::Status EncodeTradingMutation(
     const TradingMutation& mutation, std::span<std::byte> bytes,
-    std::size_t& size) noexcept;
+    size_t& size) noexcept;
 [[nodiscard]] base::Status DecodeTradingMutation(
     std::span<const std::byte> bytes, TradingMutation& out) noexcept;
 

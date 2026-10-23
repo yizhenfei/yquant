@@ -1,3 +1,5 @@
+#include <stdint.h>
+
 #include <chrono>
 #include <cstring>
 #include <functional>
@@ -14,8 +16,8 @@ using trading::MessageType;
 
 class RemoteClock final : public base::MonotonicClock {
  public:
-  std::uint64_t Now() const noexcept override { return now; }
-  std::uint64_t now = 1000;
+  uint64_t Now() const noexcept override { return now; }
+  uint64_t now = 1000;
 };
 
 // A real loopback stream whose handshake is served on a temporary thread;
@@ -59,17 +61,24 @@ class TradingServiceImplTest : public ::testing::Test {
           std::chrono::steady_clock::now() + std::chrono::seconds(2);
       bool accepted = false;
       while (!accepted && std::chrono::steady_clock::now() < deadline) {
-        if (!listener.Accept(peer, accepted).ok()) return;
+        if (!listener.Accept(peer, accepted).ok()) {
+          return;
+        }
         std::this_thread::yield();
       }
-      if (!accepted) return;
+      if (!accepted) {
+        return;
+      }
       trading::Message hello;
       for (;;) {
         const auto polled = peer.Poll(hello);
-        if (polled.state == trading::ReceiveState::kMessage) break;
+        if (polled.state == trading::ReceiveState::kMessage) {
+          break;
+        }
         if (polled.state != trading::ReceiveState::kIdle ||
-            std::chrono::steady_clock::now() >= deadline)
+            std::chrono::steady_clock::now() >= deadline) {
           return;
+        }
         std::this_thread::yield();
       }
       EXPECT_EQ(hello.instrument_count, 2U);
@@ -80,9 +89,13 @@ class TradingServiceImplTest : public ::testing::Test {
       welcome.account = account;
       welcome.instruments = hello.instruments;
       welcome.instrument_count = hello.instrument_count;
-      if (!peer.Queue(welcome).ok()) return;
+      if (!peer.Queue(welcome).ok()) {
+        return;
+      }
       while (!peer.empty() && std::chrono::steady_clock::now() < deadline) {
-        if (!peer.Service().ok()) return;
+        if (!peer.Service().ok()) {
+          return;
+        }
         std::this_thread::yield();
       }
     });
@@ -91,7 +104,7 @@ class TradingServiceImplTest : public ::testing::Test {
     ASSERT_TRUE(initialized.ok()) << remote.error_detail();
   }
 
-  model::ClientOrderId Submit(std::int64_t quantity = 10) {
+  model::ClientOrderId Submit(int64_t quantity = 10) {
     model::ClientOrderId id;
     remote.SetAcceptingRequests(true);
     EXPECT_EQ(remote.SubmitOrder(
@@ -109,8 +122,12 @@ class TradingServiceImplTest : public ::testing::Test {
         std::chrono::steady_clock::now() + std::chrono::seconds(1);
     while (std::chrono::steady_clock::now() < deadline) {
       const auto polled = peer.Poll(message);
-      if (polled.state == trading::ReceiveState::kMessage) return message;
-      if (polled.state != trading::ReceiveState::kIdle) break;
+      if (polled.state == trading::ReceiveState::kMessage) {
+        return message;
+      }
+      if (polled.state != trading::ReceiveState::kIdle) {
+        break;
+      }
       std::this_thread::yield();
     }
     ADD_FAILURE() << "peer received no complete message";
@@ -128,8 +145,10 @@ class TradingServiceImplTest : public ::testing::Test {
         std::chrono::steady_clock::now() + std::chrono::seconds(1);
     for (;;) {
       auto status = remote.Poll(clock.now, dispatch, event);
-      if (!status.ok() || event || std::chrono::steady_clock::now() >= deadline)
+      if (!status.ok() || event ||
+          std::chrono::steady_clock::now() >= deadline) {
         return status;
+      }
       std::this_thread::yield();
     }
   }
@@ -142,7 +161,9 @@ class TradingServiceImplTest : public ::testing::Test {
     for (;;) {
       bool message_event = event;
       const auto status = remote.Poll(clock.now, dispatch, message_event);
-      if (!status.ok()) return status;
+      if (!status.ok()) {
+        return status;
+      }
       if (remote.next_deadline() == clock.now) {
         event = message_event;
         return status;
@@ -197,7 +218,7 @@ class TradingServiceImplTest : public ::testing::Test {
   trading::AccountView account;
   model::InstrumentId instrument;
   model::InstrumentId futures_instrument;
-  static constexpr std::uint64_t generation = 77;
+  static constexpr uint64_t generation = 77;
 };
 
 class BrokerTradingServiceImplTest : public TradingServiceImplTest {

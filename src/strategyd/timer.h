@@ -1,7 +1,8 @@
 #ifndef YQUANT_STRATEGYD_TIMER_H_
 #define YQUANT_STRATEGYD_TIMER_H_
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <optional>
 
 #include "strategyd/market_data.h"
@@ -15,6 +16,10 @@ namespace yquant::strategyd {
 // timer operations allocate no memory and never invoke callbacks themselves.
 class TimerImpl final : public strategy::Timer {
  public:
+  TimerImpl() = default;
+  TimerImpl(const TimerImpl&) = delete;
+  TimerImpl& operator=(const TimerImpl&) = delete;
+
   // Enables or suspends consumption without changing an armed deadline. The
   // runner enables it after startup; BeginStopping permanently closes mutation
   // and consumption until Reset.
@@ -30,24 +35,23 @@ class TimerImpl final : public strategy::Timer {
   // Restores an unarmed pre-start state. Call only outside strategy callbacks.
   void Reset() noexcept;
 
-  [[nodiscard]] base::ErrorCode Arm(
-      std::uint64_t deadline_ns) noexcept override;
+  [[nodiscard]] base::ErrorCode Arm(uint64_t deadline_ns) noexcept override;
   [[nodiscard]] base::ErrorCode Cancel() noexcept override;
-  std::optional<std::uint64_t> deadline() const noexcept override {
+  std::optional<uint64_t> deadline() const noexcept override {
     return deadline_;
   }
 
   // Consumes a due notification outside callbacks while running. Uses absolute
   // monotonic now; success disarms the timer and overwrites out with its
   // deadline and actual dispatch time. False preserves out and timer state.
-  [[nodiscard]] bool TryTakeDue(std::uint64_t now,
+  [[nodiscard]] bool TryTakeDue(uint64_t now,
                                 strategy::TimerEvent& out) noexcept;
 
  private:
   // Returns whether the current lifecycle and callback phase allow mutation.
   bool CanChange() const noexcept;
 
-  std::optional<std::uint64_t> deadline_;  // Absolute nanoseconds, or unarmed.
+  std::optional<uint64_t> deadline_;  // Absolute nanoseconds, or unarmed.
   bool running_ = false;
   bool stopping_ = false;
   strategy::CallbackPhase phase_ = strategy::CallbackPhase::kNone;

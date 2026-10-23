@@ -1,5 +1,7 @@
 #include "marketd/recording.h"
 
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -8,30 +10,36 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
-#include <filesystem>
 #include <span>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
+#include "file_test_support.h"
 #include "gtest/gtest.h"
 #include "test_support.h"
+#include "yquant/base/format.h"
 
 namespace yquant::marketd {
 namespace {
 
-RecordConfig Config(const std::string& path, std::size_t capacity = 1 << 20) {
+RecordConfig Config(const std::string& path, size_t capacity = 1 << 20) {
   RecordConfig config;
-  std::snprintf(config.path, sizeof(config.path), "%s", path.c_str());
+  ::yquant::base::FormatTo(config.path, sizeof(config.path), "{}",
+                           path.c_str());
   config.queue_capacity = capacity;
   return config;
 }
 
 std::vector<std::byte> ReadBytes(const std::string& path) {
   FILE* file = std::fopen(path.c_str(), "rb");
-  if (file == nullptr) return {};
+  if (file == nullptr) {
+    return {};
+  }
   if (std::fseek(file, 0, SEEK_END) != 0) {
     std::fclose(file);
     return {};
@@ -41,45 +49,53 @@ std::vector<std::byte> ReadBytes(const std::string& path) {
     std::fclose(file);
     return {};
   }
-  std::vector<std::byte> bytes(static_cast<std::size_t>(size));
+  std::vector<std::byte> bytes(static_cast<size_t>(size));
   const bool complete =
       std::fread(bytes.data(), 1, bytes.size(), file) == bytes.size();
   std::fclose(file);
-  if (!complete) bytes.clear();
+  if (!complete) {
+    bytes.clear();
+  }
   return bytes;
 }
 
 bool WriteBytes(const std::string& path, std::span<const std::byte> bytes) {
   FILE* file = std::fopen(path.c_str(), "wb");
-  if (file == nullptr) return false;
+  if (file == nullptr) {
+    return false;
+  }
   const bool complete =
       std::fwrite(bytes.data(), 1, bytes.size(), file) == bytes.size();
   return std::fclose(file) == 0 && complete;
 }
 
-void Store64(std::span<std::byte> bytes, std::uint64_t value) {
-  for (std::size_t i = 0; i < 8; ++i) {
+void Store64(std::span<std::byte> bytes, uint64_t value) {
+  for (size_t i = 0; i < 8; ++i) {
     bytes[i] = static_cast<std::byte>(value & 0xff);
     value >>= 8;
   }
 }
 
 void RepairChecksum(std::span<std::byte> bytes) {
-  std::uint64_t value = 14695981039346656037ULL;
+  uint64_t value = 14695981039346656037ULL;
   for (const auto byte : bytes.first(bytes.size() - 8)) {
-    value ^= std::to_integer<std::uint8_t>(byte);
+    value ^= std::to_integer<uint8_t>(byte);
     value *= 1099511628211ULL;
   }
   Store64(bytes.last(8), value);
 }
 
-bool CreateRecording(const std::string& path, std::size_t count = 3) {
+bool CreateRecording(const std::string& path, size_t count = 3) {
   RecordPublisher publisher;
-  if (!publisher.Init(Config(path)).ok()) return false;
-  for (std::size_t i = 0; i < count; ++i) {
+  if (!publisher.Init(Config(path)).ok()) {
+    return false;
+  }
+  for (size_t i = 0; i < count; ++i) {
     auto quote = testing::Quote(i + 1);
     quote.receive_time_ns = 1000 + i * 100;
-    if (!publisher.Publish(quote).ok()) return false;
+    if (!publisher.Publish(quote).ok()) {
+      return false;
+    }
   }
   return publisher.Finish().ok();
 }
@@ -90,7 +106,7 @@ TEST(RecordingTest, FinishDrainsAllFramesAndPreservesQuoteMetadata) {
   const auto path = directory.File("quotes.yqr");
   RecordPublisher publisher;
   ASSERT_TRUE(publisher.Init(Config(path)).ok());
-  for (std::size_t i = 0; i < 1000; ++i) {
+  for (size_t i = 0; i < 1000; ++i) {
     auto quote = testing::Quote(i + 1);
     quote.receive_time_ns = 1000 + i * 100;
     ASSERT_TRUE(publisher.Publish(quote).ok()) << publisher.error_detail();
@@ -105,7 +121,7 @@ TEST(RecordingTest, FinishDrainsAllFramesAndPreservesQuoteMetadata) {
   ASSERT_TRUE(LoadRecordingFile(path.c_str(), 1000, data, detail).ok())
       << detail.data();
   ASSERT_EQ(data.size(), 1000U);
-  for (std::size_t i = 0; i < data.size(); ++i) {
+  for (size_t i = 0; i < data.size(); ++i) {
     auto expected = testing::Quote(i + 1);
     expected.receive_time_ns = 0;
     EXPECT_EQ(data[i].quote, expected);
@@ -141,11 +157,14 @@ TEST(RecordingTest, FinishUsesTheOpenedParentDirectoryAfterRename) {
   const auto original = directory.File("original");
   const auto moved = directory.File("moved");
   std::error_code error;
-  ASSERT_TRUE(std::filesystem::create_directory(original, error));
+  ASSERT_TRUE(::yquant::testing::files::CreateDirectory(
+      ::yquant::testing::files::FilePath(original), error));
   ASSERT_FALSE(error);
   RecordPublisher publisher;
   ASSERT_TRUE(publisher.Init(Config(original + "/quotes.yqr")).ok());
-  std::filesystem::rename(original, moved, error);
+  ::yquant::testing::files::Rename(::yquant::testing::files::FilePath(original),
+                                   ::yquant::testing::files::FilePath(moved),
+                                   error);
   ASSERT_FALSE(error);
   ASSERT_TRUE(publisher.Publish(testing::Quote()).ok());
   ASSERT_TRUE(publisher.Finish().ok()) << publisher.error_detail();
@@ -200,14 +219,22 @@ TEST(RecordingTest, CorruptFilesPreservePreviousReplayData) {
     SCOPED_TRACE(mutation);
     auto bytes = original;
     auto header = std::span(bytes).first(64);
-    if (mutation == 0) bytes.resize(10);
-    if (mutation == 1) bytes.pop_back();
-    if (mutation == 2) bytes.push_back(std::byte{0});
+    if (mutation == 0) {
+      bytes.resize(10);
+    }
+    if (mutation == 1) {
+      bytes.pop_back();
+    }
+    if (mutation == 2) {
+      bytes.push_back(std::byte{0});
+    }
     if (mutation == 3) {
       bytes[24] = std::byte{0};  // Unsealed, with a valid header checksum.
       RepairChecksum(header);
     }
-    if (mutation == 4) bytes[0] ^= std::byte{1};
+    if (mutation == 4) {
+      bytes[0] ^= std::byte{1};
+    }
     if (mutation == 5) {
       bytes[8] = std::byte{2};
       RepairChecksum(header);
@@ -216,8 +243,12 @@ TEST(RecordingTest, CorruptFilesPreservePreviousReplayData) {
       bytes[28] = std::byte{1};
       RepairChecksum(header);
     }
-    if (mutation == 7) bytes[56] ^= std::byte{1};
-    if (mutation == 8) bytes[64 + 8 + 40] ^= std::byte{1};
+    if (mutation == 7) {
+      bytes[56] ^= std::byte{1};
+    }
+    if (mutation == 8) {
+      bytes[64 + 8 + 40] ^= std::byte{1};
+    }
     if (mutation == 9) {
       bytes[64 + 8 + 8] = std::byte{0};  // Invalid zero source_id.
       RepairChecksum(std::span(bytes).subspan(64, 96));
@@ -283,14 +314,15 @@ struct IoControl {
   int sync_calls = 0;
   bool fail_close = false;
   bool interrupt_once = false;
-  std::size_t short_write = 0;
+  size_t short_write = 0;
 
   static ssize_t Write(void* context, int fd, const void* data,
-                       std::size_t size) noexcept {
+                       size_t size) noexcept {
     auto& control = *static_cast<IoControl*>(context);
     control.entered.store(true, std::memory_order_release);
-    while (control.blocked.load(std::memory_order_acquire))
+    while (control.blocked.load(std::memory_order_acquire)) {
       std::this_thread::yield();
+    }
     if (control.interrupt_once) {
       control.interrupt_once = false;
       errno = EINTR;
@@ -300,7 +332,9 @@ struct IoControl {
       errno = ENOSPC;
       return -1;
     }
-    if (control.short_write != 0) size = std::min(size, control.short_write);
+    if (control.short_write != 0) {
+      size = std::min(size, control.short_write);
+    }
     return ::write(fd, data, size);
   }
 
@@ -328,7 +362,9 @@ struct IoControl {
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (!entered.load(std::memory_order_acquire)) {
-      if (std::chrono::steady_clock::now() >= deadline) return false;
+      if (std::chrono::steady_clock::now() >= deadline) {
+        return false;
+      }
       std::this_thread::yield();
     }
     return true;
@@ -346,7 +382,9 @@ TEST(RecordingTest, QueueFullIsReportedAndRecordingRemainsUnsealed) {
   ASSERT_TRUE(publisher.Init(Config(path, 256), &hooks).ok());
   ASSERT_TRUE(publisher.Publish(testing::Quote()).ok());
   const bool entered = control.WaitForWrite();
-  if (!entered) control.blocked.store(false);
+  if (!entered) {
+    control.blocked.store(false);
+  }
   ASSERT_TRUE(entered);
   const auto second = publisher.Publish(testing::Quote(2));
   const auto third = publisher.Publish(testing::Quote(3));

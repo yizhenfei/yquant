@@ -1,34 +1,45 @@
 #include "yquant/trading/ctp_trading_adapter.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <new>
+#include <optional>
 #include <thread>
+#include <utility>
 
+#include "yquant/base/format.h"
 #include "yquant/trading/connection.h"
 
 namespace yquant::trading {
 namespace {
 
 // Poll the local bridge without making an idle adapter retain a due deadline.
-constexpr std::uint64_t kPollIntervalNs = 1000000;
+constexpr uint64_t kPollIntervalNs = 1000000;
 // Runtime heartbeats continue while the broker completes account queries.
-constexpr std::uint64_t kHeartbeatIntervalNs = 250000000;
-constexpr std::size_t kReceiveBudget = 16;
+constexpr uint64_t kHeartbeatIntervalNs = 250000000;
+constexpr size_t kReceiveBudget = 16;
 
-std::uint64_t After(std::uint64_t now, std::uint64_t interval) noexcept {
+uint64_t After(uint64_t now, uint64_t interval) noexcept {
   return interval > UINT64_MAX - now ? UINT64_MAX : now + interval;
 }
 
 bool SameAccount(const BrokerAccountSnapshot& a,
                  const BrokerAccountSnapshot& b) noexcept {
-  if (a.account != b.account || a.position_count != b.position_count)
+  if (a.account != b.account || a.position_count != b.position_count) {
     return false;
-  for (std::size_t i = 0; i < a.position_count; ++i)
-    if (a.positions[i] != b.positions[i]) return false;
+  }
+  for (size_t i = 0; i < a.position_count; ++i) {
+    if (a.positions[i] != b.positions[i]) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -38,7 +49,7 @@ struct CtpTradingAdapter::Storage {
   struct Order {
     model::ClientOrderId id;
     model::OrderRequest request;
-    std::uint64_t sequence = 0;
+    uint64_t sequence = 0;
     bool active = true;
     bool cancel_pending = false;
   };
@@ -46,11 +57,11 @@ struct CtpTradingAdapter::Storage {
   Connection connection;
   BrokerAccountSnapshot account;
   std::array<Order, kMaxTradingOrders> orders{};
-  std::size_t order_count = 0;
-  std::uint64_t generation = 0;
-  std::uint64_t poll_at = 0;
-  std::uint64_t last_receive = 0;
-  std::uint64_t last_send = 0;
+  size_t order_count = 0;
+  uint64_t generation = 0;
+  uint64_t poll_at = 0;
+  uint64_t last_receive = 0;
+  uint64_t last_send = 0;
   bool started = false;
   bool clock_started = false;
   bool stopping = false;
@@ -61,13 +72,19 @@ struct CtpTradingAdapter::Storage {
   // Client order IDs may be sparse; this bounded cold-sized table owns them
   // until the gateway session ends. No order identity is reused.
   Order* Find(model::ClientOrderId id) noexcept {
-    for (std::size_t i = 0; i < order_count; ++i)
-      if (orders[i].id == id) return &orders[i];
+    for (size_t i = 0; i < order_count; ++i) {
+      if (orders[i].id == id) {
+        return &orders[i];
+      }
+    }
     return nullptr;
   }
   bool LocalDrained() const noexcept {
-    for (std::size_t i = 0; i < order_count; ++i)
-      if (orders[i].active || orders[i].cancel_pending) return false;
+    for (size_t i = 0; i < order_count; ++i) {
+      if (orders[i].active || orders[i].cancel_pending) {
+        return false;
+      }
+    }
     return connection.empty();
   }
 };
@@ -79,92 +96,118 @@ CtpTradingAdapter::~CtpTradingAdapter() noexcept { (void)Stop(); }
 
 base::Status CtpTradingAdapter::Fail(base::ErrorCode code,
                                      const char* detail) noexcept {
-  if (storage_ && !storage_->failure.ok()) return storage_->failure;
-  std::snprintf(error_detail_, sizeof(error_detail_), "%s", detail);
+  if (storage_ && !storage_->failure.ok()) {
+    return storage_->failure;
+  }
+  ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_), "{}", detail);
   const base::Status status{code, {}};
-  if (storage_) storage_->failure = status;
+  if (storage_) {
+    storage_->failure = status;
+  }
   return status;
 }
 
 base::Status CtpTradingAdapter::Prepare(const TradingConfig& config) noexcept {
-  if (storage_)
+  if (storage_) {
     return Fail(base::ErrorCode::kInvalidState,
                 "CTP bridge adapter is already prepared");
+  }
   base::ConfigError error;
   const auto valid = ValidateTradingConfig(config, error);
-  if (!valid.ok() || config.adapter != TradingAdapterKind::kCtp)
+  if (!valid.ok() || config.adapter != TradingAdapterKind::kCtp) {
     return Fail(base::ErrorCode::kInvalidArgument,
                 "CTP bridge requires a valid ctp broker configuration");
-  if (instruments_.size() == 0 || instruments_.size() > kMaxInstruments)
+  }
+  if (instruments_.size() == 0 || instruments_.size() > kMaxInstruments) {
     return Fail(base::ErrorCode::kInvalidArgument,
                 "CTP bridge requires a configured futures instrument scope");
-  for (std::size_t i = 0; i < instruments_.size(); ++i)
-    if (instruments_[i].type != model::InstrumentType::kFutures)
+  }
+  for (size_t i = 0; i < instruments_.size(); ++i) {
+    if (instruments_[i].type != model::InstrumentType::kFutures) {
       return Fail(base::ErrorCode::kInvalidArgument,
                   "CTP bridge only supports futures instruments");
+    }
+  }
   auto storage = std::unique_ptr<Storage>(new (std::nothrow) Storage);
-  if (!storage)
+  if (!storage) {
     return Fail(base::ErrorCode::kResourceExhausted,
                 "cannot allocate CTP bridge storage");
+  }
   storage->config = config.ctp;
   storage_ = std::move(storage);
   error_detail_[0] = '\0';
   return {};
 }
 
-base::Status CtpTradingAdapter::Start(std::uint64_t) noexcept {
-  if (!storage_ || storage_->started)
+base::Status CtpTradingAdapter::Start(uint64_t) noexcept {
+  if (!storage_ || storage_->started) {
     return Fail(base::ErrorCode::kInvalidState,
                 "CTP bridge must be prepared and started only once");
+  }
   auto& s = *storage_;
-  if (!s.failure.ok()) return s.failure;
+  if (!s.failure.ok()) {
+    return s.failure;
+  }
   Endpoint endpoint;
   std::memcpy(endpoint.address, s.config.address, sizeof(endpoint.address));
   endpoint.port = s.config.port;
   auto status = s.connection.Connect(endpoint, s.config.connect_timeout_ns);
-  if (!status.ok()) return Fail(status.code, s.connection.error_detail());
+  if (!status.ok()) {
+    return Fail(status.code, s.connection.error_detail());
+  }
   Message hello;
   hello.type = MessageType::kHello;
   hello.client_id = 1;
   std::memcpy(hello.token, s.config.token, sizeof(hello.token));
   hello.instrument_count = instruments_.size();
-  for (std::size_t i = 0; i < instruments_.size(); ++i)
+  for (size_t i = 0; i < instruments_.size(); ++i) {
     hello.instruments[i] = {instruments_[i].id, instruments_[i].price_decimals};
+  }
   status = s.connection.Queue(hello);
-  if (!status.ok()) return Fail(status.code, s.connection.error_detail());
+  if (!status.ok()) {
+    return Fail(status.code, s.connection.error_detail());
+  }
   const auto deadline = std::chrono::steady_clock::now() +
                         std::chrono::nanoseconds(s.config.connect_timeout_ns);
   while (std::chrono::steady_clock::now() < deadline) {
     Message incoming;
     const auto received = s.connection.Poll(incoming);
     if (received.state == ReceiveState::kError ||
-        received.state == ReceiveState::kClosed)
+        received.state == ReceiveState::kClosed) {
       return Fail(base::ErrorCode::kIoError,
                   "CTP bridge closed before completing broker initialization");
+    }
     if (received.state == ReceiveState::kIdle) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
       continue;
     }
-    if (incoming.type == MessageType::kHeartbeat) continue;
-    if (incoming.type == MessageType::kError)
+    if (incoming.type == MessageType::kHeartbeat) {
+      continue;
+    }
+    if (incoming.type == MessageType::kError) {
       return Fail(incoming.error_code, incoming.reason.text);
+    }
     if (incoming.type != MessageType::kWelcome || incoming.generation == 0 ||
         !incoming.account.broker_managed ||
         incoming.account.type != model::AccountType::kFutures ||
         incoming.account.revision == 0 ||
-        incoming.instrument_count != instruments_.size())
+        incoming.instrument_count != instruments_.size()) {
       return Fail(base::ErrorCode::kCorrupt,
                   "CTP bridge welcome has an invalid account or scope");
-    for (std::size_t i = 0; i < instruments_.size(); ++i) {
-      std::size_t matches = 0;
-      for (std::size_t j = 0; j < incoming.instrument_count; ++j)
+    }
+    for (size_t i = 0; i < instruments_.size(); ++i) {
+      size_t matches = 0;
+      for (size_t j = 0; j < incoming.instrument_count; ++j) {
         if (incoming.instruments[j].id == instruments_[i].id &&
             incoming.instruments[j].price_decimals ==
-                instruments_[i].price_decimals)
+                instruments_[i].price_decimals) {
           ++matches;
-      if (matches != 1)
+        }
+      }
+      if (matches != 1) {
         return Fail(base::ErrorCode::kCorrupt,
                     "CTP bridge instrument dictionary differs from gateway");
+      }
     }
     s.account.revision = incoming.account.revision;
     s.account.account = incoming.account.futures;
@@ -185,29 +228,36 @@ base::Status CtpTradingAdapter::ReadAccountSnapshot(
 
 base::Status CtpTradingAdapter::ReadBrokerAccountSnapshot(
     BrokerAccountSnapshot& out) noexcept {
-  if (!storage_ || !storage_->started || !storage_->failure.ok())
+  if (!storage_ || !storage_->started || !storage_->failure.ok()) {
     return {base::ErrorCode::kInvalidState, {}};
+  }
   out = storage_->account;
   return {};
 }
 
 base::Status CtpTradingAdapter::SendOrder(model::ClientOrderId id,
                                           const model::OrderRequest& request,
-                                          std::uint64_t now) noexcept {
-  if (!storage_ || !storage_->started || !storage_->failure.ok())
+                                          uint64_t now) noexcept {
+  if (!storage_ || !storage_->started || !storage_->failure.ok()) {
     return {base::ErrorCode::kInvalidState, {}};
+  }
   auto& s = *storage_;
-  if (s.stopping) return {base::ErrorCode::kInvalidState, {}};
-  if (s.Find(id) != nullptr || s.order_count == s.orders.size())
+  if (s.stopping) {
+    return {base::ErrorCode::kInvalidState, {}};
+  }
+  if (s.Find(id) != nullptr || s.order_count == s.orders.size()) {
     return Fail(base::ErrorCode::kResourceExhausted,
                 "CTP bridge order identity is duplicate or capacity exhausted");
+  }
   Message message;
   message.type = MessageType::kNewOrder;
   message.generation = s.generation;
   message.order_id = id;
   message.request = request;
   const auto status = s.connection.Queue(message);
-  if (!status.ok()) return Fail(status.code, s.connection.error_detail());
+  if (!status.ok()) {
+    return Fail(status.code, s.connection.error_detail());
+  }
   auto& order = s.orders[s.order_count++];
   order.id = id;
   order.request = request;
@@ -217,14 +267,16 @@ base::Status CtpTradingAdapter::SendOrder(model::ClientOrderId id,
 
 base::Status CtpTradingAdapter::SendCancel(
     model::ClientOrderId id, const model::BrokerOrderId& broker_order_id,
-    model::CancelRequestId cancel_request_id, std::uint64_t now) noexcept {
-  if (!storage_ || !storage_->started || !storage_->failure.ok())
+    model::CancelRequestId cancel_request_id, uint64_t now) noexcept {
+  if (!storage_ || !storage_->started || !storage_->failure.ok()) {
     return {base::ErrorCode::kInvalidState, {}};
+  }
   auto& s = *storage_;
   auto* order = s.Find(id);
-  if (order == nullptr || order->cancel_pending)
+  if (order == nullptr || order->cancel_pending) {
     return Fail(base::ErrorCode::kInvalidState,
                 "CTP cancel has no known order or is already outstanding");
+  }
   Message message;
   message.type = MessageType::kCancelOrder;
   message.generation = s.generation;
@@ -232,20 +284,27 @@ base::Status CtpTradingAdapter::SendCancel(
   message.cancel_id = cancel_request_id;
   message.broker_order_id = broker_order_id;
   const auto status = s.connection.Queue(message);
-  if (!status.ok()) return Fail(status.code, s.connection.error_detail());
+  if (!status.ok()) {
+    return Fail(status.code, s.connection.error_detail());
+  }
   order->cancel_pending = true;
   s.last_send = now;
   return {};
 }
 
-TradingPollResult CtpTradingAdapter::Poll(std::uint64_t now,
+TradingPollResult CtpTradingAdapter::Poll(uint64_t now,
                                           TradingEvent& out) noexcept {
-  if (!storage_ || !storage_->started)
+  if (!storage_ || !storage_->started) {
     return {TradingPollState::kError,
             Fail(base::ErrorCode::kInvalidState, "CTP bridge is not started")};
+  }
   auto& s = *storage_;
-  if (!s.failure.ok()) return {TradingPollState::kError, s.failure};
-  if (s.bridge_drained) return {};
+  if (!s.failure.ok()) {
+    return {TradingPollState::kError, s.failure};
+  }
+  if (s.bridge_drained) {
+    return {};
+  }
   if (!s.clock_started) {
     s.last_receive = s.last_send = now;
     s.clock_started = true;
@@ -256,15 +315,17 @@ TradingPollResult CtpTradingAdapter::Poll(std::uint64_t now,
     stop.type = MessageType::kStop;
     stop.generation = s.generation;
     const auto status = s.connection.Queue(stop);
-    if (!status.ok())
+    if (!status.ok()) {
       return {TradingPollState::kError,
               Fail(status.code, s.connection.error_detail())};
+    }
     s.stop_sent = true;
     s.last_send = now;
   }
-  if (now - s.last_receive >= s.config.heartbeat_timeout_ns)
+  if (now - s.last_receive >= s.config.heartbeat_timeout_ns) {
     return {TradingPollState::kError,
             Fail(base::ErrorCode::kIoError, "CTP bridge heartbeat timed out")};
+  }
   // Once Stop is sent the bridge may finish and close at any time. Keep
   // reading its final account/Drained frames without racing a new write
   // against that expected close. Stop itself refreshed the peer deadline.
@@ -273,54 +334,66 @@ TradingPollResult CtpTradingAdapter::Poll(std::uint64_t now,
     heartbeat.type = MessageType::kHeartbeat;
     heartbeat.generation = s.generation;
     const auto status = s.connection.Queue(heartbeat);
-    if (!status.ok())
+    if (!status.ok()) {
       return {TradingPollState::kError,
               Fail(status.code, s.connection.error_detail())};
+    }
     s.last_send = now;
   }
-  for (std::size_t i = 0; i < kReceiveBudget; ++i) {
+  for (size_t i = 0; i < kReceiveBudget; ++i) {
     Message message;
     const auto result = s.connection.Poll(message);
-    if (result.state == ReceiveState::kIdle) return {};
+    if (result.state == ReceiveState::kIdle) {
+      return {};
+    }
     if (result.state == ReceiveState::kError ||
-        result.state == ReceiveState::kClosed)
+        result.state == ReceiveState::kClosed) {
       return {TradingPollState::kError,
               Fail(base::ErrorCode::kIoError,
                    "CTP bridge disconnected; outstanding requests need "
                    "reconciliation")};
+    }
     s.last_receive = now;
-    if (message.generation != s.generation)
+    if (message.generation != s.generation) {
       return {TradingPollState::kError,
               Fail(base::ErrorCode::kCorrupt, "CTP bridge generation changed")};
-    if (message.type == MessageType::kHeartbeat) continue;
+    }
+    if (message.type == MessageType::kHeartbeat) {
+      continue;
+    }
     if (message.type == MessageType::kDrained) {
-      if (!s.stop_sent || !s.LocalDrained())
+      if (!s.stop_sent || !s.LocalDrained()) {
         return {TradingPollState::kError,
                 Fail(base::ErrorCode::kCorrupt,
                      "CTP bridge drained before local orders settled")};
+      }
       s.bridge_drained = true;
       return {};
     }
-    if (message.type == MessageType::kError)
+    if (message.type == MessageType::kError) {
       return {TradingPollState::kError,
               Fail(message.error_code, message.reason.text)};
+    }
     if ((message.type != MessageType::kOrderUpdate &&
          message.type != MessageType::kAccount) ||
         !message.account.broker_managed ||
         message.account.type != model::AccountType::kFutures ||
-        message.account.revision == 0)
+        message.account.revision == 0) {
       return {TradingPollState::kError,
               Fail(base::ErrorCode::kCorrupt, "unexpected CTP bridge message")};
+    }
     BrokerAccountSnapshot next;
     next.revision = message.account.revision;
     next.account = message.account.futures;
     next.positions = message.account.futures_positions;
     next.position_count = message.account.futures_position_count;
     if (next.revision < s.account.revision ||
-        (next.revision == s.account.revision && !SameAccount(next, s.account)))
+        (next.revision == s.account.revision &&
+         !SameAccount(next, s.account))) {
       return {TradingPollState::kError,
               Fail(base::ErrorCode::kCorrupt,
                    "CTP broker account revision regressed")};
+    }
     if (message.type == MessageType::kAccount) {
       s.account = next;
       return {TradingPollState::kAccount, {}};
@@ -332,10 +405,11 @@ TradingPollResult CtpTradingAdapter::Poll(std::uint64_t now,
         update.order.side != order->request.side ||
         update.order.limit_price != order->request.limit_price ||
         update.order.original_qty != order->request.quantity ||
-        update.order.position_effect != order->request.position_effect)
+        update.order.position_effect != order->request.position_effect) {
       return {
           TradingPollState::kError,
           Fail(base::ErrorCode::kCorrupt, "CTP report order identity differs")};
+    }
     TradingEvent event;
     event.client_order_id = update.order.client_order_id;
     event.broker_order_id = update.order.broker_order_id;
@@ -361,31 +435,39 @@ TradingPollResult CtpTradingAdapter::Poll(std::uint64_t now,
   return {};
 }
 
-std::optional<std::uint64_t> CtpTradingAdapter::next_deadline() const noexcept {
+std::optional<uint64_t> CtpTradingAdapter::next_deadline() const noexcept {
   if (!storage_ || !storage_->started || !storage_->failure.ok() ||
-      storage_->bridge_drained)
+      storage_->bridge_drained) {
     return {};
+  }
   return storage_->clock_started ? storage_->poll_at : 0;
 }
 
 bool CtpTradingAdapter::is_drained() const noexcept {
-  if (!storage_) return true;
+  if (!storage_) {
+    return true;
+  }
   return storage_->LocalDrained() &&
          (!storage_->stopping || storage_->bridge_drained);
 }
 
 void CtpTradingAdapter::BeginStopping() noexcept {
-  if (storage_) storage_->stopping = true;
+  if (storage_) {
+    storage_->stopping = true;
+  }
 }
 
 base::Status CtpTradingAdapter::Stop() noexcept {
-  if (!storage_) return {};
+  if (!storage_) {
+    return {};
+  }
   auto& s = *storage_;
   auto status = s.failure;
-  if (s.started && status.ok() && !is_drained())
+  if (s.started && status.ok() && !is_drained()) {
     status =
         Fail(base::ErrorCode::kInvalidState,
              "CTP bridge stopped before orders/account drain confirmation");
+  }
   s.connection.Close();
   storage_.reset();
   return status;

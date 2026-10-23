@@ -2,6 +2,8 @@
 
 #include <fcntl.h>
 #include <poll.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -12,10 +14,12 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <cstddef>
 #include <cstring>
-#include <filesystem>
 #include <limits>
+#include <span>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -24,13 +28,12 @@
 #include "base/internal/shared_memory_mapping.h"
 #include "base/internal/shm_broadcast_layout.h"
 #include "base/internal/shm_stream_registry.h"
+#include "file_test_support.h"
 #include "gtest/gtest.h"
 #include "md/internal/event_codec.h"
 
 namespace yquant::md {
 namespace {
-
-using namespace std::chrono_literals;
 
 class ShmBroadcastTest : public ::testing::Test {
  protected:
@@ -44,13 +47,16 @@ class ShmBroadcastTest : public ::testing::Test {
 
   void TearDown() override {
     auto stale = base::internal::Discover(endpoint_);
-    if (stale) ::shm_unlink(stale->shm_name.c_str());
+    if (stale) {
+      ::shm_unlink(stale->shm_name.c_str());
+    }
     std::error_code ignored;
-    std::filesystem::remove_all(endpoint_.runtime_directory, ignored);
+    ::yquant::testing::files::RemoveTree(
+        ::yquant::testing::files::FilePath(endpoint_.runtime_directory),
+        ignored);
   }
 
-  ShmPublisher Publisher(std::size_t capacity = 8,
-                         std::size_t max_payload_size = 64) {
+  ShmPublisher Publisher(size_t capacity = 8, size_t max_payload_size = 64) {
     ShmPublisher publisher;
     EXPECT_TRUE(publisher.Create({endpoint_, capacity, max_payload_size}).ok());
     return publisher;
@@ -67,9 +73,9 @@ class ShmBroadcastTest : public ::testing::Test {
 
 // Fixed deterministic bytes expose mixed copies during an overlapping
 // overwrite.
-std::vector<std::byte> Payload(std::uint64_t value, std::size_t size = 32) {
+std::vector<std::byte> Payload(uint64_t value, size_t size = 32) {
   std::vector<std::byte> bytes(size);
-  for (std::size_t i = 0; i < size; ++i) {
+  for (size_t i = 0; i < size; ++i) {
     const auto word =
         value * 0x9e3779b97f4a7c15ULL + (i / 8) * 0x517cc1b727220a95ULL;
     bytes[i] = std::byte((word >> (8 * (i % 8))) & 0xff);
@@ -77,17 +83,17 @@ std::vector<std::byte> Payload(std::uint64_t value, std::size_t size = 32) {
   return bytes;
 }
 
-EventHeader Header(std::uint64_t sequence, std::uint64_t instrument = 42,
-                   std::uint32_t type = 7,
+EventHeader Header(uint64_t sequence, uint64_t instrument = 42,
+                   uint32_t type = 7,
                    EventScope scope = EventScope::kBusiness) {
   return {13, instrument, sequence * 1000, sequence, type, scope, true};
 }
 
-void Publish(ShmPublisher& publisher, std::uint64_t value,
-             std::uint64_t instrument = 42, std::uint32_t type = 7,
-             EventScope scope = EventScope::kBusiness, std::size_t size = 32) {
+void Publish(ShmPublisher& publisher, uint64_t value, uint64_t instrument = 42,
+             uint32_t type = 7, EventScope scope = EventScope::kBusiness,
+             size_t size = 32) {
   const auto bytes = Payload(value, size);
-  std::uint64_t sequence = 0;
+  uint64_t sequence = 0;
   ASSERT_TRUE(
       publisher
           .Publish({Header(value, instrument, type, scope), bytes}, &sequence)
@@ -95,8 +101,7 @@ void Publish(ShmPublisher& publisher, std::uint64_t value,
   EXPECT_EQ(sequence, value);
 }
 
-void ExpectEvent(ShmReader& reader, EventBuffer& buffer,
-                 std::uint64_t sequence) {
+void ExpectEvent(ShmReader& reader, EventBuffer& buffer, uint64_t sequence) {
   const auto result = reader.TryNext(buffer);
   ASSERT_EQ(result.status, ReadStatus::kEvent);
   EXPECT_EQ(result.sequence, sequence);
@@ -135,7 +140,7 @@ class Pipe {
 // Child-side GoogleTest failures become a nonzero exit status in the parent.
 class Child {
  public:
-  template <class Function>
+  template <typename Function>
   explicit Child(Function function) {
     pid_ = ::fork();
     EXPECT_GE(pid_, 0);
@@ -154,7 +159,8 @@ class Child {
   }
   void Kill() { ASSERT_EQ(::kill(pid_, SIGKILL), 0); }
   int Wait() {
-    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (std::chrono::steady_clock::now() < deadline) {
       int status = 0;
       const auto result = ::waitpid(pid_, &status, WNOHANG);
@@ -162,8 +168,10 @@ class Child {
         pid_ = -1;
         return status;
       }
-      if (result < 0 && errno != EINTR) break;
-      std::this_thread::sleep_for(1ms);
+      if (result < 0 && errno != EINTR) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     ADD_FAILURE() << "child wait timed out";
     return -1;
@@ -209,7 +217,7 @@ TEST_F(ShmBroadcastTest, DeliversEveryEventInStreamOrder) {
   Publish(publisher, 6, 42, 7);
   auto reader = Reader();
   EventBuffer buffer;
-  for (std::uint64_t sequence = 1; sequence <= 6; ++sequence) {
+  for (uint64_t sequence = 1; sequence <= 6; ++sequence) {
     ExpectEvent(reader, buffer, sequence);
     EXPECT_EQ(reader.next_sequence(), sequence + 1);
   }
@@ -219,7 +227,7 @@ TEST_F(ShmBroadcastTest, DeliversEveryEventInStreamOrder) {
 TEST_F(ShmBroadcastTest, PublicationErrorsAndUnchangedReadBuffer) {
   auto publisher = Publisher(8, 32);
   const auto bytes = Payload(1, 33);
-  std::uint64_t sequence = 999;
+  uint64_t sequence = 999;
   EXPECT_EQ(publisher.Publish({Header(1), bytes}, &sequence).code,
             base::ErrorCode::kResourceExhausted);
   EXPECT_EQ(sequence, 999);
@@ -244,7 +252,7 @@ TEST_F(ShmBroadcastTest, PublicationErrorsAndUnchangedReadBuffer) {
 TEST_F(ShmBroadcastTest, OverrunAndExplicitRecovery) {
   auto publisher = Publisher(4);
   auto reader = Reader();
-  for (std::uint64_t sequence = 1; sequence <= 8; ++sequence) {
+  for (uint64_t sequence = 1; sequence <= 8; ++sequence) {
     Publish(publisher, sequence);
   }
   EventBuffer buffer;
@@ -256,7 +264,7 @@ TEST_F(ShmBroadcastTest, OverrunAndExplicitRecovery) {
   EXPECT_EQ(gap.resume_candidate, 2);
   EXPECT_EQ(reader.next_sequence(), 1);
   EXPECT_EQ(reader.TryNext(buffer).gap, gap);
-  std::uint64_t sequence = 99;
+  uint64_t sequence = 99;
   auto forged = gap;
   ++forged.id;
   EXPECT_FALSE(reader.Resume(forged, sequence).ok());
@@ -271,7 +279,9 @@ TEST_F(ShmBroadcastTest, OverrunAndExplicitRecovery) {
   ASSERT_TRUE(reader.Resume(*again.gap, sequence, ResumePosition::At(5)).ok());
   ExpectEvent(reader, buffer, 5);
   EXPECT_FALSE(reader.Resume(gap, sequence).ok());
-  for (std::uint64_t next = 9; next <= 13; ++next) Publish(publisher, next);
+  for (uint64_t next = 9; next <= 13; ++next) {
+    Publish(publisher, next);
+  }
   again = reader.TryNext(buffer);
   ASSERT_TRUE(again.gap);
   EXPECT_NE(again.gap->id, gap.id);
@@ -301,16 +311,16 @@ TEST_F(ShmBroadcastTest, RefreshAndRestartBoundaries) {
   auto publisher = Publisher(2);
   const auto generation = publisher.generation();
   auto reader = Reader();
-  for (std::uint64_t sequence = 1; sequence <= 3; ++sequence) {
+  for (uint64_t sequence = 1; sequence <= 3; ++sequence) {
     Publish(publisher, sequence);
   }
   EventBuffer buffer;
   const auto result = reader.TryNext(buffer);
   ASSERT_TRUE(result.gap);
   const auto gap = *result.gap;
-  std::this_thread::sleep_for(2ms);
+  std::this_thread::sleep_for(std::chrono::milliseconds(2));
   RefreshResult refresh;
-  ASSERT_TRUE(reader.Refresh(refresh, 1ns).ok());
+  ASSERT_TRUE(reader.Refresh(refresh, std::chrono::nanoseconds(1)).ok());
   EXPECT_EQ(refresh.status, RefreshStatus::kCurrent);
   EXPECT_EQ(refresh.health, PublisherHealth::kStale);
   ASSERT_TRUE(publisher.Tick().ok());
@@ -325,7 +335,7 @@ TEST_F(ShmBroadcastTest, RefreshAndRestartBoundaries) {
   EXPECT_EQ(refresh.status, RefreshStatus::kStreamChanged);
   EXPECT_EQ(refresh.discovered_generation, replacement.generation());
   EXPECT_EQ(reader.TryNext(buffer).status, ReadStatus::kStreamChanged);
-  std::uint64_t sequence = 0;
+  uint64_t sequence = 0;
   EXPECT_FALSE(reader.Resume(gap, sequence).ok());
   auto reconnected = Reader();
   EXPECT_FALSE(reconnected.Resume(gap, sequence).ok());
@@ -366,7 +376,7 @@ TEST_F(ShmBroadcastTest, AbruptExitReleasesLock) {
     auto publisher = Publisher();
     Publish(publisher, 1);
     ready.Signal();
-    std::this_thread::sleep_for(8s);
+    std::this_thread::sleep_for(std::chrono::seconds(8));
     FAIL() << "expected SIGKILL";
   });
   ready.Wait();
@@ -388,7 +398,7 @@ TEST_F(ShmBroadcastTest, PendingInitializationRecovery) {
     auto publisher = Publisher();
     Publish(publisher, 1);
     ready.Signal();
-    std::this_thread::sleep_for(8s);
+    std::this_thread::sleep_for(std::chrono::seconds(8));
     FAIL() << "expected initialization crash";
   });
   ready.Wait();
@@ -396,18 +406,28 @@ TEST_F(ShmBroadcastTest, PendingInitializationRecovery) {
   auto previous = base::internal::Discover(endpoint_);
   ASSERT_TRUE(previous);
   std::error_code error;
-  std::filesystem::rename(endpoint_.runtime_directory / "ticks.manifest",
-                          endpoint_.runtime_directory / "ticks.pending", error);
+  ::yquant::testing::files::Rename(
+      ::yquant::testing::files::FilePath(
+          ::yquant::testing::files::FilePath(endpoint_.runtime_directory) /
+          "ticks.manifest"),
+      ::yquant::testing::files::FilePath(
+          ::yquant::testing::files::FilePath(endpoint_.runtime_directory) /
+          "ticks.pending"),
+      error);
   ASSERT_FALSE(error);
   child.Kill();
   const int child_status = child.Wait();
   EXPECT_TRUE(WIFSIGNALED(child_status));
   auto replacement = Publisher();
   EXPECT_FALSE(
-      std::filesystem::exists(endpoint_.runtime_directory / "ticks.pending"));
+      ::yquant::testing::files::Exists(::yquant::testing::files::FilePath(
+          ::yquant::testing::files::FilePath(endpoint_.runtime_directory) /
+          "ticks.pending")));
   const int stale_fd = ::shm_open(previous->shm_name.c_str(), O_RDWR, 0);
   const int stale_errno = errno;
-  if (stale_fd >= 0) ::close(stale_fd);
+  if (stale_fd >= 0) {
+    ::close(stale_fd);
+  }
   EXPECT_LT(stale_fd, 0);
   EXPECT_EQ(stale_errno, ENOENT);
   RefreshResult refresh;
@@ -423,9 +443,10 @@ TEST_F(ShmBroadcastTest, CrossProcessOverwriteIntegrity) {
     auto reader = Reader();
     EventBuffer buffer;
     ready.Signal();
-    std::uint64_t previous = 0;
-    std::size_t received = 0;
-    const auto deadline = std::chrono::steady_clock::now() + 8s;
+    uint64_t previous = 0;
+    size_t received = 0;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(8);
     while (std::chrono::steady_clock::now() < deadline) {
       const auto result = reader.TryNext(buffer, {32});
       if (result.status == ReadStatus::kEvent) {
@@ -441,7 +462,7 @@ TEST_F(ShmBroadcastTest, CrossProcessOverwriteIntegrity) {
         ++received;
       } else if (result.status == ReadStatus::kGap) {
         ASSERT_TRUE(result.gap);
-        std::uint64_t sequence = 0;
+        uint64_t sequence = 0;
         ASSERT_TRUE(reader.Resume(*result.gap, sequence).ok());
       } else if (result.status == ReadStatus::kEndOfGeneration) {
         EXPECT_GT(received, 0);
@@ -454,7 +475,7 @@ TEST_F(ShmBroadcastTest, CrossProcessOverwriteIntegrity) {
     FAIL() << "stress reader timed out";
   });
   ready.Wait();
-  for (std::uint64_t sequence = 1; sequence <= 50'000; ++sequence) {
+  for (uint64_t sequence = 1; sequence <= 50'000; ++sequence) {
     Publish(publisher, sequence, sequence & 7, 7, EventScope::kBusiness, 512);
   }
   publisher.Close();
@@ -465,7 +486,7 @@ TEST_F(ShmBroadcastTest, CorruptEventStopsDelivery) {
   base::ShmBroadcastWriter writer;
   ASSERT_TRUE(writer.Create({endpoint_, {8, 80}}).ok());
   const auto bytes = Payload(1, 8);
-  std::array<std::uint64_t, 10> encoded{};
+  std::array<uint64_t, 10> encoded{};
   ASSERT_TRUE(internal::EncodeEvent({Header(1), bytes}, encoded, 16));
   const auto valid = encoded;
   auto wire = std::as_writable_bytes(std::span(encoded));
@@ -489,7 +510,7 @@ TEST_F(ShmBroadcastTest, CorruptEventStopsDelivery) {
   auto* header =
       reinterpret_cast<base::internal::BroadcastHeader*>(memory.data());
   const auto& layout = header->layout;
-  for (std::size_t i = 0; i < valid.size(); ++i) {
+  for (size_t i = 0; i < valid.size(); ++i) {
     base::internal::BroadcastSlot(memory.data() + layout.slots_offset,
                                   layout.slot_stride, layout.capacity, 1, i + 2)
         .store(valid[i], std::memory_order_relaxed);
@@ -505,7 +526,7 @@ TEST_F(ShmBroadcastTest, InvalidConfiguration) {
   EXPECT_FALSE(publisher.Create({endpoint_, 3, 64}).ok());
   EXPECT_FALSE(publisher.Create({endpoint_, 8, kMaxEventPayloadSize + 1}).ok());
   EXPECT_FALSE(
-      publisher.Create({endpoint_, 8, std::numeric_limits<std::size_t>::max()})
+      publisher.Create({endpoint_, 8, std::numeric_limits<size_t>::max()})
           .ok());
   EXPECT_FALSE(
       publisher.Create({{endpoint_.runtime_directory, "../escape"}, 8, 64})

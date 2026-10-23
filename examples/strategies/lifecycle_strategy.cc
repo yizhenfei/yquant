@@ -1,11 +1,13 @@
-#include <cstddef>
-#include <cstdint>
+#include <stddef.h>
+#include <stdint.h>
+
 #include <cstdio>
 #include <cstring>
 #include <new>
 #include <string_view>
 
 #include "simdjson.h"
+#include "yquant/base/format.h"
 #include "yquant/base/status.h"
 #include "yquant/strategy/strategy.h"
 #include "yquant/strategy/strategy_plugin.h"
@@ -19,7 +21,7 @@ using yquant::strategy::StrategyConfig;
 using yquant::strategy::StrategyContext;
 using yquant::strategy::StrategyPlugin;
 
-constexpr std::size_t kMaxStartupMessageBytes = 128;
+constexpr size_t kMaxStartupMessageBytes = 128;
 
 ErrorCode ParseError(simdjson::error_code result, std::string_view path,
                      ConfigError& error) noexcept {
@@ -95,7 +97,7 @@ class LifecycleConfig final : public StrategyConfig {
 
  private:
   char startup_message_[kMaxStartupMessageBytes] = {};
-  std::size_t startup_message_size_ = 0;
+  size_t startup_message_size_ = 0;
 };
 
 class LifecycleStrategy final : public Strategy {
@@ -107,8 +109,10 @@ class LifecycleStrategy final : public Strategy {
       return ErrorCode::kInvalidState;
     }
     const auto message = config_.startup_message();
-    std::fprintf(stdout, "lifecycle_strategy: startup_message=%.*s\n",
-                 static_cast<int>(message.size()), message.data());
+    ::yquant::base::Print(
+        stdout, "lifecycle_strategy: startup_message={}\n",
+        ::yquant::base::CStringPrefix(message.data(),
+                                      static_cast<int>(message.size())));
     std::fflush(stdout);
     state_ = State::kRunning;
     return ErrorCode::kOk;
@@ -141,10 +145,9 @@ ErrorCode CreateStrategy(Strategy*& output) noexcept {
 
 void DestroyStrategy(Strategy* strategy) noexcept { delete strategy; }
 
-const StrategyPlugin kPlugin = {
-    yquant::strategy::kStrategyPluginAbiVersion,
-    static_cast<std::uint32_t>(sizeof(StrategyPlugin)), CreateStrategy,
-    DestroyStrategy};
+const StrategyPlugin kPlugin = {yquant::strategy::kStrategyPluginAbiVersion,
+                                static_cast<uint32_t>(sizeof(StrategyPlugin)),
+                                CreateStrategy, DestroyStrategy};
 
 }  // namespace
 

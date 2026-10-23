@@ -1,9 +1,12 @@
 #include <fcntl.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <unistd.h>
 
 #include <array>
 #include <cerrno>
 #include <cstdlib>
+#include <optional>
 #include <span>
 #include <string>
 
@@ -56,7 +59,7 @@ class QuoteEventPipe {
     for (;;) {
       const ssize_t count = read(fds_[0], buffer, sizeof(buffer));
       if (count > 0) {
-        events.append(buffer, static_cast<std::size_t>(count));
+        events.append(buffer, static_cast<size_t>(count));
       } else if (count == -1 && errno == EINTR) {
         continue;
       } else {
@@ -78,7 +81,7 @@ void ExpectQuoteTrace(std::string events, const char* expected) {
   EXPECT_EQ(events, expected);
 }
 
-model::QuoteTick Quote(std::uint64_t sequence = 1) {
+model::QuoteTick Quote(uint64_t sequence = 1) {
   model::QuoteTick tick;
   tick.source_id = {1};
   EXPECT_EQ(model::MakeInstrumentId("SSE", "600000", tick.instrument_id),
@@ -126,7 +129,7 @@ class ControlledSource final : public MarketDataSource {
   }
 
   base::Status Start(std::span<const model::InstrumentId> subscriptions,
-                     std::uint64_t) noexcept override {
+                     uint64_t) noexcept override {
     ++start_calls;
     if (subscriptions.size() != 1 || fail_start) {
       return Fail("injected start failure");
@@ -136,13 +139,14 @@ class ControlledSource final : public MarketDataSource {
     return {};
   }
 
-  MarketDataPollResult Poll(std::uint64_t,
-                            model::QuoteTick& out) noexcept override {
+  MarketDataPollResult Poll(uint64_t, model::QuoteTick& out) noexcept override {
     ++poll_calls;
     if (fail_poll) {
       return {MarketDataPollState::kError, Fail("injected poll failure")};
     }
-    if (poll_driven_idle) return {};
+    if (poll_driven_idle) {
+      return {};
+    }
     if (scripted_) {
       if (exhausted()) {
         return {MarketDataPollState::kIdle, {}};
@@ -152,9 +156,8 @@ class ControlledSource final : public MarketDataSource {
     }
     model::QuoteTick tick;
     tick.source_id = {1};
-    tick.instrument_id.value = (std::uint64_t{1} << 32) | 600000;
-    tick.sequence =
-        repeat_sequence ? 1 : static_cast<std::uint64_t>(poll_calls);
+    tick.instrument_id.value = (uint64_t{1} << 32) | 600000;
+    tick.sequence = repeat_sequence ? 1 : static_cast<uint64_t>(poll_calls);
     tick.bid_price = 1000;
     tick.bid_qty = 100;
     tick.ask_price = 1001;
@@ -164,9 +167,8 @@ class ControlledSource final : public MarketDataSource {
     return {MarketDataPollState::kEvent, {}};
   }
 
-  std::optional<std::uint64_t> next_deadline() const noexcept override {
-    return active_ && !exhausted() ? std::optional<std::uint64_t>{0}
-                                   : std::nullopt;
+  std::optional<uint64_t> next_deadline() const noexcept override {
+    return active_ && !exhausted() ? std::optional<uint64_t>{0} : std::nullopt;
   }
 
   bool is_poll_driven() const noexcept override { return poll_driven_idle; }
@@ -190,7 +192,7 @@ class ControlledSource final : public MarketDataSource {
   bool active_ = false;
   bool scripted_ = false;
   std::span<const model::QuoteTick> quotes_;
-  std::size_t next_quote_ = 0;
+  size_t next_quote_ = 0;
   const char* error_ = "";
 };
 
@@ -224,7 +226,7 @@ class TestEventLoopEnvironment final : public base::EventLoopEnvironment {
     return {};
   }
 
-  base::Status Wait(std::optional<std::uint64_t>) noexcept override {
+  base::Status Wait(std::optional<uint64_t>) noexcept override {
     ++wait_calls;
     return {fail_wait ? ErrorCode::kIoError : ErrorCode::kInternalError, {}};
   }
@@ -630,7 +632,7 @@ TEST(MarketRunnerTest, RunHandlesPendingStopBeforePolling) {
 // Maintenance deadlines must wake a waiting host even when no quote is due.
 class MaintenanceSource final : public MarketDataSource {
  public:
-  std::optional<std::uint64_t> quote_deadline;
+  std::optional<uint64_t> quote_deadline;
   int poll_calls = 0;
   int stop_calls = 0;
 
@@ -638,21 +640,20 @@ class MaintenanceSource final : public MarketDataSource {
     return {};
   }
   base::Status Start(std::span<const model::InstrumentId>,
-                     std::uint64_t) noexcept override {
+                     uint64_t) noexcept override {
     return {};
   }
-  MarketDataPollResult Poll(std::uint64_t,
-                            model::QuoteTick&) noexcept override {
+  MarketDataPollResult Poll(uint64_t, model::QuoteTick&) noexcept override {
     ++poll_calls;
     return {MarketDataPollState::kError, {ErrorCode::kInternalError, {}}};
   }
-  std::optional<std::uint64_t> next_deadline() const noexcept override {
+  std::optional<uint64_t> next_deadline() const noexcept override {
     return quote_deadline;
   }
-  base::Status Service(std::uint64_t now) noexcept override {
+  base::Status Service(uint64_t now) noexcept override {
     return now < 100 ? base::Status{} : base::Status{ErrorCode::kIoError, {}};
   }
-  std::optional<std::uint64_t> next_service_deadline() const noexcept override {
+  std::optional<uint64_t> next_service_deadline() const noexcept override {
     return 100;
   }
   base::Status Stop() noexcept override {
@@ -666,8 +667,8 @@ class MaintenanceSource final : public MarketDataSource {
 
 class MaintenanceClock final : public base::MonotonicClock {
  public:
-  std::uint64_t now = 0;
-  std::uint64_t Now() const noexcept override { return now; }
+  uint64_t now = 0;
+  uint64_t Now() const noexcept override { return now; }
 };
 
 class MaintenanceEnvironment final : public base::EventLoopEnvironment {
@@ -677,9 +678,10 @@ class MaintenanceEnvironment final : public base::EventLoopEnvironment {
     out = false;
     return {};
   }
-  base::Status Wait(std::optional<std::uint64_t> timeout) noexcept override {
-    if (!timeout || *timeout != 100 || wait_calls != 0)
+  base::Status Wait(std::optional<uint64_t> timeout) noexcept override {
+    if (!timeout || *timeout != 100 || wait_calls != 0) {
       return {ErrorCode::kInternalError, {}};
+    }
     ++wait_calls;
     clock_.now += *timeout;
     return {};
@@ -692,7 +694,7 @@ class MaintenanceEnvironment final : public base::EventLoopEnvironment {
 
 struct MaintenanceDeadline {
   const char* name;
-  std::optional<std::uint64_t> quote_deadline;
+  std::optional<uint64_t> quote_deadline;
 };
 
 class MaintenanceDeadlineTest

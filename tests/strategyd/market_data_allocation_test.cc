@@ -1,7 +1,10 @@
+#include <stddef.h>
+#include <stdint.h>
+
 #include <algorithm>
 #include <array>
-#include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <new>
 #include <span>
 #include <utility>
@@ -19,19 +22,21 @@
 namespace {
 
 struct CppHeapActivity {
-  std::size_t allocation_calls = 0;
-  std::size_t deallocation_calls = 0;
+  size_t allocation_calls = 0;
+  size_t deallocation_calls = 0;
 };
 
-thread_local bool g_track_cpp_heap = false;
-thread_local CppHeapActivity g_cpp_heap_activity;
+constinit thread_local bool g_track_cpp_heap = false;
+constinit thread_local CppHeapActivity g_cpp_heap_activity;
 
 // This executable counts replacement C++ allocation/deallocation functions.
 // Direct calls to malloc, realloc, free, or OS mapping APIs are not counted.
-void* AllocateCppHeap(std::size_t size, std::size_t alignment,
+void* AllocateCppHeap(size_t size, size_t alignment,
                       bool abort_on_failure) noexcept {
-  if (g_track_cpp_heap) ++g_cpp_heap_activity.allocation_calls;
-  size = std::max<std::size_t>(size, 1);
+  if (g_track_cpp_heap) {
+    ++g_cpp_heap_activity.allocation_calls;
+  }
+  size = std::max<size_t>(size, 1);
   void* result = nullptr;
   if (alignment == 0) {
     result = std::malloc(size);
@@ -39,12 +44,16 @@ void* AllocateCppHeap(std::size_t size, std::size_t alignment,
                             size) != 0) {
     result = nullptr;
   }
-  if (result == nullptr && abort_on_failure) std::abort();
+  if (result == nullptr && abort_on_failure) {
+    std::abort();
+  }
   return result;
 }
 
 void DeallocateCppHeap(void* memory) noexcept {
-  if (g_track_cpp_heap) ++g_cpp_heap_activity.deallocation_calls;
+  if (g_track_cpp_heap) {
+    ++g_cpp_heap_activity.deallocation_calls;
+  }
   std::free(memory);
 }
 
@@ -59,47 +68,45 @@ CppHeapActivity ObserveCppHeap(Action&& action) noexcept {
 
 }  // namespace
 
-void* operator new(std::size_t size) { return AllocateCppHeap(size, 0, true); }
+void* operator new(size_t size) { return AllocateCppHeap(size, 0, true); }
 
-void* operator new[](std::size_t size) {
-  return AllocateCppHeap(size, 0, true);
-}
+void* operator new[](size_t size) { return AllocateCppHeap(size, 0, true); }
 
-void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
+void* operator new(size_t size, const std::nothrow_t&) noexcept {
   return AllocateCppHeap(size, 0, false);
 }
 
-void* operator new[](std::size_t size, const std::nothrow_t&) noexcept {
+void* operator new[](size_t size, const std::nothrow_t&) noexcept {
   return AllocateCppHeap(size, 0, false);
 }
 
-void* operator new(std::size_t size, std::align_val_t alignment) {
-  return AllocateCppHeap(size, static_cast<std::size_t>(alignment), true);
+void* operator new(size_t size, std::align_val_t alignment) {
+  return AllocateCppHeap(size, static_cast<size_t>(alignment), true);
 }
 
-void* operator new[](std::size_t size, std::align_val_t alignment) {
-  return AllocateCppHeap(size, static_cast<std::size_t>(alignment), true);
+void* operator new[](size_t size, std::align_val_t alignment) {
+  return AllocateCppHeap(size, static_cast<size_t>(alignment), true);
 }
 
-void* operator new(std::size_t size, std::align_val_t alignment,
+void* operator new(size_t size, std::align_val_t alignment,
                    const std::nothrow_t&) noexcept {
-  return AllocateCppHeap(size, static_cast<std::size_t>(alignment), false);
+  return AllocateCppHeap(size, static_cast<size_t>(alignment), false);
 }
 
-void* operator new[](std::size_t size, std::align_val_t alignment,
+void* operator new[](size_t size, std::align_val_t alignment,
                      const std::nothrow_t&) noexcept {
-  return AllocateCppHeap(size, static_cast<std::size_t>(alignment), false);
+  return AllocateCppHeap(size, static_cast<size_t>(alignment), false);
 }
 
 void operator delete(void* memory) noexcept { DeallocateCppHeap(memory); }
 
 void operator delete[](void* memory) noexcept { DeallocateCppHeap(memory); }
 
-void operator delete(void* memory, std::size_t) noexcept {
+void operator delete(void* memory, size_t) noexcept {
   DeallocateCppHeap(memory);
 }
 
-void operator delete[](void* memory, std::size_t) noexcept {
+void operator delete[](void* memory, size_t) noexcept {
   DeallocateCppHeap(memory);
 }
 
@@ -119,11 +126,11 @@ void operator delete[](void* memory, std::align_val_t) noexcept {
   DeallocateCppHeap(memory);
 }
 
-void operator delete(void* memory, std::size_t, std::align_val_t) noexcept {
+void operator delete(void* memory, size_t, std::align_val_t) noexcept {
   DeallocateCppHeap(memory);
 }
 
-void operator delete[](void* memory, std::size_t, std::align_val_t) noexcept {
+void operator delete[](void* memory, size_t, std::align_val_t) noexcept {
   DeallocateCppHeap(memory);
 }
 
@@ -143,17 +150,17 @@ namespace {
 // Test clock shares the source/context time domain without wall-clock sleeps.
 class ManualClock final : public base::MonotonicClock {
  public:
-  std::uint64_t Now() const noexcept override { return now; }
-  std::uint64_t now = 0;
+  uint64_t Now() const noexcept override { return now; }
+  uint64_t now = 0;
 };
 
 struct ExerciseCounts {
-  std::size_t quotes = 0;
-  std::size_t idle = 0;
-  std::size_t duplicates = 0;
-  std::size_t old_quotes = 0;
-  std::size_t rejected = 0;
-  std::size_t query_misses = 0;
+  size_t quotes = 0;
+  size_t idle = 0;
+  size_t duplicates = 0;
+  size_t old_quotes = 0;
+  size_t rejected = 0;
+  size_t query_misses = 0;
 };
 
 // Performs only allocation-counted work. A literal failure reason and counters
@@ -161,13 +168,13 @@ struct ExerciseCounts {
 const char* ExerciseMarketData(md::MockQuoteSource& source,
                                MarketDataImpl& market_data,
                                const strategy::StrategyContext& context,
-                               ManualClock& clock, std::uint64_t interval,
-                               std::size_t instrument_count,
+                               ManualClock& clock, uint64_t interval,
+                               size_t instrument_count,
                                ExerciseCounts& counts) noexcept {
-  constexpr std::size_t kBatches = 128;
+  constexpr size_t kBatches = 128;
   model::QuoteTick tick;
   tick.sequence = 12345;
-  for (std::size_t batch = 0; batch < kBatches; ++batch) {
+  for (size_t batch = 0; batch < kBatches; ++batch) {
     const auto idle_output = tick;
     clock.now += interval - 1;
     if (source.Poll(clock.Now(), tick).state != md::MockQuotePollState::kIdle ||
@@ -176,8 +183,7 @@ const char* ExerciseMarketData(md::MockQuoteSource& source,
     }
     ++counts.idle;
     ++clock.now;
-    for (std::size_t instrument = 0; instrument < instrument_count;
-         ++instrument) {
+    for (size_t instrument = 0; instrument < instrument_count; ++instrument) {
       const auto result = source.Poll(clock.Now(), tick);
       if (result.state != md::MockQuotePollState::kEvent ||
           !result.status.ok()) {
@@ -261,7 +267,9 @@ TEST(MarketDataCppHeapCounterTest, CountsReplacementOperatorCalls) {
     pointers[5] = ::operator new[](16, std::align_val_t{128});
     pointers[6] = ::operator new(16, std::align_val_t{128}, std::nothrow);
     pointers[7] = ::operator new[](16, std::align_val_t{128}, std::nothrow);
-    for (const auto pointer : pointers) succeeded &= pointer != nullptr;
+    for (const auto pointer : pointers) {
+      succeeded &= pointer != nullptr;
+    }
     ::operator delete(pointers[0]);
     ::operator delete[](pointers[1]);
     ::operator delete(pointers[2], std::nothrow);
@@ -281,11 +289,11 @@ TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
   config.source_id = {17};
   config.interval_ns = 1000000;
   config.instrument_count = md::kMaxMarketDataInstruments;
-  for (std::size_t index = 0; index < config.instrument_count; ++index) {
+  for (size_t index = 0; index < config.instrument_count; ++index) {
     auto& item = config.instruments[index];
     item.instrument.venue = model::Venue::kSse;
-    std::size_t numeric_symbol = 600000 + index;
-    for (std::size_t digit = model::kSymbolLength; digit != 0; --digit) {
+    size_t numeric_symbol = 600000 + index;
+    for (size_t digit = model::kSymbolLength; digit != 0; --digit) {
       item.instrument.symbol[digit - 1] = '0' + numeric_symbol % 10;
       numeric_symbol /= 10;
     }
@@ -293,7 +301,7 @@ TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
                                       item.instrument.id),
               base::ErrorCode::kOk);
     item.instrument.price_decimals = 2;
-    item.bid_price = 1000 + static_cast<std::int64_t>(index);
+    item.bid_price = 1000 + static_cast<int64_t>(index);
     item.ask_price = item.bid_price + 1;
     item.bid_qty = 100;
     item.ask_qty = 200;
@@ -307,11 +315,12 @@ TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
   md::MarketDataConfig host;
   host.source_id = config.source_id;
   host.instrument_count = config.instrument_count;
-  for (std::size_t i = 0; i < host.instrument_count; ++i)
+  for (size_t i = 0; i < host.instrument_count; ++i) {
     host.instruments[i].instrument = config.instruments[i].instrument;
+  }
   ASSERT_TRUE(market_data.Configure(host).ok());
   market_data.BeginCallback(strategy::CallbackPhase::kStart);
-  for (std::size_t index = 0; index < config.instrument_count; ++index) {
+  for (size_t index = 0; index < config.instrument_count; ++index) {
     ASSERT_EQ(context.market_data().SubscribeQuotes(
                   config.instruments[index].instrument.id),
               base::ErrorCode::kOk);
@@ -365,7 +374,7 @@ TEST(MarketDataCppHeapTest,
   ReplayMarketDataSource source;
   ASSERT_TRUE(source.Prepare(config).ok()) << source.error_detail();
   const char* failure = nullptr;
-  std::size_t quotes = 0;
+  size_t quotes = 0;
   const auto activity = ObserveCppHeap([&]() noexcept {
     if (!source.Start(std::span(&id, 1), 100).ok() ||
         source.next_deadline() != 100 || source.finished()) {
@@ -373,7 +382,7 @@ TEST(MarketDataCppHeapTest,
       return;
     }
     model::QuoteTick tick;
-    for (std::uint64_t now = 100; now <= 110; ++now) {
+    for (uint64_t now = 100; now <= 110; ++now) {
       for (;;) {
         const auto previous = tick;
         const auto result = source.Poll(now, tick);
@@ -382,7 +391,9 @@ TEST(MarketDataCppHeapTest,
           return;
         }
         if (result.state == MarketDataPollState::kIdle) {
-          if (tick != previous) failure = "idle replay changed output";
+          if (tick != previous) {
+            failure = "idle replay changed output";
+          }
           break;
         }
         if (result.state != MarketDataPollState::kEvent ||
@@ -396,7 +407,9 @@ TEST(MarketDataCppHeapTest,
         return;
       }
     }
-    if (source.next_deadline()) failure = "finished replay retained a deadline";
+    if (source.next_deadline()) {
+      failure = "finished replay retained a deadline";
+    }
   });
   EXPECT_EQ(failure, nullptr) << (failure == nullptr ? "" : failure);
   EXPECT_EQ(quotes, 4U);
@@ -418,7 +431,7 @@ TEST(TimerCppHeapTest,
     timer.EndCallback();
     timer.SetRunning(true);
     const strategy::Timer& read_only = timer;
-    for (std::uint64_t now = 0; now < 4096; ++now) {
+    for (uint64_t now = 0; now < 4096; ++now) {
       strategy::TimerEvent event;
       if (read_only.deadline() != now || !timer.TryTakeDue(now, event) ||
           event.deadline_ns != now || event.fire_time_ns != now ||
@@ -436,7 +449,9 @@ TEST(TimerCppHeapTest,
       timer.EndCallback();
     }
     timer.BeginStopping();
-    if (read_only.deadline()) failure = "stopping retained a timer";
+    if (read_only.deadline()) {
+      failure = "stopping retained a timer";
+    }
   });
   EXPECT_EQ(failure, nullptr) << (failure == nullptr ? "" : failure);
   EXPECT_EQ(activity.allocation_calls, 0U);

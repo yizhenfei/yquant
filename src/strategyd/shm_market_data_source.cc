@@ -1,9 +1,15 @@
 #include "strategyd/shm_market_data_source.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
 #include <cstdio>
 #include <limits>
+#include <optional>
+#include <span>
 
+#include "yquant/base/format.h"
 #include "yquant/md/event_filter.h"
 #include "yquant/md/quote_codec.h"
 
@@ -11,9 +17,9 @@ namespace yquant::strategyd {
 namespace {
 
 // Adds a scheduling interval, saturating instead of wrapping into the past.
-std::uint64_t After(std::uint64_t now, std::uint64_t interval) noexcept {
-  return now > std::numeric_limits<std::uint64_t>::max() - interval
-             ? std::numeric_limits<std::uint64_t>::max()
+uint64_t After(uint64_t now, uint64_t interval) noexcept {
+  return now > std::numeric_limits<uint64_t>::max() - interval
+             ? std::numeric_limits<uint64_t>::max()
              : now + interval;
 }
 
@@ -21,7 +27,7 @@ std::uint64_t After(std::uint64_t now, std::uint64_t interval) noexcept {
 
 base::Status ShmMarketDataSource::Error(base::Status status,
                                         const char* detail) noexcept {
-  std::snprintf(error_detail_, sizeof(error_detail_), "%s", detail);
+  ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_), "{}", detail);
   return status;
 }
 
@@ -43,8 +49,8 @@ base::Status ShmMarketDataSource::Prepare(
   base::ConfigError error;
   const auto result = md::ValidateMarketDataConfig(config, error);
   if (!result.ok()) {
-    std::snprintf(error_detail_, sizeof(error_detail_), "%s: %s",
-                  error.field_path, error.message);
+    ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_), "{}: {}",
+                             error.field_path, error.message);
     return result;
   }
   if (config.adapter != md::MarketDataAdapter::kShm) {
@@ -58,8 +64,7 @@ base::Status ShmMarketDataSource::Prepare(
 }
 
 base::Status ShmMarketDataSource::Start(
-    std::span<const model::InstrumentId> subscriptions,
-    std::uint64_t now) noexcept {
+    std::span<const model::InstrumentId> subscriptions, uint64_t now) noexcept {
   if (state_ != State::kPrepared) {
     return Error({base::ErrorCode::kInvalidState, {}},
                  "source must be prepared before activation");
@@ -68,14 +73,15 @@ base::Status ShmMarketDataSource::Start(
     return Error({base::ErrorCode::kInvalidArgument, {}},
                  "too many market data subscriptions");
   }
-  std::array<std::uint64_t, md::kMaxMarketDataInstruments> instruments{};
-  std::size_t instrument_count = 0;
+  std::array<uint64_t, md::kMaxMarketDataInstruments> instruments{};
+  size_t instrument_count = 0;
   std::array<bool, md::kMaxMarketDataInstruments> selected = {};
   for (const auto id : subscriptions) {
-    std::size_t index = 0;
+    size_t index = 0;
     while (index < config_.instrument_count &&
-           config_.instruments[index].instrument.id != id)
+           config_.instruments[index].instrument.id != id) {
       ++index;
+    }
     if (index == config_.instrument_count || selected[index]) {
       return Error({base::ErrorCode::kInvalidArgument, {}},
                    "subscription contains an unknown or duplicate instrument");
@@ -87,16 +93,17 @@ base::Status ShmMarketDataSource::Start(
   const auto status = reader_.Open(endpoint, md::StartPosition::Live());
   if (!status.ok()) {
     char detail[sizeof(error_detail_)];
-    std::snprintf(detail, sizeof(detail),
-                  "could not attach shm stream=%s runtime_directory=%.*s",
-                  config_.stream, 500, config_.runtime_directory);
+    ::yquant::base::FormatTo(
+        detail, sizeof(detail),
+        "could not attach shm stream={} runtime_directory={}", config_.stream,
+        ::yquant::base::CStringPrefix(config_.runtime_directory, 500));
     return Error(status, detail);
   }
   instruments_ = instruments;
   instrument_count_ = instrument_count;
   state_ = State::kActive;
   deadline_ =
-      subscriptions.empty() ? std::nullopt : std::optional<std::uint64_t>{now};
+      subscriptions.empty() ? std::nullopt : std::optional<uint64_t>{now};
   service_deadline_ = After(now, kShmHealthCheckIntervalNs);
   health_ = {};
   health_.health = md::PublisherHealth::kReady;
@@ -104,16 +111,20 @@ base::Status ShmMarketDataSource::Start(
   return {};
 }
 
-base::Status ShmMarketDataSource::Service(std::uint64_t now) noexcept {
-  if (state_ == State::kFailed) return terminal_status_;
+base::Status ShmMarketDataSource::Service(uint64_t now) noexcept {
+  if (state_ == State::kFailed) {
+    return terminal_status_;
+  }
   if (state_ != State::kActive || !service_deadline_ ||
-      now < *service_deadline_)
+      now < *service_deadline_) {
     return {};
+  }
   md::RefreshResult refreshed;
   const auto status = reader_.Refresh(refreshed);
-  if (!status.ok())
+  if (!status.ok()) {
     return PollError(status, "could not refresh shm publisher discovery")
         .status;
+  }
   health_ = refreshed;
   if (health_.status == md::RefreshStatus::kStreamChanged) {
     return PollError({base::ErrorCode::kInvalidState, {}},
@@ -131,30 +142,35 @@ base::Status ShmMarketDataSource::Service(std::uint64_t now) noexcept {
   return {};
 }
 
-MarketDataPollResult ShmMarketDataSource::Poll(std::uint64_t now,
+MarketDataPollResult ShmMarketDataSource::Poll(uint64_t now,
                                                model::QuoteTick& out) noexcept {
-  if (state_ == State::kFailed)
+  if (state_ == State::kFailed) {
     return {MarketDataPollState::kError, terminal_status_};
+  }
   if (state_ != State::kActive) {
     return {MarketDataPollState::kError,
             Error({base::ErrorCode::kInvalidState, {}},
                   "source must be active when polling")};
   }
-  if (!deadline_ || now < *deadline_) return {};
+  if (!deadline_ || now < *deadline_) {
+    return {};
+  }
   // Bound filtering independently of reader retries so unrelated events cannot
   // keep the host from checking stop requests and servicing other sources.
-  constexpr std::size_t kMaxEventsPerPoll = 64;
-  constexpr std::uint32_t kEventTypes[] = {md::kQuoteEventType};
+  constexpr size_t kMaxEventsPerPoll = 64;
+  constexpr uint32_t kEventTypes[] = {md::kQuoteEventType};
   const md::EventFilter filter{std::span(instruments_).first(instrument_count_),
                                kEventTypes, false, false};
-  std::size_t attempts_left = md::ReadBudget{}.max_attempts;
-  for (std::size_t scanned = 0;
-       scanned < kMaxEventsPerPoll && attempts_left != 0; ++scanned) {
+  size_t attempts_left = md::ReadBudget{}.max_attempts;
+  for (size_t scanned = 0; scanned < kMaxEventsPerPoll && attempts_left != 0;
+       ++scanned) {
     const auto result = reader_.TryNext(buffer_, {attempts_left});
     attempts_left -= result.attempts;
     switch (result.status) {
       case md::ReadStatus::kEvent: {
-        if (!filter.Matches(buffer_.header)) continue;
+        if (!filter.Matches(buffer_.header)) {
+          continue;
+        }
         model::QuoteTick quote;
         const auto status = md::DecodeQuoteEvent(buffer_.view(), quote);
         if (!status.ok()) {
@@ -162,9 +178,10 @@ MarketDataPollResult ShmMarketDataSource::Poll(std::uint64_t now,
         }
         if (quote.source_id != config_.source_id) {
           char detail[128];
-          std::snprintf(detail, sizeof(detail),
-                        "shm quote source_id=%u does not match configured %u",
-                        quote.source_id.value, config_.source_id.value);
+          ::yquant::base::FormatTo(
+              detail, sizeof(detail),
+              "shm quote source_id={} does not match configured {}",
+              quote.source_id.value, config_.source_id.value);
           return PollError({base::ErrorCode::kCorrupt, {}}, detail);
         }
         quote.receive_time_ns = now;
@@ -194,14 +211,13 @@ MarketDataPollResult ShmMarketDataSource::Poll(std::uint64_t now,
       case md::ReadStatus::kGap: {
         char detail[256];
         if (result.gap) {
-          std::snprintf(
+          ::yquant::base::FormatTo(
               detail, sizeof(detail),
-              "shm market-data gap: expected_sequence=%llu "
-              "resume_candidate=%llu",
-              static_cast<unsigned long long>(result.gap->expected_sequence),
-              static_cast<unsigned long long>(result.gap->resume_candidate));
+              "shm market-data gap: expected_sequence={} resume_candidate={}",
+              result.gap->expected_sequence, result.gap->resume_candidate);
         } else {
-          std::snprintf(detail, sizeof(detail), "shm market-data gap");
+          ::yquant::base::FormatTo(detail, sizeof(detail),
+                                   "shm market-data gap");
         }
         return PollError({base::ErrorCode::kCorrupt, {}}, detail);
       }

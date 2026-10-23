@@ -1,6 +1,9 @@
 #ifndef YQUANT_TESTS_MARKET_DATA_FEED_H_
 #define YQUANT_TESTS_MARKET_DATA_FEED_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -8,11 +11,14 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
-#include <filesystem>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <thread>
 #include <vector>
 
+#include "file_test_support.h"
+#include "yquant/base/format.h"
 #include "yquant/base/json_config_document.h"
 #include "yquant/md/market_data_config.h"
 #include "yquant/md/mock_quote_source.h"
@@ -30,12 +36,15 @@ class MarketDataFeed {
   MarketDataFeed& operator=(const MarketDataFeed&) = delete;
   ~MarketDataFeed() {
     stop_.store(true);
-    if (thread_.joinable()) thread_.join();
+    if (thread_.joinable()) {
+      thread_.join();
+    }
     (void)source_.Stop();
     publisher_.Close();
     if (directory_[0]) {
       std::error_code error;
-      std::filesystem::remove_all(directory_, error);
+      ::yquant::testing::files::RemoveTree(
+          ::yquant::testing::files::FilePath(directory_), error);
     }
   }
   // Replaces only the test endpoint with a per-child stream, preserving all
@@ -43,35 +52,52 @@ class MarketDataFeed {
   int Prepare(std::vector<std::string>& arguments) {
     const auto option =
         std::find(arguments.begin(), arguments.end(), "--market-data-config");
-    if (option == arguments.end() || option + 1 == arguments.end()) return 0;
+    if (option == arguments.end() || option + 1 == arguments.end()) {
+      return 0;
+    }
     md::MarketDataConfigLoader loader;
-    if (!loader.Load((option + 1)->c_str()).ok()) return 0;
+    if (!loader.Load((option + 1)->c_str()).ok()) {
+      return 0;
+    }
     const auto& host = loader.config();
     constexpr std::string_view kEndpoint = "/tmp/yquant-test-feed";
-    if (std::string_view(host.runtime_directory) != kEndpoint) return 0;
+    if (std::string_view(host.runtime_directory) != kEndpoint) {
+      return 0;
+    }
     char pattern[] = "/tmp/yquant-test-feed-XXXXXX";
-    if (!::mkdtemp(pattern)) return errno;
-    std::snprintf(directory_, sizeof(directory_), "%s", pattern);
+    if (!::mkdtemp(pattern)) {
+      return errno;
+    }
+    ::yquant::base::FormatTo(directory_, sizeof(directory_), "{}", pattern);
     base::JsonConfigDocument document;
-    if (!document.Load((option + 1)->c_str()).ok()) return EINVAL;
+    if (!document.Load((option + 1)->c_str()).ok()) {
+      return EINVAL;
+    }
     std::string json(document.source());
     const auto position = json.find(kEndpoint);
-    if (position == std::string::npos) return EINVAL;
+    if (position == std::string::npos) {
+      return EINVAL;
+    }
     json.replace(position, kEndpoint.size(), directory_);
     config_path_ = std::string(directory_) + "/receiver.json";
     auto* file = std::fopen(config_path_.c_str(), "wb");
-    if (!file) return errno;
+    if (!file) {
+      return errno;
+    }
     const bool written =
         std::fwrite(json.data(), 1, json.size(), file) == json.size();
     const int closed = std::fclose(file);
-    if (!written || closed) return EIO;
-    if (host.instrument_count > md::kMaxMockQuoteInstruments) return EINVAL;
+    if (!written || closed) {
+      return EIO;
+    }
+    if (host.instrument_count > md::kMaxMockQuoteInstruments) {
+      return EINVAL;
+    }
     md::MockQuoteConfig config;
     config.source_id = host.source_id;
-    config.interval_ns =
-        std::max<std::uint64_t>(1000000, host.poll_interval_ns);
+    config.interval_ns = std::max<uint64_t>(1000000, host.poll_interval_ns);
     config.instrument_count = host.instrument_count;
-    for (std::size_t i = 0; i < config.instrument_count; ++i) {
+    for (size_t i = 0; i < config.instrument_count; ++i) {
       auto& item = config.instruments[i];
       item.instrument = host.instruments[i].instrument;
       item.bid_price = 1000;
@@ -83,11 +109,12 @@ class MarketDataFeed {
     if (!source_.Prepare(config).ok() ||
         !publisher_
              .Create({{directory_, host.stream}, 4096, md::kQuoteFrameSize})
-             .ok())
+             .ok()) {
       return EINVAL;
+    }
     *(option + 1) = config_path_;
     thread_ = std::thread([this] {
-      std::uint64_t next_tick = 0;
+      uint64_t next_tick = 0;
       bool started = false;
       while (!stop_.load()) {
         const auto now = Now();
@@ -100,7 +127,9 @@ class MarketDataFeed {
             std::this_thread::sleep_for(std::chrono::microseconds(100));
             continue;
           }
-          if (!source_.Start(now).ok()) return;
+          if (!source_.Start(now).ok()) {
+            return;
+          }
           started = true;
         }
         model::QuoteTick quote;
@@ -108,12 +137,14 @@ class MarketDataFeed {
         if (result.state == md::MockQuotePollState::kEvent) {
           md::QuoteFrame frame;
           if (!md::EncodeQuote(quote, frame).ok() ||
-              !publisher_.Publish(md::QuoteEvent(quote, frame)).ok())
+              !publisher_.Publish(md::QuoteEvent(quote, frame)).ok()) {
             return;
-        } else if (result.state == md::MockQuotePollState::kError)
+          }
+        } else if (result.state == md::MockQuotePollState::kError) {
           return;
-        else
+        } else {
           std::this_thread::sleep_for(std::chrono::microseconds(100));
+        }
       }
     });
     return 0;
@@ -124,7 +155,7 @@ class MarketDataFeed {
   void Release() { receiving_.store(true); }
 
  private:
-  static std::uint64_t Now() {
+  static uint64_t Now() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
         .count();

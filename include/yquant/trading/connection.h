@@ -1,6 +1,8 @@
 #ifndef YQUANT_TRADING_CONNECTION_H_
 #define YQUANT_TRADING_CONNECTION_H_
 
+#include <stdint.h>
+
 #include <cstddef>
 #include <memory>
 
@@ -28,7 +30,7 @@ class Connection {
   [[nodiscard]] base::Status Adopt(int fd) noexcept;
   // Cold bounded connect. Numeric IPv4 only; failure leaves the object closed.
   [[nodiscard]] base::Status Connect(const Endpoint& endpoint,
-                                     std::uint64_t timeout_ns) noexcept;
+                                     uint64_t timeout_ns) noexcept;
   [[nodiscard]] base::Status Queue(const Message& message) noexcept;
   // Transfers a bounded number of queued byte ranges to the socket. A write
   // failure closes the stream and is reported again by subsequent Poll calls.
@@ -62,12 +64,12 @@ class Listener {
   // into a closed Connection; failure closes any newly accepted descriptor.
   [[nodiscard]] base::Status Accept(Connection& connection,
                                     bool& accepted) noexcept;
-  std::uint16_t port() const noexcept { return port_; }
+  uint16_t port() const noexcept { return port_; }
   void Close() noexcept;
 
  private:
   int fd_ = -1;
-  std::uint16_t port_ = 0;
+  uint16_t port_ = 0;
 };
 
 }  // namespace yquant::trading

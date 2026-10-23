@@ -2,6 +2,8 @@
 
 #include <fcntl.h>
 #include <pthread.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -11,7 +13,6 @@
 #include <atomic>
 #include <cerrno>
 #include <cstddef>
-#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -19,16 +20,18 @@
 #include <new>
 #include <span>
 #include <string_view>
+#include <system_error>
 
 #include "base/internal/logging_backend.h"
 #include "base/internal/logging_shared.h"
+#include "yquant/base/format.h"
 
 namespace yquant::base {
 namespace {
 
 std::atomic<const internal::LogBackendHooks*> backend_hooks{nullptr};
-constexpr std::size_t kPathCapacity = kMaxLogPathBytes;
-constexpr std::size_t kFramesPerPoll = 64;
+constexpr size_t kPathCapacity = kMaxLogPathBytes;
+constexpr size_t kFramesPerPoll = 64;
 constexpr timespec kShutdownPollInterval{0, 1000000};
 
 int OpenFile(const internal::LogBackendHooks* hooks, const char* path,
@@ -43,7 +46,7 @@ int OpenFile(const internal::LogBackendHooks* hooks, const char* path,
 }
 
 ssize_t WriteFile(const internal::LogBackendHooks* hooks, int fd,
-                  const void* bytes, std::size_t size) noexcept {
+                  const void* bytes, size_t size) noexcept {
   if (hooks != nullptr && hooks->write != nullptr) {
     return hooks->write(hooks->context, fd, bytes, size);
   }
@@ -74,8 +77,7 @@ int RenameFile(const internal::LogBackendHooks* hooks, const char* source,
              : rename(source, destination);
 }
 
-bool CopyText(std::string_view input, char* output,
-              std::size_t capacity) noexcept {
+bool CopyText(std::string_view input, char* output, size_t capacity) noexcept {
   if (input.empty() || input.size() >= capacity ||
       input.find('\0') != std::string_view::npos) {
     return false;
@@ -93,7 +95,7 @@ bool ParentDirectory(std::string_view path, char* output) noexcept {
   if (slash + 1 == path.size()) {
     return false;
   }
-  return CopyText(path.substr(0, std::max<std::size_t>(slash, 1)), output,
+  return CopyText(path.substr(0, std::max<size_t>(slash, 1)), output,
                   kPathCapacity);
 }
 
@@ -122,19 +124,18 @@ void AddCounters(LogCounters& destination, const LogCounters& source) noexcept {
 
 void ReportShutdownError(const ShutdownResult& result) noexcept {
   char message[256];
-  const int length = std::snprintf(
+  const int length = ::yquant::base::FormatTo(
       message, sizeof(message),
-      "yquant logging shutdown failed: stage=%d channel=%zu error=%d "
-      "system_error=%d count=%llu\n",
+      "yquant logging shutdown failed: stage={} channel={} error={} "
+      "system_error={} count={}\n",
       static_cast<int>(result.stage), result.channel_index,
       static_cast<int>(result.status.code), result.status.system_error.value(),
-      static_cast<unsigned long long>(result.error_count));
+      result.error_count);
   if (length <= 0) {
     return;
   }
-  const auto size =
-      std::min(static_cast<std::size_t>(length), sizeof(message) - 1);
-  std::size_t offset = 0;
+  const auto size = std::min(static_cast<size_t>(length), sizeof(message) - 1);
+  size_t offset = 0;
   while (offset < size) {
     const auto written = write(STDERR_FILENO, message + offset, size - offset);
     if (written < 0 && errno == EINTR) {
@@ -143,7 +144,7 @@ void ReportShutdownError(const ShutdownResult& result) noexcept {
     if (written <= 0) {
       return;
     }
-    offset += static_cast<std::size_t>(written);
+    offset += static_cast<size_t>(written);
   }
 }
 
@@ -160,18 +161,18 @@ struct LogManagerImpl {
     Logger* logger = nullptr;
     SpscQueue consumer;
     std::byte* queue_memory = nullptr;
-    std::size_t queue_bytes = 0;
-    std::uint64_t queue_capacity = 0;
+    size_t queue_bytes = 0;
+    uint64_t queue_capacity = 0;
     std::byte* batch = nullptr;
-    std::size_t batch_used = 0;
+    size_t batch_used = 0;
     int file_fd = -1;
     int directory_fd = -1;
     char file_path[kPathCapacity]{};
-    std::uint64_t file_bytes = 0;
-    std::uint64_t max_file_bytes = 0;
-    std::uint64_t archive_sequence = 0;
+    uint64_t file_bytes = 0;
+    uint64_t max_file_bytes = 0;
+    uint64_t archive_sequence = 0;
     SharedLogState* shared = nullptr;
-    std::size_t mapping_bytes = 0;
+    size_t mapping_bytes = 0;
     int queue_fd = -1;
     char queue_path[kPathCapacity]{};
     char temporary_path[kPathCapacity]{};
@@ -181,13 +182,13 @@ struct LogManagerImpl {
     bool failed = false;
     Status first_error;
     LogErrorStage first_stage = LogErrorStage::kNone;
-    std::uint64_t error_count = 0;
+    uint64_t error_count = 0;
   };
 
   LogConfig config;
   const LogBackendHooks* hooks = nullptr;
   Channel* channels = nullptr;
-  std::size_t channel_count = 0;
+  size_t channel_count = 0;
   pthread_mutex_t mutex{};
   pthread_cond_t condition{};
   pthread_t thread{};
@@ -199,7 +200,7 @@ struct LogManagerImpl {
   bool request_done = false;
   bool stop_requested = false;
   bool shutdown_complete = false;
-  std::size_t pending_index = 0;
+  size_t pending_index = 0;
   Status request_status;
   ShutdownResult final_result;
 
@@ -208,7 +209,7 @@ struct LogManagerImpl {
   void Signal() noexcept { CheckPthread(pthread_cond_signal(&condition)); }
   void Wait() noexcept { CheckPthread(pthread_cond_wait(&condition, &mutex)); }
 
-  void RecordError(Channel& channel, std::size_t index, LogErrorStage stage,
+  void RecordError(Channel& channel, size_t index, LogErrorStage stage,
                    Status status) noexcept {
     channel.failed = true;
     channel.logger->active_.store(0, std::memory_order_release);
@@ -218,12 +219,11 @@ struct LogManagerImpl {
       channel.first_error = status;
       channel.first_stage = stage;
       // Publish the first error as one atomic value for live monitoring.
-      const auto packed =
-          static_cast<std::uint64_t>(status.code) |
-          (static_cast<std::uint64_t>(stage) << 8) |
-          (static_cast<std::uint64_t>(
-               static_cast<std::uint32_t>(status.system_error.value()))
-           << 16);
+      const auto packed = static_cast<uint64_t>(status.code) |
+                          (static_cast<uint64_t>(stage) << 8) |
+                          (static_cast<uint64_t>(static_cast<uint32_t>(
+                               status.system_error.value()))
+                           << 16);
       channel.logger->backend_error_.store(packed, std::memory_order_release);
       if (channel.sink && channel.shared != nullptr) {
         channel.shared->backend_error.store(packed, std::memory_order_release);
@@ -236,8 +236,7 @@ struct LogManagerImpl {
     }
   }
 
-  void IoError(Channel& channel, std::size_t index,
-               LogErrorStage stage) noexcept {
+  void IoError(Channel& channel, size_t index, LogErrorStage stage) noexcept {
     const int saved_errno = errno;
     RecordError(channel, index, stage,
                 SystemStatus(ErrorCode::kIoError, saved_errno));
@@ -246,11 +245,11 @@ struct LogManagerImpl {
   // Creates a private mapped file. Link publishes it only after all resources
   // and atomic objects are initialized; readers never see a partial layout.
   Status MapSink(Channel& channel) noexcept {
-    const auto length =
-        std::snprintf(channel.temporary_path, sizeof(channel.temporary_path),
-                      "%s.XXXXXX", channel.queue_path);
+    const auto length = ::yquant::base::FormatTo(
+        channel.temporary_path, sizeof(channel.temporary_path), "{}.XXXXXX",
+        channel.queue_path);
     if (length < 0 ||
-        static_cast<std::size_t>(length) >= sizeof(channel.temporary_path)) {
+        static_cast<size_t>(length) >= sizeof(channel.temporary_path)) {
       channel.temporary_path[0] = '\0';
       return {ErrorCode::kInvalidArgument, {}};
     }
@@ -266,7 +265,9 @@ struct LogManagerImpl {
     }
     void* region = mmap(nullptr, channel.mapping_bytes, PROT_READ | PROT_WRITE,
                         MAP_SHARED, channel.queue_fd, 0);
-    if (region == MAP_FAILED) return SystemStatus(ErrorCode::kIoError, errno);
+    if (region == MAP_FAILED) {
+      return SystemStatus(ErrorCode::kIoError, errno);
+    }
     channel.shared = new (region) SharedLogState;
     channel.shared->capacity = channel.queue_capacity;
     channel.queue_memory =
@@ -279,7 +280,9 @@ struct LogManagerImpl {
   Status MapProducer(Channel& channel) noexcept {
     channel.queue_fd =
         open(channel.queue_path, O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-    if (channel.queue_fd < 0) return SystemStatus(ErrorCode::kIoError, errno);
+    if (channel.queue_fd < 0) {
+      return SystemStatus(ErrorCode::kIoError, errno);
+    }
     struct stat metadata{};
     if (fstat(channel.queue_fd, &metadata) < 0) {
       return SystemStatus(ErrorCode::kIoError, errno);
@@ -290,13 +293,15 @@ struct LogManagerImpl {
     }
     void* region = mmap(nullptr, channel.mapping_bytes, PROT_READ | PROT_WRITE,
                         MAP_SHARED, channel.queue_fd, 0);
-    if (region == MAP_FAILED) return SystemStatus(ErrorCode::kIoError, errno);
+    if (region == MAP_FAILED) {
+      return SystemStatus(ErrorCode::kIoError, errno);
+    }
     channel.shared = static_cast<SharedLogState*>(region);
     if (channel.shared->magic != kSharedLogMagic ||
         channel.shared->capacity != channel.queue_capacity) {
       return {ErrorCode::kInvalidArgument, {}};
     }
-    std::uint64_t expected = 0;
+    uint64_t expected = 0;
     if (channel.shared->consumer_done.load(std::memory_order_acquire) != 0 ||
         !channel.shared->producer_claimed.compare_exchange_strong(
             expected, 1, std::memory_order_acq_rel)) {
@@ -342,10 +347,14 @@ struct LogManagerImpl {
     const auto bytes = SpscQueue::RequiredBytes(channel.queue_capacity);
     channel.queue_bytes = bytes.bytes;
     channel.mapping_bytes = bytes.bytes + sizeof(SharedLogState);
-    if (config.backend == LogBackend::kLogd) return MapProducer(channel);
+    if (config.backend == LogBackend::kLogd) {
+      return MapProducer(channel);
+    }
     if (channel.sink) {
       const auto status = MapSink(channel);
-      if (!status.ok()) return status;
+      if (!status.ok()) {
+        return status;
+      }
     } else {
       void* region = nullptr;
       const int error = posix_memalign(&region, SpscQueue::required_alignment(),
@@ -391,7 +400,7 @@ struct LogManagerImpl {
     if (!S_ISREG(metadata.st_mode)) {
       return {ErrorCode::kInvalidArgument, {}};
     }
-    for (std::size_t index = 0; index < channel_count; ++index) {
+    for (size_t index = 0; index < channel_count; ++index) {
       if (channels[index].file_fd < 0) {
         continue;
       }
@@ -405,7 +414,7 @@ struct LogManagerImpl {
       }
     }
     if (metadata.st_size > 0) {
-      channel.file_bytes = static_cast<std::uint64_t>(metadata.st_size);
+      channel.file_bytes = static_cast<uint64_t>(metadata.st_size);
     }
     // Touch the entire queue and batch allocations before publishing a Logger.
     // Queue initialization has already installed its atomic control objects.
@@ -455,8 +464,8 @@ struct LogManagerImpl {
     channel.file_bytes = 0;
   }
 
-  bool Flush(Channel& channel, std::size_t index) noexcept {
-    std::size_t offset = 0;
+  bool Flush(Channel& channel, size_t index) noexcept {
+    size_t offset = 0;
     while (offset < channel.batch_used) {
       const auto result =
           WriteFile(hooks, channel.file_fd, channel.batch + offset,
@@ -465,7 +474,7 @@ struct LogManagerImpl {
         continue;
       }
       if (result <= 0 ||
-          static_cast<std::size_t>(result) > channel.batch_used - offset) {
+          static_cast<size_t>(result) > channel.batch_used - offset) {
         if (result >= 0) {
           errno = EIO;
         }
@@ -477,13 +486,13 @@ struct LogManagerImpl {
         }
         return false;
       }
-      offset += static_cast<std::size_t>(result);
-      channel.file_bytes += static_cast<std::uint64_t>(result);
+      offset += static_cast<size_t>(result);
+      channel.file_bytes += static_cast<uint64_t>(result);
       timespec progress{};
       if (clock_gettime(CLOCK_MONOTONIC, &progress) == 0) {
         channel.logger->last_write_ns_.store(
-            static_cast<std::uint64_t>(progress.tv_sec) * 1000000000ULL +
-                static_cast<std::uint64_t>(progress.tv_nsec),
+            static_cast<uint64_t>(progress.tv_sec) * 1000000000ULL +
+                static_cast<uint64_t>(progress.tv_nsec),
             std::memory_order_release);
         if (channel.shared != nullptr) {
           channel.shared->last_write_ns.store(
@@ -496,7 +505,7 @@ struct LogManagerImpl {
     return true;
   }
 
-  bool Rotate(Channel& channel, std::size_t index) noexcept {
+  bool Rotate(Channel& channel, size_t index) noexcept {
     if (SyncFile(hooks, channel.file_fd) < 0) {
       IoError(channel, index, LogErrorStage::kSync);
       return false;
@@ -509,17 +518,16 @@ struct LogManagerImpl {
     }
     char archive[kPathCapacity];
     for (;;) {
-      if (channel.archive_sequence ==
-          std::numeric_limits<std::uint64_t>::max()) {
+      if (channel.archive_sequence == std::numeric_limits<uint64_t>::max()) {
         errno = EOVERFLOW;
         IoError(channel, index, LogErrorStage::kRotate);
         return false;
       }
       ++channel.archive_sequence;
-      const int length = std::snprintf(
-          archive, sizeof(archive), "%s.%llu", channel.file_path,
-          static_cast<unsigned long long>(channel.archive_sequence));
-      if (length < 0 || static_cast<std::size_t>(length) >= sizeof(archive)) {
+      const int length =
+          ::yquant::base::FormatTo(archive, sizeof(archive), "{}.{}",
+                                   channel.file_path, channel.archive_sequence);
+      if (length < 0 || static_cast<size_t>(length) >= sizeof(archive)) {
         errno = ENAMETOOLONG;
         IoError(channel, index, LogErrorStage::kRotate);
         return false;
@@ -557,7 +565,7 @@ struct LogManagerImpl {
   }
 
   // Returns true if the frame budget was exhausted and another poll is needed.
-  bool Drain(Channel& channel, std::size_t index) noexcept {
+  bool Drain(Channel& channel, size_t index) noexcept {
     if (channel.failed) {
       return false;
     }
@@ -568,7 +576,7 @@ struct LogManagerImpl {
                   {ErrorCode::kCorrupt, {}});
       return false;
     }
-    for (std::size_t count = 0; count < kFramesPerPoll; ++count) {
+    for (size_t count = 0; count < kFramesPerPoll; ++count) {
       const auto previous_bytes = channel.batch_used;
       const auto result = channel.consumer.TryRead(std::span(
           channel.batch + previous_bytes, config.batch_bytes - previous_bytes));
@@ -622,7 +630,7 @@ struct LogManagerImpl {
 
   // stream_ended must be observed before the final drain, so an end marker
   // published after an empty read cannot turn a partial drain into success.
-  void FinishChannel(Channel& channel, std::size_t index,
+  void FinishChannel(Channel& channel, size_t index,
                      bool stream_ended = false) noexcept {
     if (channel.sink && !stream_ended) {
       // An early consumer shutdown cannot acknowledge a complete producer
@@ -632,10 +640,9 @@ struct LogManagerImpl {
         RecordError(channel, index, LogErrorStage::kSync,
                     SystemStatus(ErrorCode::kIoError, EPIPE));
       } else {
-        const auto packed =
-            static_cast<std::uint64_t>(ErrorCode::kIoError) |
-            (static_cast<std::uint64_t>(LogErrorStage::kSync) << 8) |
-            (static_cast<std::uint64_t>(EPIPE) << 16);
+        const auto packed = static_cast<uint64_t>(ErrorCode::kIoError) |
+                            (static_cast<uint64_t>(LogErrorStage::kSync) << 8) |
+                            (static_cast<uint64_t>(EPIPE) << 16);
         channel.shared->backend_error.store(packed, std::memory_order_release);
       }
     }
@@ -685,7 +692,7 @@ struct LogManagerImpl {
       return;
     }
     const auto nanoseconds =
-        static_cast<std::uint64_t>(deadline.tv_nsec) + config.idle_sleep_ns;
+        static_cast<uint64_t>(deadline.tv_nsec) + config.idle_sleep_ns;
     deadline.tv_sec += static_cast<time_t>(nanoseconds / 1000000000);
     deadline.tv_nsec = static_cast<long>(nanoseconds % 1000000000);
     Lock();
@@ -731,9 +738,11 @@ struct LogManagerImpl {
       const bool stopping = stop_requested;
       Unlock();
       bool more = false;
-      for (std::size_t channel = 0; channel < count; ++channel) {
+      for (size_t channel = 0; channel < count; ++channel) {
         auto& current = channels[channel];
-        if (current.finished) continue;
+        if (current.finished) {
+          continue;
+        }
         // Observe end-of-stream BEFORE draining so the empty observation cannot
         // precede the producer's final publication.
         const bool ended =
@@ -752,7 +761,7 @@ struct LogManagerImpl {
         WaitIdle();
       }
     }
-    for (std::size_t index = 0; index < channel_count; ++index) {
+    for (size_t index = 0; index < channel_count; ++index) {
       auto& channel = channels[index];
       if (!channel.finished) {
         const bool ended =
@@ -764,7 +773,9 @@ struct LogManagerImpl {
         }
         FinishChannel(channel, index, ended);
       }
-      if (channels[index].shared != nullptr) ReleaseStorage(channels[index]);
+      if (channels[index].shared != nullptr) {
+        ReleaseStorage(channels[index]);
+      }
     }
   }
 
@@ -809,12 +820,12 @@ Status LogManager::Initialize(const LogConfig& config) noexcept {
        config.backend != LogBackend::kLogd) ||
       config.max_loggers == 0 || config.batch_bytes < kMaxLogBytes ||
       config.batch_bytes >
-          static_cast<std::size_t>(std::numeric_limits<ssize_t>::max()) ||
-      config.max_loggers > (std::numeric_limits<std::size_t>::max() -
+          static_cast<size_t>(std::numeric_limits<ssize_t>::max()) ||
+      config.max_loggers > (std::numeric_limits<size_t>::max() -
                             sizeof(internal::LogManagerImpl::Channel)) /
                                sizeof(internal::LogManagerImpl::Channel) ||
       config.idle_sleep_ns >
-          std::numeric_limits<std::uint64_t>::max() - 1000000000) {
+          std::numeric_limits<uint64_t>::max() - 1000000000) {
     return {ErrorCode::kInvalidArgument, {}};
   }
   auto* candidate = new (std::nothrow) internal::LogManagerImpl;
@@ -855,7 +866,9 @@ Status LogManager::Initialize(const LogConfig& config) noexcept {
   candidate->thread_started = config.backend == LogBackend::kThread;
   if (candidate->thread_started) {
     candidate->Lock();
-    while (!candidate->ready) candidate->Wait();
+    while (!candidate->ready) {
+      candidate->Wait();
+    }
     candidate->Unlock();
   }
   impl_ = candidate;
@@ -879,7 +892,7 @@ CreateLoggerResult LogManager::CreateChannel(const LoggerConfig& config,
   const auto required = SpscQueue::RequiredBytes(config.queue_capacity);
   if (required.status != SpscStatus::kSuccess ||
       required.bytes >
-          static_cast<std::uint64_t>(std::numeric_limits<off_t>::max()) -
+          static_cast<uint64_t>(std::numeric_limits<off_t>::max()) -
               sizeof(internal::SharedLogState)) {
     return {{ErrorCode::kInvalidArgument, {}}, nullptr};
   }
@@ -906,7 +919,7 @@ CreateLoggerResult LogManager::CreateChannel(const LoggerConfig& config,
   if (impl_->channel_count == impl_->config.max_loggers) {
     return {{ErrorCode::kResourceExhausted, {}}, nullptr};
   }
-  for (std::size_t index = 0; index < impl_->channel_count; ++index) {
+  for (size_t index = 0; index < impl_->channel_count; ++index) {
     if ((!producer && config.file_path == impl_->channels[index].file_path) ||
         (shared && config.queue_path == impl_->channels[index].queue_path)) {
       return {{ErrorCode::kInvalidArgument, {}}, nullptr};
@@ -965,7 +978,7 @@ ShutdownResult LogManager::Shutdown() noexcept {
   }
   // The caller has already joined all producers. Detach their views before
   // the backend can release the queue storage.
-  for (std::size_t index = 0; index < impl_->channel_count; ++index) {
+  for (size_t index = 0; index < impl_->channel_count; ++index) {
     auto* logger = impl_->channels[index].logger;
     logger->active_.store(0, std::memory_order_release);
     if (logger->producer_.attached() &&
@@ -976,19 +989,18 @@ ShutdownResult LogManager::Shutdown() noexcept {
   if (impl_->config.backend == LogBackend::kLogd) {
     timespec started{};
     (void)clock_gettime(CLOCK_MONOTONIC, &started);
-    for (std::size_t index = 0; index < impl_->channel_count; ++index) {
+    for (size_t index = 0; index < impl_->channel_count; ++index) {
       impl_->channels[index].shared->producer_done.store(
           1, std::memory_order_release);
     }
-    for (std::size_t index = 0; index < impl_->channel_count; ++index) {
+    for (size_t index = 0; index < impl_->channel_count; ++index) {
       auto& channel = impl_->channels[index];
       while (channel.shared->consumer_done.load(std::memory_order_acquire) ==
              0) {
         timespec now{};
         (void)clock_gettime(CLOCK_MONOTONIC, &now);
         const auto elapsed =
-            static_cast<std::uint64_t>(now.tv_sec - started.tv_sec) *
-                1000000000ULL +
+            static_cast<uint64_t>(now.tv_sec - started.tv_sec) * 1000000000ULL +
             now.tv_nsec - started.tv_nsec;
         if (elapsed >= impl_->config.shutdown_timeout_ns) {
           impl_->RecordError(channel, index, LogErrorStage::kSync,
@@ -1012,7 +1024,7 @@ ShutdownResult LogManager::Shutdown() noexcept {
     CheckPthread(pthread_join(impl_->thread, nullptr));
     impl_->thread_started = false;
   }
-  for (std::size_t index = 0; index < impl_->channel_count; ++index) {
+  for (size_t index = 0; index < impl_->channel_count; ++index) {
     auto* logger = impl_->channels[index].logger;
     AddCounters(impl_->final_result.counters, logger->counters());
     delete logger;
@@ -1022,7 +1034,7 @@ ShutdownResult LogManager::Shutdown() noexcept {
   return impl_->final_result;
 }
 
-LogChannelError LogManager::channel_error(std::size_t index) const noexcept {
+LogChannelError LogManager::channel_error(size_t index) const noexcept {
   if (impl_ == nullptr || !impl_->shutdown_complete) {
     return {{ErrorCode::kInvalidState, {}}, LogErrorStage::kNone, 0};
   }

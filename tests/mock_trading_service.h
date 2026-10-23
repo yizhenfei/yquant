@@ -1,7 +1,11 @@
 #ifndef YQUANT_TESTS_MOCK_TRADING_SERVICE_H_
 #define YQUANT_TESTS_MOCK_TRADING_SERVICE_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <algorithm>
+#include <optional>
 #include <vector>
 
 #include "yquant/md/instrument_scope.h"
@@ -15,7 +19,7 @@ namespace yquant::testing {
 class MockTradingService final : public trading::TradingService {
  public:
   struct Event {
-    std::uint64_t deadline = 0;
+    uint64_t deadline = 0;
     trading::TradingDispatch dispatch;
     bool update_account = false;
     trading::AccountView account;
@@ -44,9 +48,13 @@ class MockTradingService final : public trading::TradingService {
                     const md::MarketDataConfig& dictionary) noexcept override {
     ++init_calls;
     stage_ = "trading_connect";
-    if (!init_result.ok()) return init_result;
+    if (!init_result.ok()) {
+      return init_result;
+    }
     const auto status = instruments_.Configure(dictionary);
-    if (!status.ok()) return status;
+    if (!status.ok()) {
+      return status;
+    }
     requests.reserve(trading::kMaxTradingOrders);
     orders_.reserve(trading::kMaxTradingOrders);
     attempted_.reserve(trading::kMaxTradingOrders);
@@ -75,7 +83,9 @@ class MockTradingService final : public trading::TradingService {
   }
   void BeginStopping() noexcept override {
     accepting_ = false;
-    if (stopping_) return;
+    if (stopping_) {
+      return;
+    }
     stopping_ = true;
     events.insert(events.end(), stopping_events.begin(), stopping_events.end());
   }
@@ -87,10 +97,15 @@ class MockTradingService final : public trading::TradingService {
   }
   base::ErrorCode SubmitOrder(const model::OrderRequest& request,
                               model::ClientOrderId& out) noexcept override {
-    if (!accepting_orders()) return base::ErrorCode::kInvalidState;
-    if (submit_result != base::ErrorCode::kOk) return submit_result;
-    if (orders_.size() == trading::kMaxTradingOrders)
+    if (!accepting_orders()) {
+      return base::ErrorCode::kInvalidState;
+    }
+    if (submit_result != base::ErrorCode::kOk) {
+      return submit_result;
+    }
+    if (orders_.size() == trading::kMaxTradingOrders) {
       return base::ErrorCode::kResourceExhausted;
+    }
     requests.push_back(request);
     model::OrderSnapshot order;
     order.client_order_id = {orders_.size() + 1};
@@ -106,48 +121,58 @@ class MockTradingService final : public trading::TradingService {
     return base::ErrorCode::kOk;
   }
   base::ErrorCode CancelOrder(model::ClientOrderId id) noexcept override {
-    if (!accepting_orders()) return base::ErrorCode::kInvalidState;
-    if (id.value == 0 || id.value > orders_.size())
-      return base::ErrorCode::kInvalidArgument;
-    auto& order = orders_[id.value - 1];
-    if (order.state != model::OrderState::kWorking || order.cancel_pending)
+    if (!accepting_orders()) {
       return base::ErrorCode::kInvalidState;
+    }
+    if (id.value == 0 || id.value > orders_.size()) {
+      return base::ErrorCode::kInvalidArgument;
+    }
+    auto& order = orders_[id.value - 1];
+    if (order.state != model::OrderState::kWorking || order.cancel_pending) {
+      return base::ErrorCode::kInvalidState;
+    }
     ++cancel_calls;
     order.cancel_pending = true;
-    order.cancel_request_id = {static_cast<std::uint64_t>(cancel_calls)};
+    order.cancel_request_id = {static_cast<uint64_t>(cancel_calls)};
     return base::ErrorCode::kOk;
   }
   bool TryGetOrder(model::ClientOrderId id,
                    model::OrderSnapshot& out) const noexcept override {
-    if (!initialized_ || id.value == 0 || id.value > orders_.size())
+    if (!initialized_ || id.value == 0 || id.value > orders_.size()) {
       return false;
+    }
     out = orders_[id.value - 1];
     return true;
   }
   bool TryGetCash(model::CashSnapshot& out) const noexcept override {
-    if (!initialized_ || account_.type != model::AccountType::kCash)
+    if (!initialized_ || account_.type != model::AccountType::kCash) {
       return false;
+    }
     out = account_.cash;
     return true;
   }
   bool TryGetPosition(model::InstrumentId id,
                       model::PositionSnapshot& out) const noexcept override {
     if (!initialized_ || account_.type != model::AccountType::kCash ||
-        !instruments_.HasInstrument(id))
+        !instruments_.HasInstrument(id)) {
       return false;
-    for (std::size_t i = 0; i < account_.position_count; ++i)
+    }
+    for (size_t i = 0; i < account_.position_count; ++i) {
       if (account_.positions[i].instrument_id == id) {
         out = account_.positions[i];
         return true;
       }
+    }
     out = {id, 0, 0, 0};
     return true;
   }
-  base::Status ProcessRequests(std::uint64_t now,
-                               std::size_t limit = 64) noexcept override {
+  base::Status ProcessRequests(uint64_t now,
+                               size_t limit = 64) noexcept override {
     stage_ = "trading_send";
-    for (std::size_t i = 0; i < orders_.size() && limit != 0; ++i) {
-      if (attempted_[i]) continue;
+    for (size_t i = 0; i < orders_.size() && limit != 0; ++i) {
+      if (attempted_[i]) {
+        continue;
+      }
       --limit;
       attempted_[i] = true;
       if (stopping_) {
@@ -162,51 +187,69 @@ class MockTradingService final : public trading::TradingService {
         events.push_back(event);
       } else {
         ++send_calls;
-        if (!send_result.ok()) return send_result;
+        if (!send_result.ok()) {
+          return send_result;
+        }
       }
     }
     return {};
   }
-  std::optional<std::uint64_t> next_deadline() const noexcept override {
-    for (const bool attempted : attempted_)
-      if (!attempted) return 0;
-    if (next_event_ < events.size()) return events[next_event_].deadline;
+  std::optional<uint64_t> next_deadline() const noexcept override {
+    for (const bool attempted : attempted_) {
+      if (!attempted) {
+        return 0;
+      }
+    }
+    if (next_event_ < events.size()) {
+      return events[next_event_].deadline;
+    }
     return {};
   }
-  bool has_ready_event(std::uint64_t now) const noexcept override {
-    if (next_event_ == events.size()) return false;
+  bool has_ready_event(uint64_t now) const noexcept override {
+    if (next_event_ == events.size()) {
+      return false;
+    }
     const auto id =
         events[next_event_].dispatch.update.order.client_order_id.value;
     return id != 0 && id <= attempted_.size() && attempted_[id - 1] &&
            events[next_event_].deadline <= now;
   }
   bool is_drained() const noexcept override {
-    if (!initialized_) return true;
-    if (!stopping_ || never_drained || next_event_ < events.size())
+    if (!initialized_) {
+      return true;
+    }
+    if (!stopping_ || never_drained || next_event_ < events.size()) {
       return false;
+    }
     return std::all_of(orders_.begin(), orders_.end(), [](const auto& order) {
       return model::IsTerminalOrderState(order.state) && !order.cancel_pending;
     });
   }
-  std::size_t order_count() const noexcept override { return orders_.size(); }
+  size_t order_count() const noexcept override { return orders_.size(); }
   const char* error_detail() const noexcept override {
     return "injected trading service failure";
   }
   const char* error_stage() const noexcept override { return stage_; }
-  base::Status Poll(std::uint64_t now, trading::TradingDispatch& out,
+  base::Status Poll(uint64_t now, trading::TradingDispatch& out,
                     bool& event) noexcept override {
     ++poll_calls;
     stage_ = "trading_poll";
-    if (!poll_result.ok()) return poll_result;
+    if (!poll_result.ok()) {
+      return poll_result;
+    }
     if (!has_ready_event(now)) {
       event = false;
       return {};
     }
     const auto& next = events[next_event_];
     const auto id = next.dispatch.update.order.client_order_id.value;
-    if (id == 0 || id > orders_.size()) return {base::ErrorCode::kCorrupt, {}};
+    if (id == 0 || id > orders_.size()) {
+      return {base::ErrorCode::kCorrupt, {}};
+    }
     orders_[id - 1] = next.dispatch.update.order;
-    if (next.update_account) account_ = next.account;
+    if (next.update_account) {
+      account_ = next.account;
+    }
     out = next.dispatch;
     ++next_event_;
     ++delivered;
@@ -216,8 +259,9 @@ class MockTradingService final : public trading::TradingService {
 
   bool TryGetFuturesAccount(
       model::FuturesAccountSnapshot& out) const noexcept override {
-    if (!initialized_ || account_.type != model::AccountType::kFutures)
+    if (!initialized_ || account_.type != model::AccountType::kFutures) {
       return false;
+    }
     out = account_.futures;
     return true;
   }
@@ -225,13 +269,15 @@ class MockTradingService final : public trading::TradingService {
       model::InstrumentId id,
       model::FuturesPositionSnapshot& out) const noexcept override {
     if (!initialized_ || account_.type != model::AccountType::kFutures ||
-        !instruments_.HasInstrument(id))
+        !instruments_.HasInstrument(id)) {
       return false;
-    for (std::size_t i = 0; i < account_.futures_position_count; ++i)
+    }
+    for (size_t i = 0; i < account_.futures_position_count; ++i) {
       if (account_.futures_positions[i].instrument_id == id) {
         out = account_.futures_positions[i];
         return true;
       }
+    }
     out = {};
     out.instrument_id = id;
     return true;
@@ -246,7 +292,7 @@ class MockTradingService final : public trading::TradingService {
   trading::AccountView account_;
   std::vector<model::OrderSnapshot> orders_;
   std::vector<bool> attempted_;
-  std::size_t next_event_ = 0;
+  size_t next_event_ = 0;
   bool initialized_ = false;
   bool accepting_ = false;
   bool stopping_ = false;

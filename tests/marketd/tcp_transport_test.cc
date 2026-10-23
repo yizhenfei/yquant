@@ -4,6 +4,8 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -12,7 +14,6 @@
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
-#include <cstdint>
 #include <cstring>
 #include <span>
 #include <thread>
@@ -23,14 +24,13 @@
 namespace yquant::marketd {
 namespace {
 
-using namespace std::chrono_literals;
 using Clock = std::chrono::steady_clock;
-constexpr std::uint64_t kReceiveTime = 123456;
+constexpr uint64_t kReceiveTime = 123456;
 
-model::QuoteTick Quote(std::uint64_t sequence = 1) {
+model::QuoteTick Quote(uint64_t sequence = 1) {
   model::QuoteTick quote;
   quote.source_id.value = 13;
-  quote.instrument_id.value = (std::uint64_t{1} << 32) | 600000;
+  quote.instrument_id.value = (uint64_t{1} << 32) | 600000;
   quote.sequence = sequence;
   quote.event_time_ns = 1000 + sequence;
   quote.receive_time_ns = 999;
@@ -52,12 +52,16 @@ class RawServer {
  public:
   ~RawServer() {
     ClosePeer();
-    if (listener_ >= 0) ::close(listener_);
+    if (listener_ >= 0) {
+      ::close(listener_);
+    }
   }
 
   bool Init() {
     listener_ = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (listener_ < 0 || !Nonblocking(listener_)) return false;
+    if (listener_ < 0 || !Nonblocking(listener_)) {
+      return false;
+    }
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -76,23 +80,26 @@ class RawServer {
   }
 
   bool Accept() {
-    const auto deadline = Clock::now() + 3s;
+    const auto deadline = Clock::now() + std::chrono::seconds(3);
     while (Clock::now() < deadline) {
       peer_ = ::accept(listener_, nullptr, nullptr);
-      if (peer_ >= 0) return Nonblocking(peer_);
-      if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+      if (peer_ >= 0) {
+        return Nonblocking(peer_);
+      }
+      if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
         return false;
+      }
       std::this_thread::yield();
     }
     return false;
   }
 
   bool Send(std::span<const std::byte> bytes) {
-    const auto deadline = Clock::now() + 3s;
+    const auto deadline = Clock::now() + std::chrono::seconds(3);
     while (!bytes.empty() && Clock::now() < deadline) {
       const auto count = ::send(peer_, bytes.data(), bytes.size(), 0);
       if (count > 0) {
-        bytes = bytes.subspan(static_cast<std::size_t>(count));
+        bytes = bytes.subspan(static_cast<size_t>(count));
       } else if (count < 0 &&
                  (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
         std::this_thread::yield();
@@ -104,26 +111,32 @@ class RawServer {
   }
 
   void ClosePeer() {
-    if (peer_ >= 0) ::close(peer_);
+    if (peer_ >= 0) {
+      ::close(peer_);
+    }
     peer_ = -1;
   }
-  std::uint16_t port() const { return port_; }
+  uint16_t port() const { return port_; }
 
  private:
   int listener_ = -1;
   int peer_ = -1;
-  std::uint16_t port_ = 0;
+  uint16_t port_ = 0;
 };
 
 // A connected receiver with a deliberately small advertised window.
 class IdleClient {
  public:
   ~IdleClient() {
-    if (descriptor_ >= 0) ::close(descriptor_);
+    if (descriptor_ >= 0) {
+      ::close(descriptor_);
+    }
   }
-  bool Connect(std::uint16_t port) {
+  bool Connect(uint16_t port) {
     descriptor_ = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (descriptor_ < 0 || !Nonblocking(descriptor_)) return false;
+    if (descriptor_ < 0 || !Nonblocking(descriptor_)) {
+      return false;
+    }
     const int receive_bytes = 1024;
     if (::setsockopt(descriptor_, SOL_SOCKET, SO_RCVBUF, &receive_bytes,
                      sizeof(receive_bytes)) != 0) {
@@ -137,8 +150,10 @@ class IdleClient {
                   sizeof(address)) == 0) {
       return true;
     }
-    if (errno != EINPROGRESS) return false;
-    const auto deadline = Clock::now() + 3s;
+    if (errno != EINPROGRESS) {
+      return false;
+    }
+    const auto deadline = Clock::now() + std::chrono::seconds(3);
     while (Clock::now() < deadline) {
       pollfd descriptor{descriptor_, POLLOUT, 0};
       const int ready = ::poll(&descriptor, 1, 0);
@@ -149,7 +164,9 @@ class IdleClient {
                    0 &&
                error == 0;
       }
-      if (ready < 0 && errno != EINTR) return false;
+      if (ready < 0 && errno != EINTR) {
+        return false;
+      }
       std::this_thread::yield();
     }
     return false;
@@ -161,15 +178,17 @@ class IdleClient {
 
 // Nonblocking connect can finish before accept runs, so publication starts
 // only after every intended downstream has its own queue on the publisher.
-bool WaitForClients(TcpPublisher& publisher, std::size_t expected) {
-  const auto deadline = Clock::now() + 3s;
+bool WaitForClients(TcpPublisher& publisher, size_t expected) {
+  const auto deadline = Clock::now() + std::chrono::seconds(3);
   while (Clock::now() < deadline) {
     const auto status = publisher.Service(0);
     if (!status.ok()) {
       ADD_FAILURE() << publisher.error_detail();
       return false;
     }
-    if (publisher.connected_clients() == expected) return true;
+    if (publisher.connected_clients() == expected) {
+      return true;
+    }
     std::this_thread::yield();
   }
   ADD_FAILURE() << "TCP accepted clients: " << publisher.connected_clients()
@@ -178,11 +197,13 @@ bool WaitForClients(TcpPublisher& publisher, std::size_t expected) {
 }
 
 PollResult Await(TcpSource& source, model::QuoteTick& out) {
-  const auto deadline = Clock::now() + 3s;
+  const auto deadline = Clock::now() + std::chrono::seconds(3);
   PollResult result;
   while (Clock::now() < deadline) {
     result = source.Poll(kReceiveTime, out);
-    if (result.state != PollState::kIdle) return result;
+    if (result.state != PollState::kIdle) {
+      return result;
+    }
     std::this_thread::yield();
   }
   ADD_FAILURE() << "TCP source remained idle until deadline";
@@ -208,7 +229,7 @@ TEST(TcpTransportTest, EphemeralPortFansOutCompleteFramesToTwoClients) {
   auto output = Quote(999);
   EXPECT_EQ(first.Poll(kReceiveTime, output).state, PollState::kIdle);
   EXPECT_EQ(output, Quote(999));
-  for (std::uint64_t sequence = 1; sequence <= 128; ++sequence) {
+  for (uint64_t sequence = 1; sequence <= 128; ++sequence) {
     const auto quote = Quote(sequence);
     ASSERT_TRUE(publisher.Publish(quote).ok());
     ASSERT_EQ(Await(first, output).state, PollState::kEvent);
@@ -339,7 +360,7 @@ TEST(TcpTransportTest, ClosingOneClientPreservesOtherClientProgress) {
   ASSERT_EQ(Await(healthy, output).state, PollState::kEvent);
   closed.Close();
   ASSERT_TRUE(WaitForClients(publisher, 1));
-  for (std::uint64_t sequence = 2; sequence <= 16; ++sequence) {
+  for (uint64_t sequence = 2; sequence <= 16; ++sequence) {
     ASSERT_TRUE(publisher.Publish(Quote(sequence)).ok());
     ASSERT_EQ(Await(healthy, output).state, PollState::kEvent);
     ExpectQuote(output, Quote(sequence));
@@ -384,8 +405,8 @@ TEST(TcpTransportTest, SlowClientQueueOverflowIsIsolated) {
   ASSERT_TRUE(healthy.Init({"127.0.0.1", publisher.port()}).ok());
   ASSERT_TRUE(WaitForClients(publisher, 2));
   model::QuoteTick output;
-  std::uint64_t sequence = 0;
-  const auto deadline = Clock::now() + 3s;
+  uint64_t sequence = 0;
+  const auto deadline = Clock::now() + std::chrono::seconds(3);
   // The idle socket eventually fills both its TCP receive window and the
   // publisher's bounded queue, while each healthy frame is drained immediately.
   while (publisher.disconnected_clients() == 0 && Clock::now() < deadline &&
@@ -395,7 +416,9 @@ TEST(TcpTransportTest, SlowClientQueueOverflowIsIsolated) {
     PollResult result;
     do {
       result = healthy.Poll(kReceiveTime, output);
-      if (result.state != PollState::kIdle) break;
+      if (result.state != PollState::kIdle) {
+        break;
+      }
       std::this_thread::yield();
     } while (Clock::now() < deadline);
     ASSERT_EQ(result.state, PollState::kEvent);

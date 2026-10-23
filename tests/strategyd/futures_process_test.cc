@@ -1,7 +1,7 @@
+#include <stdint.h>
+
 #include <charconv>
 #include <csignal>
-#include <cstdint>
-#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -9,6 +9,7 @@
 #include <system_error>
 #include <vector>
 
+#include "file_test_support.h"
 #include "gtest/gtest.h"
 #include "test_config_file.h"
 #include "trading_process_helpers.h"
@@ -21,31 +22,38 @@ namespace {
 // when the temporary configuration moves to another directory.
 std::string AcceleratedReplay() {
   md::MarketDataConfigLoader loader;
-  if (!loader.Load(YQUANT_TEST_FUTURES_MARKET_CONFIG_PATH).ok()) return {};
+  if (!loader.Load(YQUANT_TEST_FUTURES_MARKET_CONFIG_PATH).ok()) {
+    return {};
+  }
   std::ifstream input(YQUANT_TEST_FUTURES_MARKET_CONFIG_PATH);
   std::string json{std::istreambuf_iterator<char>(input), {}};
   const auto replace = [&](std::string_view before, std::string_view after) {
     const auto offset = json.find(before);
-    if (offset == std::string::npos) return false;
+    if (offset == std::string::npos) {
+      return false;
+    }
     json.replace(offset, before.size(), after);
     return true;
   };
   const auto quote_path = [](std::string_view path) {
     std::string result = "\"";
     for (const char byte : path) {
-      if (byte == '"' || byte == '\\') result += '\\';
+      if (byte == '"' || byte == '\\') {
+        result += '\\';
+      }
       result += byte;
     }
     return result + '"';
   };
-  const auto catalog_path =
-      std::filesystem::absolute("examples/instruments.json");
+  const auto catalog_path = ::yquant::testing::files::AbsolutePath(
+      ::yquant::testing::files::FilePath("examples/instruments.json"));
   if (!replace("\"examples/data/a1805_20171227.csv\"",
                quote_path(loader.config().replay_path)) ||
       !replace("\"examples/instruments.json\"",
                quote_path(catalog_path.native())) ||
-      !replace("\"replay_speed\": 100", "\"replay_speed\": 1000"))
+      !replace("\"replay_speed\": 100", "\"replay_speed\": 1000")) {
     return {};
+  }
   return json;
 }
 
@@ -62,7 +70,7 @@ std::vector<std::string> FuturesArguments(const char* market_path) {
 
 // Reads one complete numeric field from the final summary, independently of
 // the number and order of fields in readiness messages.
-std::int64_t SummaryValue(std::string_view output, std::string_view name) {
+int64_t SummaryValue(std::string_view output, std::string_view name) {
   const auto stopped = output.rfind("futures_bbo: stopped ");
   if (stopped == output.npos) {
     ADD_FAILURE() << output;
@@ -78,7 +86,7 @@ std::int64_t SummaryValue(std::string_view output, std::string_view name) {
   }
   offset += key.size();
   const auto value = output.substr(offset);
-  std::int64_t number = INT64_MIN;
+  int64_t number = INT64_MIN;
   const auto parsed =
       std::from_chars(value.data(), value.data() + value.size(), number);
   EXPECT_EQ(parsed.ec, std::errc{});

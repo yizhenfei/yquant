@@ -1,7 +1,7 @@
 #ifndef YQUANT_STRATEGYD_STRATEGY_LIBRARY_H_
 #define YQUANT_STRATEGYD_STRATEGY_LIBRARY_H_
 
-#include <cstddef>
+#include <stddef.h>
 
 #include "yquant/base/status.h"
 #include "yquant/strategy/strategy_plugin.h"
@@ -54,7 +54,7 @@ class StrategyLibrary {
   void SetError(const char* stage, const char* detail) noexcept;
 
   // Diagnostic capacity in bytes, including the terminating null.
-  static constexpr std::size_t kErrorDetailSize = 1024;
+  static constexpr size_t kErrorDetailSize = 1024;
   void* handle_ = nullptr;  // Owned loader reference, null when closed.
   const strategy::StrategyPlugin* plugin_ = nullptr;  // Borrowed from handle_.
   const char* error_stage_ = "";

@@ -4,12 +4,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <limits>
 #include <string>
 #include <string_view>
 #include <system_error>
 
+#include "file_test_support.h"
 #include "gtest/gtest.h"
 #include "scoped_working_directory.h"
 #include "test_config_file.h"
@@ -25,7 +25,9 @@ using ::yquant::testing::ConfigFile;
 std::string Replace(std::string json, std::string_view from,
                     std::string_view to) {
   const auto position = json.find(from);
-  if (position != std::string::npos) json.replace(position, from.size(), to);
+  if (position != std::string::npos) {
+    json.replace(position, from.size(), to);
+  }
   return json;
 }
 
@@ -36,7 +38,8 @@ class CatalogConfigDirectory {
   ~CatalogConfigDirectory() {
     if (valid_) {
       std::error_code error;
-      std::filesystem::remove_all(path_, error);
+      ::yquant::testing::files::RemoveTree(
+          ::yquant::testing::files::FilePath(path_), error);
     }
   }
   CatalogConfigDirectory(const CatalogConfigDirectory&) = delete;
@@ -44,16 +47,23 @@ class CatalogConfigDirectory {
 
   bool valid() const { return valid_; }
   std::string File(std::string_view name) const {
-    return (std::filesystem::path(path_) / name).string();
+    return (::yquant::testing::files::FilePath(path_) / name).string();
   }
   bool Write(std::string_view name, std::string_view contents) const {
-    if (!valid_) return false;
-    const auto file_path = std::filesystem::path(path_) / name;
+    if (!valid_) {
+      return false;
+    }
+    const auto file_path = ::yquant::testing::files::FilePath(path_) / name;
     std::error_code error;
-    std::filesystem::create_directories(file_path.parent_path(), error);
-    if (error) return false;
+    ::yquant::testing::files::CreateDirectories(
+        ::yquant::testing::files::FilePath(file_path.Parent()), error);
+    if (error) {
+      return false;
+    }
     FILE* file = std::fopen(file_path.c_str(), "wb");
-    if (file == nullptr) return false;
+    if (file == nullptr) {
+      return false;
+    }
     const auto written = std::fwrite(contents.data(), 1, contents.size(), file);
     return std::fclose(file) == 0 && written == contents.size();
   }
@@ -90,7 +100,7 @@ TEST(MarketDataConfigTest,
   EXPECT_EQ(loader.config().adapter, MarketDataAdapter::kReplay);
   const std::string path(file.path());
   const auto expected =
-      std::filesystem::current_path().string() + "/quotes.csv";
+      ::yquant::testing::files::CurrentPath().string() + "/quotes.csv";
   EXPECT_STREQ(loader.config().replay_path, expected.c_str());
   EXPECT_EQ(loader.config().replay_speed, 1U);
   EXPECT_EQ(loader.config().replay_tail_ns, 1000000000U);

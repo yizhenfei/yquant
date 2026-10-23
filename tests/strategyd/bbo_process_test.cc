@@ -1,7 +1,8 @@
+#include <stddef.h>
+#include <stdint.h>
+
 #include <cinttypes>
 #include <csignal>
-#include <cstddef>
-#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <string_view>
@@ -27,10 +28,9 @@ std::vector<std::string> BboArguments() {
 }
 
 // Counts complete readiness/lifecycle markers, independently of other output.
-std::size_t CountMarkers(std::string_view output,
-                         std::string_view marker) noexcept {
-  std::size_t count = 0;
-  std::size_t offset = 0;
+size_t CountMarkers(std::string_view output, std::string_view marker) noexcept {
+  size_t count = 0;
+  size_t offset = 0;
   while ((offset = output.find(marker, offset)) != std::string_view::npos) {
     ++count;
     offset += marker.size();
@@ -61,15 +61,15 @@ TEST(BboProcessTest, LoadsPluginAndDrainsQuotesAfterTerminationSignal) {
   const auto offset = child.output().find(kStopped);
   const auto line =
       child.output().substr(offset, child.output().find('\n', offset) - offset);
-  std::uint64_t submitted = 0;
-  std::uint64_t cancels = 0;
-  std::uint64_t fills = 0;
-  std::uint64_t filled_qty = 0;
-  std::int64_t cash = 0;
-  std::int64_t cash_reserved = 0;
-  std::int64_t total_qty = 0;
-  std::int64_t available_qty = 0;
-  std::int64_t reserved_qty = 0;
+  uint64_t submitted = 0;
+  uint64_t cancels = 0;
+  uint64_t fills = 0;
+  uint64_t filled_qty = 0;
+  int64_t cash = 0;
+  int64_t cash_reserved = 0;
+  int64_t total_qty = 0;
+  int64_t available_qty = 0;
+  int64_t reserved_qty = 0;
   unsigned slots = 0;
   ASSERT_EQ(std::sscanf(line.c_str(),
                         "bbo_market_making: stopped submitted=%" SCNu64

@@ -1,8 +1,12 @@
 #include "strategyd/replay_market_data_source.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
 #include <cstring>
 #include <limits>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -177,10 +181,10 @@ TEST(ReplayMarketDataSourceTest, StartOverflowLeavesPreparedStateRetryable) {
   EXPECT_FALSE(source.finished());
   ASSERT_TRUE(source.Start(std::span(&id, 1), 0).ok());
   model::QuoteTick quote;
-  ASSERT_EQ(source.Poll(std::numeric_limits<std::uint64_t>::max(), quote).state,
+  ASSERT_EQ(source.Poll(std::numeric_limits<uint64_t>::max(), quote).state,
             MarketDataPollState::kEvent);
   EXPECT_FALSE(source.finished());
-  EXPECT_EQ(source.Poll(std::numeric_limits<std::uint64_t>::max(), quote).state,
+  EXPECT_EQ(source.Poll(std::numeric_limits<uint64_t>::max(), quote).state,
             MarketDataPollState::kIdle);
   EXPECT_TRUE(source.finished());
 }
@@ -192,13 +196,11 @@ TEST(ReplayMarketDataSourceTest, TailOverflowAlsoPreservesPreparedState) {
   config.replay_tail_ns = 5;
   ReplayMarketDataSource source;
   ASSERT_TRUE(source.Prepare(config).ok());
-  EXPECT_EQ(
-      source.Start({}, std::numeric_limits<std::uint64_t>::max() - 9).code,
-      base::ErrorCode::kResourceExhausted);
+  EXPECT_EQ(source.Start({}, std::numeric_limits<uint64_t>::max() - 9).code,
+            base::ErrorCode::kResourceExhausted);
   EXPECT_FALSE(source.next_deadline());
-  ASSERT_TRUE(
-      source.Start({}, std::numeric_limits<std::uint64_t>::max() - 10).ok());
-  EXPECT_EQ(source.next_deadline(), std::numeric_limits<std::uint64_t>::max());
+  ASSERT_TRUE(source.Start({}, std::numeric_limits<uint64_t>::max() - 10).ok());
+  EXPECT_EQ(source.next_deadline(), std::numeric_limits<uint64_t>::max());
 }
 
 struct InvalidCsv {
@@ -283,12 +285,14 @@ TEST(ReplayMarketDataSourceTest, AcceptsCrLfFinalLineAndSignedPriceBoundary) {
   ASSERT_TRUE(source.Start(std::span(&id, 1), 0).ok());
   model::QuoteTick quote;
   ASSERT_EQ(source.Poll(0, quote).state, MarketDataPollState::kEvent);
-  EXPECT_EQ(quote.bid_price, std::numeric_limits<std::int64_t>::min());
+  EXPECT_EQ(quote.bid_price, std::numeric_limits<int64_t>::min());
 }
 
 TEST(ReplayMarketDataSourceTest, EnforcesFrameAndFileCapacityBeforeActivation) {
   std::string csv(kHeader);
-  for (std::size_t index = 0; index != kMaxReplayFrames; ++index) csv += kRow;
+  for (size_t index = 0; index != kMaxReplayFrames; ++index) {
+    csv += kRow;
+  }
   testing::ConfigFile full(csv);
   ASSERT_TRUE(full.valid());
   ReplayMarketDataSource source;

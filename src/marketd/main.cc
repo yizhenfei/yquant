@@ -1,10 +1,14 @@
+#include <stdint.h>
+
 #include <charconv>
 #include <cstdio>
 #include <cstring>
 #include <string_view>
+#include <system_error>
 
 #include "marketd/config.h"
 #include "marketd/runner.h"
+#include "yquant/base/format.h"
 #include "yquant/base/monotonic_clock.h"
 #include "yquant/base/termination_signals.h"
 
@@ -21,11 +25,12 @@ void PrintUsage(FILE* output) noexcept {
 // Includes the owned stage detail after adapter resources have been closed.
 void PrintFailure(const char* stage, const yquant::base::Status& status,
                   const char* detail) noexcept {
-  std::fprintf(stderr, "yquant-marketd: stage=%s code=%u detail=%s", stage,
-               static_cast<unsigned>(status.code), detail);
+  ::yquant::base::Print(stderr, "yquant-marketd: stage={} code={} detail={}",
+                        stage, static_cast<unsigned>(status.code), detail);
   if (status.system_error) {
-    std::fprintf(stderr, " system_error=%d (%s)", status.system_error.value(),
-                 std::strerror(status.system_error.value()));
+    ::yquant::base::Print(stderr, " system_error={} ({})",
+                          status.system_error.value(),
+                          std::strerror(status.system_error.value()));
   }
   std::fputc('\n', stderr);
 }
@@ -40,7 +45,7 @@ int main(int argc, char* argv[]) {
   const char* config_path = nullptr;
   bool check_config = false;
   bool has_limit = false;
-  std::uint64_t max_events = 0;
+  uint64_t max_events = 0;
   bool valid = true;
   for (int i = 1; i < argc && valid; ++i) {
     const std::string_view arg = argv[i];
@@ -68,13 +73,13 @@ int main(int argc, char* argv[]) {
   auto status = loader.Load(config_path);
   if (!status.ok()) {
     char detail[768];
-    std::snprintf(detail, sizeof(detail), "%s: %s", loader.error().field_path,
-                  loader.error().message);
+    ::yquant::base::FormatTo(detail, sizeof(detail), "{}: {}",
+                             loader.error().field_path, loader.error().message);
     PrintFailure("config", status, detail);
     return 1;
   }
   if (check_config) {
-    std::fprintf(stdout, "yquant-marketd: configuration valid\n");
+    ::yquant::base::Print(stdout, "yquant-marketd: configuration valid\n");
     return 0;
   }
   yquant::base::TerminationSignals signals;
@@ -90,14 +95,15 @@ int main(int argc, char* argv[]) {
     PrintFailure(runner.error_stage(), status, runner.error_detail());
     return 1;
   }
-  std::fprintf(stdout, "yquant-marketd: Running config=%s\n", config_path);
+  ::yquant::base::Print(stdout, "yquant-marketd: Running config={}\n",
+                        config_path);
   std::fflush(stdout);
   status = runner.Run(clock, signals, max_events);
   if (!status.ok()) {
     PrintFailure(runner.error_stage(), status, runner.error_detail());
     return 1;
   }
-  std::fprintf(stdout, "yquant-marketd: Stopped events=%llu\n",
-               static_cast<unsigned long long>(runner.event_count()));
+  ::yquant::base::Print(stdout, "yquant-marketd: Stopped events={}\n",
+                        runner.event_count());
   return 0;
 }

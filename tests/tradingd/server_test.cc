@@ -1,17 +1,22 @@
 #include "tradingd/server.h"
 
+#include <stdint.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <thread>
 #include <vector>
 
+#include "file_test_support.h"
 #include "gtest/gtest.h"
 #include "scoped_working_directory.h"
+#include "yquant/base/format.h"
 #include "yquant/md/market_data_config.h"
 #include "yquant/trading/connection.h"
 
@@ -20,14 +25,14 @@ namespace {
 
 class TestClock final : public base::MonotonicClock {
  public:
-  std::uint64_t Now() const noexcept override { return now; }
-  std::uint64_t now = 1000000;
+  uint64_t Now() const noexcept override { return now; }
+  uint64_t now = 1000000;
 };
 
 ServerConfig Config() {
   ServerConfig config;
   config.listen.port = 0;
-  std::snprintf(config.token, sizeof(config.token), "test-token");
+  ::yquant::base::FormatTo(config.token, sizeof(config.token), "test-token");
   config.market_data.source_id = {1};
 
   config.market_data.instrument_count = 1;
@@ -45,7 +50,7 @@ ServerConfig Config() {
 
 struct Peer {
   trading::Connection connection;
-  std::uint64_t generation = 0;
+  uint64_t generation = 0;
   std::vector<trading::Message> received;
 };
 
@@ -61,38 +66,42 @@ class ServerTest : public ::testing::Test {
     ASSERT_TRUE(server.Init(config).ok()) << server.error_detail();
   }
 
-  void Connect(Peer& peer, std::uint64_t id = 1,
-               const char* token = "test-token") {
+  void Connect(Peer& peer, uint64_t id = 1, const char* token = "test-token") {
     trading::Endpoint endpoint;
     endpoint.port = server.port();
     ASSERT_TRUE(peer.connection.Connect(endpoint, 1000000000).ok());
     trading::Message hello;
     hello.type = trading::MessageType::kHello;
     hello.client_id = id;
-    std::snprintf(hello.token, sizeof(hello.token), "%s", token);
+    ::yquant::base::FormatTo(hello.token, sizeof(hello.token), "{}", token);
     hello.instrument_count = 1;
     hello.instruments[0] = {config.market_data.instruments[0].instrument.id, 2};
     ASSERT_TRUE(peer.connection.Queue(hello).ok());
     Pump();
-    for (const auto& message : peer.received)
-      if (message.type == trading::MessageType::kWelcome)
+    for (const auto& message : peer.received) {
+      if (message.type == trading::MessageType::kWelcome) {
         peer.generation = message.generation;
+      }
+    }
   }
 
   void Pump() {
     for (int iteration = 0; iteration < 40; ++iteration) {
       for (auto* peer : {&first, &second}) {
-        if (peer->connection.open()) (void)peer->connection.Service();
+        if (peer->connection.open()) {
+          (void)peer->connection.Service();
+        }
       }
       ASSERT_TRUE(server.Service(clock.now).ok()) << server.error_detail();
       for (auto* peer : {&first, &second}) {
         for (int count = 0; count < 64 && peer->connection.open(); ++count) {
           trading::Message message;
           const auto result = peer->connection.Poll(message);
-          if (result.state == trading::ReceiveState::kMessage)
+          if (result.state == trading::ReceiveState::kMessage) {
             peer->received.push_back(message);
-          else
+          } else {
             break;
+          }
         }
       }
       std::this_thread::yield();
@@ -107,8 +116,12 @@ class ServerTest : public ::testing::Test {
         std::chrono::steady_clock::now() + std::chrono::seconds(2);
     do {
       Pump();
-      if (HasFatalFailure()) return false;
-      if (ready()) return true;
+      if (HasFatalFailure()) {
+        return false;
+      }
+      if (ready()) {
+        return true;
+      }
     } while (std::chrono::steady_clock::now() < deadline);
     return false;
   }
@@ -118,7 +131,7 @@ class ServerTest : public ::testing::Test {
     Pump();
   }
 
-  void Order(Peer& peer, std::uint64_t id, std::int64_t qty,
+  void Order(Peer& peer, uint64_t id, int64_t qty,
              model::OrderSide side = model::OrderSide::kBuy) {
     trading::Message message;
     message.type = trading::MessageType::kNewOrder;
@@ -130,12 +143,14 @@ class ServerTest : public ::testing::Test {
   }
 
   const trading::Message* Update(const Peer& peer, model::OrderUpdateKind kind,
-                                 std::uint64_t order_id = 1) const {
-    for (auto it = peer.received.rbegin(); it != peer.received.rend(); ++it)
+                                 uint64_t order_id = 1) const {
+    for (auto it = peer.received.rbegin(); it != peer.received.rend(); ++it) {
       if (it->type == trading::MessageType::kOrderUpdate &&
           it->update.kind == kind &&
-          it->update.order.client_order_id.value == order_id)
+          it->update.order.client_order_id.value == order_id) {
         return &*it;
+      }
+    }
     return nullptr;
   }
 
@@ -185,8 +200,9 @@ TEST_F(ServerTest, MultipleClientsCannotReserveTheSameCash) {
   EXPECT_EQ(server.account().cash.available, 400000000);
   const auto* rejected = Update(first, model::OrderUpdateKind::kRejected);
   const auto& accepted_peer = rejected != nullptr ? second : first;
-  if (rejected == nullptr)
+  if (rejected == nullptr) {
     rejected = Update(second, model::OrderUpdateKind::kRejected);
+  }
   ASSERT_NE(rejected, nullptr);
   EXPECT_EQ(rejected->update.order.report_sequence, 1U);
   Advance();
@@ -385,8 +401,8 @@ TEST_F(ServerTest, AccountRevisionsDoNotRegressAndOrdersUseClientSequences) {
   Advance();
   Advance();
   Advance();
-  std::uint64_t revision = 0;
-  std::uint64_t report = 0;
+  uint64_t revision = 0;
+  uint64_t report = 0;
   for (const auto& message : first.received) {
     if (message.type == trading::MessageType::kWelcome ||
         message.type == trading::MessageType::kAccount ||
@@ -394,8 +410,9 @@ TEST_F(ServerTest, AccountRevisionsDoNotRegressAndOrdersUseClientSequences) {
       EXPECT_GE(message.account.revision, revision);
       revision = message.account.revision;
     }
-    if (message.type == trading::MessageType::kOrderUpdate)
+    if (message.type == trading::MessageType::kOrderUpdate) {
       EXPECT_EQ(message.update.order.report_sequence, ++report);
+    }
   }
   EXPECT_GT(revision, 1U);
   EXPECT_GE(report, 2U);
@@ -437,26 +454,30 @@ TEST(TradingdConfigTest, MysqlArchiveRequiresDurableSourceAndBoundedOptions) {
   auto config = Config();
   auto& archive = config.mysql_archive;
   archive.enabled = true;
-  std::snprintf(archive.database, sizeof(archive.database), "yquant");
-  std::snprintf(archive.user, sizeof(archive.user), "archive");
-  std::snprintf(archive.password_env, sizeof(archive.password_env),
-                "MYSQL_PASSWORD");
+  ::yquant::base::FormatTo(archive.database, sizeof(archive.database),
+                           "yquant");
+  ::yquant::base::FormatTo(archive.user, sizeof(archive.user), "archive");
+  ::yquant::base::FormatTo(archive.password_env, sizeof(archive.password_env),
+                           "MYSQL_PASSWORD");
   base::ConfigError error;
   EXPECT_FALSE(ValidateConfig(config, error).ok());
-  std::snprintf(config.persistence.directory,
-                sizeof(config.persistence.directory),
-                "/tmp/yquant-config-only");
-  std::snprintf(config.persistence.account_key,
-                sizeof(config.persistence.account_key), "simulation/test");
+  ::yquant::base::FormatTo(config.persistence.directory,
+                           sizeof(config.persistence.directory),
+                           "/tmp/yquant-config-only");
+  ::yquant::base::FormatTo(config.persistence.account_key,
+                           sizeof(config.persistence.account_key),
+                           "simulation/test");
 #ifdef YQUANT_WITH_MYSQL
   EXPECT_TRUE(ValidateConfig(config, error).ok()) << error.message;
   archive.batch_bytes = 1;
   EXPECT_FALSE(ValidateConfig(config, error).ok());
   archive.batch_bytes = 1048576;
-  std::snprintf(archive.host, sizeof(archive.host), "database.example.test");
+  ::yquant::base::FormatTo(archive.host, sizeof(archive.host),
+                           "database.example.test");
   EXPECT_FALSE(ValidateConfig(config, error).ok());
   EXPECT_STREQ(error.field_path, "mysql_archive.tls_ca");
-  std::snprintf(archive.tls_ca, sizeof(archive.tls_ca), "/tmp/ca.pem");
+  ::yquant::base::FormatTo(archive.tls_ca, sizeof(archive.tls_ca),
+                           "/tmp/ca.pem");
   EXPECT_TRUE(ValidateConfig(config, error).ok()) << error.message;
 #else
   EXPECT_FALSE(ValidateConfig(config, error).ok());
@@ -483,7 +504,10 @@ class ConfigFiles {
   ConfigFiles() { valid_ = mkdtemp(directory_) != nullptr; }
   ~ConfigFiles() {
     std::error_code error;
-    if (valid_) std::filesystem::remove_all(directory_, error);
+    if (valid_) {
+      ::yquant::testing::files::RemoveTree(
+          ::yquant::testing::files::FilePath(directory_), error);
+    }
   }
   bool valid() const { return valid_; }
   std::string Path(const char* name) const {
@@ -491,16 +515,23 @@ class ConfigFiles {
   }
   bool CopyCatalog() const {
     std::error_code error;
-    return std::filesystem::copy_file(YQUANT_TEST_INSTRUMENT_CATALOG_PATH,
-                                      Path("instruments.json"), error);
+    return ::yquant::testing::files::CopyFile(
+        ::yquant::testing::files::FilePath(YQUANT_TEST_INSTRUMENT_CATALOG_PATH),
+        ::yquant::testing::files::FilePath(Path("instruments.json")), error);
   }
   bool Write(const char* name, std::string_view value) const {
     std::error_code error;
-    std::filesystem::create_directories(
-        std::filesystem::path(Path(name)).parent_path(), error);
-    if (error) return false;
+    ::yquant::testing::files::CreateDirectories(
+        ::yquant::testing::files::FilePath(
+            ::yquant::testing::files::FilePath(Path(name)).Parent()),
+        error);
+    if (error) {
+      return false;
+    }
     auto* file = std::fopen(Path(name).c_str(), "wb");
-    if (file == nullptr) return false;
+    if (file == nullptr) {
+      return false;
+    }
     const bool written =
         std::fwrite(value.data(), 1, value.size(), file) == value.size();
     return std::fclose(file) == 0 && written;

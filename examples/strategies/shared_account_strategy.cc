@@ -1,11 +1,13 @@
+#include <stdint.h>
+
 #include <cinttypes>
-#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <new>
 #include <string_view>
 
 #include "simdjson.h"
+#include "yquant/base/format.h"
 #include "yquant/model/identifiers.h"
 #include "yquant/model/instrument.h"
 #include "yquant/strategy/strategy.h"
@@ -22,7 +24,7 @@ class Config final : public strategy::StrategyConfig {
  public:
   model::InstrumentId instrument_id;
   model::OrderSide side = model::OrderSide::kUnknown;
-  std::int64_t quantity = 0;
+  int64_t quantity = 0;
   char venue_name[5] = {};
   char symbol_name[model::kSymbolLength + 1] = {};
 
@@ -49,12 +51,13 @@ class Config final : public strategy::StrategyConfig {
       } else if (field.key == "side") {
         std::string_view value;
         invalid = field.value.get_string().get(value);
-        if (value == "buy")
+        if (value == "buy") {
           side = model::OrderSide::kBuy;
-        else if (value == "sell")
+        } else if (value == "sell") {
           side = model::OrderSide::kSell;
-        else
+        } else {
           invalid = true;
+        }
       } else if (field.key == "quantity") {
         invalid = field.value.get_int64().get(quantity) || quantity <= 0;
       } else {
@@ -106,29 +109,36 @@ class SharedAccountStrategy final : public strategy::Strategy {
     if (context.market_data().FindInstrument(config_.venue_name,
                                              config_.symbol_name,
                                              definition) != ErrorCode::kOk ||
-        !context.trading().TryGetCash(cash))
+        !context.trading().TryGetCash(cash)) {
       return ErrorCode::kInvalidArgument;
+    }
     const auto status =
         context.market_data().SubscribeQuotes(config_.instrument_id);
-    if (status != ErrorCode::kOk) return status;
+    if (status != ErrorCode::kOk) {
+      return status;
+    }
     return Marker("shared_account: ready\n");
   }
   ErrorCode OnTick(strategy::StrategyContext& context,
                    const model::QuoteTick& quote) noexcept override {
-    if (order_id_.value != 0 || !context.trading().accepting_orders())
+    if (order_id_.value != 0 || !context.trading().accepting_orders()) {
       return ErrorCode::kOk;
+    }
     const bool buy = config_.side == model::OrderSide::kBuy;
     const auto flag =
         buy ? model::QuoteFlag::kAskValid : model::QuoteFlag::kBidValid;
     if (!model::HasQuoteFlag(quote.flags, flag) ||
         !model::HasQuoteFlag(quote.flags, model::QuoteFlag::kTradable) ||
-        (buy ? quote.ask_price : quote.bid_price) <= 0)
+        (buy ? quote.ask_price : quote.bid_price) <= 0) {
       return ErrorCode::kOk;
+    }
     const model::OrderRequest request{config_.instrument_id, config_.side,
                                       buy ? quote.ask_price : quote.bid_price,
                                       config_.quantity};
     const auto status = context.trading().SubmitOrder(request, order_id_);
-    if (status != ErrorCode::kOk) return status;
+    if (status != ErrorCode::kOk) {
+      return status;
+    }
     return Marker("shared_account: submitted\n");
   }
   ErrorCode OnOrderUpdate(strategy::StrategyContext& context,
@@ -136,14 +146,17 @@ class SharedAccountStrategy final : public strategy::Strategy {
     model::OrderSnapshot order;
     if (update.order.client_order_id != order_id_ ||
         !context.trading().TryGetOrder(order_id_, order) ||
-        order != update.order)
+        order != update.order) {
       return ErrorCode::kCorrupt;
+    }
     model::CashSnapshot cash;
-    if (!context.trading().TryGetCash(cash)) return ErrorCode::kCorrupt;
-    const int written = std::fprintf(
+    if (!context.trading().TryGetCash(cash)) {
+      return ErrorCode::kCorrupt;
+    }
+    const int written = ::yquant::base::Print(
         stdout,
-        "shared_account: order state=%s cumulative=%" PRId64 " cash=%" PRId64
-        " reserved=%" PRId64 " available=%" PRId64 "\n",
+        "shared_account: order state={} cumulative={} cash={} reserved={} "
+        "available={}\n",
         StateName(order.state), order.cumulative_filled_qty, cash.balance,
         cash.reserved, cash.available);
     return written < 0 || std::fflush(stdout) != 0 ? ErrorCode::kIoError
@@ -152,20 +165,23 @@ class SharedAccountStrategy final : public strategy::Strategy {
   ErrorCode OnFill(strategy::StrategyContext&,
                    const model::Fill& fill) noexcept override {
     if (fill.client_order_id != order_id_ || fill.quantity <= 0 ||
-        filled_qty_ > config_.quantity - fill.quantity)
+        filled_qty_ > config_.quantity - fill.quantity) {
       return ErrorCode::kCorrupt;
+    }
     filled_qty_ += fill.quantity;
     return ErrorCode::kOk;
   }
   ErrorCode OnStop(strategy::StrategyContext& context) noexcept override {
     model::OrderSnapshot order;
     model::CashSnapshot cash;
-    if (!context.trading().TryGetCash(cash)) return ErrorCode::kCorrupt;
+    if (!context.trading().TryGetCash(cash)) {
+      return ErrorCode::kCorrupt;
+    }
     const bool known = context.trading().TryGetOrder(order_id_, order);
-    const int written = std::fprintf(
+    const int written = ::yquant::base::Print(
         stdout,
-        "shared_account: stopped state=%s filled_qty=%" PRId64 " cash=%" PRId64
-        " reserved=%" PRId64 " available=%" PRId64 "\n",
+        "shared_account: stopped state={} filled_qty={} cash={} reserved={} "
+        "available={}\n",
         known ? StateName(order.state) : "none", filled_qty_, cash.balance,
         cash.reserved, cash.available);
     return written < 0 || std::fflush(stdout) != 0 ? ErrorCode::kIoError
@@ -180,7 +196,7 @@ class SharedAccountStrategy final : public strategy::Strategy {
   }
   Config config_;
   model::ClientOrderId order_id_;
-  std::int64_t filled_qty_ = 0;
+  int64_t filled_qty_ = 0;
 };
 
 ErrorCode Create(strategy::Strategy*& output) noexcept {
@@ -190,8 +206,7 @@ ErrorCode Create(strategy::Strategy*& output) noexcept {
 void Destroy(strategy::Strategy* instance) noexcept { delete instance; }
 const strategy::StrategyPlugin kPlugin = {
     strategy::kStrategyPluginAbiVersion,
-    static_cast<std::uint32_t>(sizeof(strategy::StrategyPlugin)), Create,
-    Destroy};
+    static_cast<uint32_t>(sizeof(strategy::StrategyPlugin)), Create, Destroy};
 }  // namespace
 
 extern "C" YQUANT_STRATEGY_EXPORT const yquant::strategy::StrategyPlugin*

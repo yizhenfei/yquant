@@ -1,7 +1,7 @@
 #ifndef YQUANT_STRATEGYD_STRATEGY_CONTEXT_H_
 #define YQUANT_STRATEGYD_STRATEGY_CONTEXT_H_
 
-#include <cstdint>
+#include <stdint.h>
 
 #include "yquant/base/monotonic_clock.h"
 #include "yquant/strategy/strategy_context.h"
@@ -13,6 +13,9 @@ namespace yquant::strategyd {
 // thread. Strategies may use this view only during the current callback.
 class StrategyContextImpl final : public strategy::StrategyContext {
  public:
+  StrategyContextImpl(const StrategyContextImpl&) = delete;
+  StrategyContextImpl& operator=(const StrategyContextImpl&) = delete;
+
   // Borrows clock and all services until destruction. Returned service
   // references remain callback-scoped and must not be retained by a strategy.
   StrategyContextImpl(const base::MonotonicClock& clock,
@@ -24,7 +27,7 @@ class StrategyContextImpl final : public strategy::StrategyContext {
         trading_(trading),
         timer_(timer) {}
 
-  std::uint64_t Now() const noexcept override { return clock_.Now(); }
+  uint64_t Now() const noexcept override { return clock_.Now(); }
   strategy::MarketData& market_data() noexcept override { return market_data_; }
   const strategy::MarketData& market_data() const noexcept override {
     return market_data_;

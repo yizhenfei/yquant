@@ -1,9 +1,14 @@
 #ifndef YQUANT_BASE_SHM_BROADCAST_H_
 #define YQUANT_BASE_SHM_BROADCAST_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <chrono>
-#include <filesystem>
+#include <cstddef>
 #include <memory>
+#include <optional>
+#include <span>
 #include <string>
 
 #include "yquant/base/broadcast_queue.h"
@@ -12,7 +17,7 @@ namespace yquant::base {
 // Absolute, user-owned directory not writable by group/others; stream is one
 // safe path component. Neither field is part of the queue's memory layout.
 struct ShmEndpoint {
-  std::filesystem::path runtime_directory;
+  std::string runtime_directory;
   std::string stream;
 };
 struct ShmBroadcastConfig {
@@ -54,12 +59,12 @@ class ShmBroadcastWriter final {
   [[nodiscard]] Status Create(const ShmBroadcastConfig& config);
   // Copies bytes before returning; failure preserves optional sequence output.
   [[nodiscard]] Status TryWrite(std::span<const std::byte> record,
-                                std::uint64_t* sequence = nullptr) noexcept;
+                                uint64_t* sequence = nullptr) noexcept;
   // Cold-path heartbeat update, also required while no records are published.
   [[nodiscard]] Status Tick() noexcept;
   BroadcastId generation() const noexcept;
-  std::size_t capacity() const noexcept;
-  std::size_t max_record_size() const noexcept;
+  size_t capacity() const noexcept;
+  size_t max_record_size() const noexcept;
   // Idempotent: finish queue, retire discovery/name, unmap, release writer
   // lock.
   void Close() noexcept;
@@ -90,15 +95,15 @@ class ShmBroadcastReader final {
   // Failure preserves cursor, pending gap and output; replacement invalidates
   // all old tokens. No automatic reconnect or loss skipping.
   [[nodiscard]] Status Resume(const BroadcastGapToken& token,
-                              std::uint64_t& sequence,
+                              uint64_t& sequence,
                               BroadcastResumePosition position = {}) noexcept;
   // Cold-path discovery and heartbeat check. Failure preserves output.
   [[nodiscard]] Status Refresh(
       ShmRefreshResult& result,
       std::chrono::nanoseconds stale_after = std::chrono::seconds(3));
   BroadcastId generation() const noexcept;
-  std::uint64_t next_sequence() const noexcept;
-  std::size_t max_record_size() const noexcept;
+  uint64_t next_sequence() const noexcept;
+  size_t max_record_size() const noexcept;
   void Close() noexcept;
 
  private:

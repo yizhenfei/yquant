@@ -1,7 +1,8 @@
 #ifndef YQUANT_TRADING_SIMULATED_FUTURES_EXCHANGE_H_
 #define YQUANT_TRADING_SIMULATED_FUTURES_EXCHANGE_H_
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <memory>
 #include <optional>
 
@@ -24,7 +25,7 @@ class SimulatedFuturesExchange final : public TradingAdapter {
   [[nodiscard]] base::Status Prepare(
       const TradingConfig& config) noexcept override;
   // Activates a prepared empty session without creating workers or callbacks.
-  [[nodiscard]] base::Status Start(std::uint64_t now) noexcept override;
+  [[nodiscard]] base::Status Start(uint64_t now) noexcept override;
   // Available only after Start and before any order; failure preserves out.
   [[nodiscard]] base::Status ReadAccountSnapshot(
       TradingAccountSnapshot& out) noexcept override;
@@ -32,14 +33,13 @@ class SimulatedFuturesExchange final : public TradingAdapter {
   // any executable quantity. Failure preserves all orders, plans and liquidity.
   [[nodiscard]] base::Status SendOrder(model::ClientOrderId id,
                                        const model::OrderRequest& request,
-                                       std::uint64_t now) noexcept override;
+                                       uint64_t now) noexcept override;
   // Requires an acknowledged identity and a new cancel attempt. Also settles
   // already-filled orders with a rejection. Failure queues nothing and keeps
   // the previous cancel state; request inputs are borrowed for this call only.
   [[nodiscard]] base::Status SendCancel(
       model::ClientOrderId id, const model::BrokerOrderId& broker_order_id,
-      model::CancelRequestId cancel_request_id,
-      std::uint64_t now) noexcept override;
+      model::CancelRequestId cancel_request_id, uint64_t now) noexcept override;
 
   // Copies an accepted quote and matches existing orders at their limits. New
   // aggressive orders instead trade at the executable opposing quote. An old
@@ -47,13 +47,13 @@ class SimulatedFuturesExchange final : public TradingAdapter {
   // Cancels take effect at SendCancel time plus report_interval; quotes at or
   // after that boundary cannot match the order, even before its result is read.
   [[nodiscard]] base::Status OnQuote(const model::QuoteTick& quote,
-                                     std::uint64_t now) noexcept override;
+                                     uint64_t now) noexcept override;
   // Publishes one normalized event in deadline/FIFO order. Ack is delayed by
   // report_interval. Quote-triggered fills are immediately pollable after Ack;
   // they remain ordered before a later cancel result. Idle/error preserve out.
-  [[nodiscard]] TradingPollResult Poll(std::uint64_t now,
+  [[nodiscard]] TradingPollResult Poll(uint64_t now,
                                        TradingEvent& out) noexcept override;
-  std::optional<std::uint64_t> next_deadline() const noexcept override;
+  std::optional<uint64_t> next_deadline() const noexcept override;
   bool is_drained() const noexcept override;
   [[nodiscard]] base::Status Stop() noexcept override;
   const char* error_detail() const noexcept override { return error_detail_; }

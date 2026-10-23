@@ -1,6 +1,8 @@
 #ifndef YQUANT_BASE_INTERNAL_SHM_STREAM_REGISTRY_H_
 #define YQUANT_BASE_INTERNAL_SHM_STREAM_REGISTRY_H_
 
+#include <stdint.h>
+
 #include <string>
 
 #include "base/internal/result.h"
@@ -15,7 +17,7 @@ struct ShmManifest {
 Result<ShmEndpoint> ValidateShmEndpoint(const ShmEndpoint& endpoint);
 Result<ShmManifest> Discover(const ShmEndpoint& endpoint);
 Result<BroadcastId> RandomBroadcastId();
-std::uint64_t MonotonicNs() noexcept;
+uint64_t MonotonicNs() noexcept;
 
 // Owns stream discovery and the stable writer lock, independent of mappings
 // and queue layouts. Single-thread-owned; inherited copies cannot retire the
@@ -47,7 +49,7 @@ class ShmStreamRegistry final {
   std::string pending_filename_;
   int directory_fd_ = -1;
   int lock_fd_ = -1;
-  std::uint64_t owner_epoch_ = 0;
+  uint64_t owner_epoch_ = 0;
   bool pending_ = false;
   bool published_ = false;
 };

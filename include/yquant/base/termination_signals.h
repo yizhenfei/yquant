@@ -2,8 +2,8 @@
 #define YQUANT_BASE_TERMINATION_SIGNALS_H_
 
 #include <signal.h>
+#include <stdint.h>
 
-#include <cstdint>
 #include <optional>
 
 #include "yquant/base/event_loop_environment.h"
@@ -16,6 +16,10 @@ namespace yquant::base {
 // Dispositions and the blocked mask intentionally remain installed until exit.
 class TerminationSignals final : public EventLoopEnvironment {
  public:
+  TerminationSignals() = default;
+  TerminationSignals(const TerminationSignals&) = delete;
+  TerminationSignals& operator=(const TerminationSignals&) = delete;
+
   // Acquires SIGINT/SIGTERM once. On failure leaves them blocked if the initial
   // blocking succeeded; the caller should report the failure and exit.
   [[nodiscard]] Status Prepare() noexcept;
@@ -30,7 +34,7 @@ class TerminationSignals final : public EventLoopEnvironment {
   // succeeds; other wait errors are returned. Preserves unrelated signal bits
   // from the calling mask while atomically entering the wait.
   [[nodiscard]] Status Wait(
-      std::optional<std::uint64_t> timeout_ns) noexcept override;
+      std::optional<uint64_t> timeout_ns) noexcept override;
 
  private:
   sigset_t blocked_mask_ = {};

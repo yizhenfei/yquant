@@ -1,6 +1,8 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <spawn.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -8,15 +10,16 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
-#include <cstdint>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
-#include <filesystem>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <vector>
 
+#include "file_test_support.h"
 #include "gtest/gtest.h"
 #include "trading_gateway.h"
 #include "yquant/md/quote_codec.h"
@@ -42,8 +45,12 @@ class ConsoleProcess {
       while (::waitpid(pid_, &status_, 0) < 0 && errno == EINTR) {
       }
     }
-    if (stdout_ != nullptr) std::fclose(stdout_);
-    if (stderr_ != nullptr) std::fclose(stderr_);
+    if (stdout_ != nullptr) {
+      std::fclose(stdout_);
+    }
+    if (stderr_ != nullptr) {
+      std::fclose(stderr_);
+    }
   }
 
   // Borrows arguments only while spawning. Failed starts leave no live child.
@@ -51,11 +58,15 @@ class ConsoleProcess {
     auto adapted = arguments;
     if (std::string_view(executable) == YQUANT_TEST_STRATEGYD_PATH) {
       const int error = gateway_.Prepare(adapted);
-      if (error) return error;
+      if (error) {
+        return error;
+      }
     }
     stdout_ = std::tmpfile();
     stderr_ = std::tmpfile();
-    if (stdout_ == nullptr || stderr_ == nullptr) return errno;
+    if (stdout_ == nullptr || stderr_ == nullptr) {
+      return errno;
+    }
     const int output_fd = ::fileno(stdout_);
     const int error_fd = ::fileno(stderr_);
     if (::fcntl(output_fd, F_SETFD, FD_CLOEXEC) < 0 ||
@@ -65,11 +76,15 @@ class ConsoleProcess {
     std::vector<std::string> storage{executable};
     storage.insert(storage.end(), adapted.begin(), adapted.end());
     std::vector<char*> argv;
-    for (auto& argument : storage) argv.push_back(argument.data());
+    for (auto& argument : storage) {
+      argv.push_back(argument.data());
+    }
     argv.push_back(nullptr);
     posix_spawn_file_actions_t actions;
     int error = ::posix_spawn_file_actions_init(&actions);
-    if (error != 0) return error;
+    if (error != 0) {
+      return error;
+    }
     error =
         ::posix_spawn_file_actions_adddup2(&actions, output_fd, STDOUT_FILENO);
     if (error == 0) {
@@ -90,8 +105,12 @@ class ConsoleProcess {
     const auto deadline = std::chrono::steady_clock::now() + kProcessTimeout;
     while (std::chrono::steady_clock::now() < deadline) {
       const bool ready = stdout_text().find(": Running ") != std::string::npos;
-      if (!IsRunning()) return false;
-      if (ready) return true;
+      if (!IsRunning()) {
+        return false;
+      }
+      if (ready) {
+        return true;
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     return false;
@@ -102,7 +121,9 @@ class ConsoleProcess {
   bool Wait() {
     const auto deadline = std::chrono::steady_clock::now() + kProcessTimeout;
     while (std::chrono::steady_clock::now() < deadline) {
-      if (!IsRunning()) return reaped_;
+      if (!IsRunning()) {
+        return reaped_;
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     return false;
@@ -116,12 +137,16 @@ class ConsoleProcess {
 
  private:
   bool IsRunning() {
-    if (pid_ <= 0) return false;
+    if (pid_ <= 0) {
+      return false;
+    }
     pid_t result;
     do {
       result = ::waitpid(pid_, &status_, WNOHANG);
     } while (result < 0 && errno == EINTR);
-    if (result == 0) return true;
+    if (result == 0) {
+      return true;
+    }
     reaped_ = result == pid_;
     pid_ = -1;
     return false;
@@ -130,13 +155,15 @@ class ConsoleProcess {
   // Reads an independent snapshot, preserving the writer's append offset.
   static std::string Read(FILE* file) {
     std::string text;
-    if (file == nullptr) return text;
+    if (file == nullptr) {
+      return text;
+    }
     char buffer[1024];
     for (;;) {
       const auto count =
           ::pread(::fileno(file), buffer, sizeof(buffer), text.size());
       if (count > 0) {
-        text.append(buffer, static_cast<std::size_t>(count));
+        text.append(buffer, static_cast<size_t>(count));
       } else if (count < 0 && errno == EINTR) {
         continue;
       } else {
@@ -231,7 +258,8 @@ class ConsoleOutputTest : public ::testing::Test {
   void TearDown() override {
     if (owns_directory_) {
       std::error_code error;
-      std::filesystem::remove_all(directory_, error);
+      ::yquant::testing::files::RemoveTree(
+          ::yquant::testing::files::FilePath(directory_), error);
       EXPECT_FALSE(error) << error.message();
     }
   }
@@ -242,7 +270,9 @@ class ConsoleOutputTest : public ::testing::Test {
 
   bool Write(std::string_view name, std::string_view contents) const {
     auto* file = std::fopen(File(name).c_str(), "wb");
-    if (file == nullptr) return false;
+    if (file == nullptr) {
+      return false;
+    }
     const bool written = std::fwrite(contents.data(), 1, contents.size(),
                                      file) == contents.size();
     return std::fclose(file) == 0 && written;

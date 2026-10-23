@@ -1,9 +1,13 @@
 #include "strategyd/timer.h"
 
+#include <stdint.h>
+
 namespace yquant::strategyd {
 
 bool TimerImpl::CanChange() const noexcept {
-  if (stopping_) return false;
+  if (stopping_) {
+    return false;
+  }
   switch (phase_) {
     case strategy::CallbackPhase::kNone:
     case strategy::CallbackPhase::kStop:
@@ -19,14 +23,18 @@ bool TimerImpl::CanChange() const noexcept {
   return false;
 }
 
-base::ErrorCode TimerImpl::Arm(std::uint64_t deadline_ns) noexcept {
-  if (!CanChange()) return base::ErrorCode::kInvalidState;
+base::ErrorCode TimerImpl::Arm(uint64_t deadline_ns) noexcept {
+  if (!CanChange()) {
+    return base::ErrorCode::kInvalidState;
+  }
   deadline_ = deadline_ns;
   return base::ErrorCode::kOk;
 }
 
 base::ErrorCode TimerImpl::Cancel() noexcept {
-  if (!CanChange()) return base::ErrorCode::kInvalidState;
+  if (!CanChange()) {
+    return base::ErrorCode::kInvalidState;
+  }
   deadline_.reset();
   return base::ErrorCode::kOk;
 }
@@ -44,8 +52,7 @@ void TimerImpl::Reset() noexcept {
   phase_ = strategy::CallbackPhase::kNone;
 }
 
-bool TimerImpl::TryTakeDue(std::uint64_t now,
-                           strategy::TimerEvent& out) noexcept {
+bool TimerImpl::TryTakeDue(uint64_t now, strategy::TimerEvent& out) noexcept {
   if (!running_ || stopping_ || phase_ != strategy::CallbackPhase::kNone ||
       !deadline_ || *deadline_ > now) {
     return false;

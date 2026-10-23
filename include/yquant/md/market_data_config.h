@@ -1,9 +1,10 @@
 #ifndef YQUANT_MD_MARKET_DATA_CONFIG_H_
 #define YQUANT_MD_MARKET_DATA_CONFIG_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
-#include <cstddef>
-#include <cstdint>
 
 #include "yquant/base/config_error.h"
 #include "yquant/base/status.h"
@@ -11,10 +12,10 @@
 
 namespace yquant::md {
 
-inline constexpr std::size_t kMaxMarketDataInstruments = 64;
-inline constexpr std::size_t kMaxRuntimeDirectoryLength = 4095;
-inline constexpr std::size_t kMaxStreamNameLength = 64;
-inline constexpr std::size_t kMaxReplayPathLength = 4095;
+inline constexpr size_t kMaxMarketDataInstruments = 64;
+inline constexpr size_t kMaxRuntimeDirectoryLength = 4095;
+inline constexpr size_t kMaxStreamNameLength = 64;
+inline constexpr size_t kMaxReplayPathLength = 4095;
 
 enum class MarketDataAdapter { kShm, kReplay };
 
@@ -32,14 +33,14 @@ struct MarketDataConfig {
   // continuously polls; positive intervals wait only after an empty read.
   char runtime_directory[kMaxRuntimeDirectoryLength + 1] = {};
   char stream[kMaxStreamNameLength + 1] = {};
-  std::uint64_t poll_interval_ns = 0;
+  uint64_t poll_interval_ns = 0;
   // The loader resolves relative paths against the process working directory.
   // Typed configurations supply an absolute, NUL-terminated path. Speed scales
   // elapsed CSV timestamps; the tail is an unscaled final observation window.
   char replay_path[kMaxReplayPathLength + 1] = {};
-  std::uint32_t replay_speed = 1;
-  std::uint64_t replay_tail_ns = 1000000000;
-  std::size_t instrument_count = 0;
+  uint32_t replay_speed = 1;
+  uint64_t replay_tail_ns = 1000000000;
+  size_t instrument_count = 0;
   std::array<MarketDataInstrumentConfig, kMaxMarketDataInstruments> instruments;
 };
 
@@ -59,6 +60,10 @@ struct MarketDataConfig {
 // storage survive Load(). Methods are serialized by the owning host thread.
 class MarketDataConfigLoader {
  public:
+  MarketDataConfigLoader() = default;
+  MarketDataConfigLoader(const MarketDataConfigLoader&) = default;
+  MarketDataConfigLoader& operator=(const MarketDataConfigLoader&) = default;
+
   // Replaces the previous configuration. Failure leaves config() empty and
   // error() owns diagnostics until the next call. Borrows path during the call.
   [[nodiscard]] base::Status Load(const char* path) noexcept;

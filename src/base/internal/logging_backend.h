@@ -1,6 +1,7 @@
 #ifndef YQUANT_BASE_INTERNAL_LOGGING_BACKEND_H_
 #define YQUANT_BASE_INTERNAL_LOGGING_BACKEND_H_
 
+#include <stddef.h>
 #include <sys/types.h>
 
 #include <cstddef>
@@ -22,7 +23,7 @@ struct LogBackendHooks {
   void (*on_queue_ready)(void*, Logger*,
                          std::span<std::byte>) noexcept = nullptr;
   int (*open)(void*, const char*, int, mode_t) noexcept = nullptr;
-  ssize_t (*write)(void*, int, const void*, std::size_t) noexcept = nullptr;
+  ssize_t (*write)(void*, int, const void*, size_t) noexcept = nullptr;
   int (*sync)(void*, int) noexcept = nullptr;
   int (*close)(void*, int) noexcept = nullptr;
   int (*rename)(void*, const char*, const char*) noexcept = nullptr;

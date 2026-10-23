@@ -1,8 +1,8 @@
 #ifndef YQUANT_MARKETD_REPLAY_SOURCE_H_
 #define YQUANT_MARKETD_REPLAY_SOURCE_H_
 
-#include <cstddef>
-#include <cstdint>
+#include <stddef.h>
+#include <stdint.h>
 
 #include "marketd/file_config.h"
 #include "marketd/pipeline.h"
@@ -15,6 +15,10 @@ namespace yquant::marketd {
 // daemon thread; receive timestamps belong to that thread's local clock.
 class ReplaySource final : public Source {
  public:
+  ReplaySource() = default;
+  ReplaySource(const ReplaySource&) = delete;
+  ReplaySource& operator=(const ReplaySource&) = delete;
+
   // Replaces any prior replay. Failure leaves the source closed and preserves
   // its diagnostic until the next Init. Positive speed scales offsets with
   // sub-nanosecond fractions rounded down; zero emits without pacing.
@@ -24,7 +28,7 @@ class ReplaySource final : public Source {
   // not decrease before EOF. Idle, EOF and error preserve out; EOF repeats
   // until Close or Init. Only receive_time_ns is replaced when an event is
   // emitted.
-  [[nodiscard]] PollResult Poll(std::uint64_t now,
+  [[nodiscard]] PollResult Poll(uint64_t now,
                                 model::QuoteTick& out) noexcept override;
   void Close() noexcept override;
   const char* error_detail() const noexcept override { return error_detail_; }
@@ -34,10 +38,10 @@ class ReplaySource final : public Source {
   PollResult Fail(base::Status status, const char* detail) noexcept;
 
   ReplayData data_;
-  std::size_t index_ = 0;
-  std::uint64_t start_time_ = 0;
-  std::uint64_t last_time_ = 0;
-  std::uint64_t start_delay_ = 0;
+  size_t index_ = 0;
+  uint64_t start_time_ = 0;
+  uint64_t last_time_ = 0;
+  uint64_t start_delay_ = 0;
   base::Status failure_;
   bool active_ = false;
   bool started_ = false;

@@ -1,12 +1,14 @@
+#include <stddef.h>
+#include <stdint.h>
+
 #include <cinttypes>
-#include <cstddef>
-#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <new>
 #include <string_view>
 
 #include "simdjson.h"
+#include "yquant/base/format.h"
 #include "yquant/model/account.h"
 #include "yquant/model/identifiers.h"
 #include "yquant/model/order.h"
@@ -43,7 +45,7 @@ class OrderLifecycleConfig final : public StrategyConfig {
   std::string_view symbol() const noexcept {
     return {symbol_, sizeof(symbol_)};
   }
-  std::int64_t quantity() const noexcept { return quantity_; }
+  int64_t quantity() const noexcept { return quantity_; }
 
  protected:
   ErrorCode LoadParameters(std::string_view json,
@@ -59,7 +61,7 @@ class OrderLifecycleConfig final : public StrategyConfig {
     }
     std::string_view venue;
     std::string_view symbol;
-    std::int64_t quantity = 0;
+    int64_t quantity = 0;
     for (const auto field : object) {
       bool invalid = false;
       if (field.key == "venue") {
@@ -97,9 +99,9 @@ class OrderLifecycleConfig final : public StrategyConfig {
 
  private:
   char venue_[4] = {};
-  std::size_t venue_size_ = 0;
+  size_t venue_size_ = 0;
   char symbol_[yquant::model::kSymbolLength] = {};
-  std::int64_t quantity_ = 0;
+  int64_t quantity_ = 0;
 };
 
 const char* StateName(OrderState state) noexcept {
@@ -131,10 +133,16 @@ class OrderLifecycleStrategy final : public Strategy {
     auto& market_data = context.market_data();
     const auto found = market_data.FindInstrument(
         config_.venue(), config_.symbol(), instrument_);
-    if (found != ErrorCode::kOk) return found;
-    if (CheckAccount(context, {}) != ErrorCode::kOk) return ErrorCode::kCorrupt;
+    if (found != ErrorCode::kOk) {
+      return found;
+    }
+    if (CheckAccount(context, {}) != ErrorCode::kOk) {
+      return ErrorCode::kCorrupt;
+    }
     const auto subscribed = market_data.SubscribeQuotes(instrument_.id);
-    if (subscribed != ErrorCode::kOk) return subscribed;
+    if (subscribed != ErrorCode::kOk) {
+      return subscribed;
+    }
     const auto printed = PrintMarker("order_lifecycle: ready\n");
     return printed == ErrorCode::kOk ? ReportAccount(context, "initial")
                                      : printed;
@@ -154,7 +162,9 @@ class OrderLifecycleStrategy final : public Strategy {
     request.limit_price = tick.ask_price;
     request.quantity = config_.quantity();
     const auto submitted = context.trading().SubmitOrder(request, order_id_);
-    if (submitted != ErrorCode::kOk) return submitted;
+    if (submitted != ErrorCode::kOk) {
+      return submitted;
+    }
     OrderSnapshot pending;
     if (!context.trading().TryGetOrder(order_id_, pending) ||
         pending.state != OrderState::kPendingNew ||
@@ -186,10 +196,9 @@ class OrderLifecycleStrategy final : public Strategy {
         (state == OrderState::kFilled || state == OrderState::kCanceled ||
          state == OrderState::kRejected)) {
       terminal_reported_ = true;
-      const int written = std::fprintf(
+      const int written = ::yquant::base::Print(
           stdout,
-          "order_lifecycle: terminal state=%s cumulative=%" PRId64
-          " leaves=%" PRId64 "\n",
+          "order_lifecycle: terminal state={} cumulative={} leaves={}\n",
           StateName(state), queried.cumulative_filled_qty, queried.leaves_qty);
       return written < 0 || std::fflush(stdout) != 0 ? ErrorCode::kIoError
                                                      : ErrorCode::kOk;
@@ -224,10 +233,8 @@ class OrderLifecycleStrategy final : public Strategy {
                        CheckAccount(context, final) != ErrorCode::kOk))) {
       return ErrorCode::kCorrupt;
     }
-    const int written = std::fprintf(
-        stdout,
-        "order_lifecycle: stopped fills=%" PRIu64 " filled_qty=%" PRId64
-        " state=%s\n",
+    const int written = ::yquant::base::Print(
+        stdout, "order_lifecycle: stopped fills={} filled_qty={} state={}\n",
         fills_, filled_qty_, has_order ? StateName(final.state) : "none");
     return written < 0 || std::fflush(stdout) != 0
                ? ErrorCode::kIoError
@@ -248,8 +255,9 @@ class OrderLifecycleStrategy final : public Strategy {
         position.total_qty < 0 || position.available_qty < 0 ||
         position.available_qty > position.total_qty ||
         position.reserved_qty < 0 ||
-        position.reserved_qty > position.total_qty - position.available_qty)
+        position.reserved_qty > position.total_qty - position.available_qty) {
       return ErrorCode::kCorrupt;
+    }
     return ErrorCode::kOk;
   }
 
@@ -263,11 +271,10 @@ class OrderLifecycleStrategy final : public Strategy {
         !context.trading().TryGetPosition(instrument_.id, position)) {
       return ErrorCode::kCorrupt;
     }
-    const int written = std::fprintf(
+    const int written = ::yquant::base::Print(
         stdout,
-        "order_lifecycle: account %s cash=%" PRId64 " reserved=%" PRId64
-        " available=%" PRId64 " position_total=%" PRId64
-        " position_available=%" PRId64 " position_reserved=%" PRId64 "\n",
+        "order_lifecycle: account {} cash={} reserved={} available={} "
+        "position_total={} position_available={} position_reserved={}\n",
         stage, cash.balance, cash.reserved, cash.available, position.total_qty,
         position.available_qty, position.reserved_qty);
     return written < 0 || std::fflush(stdout) != 0 ? ErrorCode::kIoError
@@ -284,8 +291,8 @@ class OrderLifecycleStrategy final : public Strategy {
   OrderLifecycleConfig config_;
   InstrumentDefinition instrument_;
   ClientOrderId order_id_;
-  std::int64_t filled_qty_ = 0;
-  std::uint64_t fills_ = 0;
+  int64_t filled_qty_ = 0;
+  uint64_t fills_ = 0;
   bool awaiting_fill_ = false;
   bool terminal_reported_ = false;
 };
@@ -299,10 +306,9 @@ ErrorCode CreateStrategy(Strategy*& output) noexcept {
 
 void DestroyStrategy(Strategy* strategy) noexcept { delete strategy; }
 
-const StrategyPlugin kPlugin = {
-    yquant::strategy::kStrategyPluginAbiVersion,
-    static_cast<std::uint32_t>(sizeof(StrategyPlugin)), CreateStrategy,
-    DestroyStrategy};
+const StrategyPlugin kPlugin = {yquant::strategy::kStrategyPluginAbiVersion,
+                                static_cast<uint32_t>(sizeof(StrategyPlugin)),
+                                CreateStrategy, DestroyStrategy};
 
 }  // namespace
 

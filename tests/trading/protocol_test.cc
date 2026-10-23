@@ -1,6 +1,10 @@
 #include "yquant/trading/protocol.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -8,12 +12,13 @@
 #include <string>
 
 #include "gtest/gtest.h"
+#include "yquant/base/format.h"
 
 namespace yquant::trading {
 namespace {
 
-model::InstrumentId Instrument(std::uint32_t symbol = 600000) {
-  return {(static_cast<std::uint64_t>(model::Venue::kSse) << 32) | symbol};
+model::InstrumentId Instrument(uint32_t symbol = 600000) {
+  return {(static_cast<uint64_t>(model::Venue::kSse) << 32) | symbol};
 }
 
 trading::Message Example(trading::MessageType type) {
@@ -73,7 +78,7 @@ void ExpectEncodingRejected(const trading::Message& message) {
   std::array<std::byte, trading::kMaxFrameSize> bytes;
   bytes.fill(std::byte{0xa5});
   const auto original = bytes;
-  std::size_t size = 123;
+  size_t size = 123;
   EXPECT_FALSE(trading::EncodeMessage(message, bytes, size).ok());
   EXPECT_EQ(size, 123);
   EXPECT_EQ(bytes, original);
@@ -85,7 +90,7 @@ class ProtocolRoundTripTest
 TEST_P(ProtocolRoundTripTest, CanonicalRoundTripPreservesOwnedValues) {
   const auto original = Example(GetParam());
   std::array<std::byte, trading::kMaxFrameSize> bytes;
-  std::size_t size = 0;
+  size_t size = 0;
   ASSERT_TRUE(trading::EncodeMessage(original, bytes, size).ok());
   EXPECT_EQ(
       trading::FrameSize(std::span(bytes).first(trading::kFrameHeaderSize)),
@@ -97,7 +102,7 @@ TEST_P(ProtocolRoundTripTest, CanonicalRoundTripPreservesOwnedValues) {
   EXPECT_EQ(decoded.generation, original.generation);
   EXPECT_EQ(decoded.sequence, original.sequence);
   std::array<std::byte, trading::kMaxFrameSize> reencoded;
-  std::size_t reencoded_size = 0;
+  size_t reencoded_size = 0;
   ASSERT_TRUE(trading::EncodeMessage(decoded, reencoded, reencoded_size).ok());
   EXPECT_EQ(reencoded_size, size);
   EXPECT_EQ(std::memcmp(bytes.data(), reencoded.data(), size), 0);
@@ -126,14 +131,14 @@ TEST(TradingProtocol, HeaderHasStableLittleEndianLayout) {
   message.generation = 0x0807060504030201ULL;
   message.sequence = 0x1817161514131211ULL;
   std::array<std::byte, trading::kMaxFrameSize> bytes;
-  std::size_t size = 0;
+  size_t size = 0;
   ASSERT_TRUE(trading::EncodeMessage(message, bytes, size).ok());
   ASSERT_EQ(size, 32);
   EXPECT_EQ(std::memcmp(bytes.data(), "YQTR", 4), 0);
   EXPECT_EQ(bytes[4], std::byte{3});
   EXPECT_EQ(bytes[5], std::byte{0});
   EXPECT_EQ(bytes[8], std::byte{32});
-  for (std::size_t index = 0; index < 8; ++index) {
+  for (size_t index = 0; index < 8; ++index) {
     EXPECT_EQ(bytes[16 + index], static_cast<std::byte>(index + 1));
     EXPECT_EQ(bytes[24 + index], static_cast<std::byte>(index + 17));
   }
@@ -143,14 +148,14 @@ TEST(TradingProtocol, DictionaryAndAccountAcceptTheirFullIndependentBounds) {
   auto message = Example(trading::MessageType::kWelcome);
   message.instrument_count = 64;
   message.account.position_count = 64;
-  for (std::size_t index = 0; index < 64; ++index) {
-    message.instruments[index] = {Instrument(static_cast<std::uint32_t>(index)),
-                                  static_cast<std::uint8_t>(index % 7)};
+  for (size_t index = 0; index < 64; ++index) {
+    message.instruments[index] = {Instrument(static_cast<uint32_t>(index)),
+                                  static_cast<uint8_t>(index % 7)};
     message.account.positions[index] = {message.instruments[index].id, 100, 80,
                                         20};
   }
   std::array<std::byte, trading::kMaxFrameSize> bytes;
-  std::size_t size = 0;
+  size_t size = 0;
   ASSERT_TRUE(trading::EncodeMessage(message, bytes, size).ok());
   trading::Message decoded;
   ASSERT_TRUE(
@@ -162,12 +167,12 @@ TEST(TradingProtocol, DictionaryAndAccountAcceptTheirFullIndependentBounds) {
 
 TEST(TradingProtocol, InactiveFieldsDoNotAffectAHeartbeat) {
   auto message = Example(trading::MessageType::kHeartbeat);
-  message.instrument_count = std::numeric_limits<std::size_t>::max();
-  message.account.position_count = std::numeric_limits<std::size_t>::max();
+  message.instrument_count = std::numeric_limits<size_t>::max();
+  message.account.position_count = std::numeric_limits<size_t>::max();
   message.request.quantity = -1;
   std::memset(message.token, 'x', sizeof(message.token));
   std::array<std::byte, trading::kMaxFrameSize> bytes;
-  std::size_t size = 0;
+  size_t size = 0;
   EXPECT_TRUE(trading::EncodeMessage(message, bytes, size).ok());
   EXPECT_EQ(size, 32);
 }
@@ -182,7 +187,7 @@ TEST(TradingProtocol, EncodingFailurePreservesBufferAndSize) {
   std::array<std::byte, 31> bytes;
   bytes.fill(std::byte{0xa5});
   const auto original = bytes;
-  std::size_t size = 123;
+  size_t size = 123;
   message.type = trading::MessageType::kHeartbeat;
   EXPECT_EQ(trading::EncodeMessage(message, bytes, size).code,
             base::ErrorCode::kResourceExhausted);
@@ -228,7 +233,7 @@ TEST(TradingProtocol, RejectsInvalidOrdersAndUnscaledNotionalOverflow) {
   ExpectEncodingRejected(message);
   message.request.limit_price = -1;
   ExpectEncodingRejected(message);
-  message.request.limit_price = std::numeric_limits<std::int64_t>::max();
+  message.request.limit_price = std::numeric_limits<int64_t>::max();
   message.request.quantity = 2;
   ExpectEncodingRejected(message);
   message = Example(trading::MessageType::kNewOrder);
@@ -303,7 +308,7 @@ TEST(TradingProtocol, GatewayOwnedPendingCancelUsesZeroRequestId) {
   message.update.order.cancel_request_id = {};
   message.update.cancel_request_id = {};
   std::array<std::byte, trading::kMaxFrameSize> bytes{};
-  std::size_t size = 0;
+  size_t size = 0;
   ASSERT_TRUE(trading::EncodeMessage(message, bytes, size).ok());
   trading::Message output;
   ASSERT_TRUE(
@@ -314,14 +319,14 @@ TEST(TradingProtocol, GatewayOwnedPendingCancelUsesZeroRequestId) {
 
 TEST(TradingProtocol, EveryTruncatedPrefixPreservesDecodeOutput) {
   std::array<std::byte, trading::kMaxFrameSize> bytes;
-  std::size_t size = 0;
+  size_t size = 0;
   ASSERT_TRUE(trading::EncodeMessage(
                   Example(trading::MessageType::kOrderUpdate), bytes, size)
                   .ok());
   trading::Message output;
   output.client_id = 191;
   output.sequence = 198;
-  for (std::size_t prefix = 0; prefix < size; ++prefix) {
+  for (size_t prefix = 0; prefix < size; ++prefix) {
     EXPECT_EQ(
         trading::DecodeMessage(std::span(bytes).first(prefix), output).code,
         base::ErrorCode::kCorrupt)
@@ -336,7 +341,7 @@ TEST(TradingProtocol, EveryTruncatedPrefixPreservesDecodeOutput) {
 
 TEST(TradingProtocol, RejectsMalformedHeaderFields) {
   std::array<std::byte, trading::kMaxFrameSize> bytes;
-  std::size_t size = 0;
+  size_t size = 0;
   ASSERT_TRUE(trading::EncodeMessage(Example(trading::MessageType::kHeartbeat),
                                      bytes, size)
                   .ok());
@@ -364,7 +369,7 @@ TEST(TradingProtocol, RejectsMalformedHeaderFields) {
 
 TEST(TradingProtocol, RejectsNoncanonicalPayloadFlagsCountsAndEnums) {
   std::array<std::byte, trading::kMaxFrameSize> bytes;
-  std::size_t size = 0;
+  size_t size = 0;
   trading::Message output;
   ASSERT_TRUE(trading::EncodeMessage(
                   Example(trading::MessageType::kOrderUpdate), bytes, size)
@@ -403,7 +408,7 @@ TEST(TradingProtocol, MaximumReasonAndOpaqueBytesRoundTrip) {
   ASSERT_EQ(message.fill.execution_id.Assign(opaque), base::ErrorCode::kOk);
   message.update.reason.Set(4, std::string(200, 'r'));
   std::array<std::byte, trading::kMaxFrameSize> bytes;
-  std::size_t size = 0;
+  size_t size = 0;
   ASSERT_TRUE(trading::EncodeMessage(message, bytes, size).ok());
   trading::Message output;
   ASSERT_TRUE(
@@ -432,9 +437,9 @@ TEST(TradingProtocol, VersionOneRejectsPositionEffectsWithoutDroppingFields) {
 
 TEST(TradingProtocol, DecodesLegacyCashAccountFramesForJournalRecovery) {
   std::array<std::byte, 66> frame{};
-  std::size_t offset = 0;
-  const auto put = [&](std::uint64_t value, std::size_t width) {
-    for (std::size_t i = 0; i < width; ++i) {
+  size_t offset = 0;
+  const auto put = [&](uint64_t value, size_t width) {
+    for (size_t i = 0; i < width; ++i) {
       frame[offset++] = std::byte(value & 255);
       value >>= 8;
     }
@@ -479,7 +484,7 @@ TEST(TradingProtocol, FuturesPositionEffectAndAccountSurviveRoundTrip) {
   position.margin = 10;
   position.unrealized_pnl = -5;
   std::array<std::byte, trading::kMaxFrameSize> bytes;
-  std::size_t size = 0;
+  size_t size = 0;
   ASSERT_TRUE(trading::EncodeMessage(message, bytes, size).ok());
   trading::Message decoded;
   ASSERT_TRUE(
@@ -505,17 +510,17 @@ TEST(TradingProtocol, CompleteFuturesDictionaryFitsWithinOneFrame) {
   message.account.type = model::AccountType::kFutures;
   message.account.revision = 1;
   message.instrument_count = message.account.futures_position_count = 64;
-  for (std::size_t i = 0; i < 64; ++i) {
+  for (size_t i = 0; i < 64; ++i) {
     char symbol[8];
-    std::snprintf(symbol, sizeof(symbol), "%c27%02u", char('a' + i / 12),
-                  unsigned(i % 12 + 1));
+    ::yquant::base::FormatTo(symbol, sizeof(symbol), "{}27{:02}",
+                             char('a' + i / 12), unsigned(i % 12 + 1));
     model::InstrumentId id;
     ASSERT_EQ(model::MakeInstrumentId("DCE", symbol, id), base::ErrorCode::kOk);
     message.instruments[i].id = id;
     message.account.futures_positions[i].instrument_id = id;
   }
   std::array<std::byte, trading::kMaxFrameSize> bytes;
-  std::size_t size = 0;
+  size_t size = 0;
   ASSERT_TRUE(trading::EncodeMessage(message, bytes, size).ok());
   EXPECT_GT(size, 4096U);
   EXPECT_LE(size, 16384U);
@@ -542,7 +547,7 @@ TEST(TradingProtocol, BrokerAccountAndUnallocatedFreezesUseVersionThree) {
   p.long_yesterday = {1, 0, 1000000000};
   p.unallocated_long_frozen = 1;
   std::array<std::byte, trading::kMaxFrameSize> bytes{};
-  std::size_t size = 0;
+  size_t size = 0;
   ASSERT_TRUE(EncodeMessage(message, bytes, size).ok());
   EXPECT_EQ(bytes[4], std::byte{3});
   Message decoded;
@@ -563,14 +568,15 @@ TEST(TradingProtocol, BrokerAccountAndUnallocatedFreezesUseVersionThree) {
 TEST(TradingProtocol, VersionTwoCashAccountDefaultsToLocalManagement) {
   auto message = Example(MessageType::kAccount);
   std::array<std::byte, trading::kMaxFrameSize> bytes{};
-  std::size_t size = 0;
+  size_t size = 0;
   ASSERT_TRUE(EncodeMessage(message, bytes, size).ok());
   // v2 has the account type at offset 40 but no following management byte.
   std::memmove(bytes.data() + 41, bytes.data() + 42, size - 42);
   --size;
   bytes[4] = std::byte{2};
-  for (std::size_t i = 0; i < 4; ++i)
+  for (size_t i = 0; i < 4; ++i) {
     bytes[8 + i] = std::byte((size >> (8 * i)) & 255);
+  }
   Message decoded;
   ASSERT_TRUE(DecodeMessage(std::span(bytes).first(size), decoded).ok());
   EXPECT_FALSE(decoded.account.broker_managed);
@@ -584,7 +590,7 @@ TEST(TradingProtocol, GenericCloseUsesBrokerVenuesAndPreservesEffect) {
       base::ErrorCode::kOk);
   request.request.position_effect = model::PositionEffect::kClose;
   std::array<std::byte, trading::kMaxFrameSize> bytes{};
-  std::size_t size = 0;
+  size_t size = 0;
   ASSERT_TRUE(EncodeMessage(request, bytes, size).ok());
   Message decoded;
   ASSERT_TRUE(DecodeMessage(std::span(bytes).first(size), decoded).ok());
@@ -606,15 +612,16 @@ TEST(TradingProtocol, VersionTwoFuturesDefaultsUnallocatedFreezesToZero) {
             base::ErrorCode::kOk);
   position.long_today = {2, 1, 2010000000};
   std::array<std::byte, trading::kMaxFrameSize> bytes{};
-  std::size_t size = 0;
+  size_t size = 0;
   ASSERT_TRUE(EncodeMessage(message, bytes, size).ok());
   // Drop v3's two trailing unallocated freezes and its account management byte.
   size -= 16;
   std::memmove(bytes.data() + 41, bytes.data() + 42, size - 42);
   --size;
   bytes[4] = std::byte{2};
-  for (std::size_t i = 0; i < 4; ++i)
+  for (size_t i = 0; i < 4; ++i) {
     bytes[8 + i] = std::byte((size >> (8 * i)) & 255);
+  }
   Message decoded;
   ASSERT_TRUE(DecodeMessage(std::span(bytes).first(size), decoded).ok());
   EXPECT_FALSE(decoded.account.broker_managed);

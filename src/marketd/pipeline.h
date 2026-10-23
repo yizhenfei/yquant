@@ -1,7 +1,7 @@
 #ifndef YQUANT_MARKETD_PIPELINE_H_
 #define YQUANT_MARKETD_PIPELINE_H_
 
-#include <cstdint>
+#include <stdint.h>
 
 #include "yquant/base/status.h"
 #include "yquant/model/quote_tick.h"
@@ -21,7 +21,7 @@ struct PollResult {
 class Source {
  public:
   virtual ~Source() noexcept = default;
-  [[nodiscard]] virtual PollResult Poll(std::uint64_t now,
+  [[nodiscard]] virtual PollResult Poll(uint64_t now,
                                         model::QuoteTick& out) noexcept = 0;
   virtual void Close() noexcept = 0;
   virtual const char* error_detail() const noexcept = 0;
@@ -35,7 +35,7 @@ class Publisher {
   virtual ~Publisher() noexcept = default;
   [[nodiscard]] virtual base::Status Publish(
       const model::QuoteTick& quote) noexcept = 0;
-  [[nodiscard]] virtual base::Status Service(std::uint64_t now) noexcept = 0;
+  [[nodiscard]] virtual base::Status Service(uint64_t now) noexcept = 0;
   // Explicit orderly shutdown reports delayed write/flush errors. The default
   // closes synchronous outputs. Implementations must make repeat calls safe.
   [[nodiscard]] virtual base::Status Finish() noexcept {

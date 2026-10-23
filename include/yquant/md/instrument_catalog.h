@@ -1,7 +1,8 @@
 #ifndef YQUANT_MD_INSTRUMENT_CATALOG_H_
 #define YQUANT_MD_INSTRUMENT_CATALOG_H_
 
-#include <cstddef>
+#include <stddef.h>
+
 #include <memory>
 #include <string_view>
 
@@ -12,7 +13,7 @@
 namespace yquant::md {
 
 // Catalog capacity is independent of a process's active instrument limit.
-inline constexpr std::size_t kMaxInstrumentCatalogEntries = 16384;
+inline constexpr size_t kMaxInstrumentCatalogEntries = 16384;
 
 // Validates identity and all equity/futures contract units. Failure owns a
 // field diagnostic and leaves definition unchanged; path is call-only.
@@ -36,12 +37,12 @@ class InstrumentCatalog {
   // Copies a matching definition to out. Failure preserves out.
   [[nodiscard]] bool Find(model::InstrumentId id,
                           model::InstrumentDefinition& out) const noexcept;
-  std::size_t size() const noexcept { return size_; }
+  size_t size() const noexcept { return size_; }
   const base::ConfigError& error() const noexcept { return error_; }
 
  private:
   std::unique_ptr<model::InstrumentDefinition[]> definitions_;
-  std::size_t size_ = 0;
+  size_t size_ = 0;
   base::ConfigError error_;
 };
 

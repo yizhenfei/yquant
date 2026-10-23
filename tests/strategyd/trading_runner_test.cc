@@ -1,4 +1,6 @@
 #include <fcntl.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -8,6 +10,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <vector>
 
 #include "gtest/gtest.h"
 #include "runner_test_harness.h"
@@ -25,18 +28,26 @@ class TradingEventPipe {
   TradingEventPipe() {
     const char* previous = std::getenv("YQUANT_TEST_EVENT_FD");
     had_previous_ = previous != nullptr;
-    if (had_previous_) previous_ = previous;
-    if (pipe(fds_) != 0 || fcntl(fds_[0], F_SETFL, O_NONBLOCK) == -1) return;
+    if (had_previous_) {
+      previous_ = previous;
+    }
+    if (pipe(fds_) != 0 || fcntl(fds_[0], F_SETFL, O_NONBLOCK) == -1) {
+      return;
+    }
     const auto fd = std::to_string(fds_[1]);
     valid_ = setenv("YQUANT_TEST_EVENT_FD", fd.c_str(), 1) == 0;
   }
   ~TradingEventPipe() {
-    if (had_previous_)
+    if (had_previous_) {
       setenv("YQUANT_TEST_EVENT_FD", previous_.c_str(), 1);
-    else
+    } else {
       unsetenv("YQUANT_TEST_EVENT_FD");
-    for (int fd : fds_)
-      if (fd >= 0) close(fd);
+    }
+    for (int fd : fds_) {
+      if (fd >= 0) {
+        close(fd);
+      }
+    }
   }
   bool valid() const { return valid_; }
   std::string Read() {
@@ -44,12 +55,13 @@ class TradingEventPipe {
     char buffer[256];
     for (;;) {
       const ssize_t count = read(fds_[0], buffer, sizeof(buffer));
-      if (count > 0)
-        out.append(buffer, static_cast<std::size_t>(count));
-      else if (count == -1 && errno == EINTR)
+      if (count > 0) {
+        out.append(buffer, static_cast<size_t>(count));
+      } else if (count == -1 && errno == EINTR) {
         continue;
-      else
+      } else {
         return out;
+      }
     }
   }
 
@@ -62,8 +74,8 @@ class TradingEventPipe {
 
 class TradingClock final : public base::MonotonicClock {
  public:
-  std::uint64_t Now() const noexcept override { return now; }
-  std::uint64_t now = 0;
+  uint64_t Now() const noexcept override { return now; }
+  uint64_t now = 0;
 };
 
 // Simulates time advancing inside a nonblocking poll. A future deadline can
@@ -72,9 +84,9 @@ struct IdleClockStep {
   TradingClock* clock = nullptr;
   bool retain_due_deadline = false;
   int idle_returns = 0;
-  std::optional<std::uint64_t> deadline;
+  std::optional<uint64_t> deadline;
 
-  bool Poll(std::uint64_t now) noexcept {
+  bool Poll(uint64_t now) noexcept {
     if (clock == nullptr || idle_returns != 0) {
       deadline.reset();
       return false;
@@ -97,30 +109,36 @@ class TradingQuoteSource final : public MarketDataSource {
   bool poll_driven_idle = false;
   bool fail_service = false;
   int due_services = 0;
-  std::uint64_t serviced_at = 0;
-  std::optional<std::uint64_t> service_deadline;
+  uint64_t serviced_at = 0;
+  std::optional<uint64_t> service_deadline;
   IdleClockStep idle;
 
   base::Status Prepare(const md::MarketDataConfig&) noexcept override {
     return {};
   }
   base::Status Start(std::span<const model::InstrumentId> ids,
-                     std::uint64_t) noexcept override {
-    if (ids.size() != 1) return {ErrorCode::kInvalidArgument, {}};
+                     uint64_t) noexcept override {
+    if (ids.size() != 1) {
+      return {ErrorCode::kInvalidArgument, {}};
+    }
     id_ = ids[0];
     active_ = true;
     return {};
   }
-  MarketDataPollResult Poll(std::uint64_t now,
+  MarketDataPollResult Poll(uint64_t now,
                             model::QuoteTick& out) noexcept override {
-    if (idle.Poll(now)) return {};
+    if (idle.Poll(now)) {
+      return {};
+    }
     if (poll_driven_idle && poll_calls != 0) {
       if (++idle_polls > 512) {
         return {MarketDataPollState::kError, {ErrorCode::kInternalError, {}}};
       }
       return {};
     }
-    if (!continuous && poll_calls != 0) return {};
+    if (!continuous && poll_calls != 0) {
+      return {};
+    }
     if (poll_calls >= 512) {
       return {MarketDataPollState::kError, {ErrorCode::kInternalError, {}}};
     }
@@ -128,7 +146,7 @@ class TradingQuoteSource final : public MarketDataSource {
     out = {};
     out.source_id = {1};
     out.instrument_id = id_;
-    out.sequence = static_cast<std::uint64_t>(poll_calls);
+    out.sequence = static_cast<uint64_t>(poll_calls);
     out.receive_time_ns = now;
     out.bid_price = 1000;
     out.bid_qty = 100;
@@ -137,21 +155,29 @@ class TradingQuoteSource final : public MarketDataSource {
     out.flags = 1 | 2 | 4;
     return {MarketDataPollState::kEvent, {}};
   }
-  std::optional<std::uint64_t> next_deadline() const noexcept override {
-    if (!active_) return {};
-    if (idle.deadline) return idle.deadline;
-    if (poll_driven_idle) return 0;
+  std::optional<uint64_t> next_deadline() const noexcept override {
+    if (!active_) {
+      return {};
+    }
+    if (idle.deadline) {
+      return idle.deadline;
+    }
+    if (poll_driven_idle) {
+      return 0;
+    }
     return poll_calls == 0 || continuous ? 0 : 60000000000ULL;
   }
   bool is_poll_driven() const noexcept override { return poll_driven_idle; }
-  base::Status Service(std::uint64_t now) noexcept override {
-    if (!service_deadline || now < *service_deadline) return {};
+  base::Status Service(uint64_t now) noexcept override {
+    if (!service_deadline || now < *service_deadline) {
+      return {};
+    }
     ++due_services;
     serviced_at = now;
     service_deadline.reset();
     return {fail_service ? ErrorCode::kIoError : ErrorCode::kOk, {}};
   }
-  std::optional<std::uint64_t> next_service_deadline() const noexcept override {
+  std::optional<uint64_t> next_service_deadline() const noexcept override {
     return active_ ? service_deadline : std::nullopt;
   }
   base::Status Stop() noexcept override {
@@ -179,16 +205,20 @@ class TradingLoopEnvironment final : public base::EventLoopEnvironment {
   int stop_after_events = 3;
   bool stop_after_quote = false;
   int checks = 0;
-  std::vector<std::uint64_t> waits;
+  std::vector<uint64_t> waits;
   base::Status CheckStop(bool& out) noexcept override {
-    if (++checks > 10000) return {ErrorCode::kInternalError, {}};
+    if (++checks > 10000) {
+      return {ErrorCode::kInternalError, {}};
+    }
     out = (stop_after_quote && source && source->poll_calls != 0) ||
           (service && stop_after_events > 0 &&
            service->delivered >= stop_after_events);
     return {};
   }
-  base::Status Wait(std::optional<std::uint64_t> timeout) noexcept override {
-    if (!timeout || waits.size() > 128) return {ErrorCode::kInternalError, {}};
+  base::Status Wait(std::optional<uint64_t> timeout) noexcept override {
+    if (!timeout || waits.size() > 128) {
+      return {ErrorCode::kInternalError, {}};
+    }
     waits.push_back(*timeout);
     clock_.now += *timeout;
     return {};
@@ -201,10 +231,8 @@ class TradingLoopEnvironment final : public base::EventLoopEnvironment {
 // Fully specified gateway-like snapshots; expected business values are owned
 // by the fixture, independent of the production account engine.
 testing::MockTradingService::Event Report(model::OrderUpdateKind kind,
-                                          std::uint64_t sequence,
-                                          std::int64_t cumulative,
-                                          std::int64_t leaves,
-                                          std::uint64_t deadline) {
+                                          uint64_t sequence, int64_t cumulative,
+                                          int64_t leaves, uint64_t deadline) {
   testing::MockTradingService::Event event;
   event.deadline = deadline;
   auto& dispatch = event.dispatch;

@@ -1,11 +1,14 @@
 #include "marketd/config.h"
 
 #include <cstdio>
+#include <cstring>
 #include <string>
+#include <string_view>
 
 #include "gtest/gtest.h"
 #include "scoped_working_directory.h"
 #include "test_support.h"
+#include "yquant/base/format.h"
 
 namespace yquant::marketd {
 namespace {
@@ -18,7 +21,8 @@ class ConfigTest : public ::testing::Test {
   void SetUp() override {
     ASSERT_TRUE(directory_.valid());
     ASSERT_TRUE(working_directory_.valid());
-    ASSERT_TRUE(std::filesystem::create_directory(directory_.File("configs")));
+    ASSERT_TRUE(::yquant::testing::files::CreateDirectory(
+        ::yquant::testing::files::FilePath(directory_.File("configs"))));
     ASSERT_TRUE(directory_.Write("mock.json", testing::kMockJson));
   }
   base::Status Load(std::string_view source, std::string_view publishers,
@@ -49,7 +53,8 @@ TEST_F(ConfigTest, LoadsRelativeMockAndPublisherDefaultsWithoutOutputs) {
   ASSERT_EQ(loader_.config().publisher_count, 1U);
   EXPECT_EQ(loader_.config().publishers[0].capacity, 1024U);
   EXPECT_EQ(loader_.config().publishers[0].max_payload_size, 256U);
-  EXPECT_FALSE(std::filesystem::exists(directory_.File("quotes.lock")));
+  EXPECT_FALSE(::yquant::testing::files::Exists(
+      ::yquant::testing::files::FilePath(directory_.File("quotes.lock"))));
 }
 
 TEST_F(ConfigTest, LoadsTcpInputAndMixedOutputsIndependentOfKeyOrder) {
@@ -71,7 +76,8 @@ TEST_F(ConfigTest, SharedMemoryValidationMatchesTransportLimits) {
       Load(mock,
            "[" + Shm(",\"capacity\":16777216,\"max_payload_size\":4096") + "]")
           .ok());
-  EXPECT_FALSE(std::filesystem::exists(directory_.File("quotes.lock")));
+  EXPECT_FALSE(::yquant::testing::files::Exists(
+      ::yquant::testing::files::FilePath(directory_.File("quotes.lock"))));
   const auto invalid_stream = "{\"adapter\":\"shm\",\"runtime_directory\":\"" +
                               std::string(directory_.path()) +
                               "\",\"stream\":\"_quotes\"}";
@@ -114,7 +120,9 @@ TEST_F(ConfigTest, RejectsMissingFieldsAndPublisherBounds) {
   EXPECT_FALSE(Load(R"({"adapter":"mock","config":"mock.json"})", "{}").ok());
   std::string outputs = "[";
   for (int i = 0; i < 9; ++i) {
-    if (i != 0) outputs += ',';
+    if (i != 0) {
+      outputs += ',';
+    }
     outputs += Shm();
   }
   outputs += ']';
@@ -169,9 +177,9 @@ TEST_F(ConfigTest, RejectsDirectFeedbackAndNormalizedDuplicateEndpoints) {
                    .ok());
   auto config = testing::LocalConfig(directory_.path());
   config.publishers[1] = config.publishers[0];
-  std::snprintf(config.publishers[1].runtime_directory,
-                sizeof(config.publishers[1].runtime_directory), "%s/./",
-                directory_.path());
+  ::yquant::base::FormatTo(config.publishers[1].runtime_directory,
+                           sizeof(config.publishers[1].runtime_directory),
+                           "{}/./", directory_.path());
   config.publisher_count = 2;
   base::ConfigError error;
   EXPECT_FALSE(ValidateConfig(config, error).ok());
@@ -212,17 +220,21 @@ TEST_F(ConfigTest, ResolvesReplayAndRecordingPathsWithoutOpeningFiles) {
   const auto& config = loader_.config();
   EXPECT_EQ(config.source.adapter, Adapter::kReplay);
   EXPECT_EQ(config.source.replay.format, ReplayFormat::kDolphinDbCsv);
-  EXPECT_STREQ(config.source.replay.path,
-               (std::filesystem::current_path() / "history.csv").c_str());
+  EXPECT_STREQ(
+      config.source.replay.path,
+      (::yquant::testing::files::CurrentPath() / "history.csv").c_str());
   EXPECT_EQ(config.source.replay.speed, 2.5);
   EXPECT_EQ(config.source.replay.source_id.value, 7U);
-  EXPECT_STREQ(config.source.replay.instrument_catalog,
-               (std::filesystem::current_path() / "catalog.json").c_str());
+  EXPECT_STREQ(
+      config.source.replay.instrument_catalog,
+      (::yquant::testing::files::CurrentPath() / "catalog.json").c_str());
   EXPECT_EQ(config.publishers[0].adapter, Adapter::kRecord);
-  EXPECT_STREQ(config.publishers[0].record.path,
-               (std::filesystem::current_path() / "quotes.yqr").c_str());
+  EXPECT_STREQ(
+      config.publishers[0].record.path,
+      (::yquant::testing::files::CurrentPath() / "quotes.yqr").c_str());
   EXPECT_EQ(config.publishers[0].record.queue_capacity, 4096U);
-  EXPECT_FALSE(std::filesystem::exists(directory_.File("quotes.yqr")));
+  EXPECT_FALSE(::yquant::testing::files::Exists(
+      ::yquant::testing::files::FilePath(directory_.File("quotes.yqr"))));
 }
 
 TEST_F(ConfigTest, EnforcesCatalogPathCapacityBeforeAndAfterResolution) {
@@ -291,7 +303,8 @@ TEST_F(ConfigTest, RejectsRecordingFeedbackAndNormalizedDuplicatePaths) {
   EXPECT_FALSE(Load(recording, R"([{"adapter":"record","path":"new.yqr"},)"
                                R"({"adapter":"record","path":"./new.yqr"}])")
                    .ok());
-  EXPECT_FALSE(std::filesystem::exists(directory_.File("new.yqr")));
+  EXPECT_FALSE(::yquant::testing::files::Exists(
+      ::yquant::testing::files::FilePath(directory_.File("new.yqr"))));
 }
 
 }  // namespace

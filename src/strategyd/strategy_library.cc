@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <system_error>
 
+#include "yquant/base/format.h"
+
 namespace yquant::strategyd {
 
 StrategyLibrary::~StrategyLibrary() noexcept { (void)Close(); }
@@ -16,7 +18,7 @@ void StrategyLibrary::SetError(const char* stage, const char* detail) noexcept {
     return;
   }
   error_stage_ = stage;
-  std::snprintf(error_detail_, sizeof(error_detail_), "%s", detail);
+  ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_), "{}", detail);
 }
 
 base::Status StrategyLibrary::Open(const char* path) noexcept {

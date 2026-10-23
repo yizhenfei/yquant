@@ -1,5 +1,7 @@
 #include "yquant/md/event_filter.h"
 
+#include <stdint.h>
+
 #include <array>
 
 #include "gtest/gtest.h"
@@ -17,8 +19,8 @@ TEST(EventFilterTest, UnrestrictedAndEmptySelections) {
 }
 
 TEST(EventFilterTest, UnsortedListsAndStatusVisibility) {
-  const std::uint64_t instruments[] = {99, 42};
-  const std::uint32_t types[] = {8, 7};
+  const uint64_t instruments[] = {99, 42};
+  const uint32_t types[] = {8, 7};
   const EventFilter filter{instruments, types, false, false};
   EventHeader header;
   header.instrument_id = 42;
@@ -36,7 +38,7 @@ TEST(EventFilterTest, UnsortedListsAndStatusVisibility) {
 }
 
 TEST(EventFilterTest, CallerChoosesCapacity) {
-  std::array<std::uint64_t, 128> instruments{};
+  std::array<uint64_t, 128> instruments{};
   instruments.back() = 42;
   const EventFilter filter{instruments, {}, false, true};
   EventHeader header;

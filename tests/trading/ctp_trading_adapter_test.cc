@@ -1,5 +1,8 @@
 #include "yquant/trading/ctp_trading_adapter.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -18,10 +21,12 @@ class BridgePeer {
  public:
   ~BridgePeer() {
     stop_requested_.store(true, std::memory_order_relaxed);
-    if (thread_.joinable()) thread_.join();
+    if (thread_.joinable()) {
+      thread_.join();
+    }
   }
   bool Open() { return listener_.Open({"127.0.0.1", 0}).ok(); }
-  std::uint16_t port() const { return listener_.port(); }
+  uint16_t port() const { return listener_.port(); }
   void Start(bool mismatched_report = false) {
     thread_ = std::thread([this, mismatched_report] {
       Connection connection;
@@ -31,7 +36,9 @@ class BridgePeer {
       while (!stop_requested_.load(std::memory_order_relaxed) &&
              std::chrono::steady_clock::now() < deadline) {
         if (!accepted) {
-          if (!listener_.Accept(connection, accepted).ok()) return;
+          if (!listener_.Accept(connection, accepted).ok()) {
+            return;
+          }
           if (!accepted) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
@@ -40,8 +47,9 @@ class BridgePeer {
         Message input;
         const auto received = connection.Poll(input);
         if (received.state == ReceiveState::kClosed ||
-            received.state == ReceiveState::kError)
+            received.state == ReceiveState::kError) {
           return;
+        }
         if (received.state == ReceiveState::kIdle) {
           std::this_thread::sleep_for(std::chrono::milliseconds(1));
           continue;
@@ -54,7 +62,9 @@ class BridgePeer {
         // Actual broker fields need not obey the local simulator's equation.
         response.account.futures = {1000, 1200, 900, 100, 50, 30, 200, 20};
         if (input.type == MessageType::kHello) {
-          if (std::strcmp(input.token, "bridge-test") != 0) return;
+          if (std::strcmp(input.token, "bridge-test") != 0) {
+            return;
+          }
           response.type = MessageType::kWelcome;
           response.instruments = input.instruments;
           response.instrument_count = input.instrument_count;
@@ -73,7 +83,9 @@ class BridgePeer {
           order.state = model::OrderState::kWorking;
           order.report_sequence = 1;
           (void)order.broker_order_id.Assign("20261022/1/1/123");
-          if (mismatched_report) ++order.limit_price;
+          if (mismatched_report) {
+            ++order.limit_price;
+          }
           response.update.kind = model::OrderUpdateKind::kAccepted;
         } else if (input.type == MessageType::kCancelOrder) {
           response.type = MessageType::kOrderUpdate;
@@ -100,26 +112,36 @@ class BridgePeer {
             Message extra;
             const auto polled = connection.Poll(extra);
             if (polled.state == ReceiveState::kMessage &&
-                extra.type == MessageType::kHeartbeat)
+                extra.type == MessageType::kHeartbeat) {
               heartbeat_after_stop_.store(true);
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
           }
           response.type = MessageType::kAccount;
           response.account.revision = 4;
           response.account.futures.available = 666;
-          if (!connection.Queue(response).ok()) return;
+          if (!connection.Queue(response).ok()) {
+            return;
+          }
           response.type = MessageType::kDrained;
-          if (!connection.Queue(response).ok()) return;
+          if (!connection.Queue(response).ok()) {
+            return;
+          }
           while (!connection.empty() &&
-                 !stop_requested_.load(std::memory_order_relaxed))
-            if (!connection.Service().ok()) return;
+                 !stop_requested_.load(std::memory_order_relaxed)) {
+            if (!connection.Service().ok()) {
+              return;
+            }
+          }
           return;
         } else if (input.type == MessageType::kHeartbeat) {
           response.type = MessageType::kHeartbeat;
         } else {
           return;
         }
-        if (!connection.Queue(response).ok()) return;
+        if (!connection.Queue(response).ok()) {
+          return;
+        }
       }
     });
   }
@@ -152,7 +174,7 @@ md::MarketDataConfig Dictionary() {
   return config;
 }
 
-TradingConfig Config(std::uint16_t port) {
+TradingConfig Config(uint16_t port) {
   TradingConfig config;
   config.adapter = TradingAdapterKind::kCtp;
   config.initial_account.type = model::AccountType::kFutures;
@@ -163,13 +185,15 @@ TradingConfig Config(std::uint16_t port) {
 }
 
 TradingPollResult Wait(CtpTradingAdapter& adapter, TradingEvent& event) {
-  for (std::size_t attempt = 0; attempt < 1000; ++attempt) {
-    const auto now = static_cast<std::uint64_t>(
+  for (size_t attempt = 0; attempt < 1000; ++attempt) {
+    const auto now = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch())
             .count());
     const auto polled = adapter.Poll(now, event);
-    if (polled.state != TradingPollState::kIdle) return polled;
+    if (polled.state != TradingPollState::kIdle) {
+      return polled;
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   return {TradingPollState::kError, {base::ErrorCode::kIoError, {}}};
@@ -213,8 +237,8 @@ TEST(CtpTradingAdapterTest, BrokerAccountReportsAndCancelUseActualWire) {
   EXPECT_EQ(account.revision, 4);
   EXPECT_EQ(account.account.available, 666);
   EXPECT_FALSE(adapter.is_drained());
-  for (std::size_t i = 0; i < 1000 && !adapter.is_drained(); ++i) {
-    const auto now = static_cast<std::uint64_t>(
+  for (size_t i = 0; i < 1000 && !adapter.is_drained(); ++i) {
+    const auto now = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch())
             .count());

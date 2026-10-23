@@ -1,16 +1,20 @@
 #include "yquant/trading/trading_config.h"
 
 #include <arpa/inet.h>
-#include <simdjson.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <string_view>
 #include <utility>
 
 #include "base/internal/json_config_parser.h"
+#include "simdjson.h"
+#include "yquant/base/format.h"
 #include "yquant/base/json_config_document.h"
 
 namespace yquant::trading {
@@ -24,41 +28,51 @@ struct PositionFieldPath {
   char text[256] = {};
   bool truncated = false;
 
-  PositionFieldPath(std::size_t index, std::string_view key) noexcept {
+  PositionFieldPath(size_t index, std::string_view key) noexcept {
     const int size =
-        key.empty()
-            ? std::snprintf(text, sizeof(text), "initial_positions[%zu]", index)
-            : std::snprintf(text, sizeof(text), "initial_positions[%zu].%.*s",
-                            index, static_cast<int>(key.size()), key.data());
-    truncated = size < 0 || static_cast<std::size_t>(size) >= sizeof(text);
+        key.empty() ? ::yquant::base::FormatTo(text, sizeof(text),
+                                               "initial_positions[{}]", index)
+                    : ::yquant::base::FormatTo(
+                          text, sizeof(text), "initial_positions[{}].{}", index,
+                          ::yquant::base::CStringPrefix(
+                              key.data(), static_cast<int>(key.size())));
+    truncated = size < 0 || static_cast<size_t>(size) >= sizeof(text);
   }
 };
 
 // Parses one owned position. reserved_qty remains zero because bootstrap JSON
 // never describes local reservations; the host validates dictionary membership.
-base::Status ParsePosition(simdjson::ondemand::value value, std::size_t index,
+base::Status ParsePosition(simdjson::ondemand::value value, size_t index,
                            model::PositionSnapshot& out,
                            base::ConfigError& error) noexcept {
   const PositionFieldPath object_path(index, {});
   simdjson::ondemand::object object;
   auto json_error = value.get_object().get(object);
-  if (json_error) return JsonError(json_error, object_path.text, error);
+  if (json_error) {
+    return JsonError(json_error, object_path.text, error);
+  }
   constexpr std::array<std::string_view, 4> kFields = {
       "venue", "symbol", "total_qty", "available_qty"};
-  std::uint32_t seen = 0;
+  uint32_t seen = 0;
   std::string_view venue;
   std::string_view symbol;
   model::PositionSnapshot parsed;
   for (auto field_result : object) {
     simdjson::ondemand::field field;
     json_error = std::move(field_result).get(field);
-    if (json_error) return JsonError(json_error, object_path.text, error);
+    if (json_error) {
+      return JsonError(json_error, object_path.text, error);
+    }
     std::string_view key;
     json_error = field.unescaped_key().get(key);
-    if (json_error) return JsonError(json_error, object_path.text, error);
+    if (json_error) {
+      return JsonError(json_error, object_path.text, error);
+    }
     const PositionFieldPath path(index, key);
-    std::size_t position = 0;
-    while (position < kFields.size() && key != kFields[position]) ++position;
+    size_t position = 0;
+    while (position < kFields.size() && key != kFields[position]) {
+      ++position;
+    }
     if (position == kFields.size()) {
       const auto status =
           InvalidConfig(path.text, "unknown position field", error);
@@ -69,22 +83,28 @@ base::Status ParsePosition(simdjson::ondemand::value value, std::size_t index,
     if (position < 2) {
       std::string_view decoded;
       json_error = field.value().get_string().get(decoded);
-      if (json_error) return JsonError(json_error, path.text, error);
-      if (position == 0)
+      if (json_error) {
+        return JsonError(json_error, path.text, error);
+      }
+      if (position == 0) {
         venue = decoded;
-      else
+      } else {
         symbol = decoded;
+      }
     } else {
-      std::int64_t quantity;
+      int64_t quantity;
       json_error = field.value().get_int64().get(quantity);
-      if (json_error) return JsonError(json_error, path.text, error);
-      if (position == 2)
+      if (json_error) {
+        return JsonError(json_error, path.text, error);
+      }
+      if (position == 2) {
         parsed.total_qty = quantity;
-      else
+      } else {
         parsed.available_qty = quantity;
+      }
     }
   }
-  for (std::size_t field = 0; field < kFields.size(); ++field) {
+  for (size_t field = 0; field < kFields.size(); ++field) {
     if ((seen & (1U << field)) == 0) {
       return InvalidConfig(PositionFieldPath(index, kFields[field]).text,
                            "required field is missing", error);
@@ -111,7 +131,9 @@ base::Status ParsePositions(simdjson::ondemand::value value,
                             base::ConfigError& error) noexcept {
   simdjson::ondemand::array positions;
   auto json_error = value.get_array().get(positions);
-  if (json_error) return JsonError(json_error, "initial_positions", error);
+  if (json_error) {
+    return JsonError(json_error, "initial_positions", error);
+  }
   for (auto item_result : positions) {
     if (account.position_count == account.positions.size()) {
       return InvalidConfig("initial_positions",
@@ -119,11 +141,15 @@ base::Status ParsePositions(simdjson::ondemand::value value,
     }
     simdjson::ondemand::value item;
     json_error = std::move(item_result).get(item);
-    if (json_error) return JsonError(json_error, "initial_positions", error);
+    if (json_error) {
+      return JsonError(json_error, "initial_positions", error);
+    }
     const auto status =
         ParsePosition(item, account.position_count,
                       account.positions[account.position_count], error);
-    if (!status.ok()) return status;
+    if (!status.ok()) {
+      return status;
+    }
     ++account.position_count;
   }
   return {};
@@ -133,15 +159,16 @@ base::Status ParsePositions(simdjson::ondemand::value value,
 struct FuturesFieldPath {
   char text[256] = {};
   bool truncated = false;
-  FuturesFieldPath(std::size_t index, std::string_view key) noexcept {
+  FuturesFieldPath(size_t index, std::string_view key) noexcept {
     const auto size =
         key.empty()
-            ? std::snprintf(text, sizeof(text),
-                            "initial_futures_positions[%zu]", index)
-            : std::snprintf(text, sizeof(text),
-                            "initial_futures_positions[%zu].%.*s", index,
-                            static_cast<int>(key.size()), key.data());
-    truncated = size < 0 || static_cast<std::size_t>(size) >= sizeof(text);
+            ? ::yquant::base::FormatTo(text, sizeof(text),
+                                       "initial_futures_positions[{}]", index)
+            : ::yquant::base::FormatTo(
+                  text, sizeof(text), "initial_futures_positions[{}].{}", index,
+                  ::yquant::base::CStringPrefix(key.data(),
+                                                static_cast<int>(key.size())));
+    truncated = size < 0 || static_cast<size_t>(size) >= sizeof(text);
   }
 };
 
@@ -152,29 +179,40 @@ base::Status ParseBucket(simdjson::ondemand::value value, std::string_view path,
                          base::ConfigError& error) noexcept {
   simdjson::ondemand::object object;
   auto code = value.get_object().get(object);
-  if (code) return JsonError(code, path, error);
-  std::uint32_t seen = 0;
+  if (code) {
+    return JsonError(code, path, error);
+  }
+  uint32_t seen = 0;
   for (auto item : object) {
     simdjson::ondemand::field field;
     code = std::move(item).get(field);
-    if (code) return JsonError(code, path, error);
+    if (code) {
+      return JsonError(code, path, error);
+    }
     std::string_view key;
     code = field.unescaped_key().get(key);
-    if (code) return JsonError(code, path, error);
+    if (code) {
+      return JsonError(code, path, error);
+    }
     char full_path[256];
-    const auto size = std::snprintf(full_path, sizeof(full_path), "%.*s.%.*s",
-                                    static_cast<int>(path.size()), path.data(),
-                                    static_cast<int>(key.size()), key.data());
+    const auto size = ::yquant::base::FormatTo(
+        full_path, sizeof(full_path), "{}.{}",
+        ::yquant::base::CStringPrefix(path.data(),
+                                      static_cast<int>(path.size())),
+        ::yquant::base::CStringPrefix(key.data(),
+                                      static_cast<int>(key.size())));
     if (key != "quantity" && key != "open_price") {
       const auto status =
           InvalidConfig(full_path, "unknown bucket field", error);
       error.truncated |=
-          size < 0 || static_cast<std::size_t>(size) >= sizeof(full_path);
+          size < 0 || static_cast<size_t>(size) >= sizeof(full_path);
       return status;
     }
-    std::int64_t parsed;
+    int64_t parsed;
     code = field.value().get_int64().get(parsed);
-    if (code) return JsonError(code, full_path, error);
+    if (code) {
+      return JsonError(code, full_path, error);
+    }
     if (key == "quantity") {
       seen |= 1;
       out.quantity = parsed;
@@ -183,14 +221,14 @@ base::Status ParseBucket(simdjson::ondemand::value value, std::string_view path,
       out.open_price = parsed;
     }
   }
-  if (seen != 3)
+  if (seen != 3) {
     return InvalidConfig(path, "quantity and open_price are required", error);
+  }
   return {};
 }
 
 // Futures inventory is kept separate from equity quantity/availability fields.
-base::Status ParseFuturesPosition(simdjson::ondemand::value value,
-                                  std::size_t index,
+base::Status ParseFuturesPosition(simdjson::ondemand::value value, size_t index,
                                   FuturesInitialPosition& out,
                                   base::ConfigError& error) noexcept {
   constexpr std::array<std::string_view, 7> kFields = {
@@ -199,19 +237,27 @@ base::Status ParseFuturesPosition(simdjson::ondemand::value value,
   const FuturesFieldPath object_path(index, {});
   simdjson::ondemand::object object;
   auto code = value.get_object().get(object);
-  if (code) return JsonError(code, object_path.text, error);
-  std::uint32_t seen = 0;
+  if (code) {
+    return JsonError(code, object_path.text, error);
+  }
+  uint32_t seen = 0;
   std::string_view venue, symbol;
   for (auto item : object) {
     simdjson::ondemand::field field;
     code = std::move(item).get(field);
-    if (code) return JsonError(code, object_path.text, error);
+    if (code) {
+      return JsonError(code, object_path.text, error);
+    }
     std::string_view key;
     code = field.unescaped_key().get(key);
-    if (code) return JsonError(code, object_path.text, error);
+    if (code) {
+      return JsonError(code, object_path.text, error);
+    }
     const FuturesFieldPath path(index, key);
-    std::size_t offset = 0;
-    while (offset < kFields.size() && key != kFields[offset]) ++offset;
+    size_t offset = 0;
+    while (offset < kFields.size() && key != kFields[offset]) {
+      ++offset;
+    }
     if (offset == kFields.size()) {
       const auto status =
           InvalidConfig(path.text, "unknown futures position field", error);
@@ -229,21 +275,28 @@ base::Status ParseFuturesPosition(simdjson::ondemand::value value,
                                          &out.short_yesterday};
       const auto status =
           ParseBucket(field.value(), path.text, *buckets[offset - 3], error);
-      if (!status.ok()) return status;
+      if (!status.ok()) {
+        return status;
+      }
     }
-    if (code) return JsonError(code, path.text, error);
+    if (code) {
+      return JsonError(code, path.text, error);
+    }
   }
-  for (std::size_t offset = 0; offset < kFields.size(); ++offset)
-    if ((seen & (1U << offset)) == 0)
+  for (size_t offset = 0; offset < kFields.size(); ++offset) {
+    if ((seen & (1U << offset)) == 0) {
       return InvalidConfig(FuturesFieldPath(index, kFields[offset]).text,
                            "required field is missing", error);
+    }
+  }
   if (model::MakeInstrumentId(venue, symbol, out.instrument_id) !=
           base::ErrorCode::kOk ||
       !model::IsFuturesVenue(
-          static_cast<model::Venue>(out.instrument_id.value >> 32)))
+          static_cast<model::Venue>(out.instrument_id.value >> 32))) {
     return InvalidConfig(
         FuturesFieldPath(index, "symbol").text,
         "requires a supported futures venue and contract symbol", error);
+  }
   return {};
 }
 
@@ -253,18 +306,25 @@ base::Status ParseFuturesPositions(simdjson::ondemand::value value,
                                    base::ConfigError& error) noexcept {
   simdjson::ondemand::array array;
   auto code = value.get_array().get(array);
-  if (code) return JsonError(code, "initial_futures_positions", error);
+  if (code) {
+    return JsonError(code, "initial_futures_positions", error);
+  }
   for (auto item : array) {
-    if (account.futures_position_count == account.futures_positions.size())
+    if (account.futures_position_count == account.futures_positions.size()) {
       return InvalidConfig("initial_futures_positions",
                            "at most 64 positions are allowed", error);
+    }
     simdjson::ondemand::value parsed;
     code = std::move(item).get(parsed);
-    if (code) return JsonError(code, "initial_futures_positions", error);
+    if (code) {
+      return JsonError(code, "initial_futures_positions", error);
+    }
     const auto status = ParseFuturesPosition(
         parsed, account.futures_position_count,
         account.futures_positions[account.futures_position_count], error);
-    if (!status.ok()) return status;
+    if (!status.ok()) {
+      return status;
+    }
     ++account.futures_position_count;
   }
   return {};
@@ -279,7 +339,9 @@ base::Status Parse(const base::JsonConfigDocument& source,
   simdjson::ondemand::object root;
   const auto status =
       base::internal::ParseConfigObject(source, parser, document, root, error);
-  if (!status.ok()) return status;
+  if (!status.ok()) {
+    return status;
+  }
   simdjson::error_code json_error;
   constexpr std::array<std::string_view, 13> kFields = {
       "adapter",
@@ -295,125 +357,156 @@ base::Status Parse(const base::JsonConfigDocument& source,
       "connect_timeout_ms",
       "heartbeat_timeout_ms",
       "initial_futures_positions"};
-  std::uint32_t seen = 0;
+  uint32_t seen = 0;
   for (auto field_result : root) {
     simdjson::ondemand::field field;
     json_error = std::move(field_result).get(field);
-    if (json_error) return JsonError(json_error, "$", error);
+    if (json_error) {
+      return JsonError(json_error, "$", error);
+    }
     std::string_view key;
     json_error = field.unescaped_key().get(key);
-    if (json_error) return JsonError(json_error, "$", error);
-    std::size_t position = 0;
-    while (position < kFields.size() && key != kFields[position]) ++position;
-    if (position == kFields.size())
+    if (json_error) {
+      return JsonError(json_error, "$", error);
+    }
+    size_t position = 0;
+    while (position < kFields.size() && key != kFields[position]) {
+      ++position;
+    }
+    if (position == kFields.size()) {
       return InvalidConfig(key, "unknown field", error);
+    }
     seen |= 1U << position;
     if (position == 0 || position == 1) {
       std::string_view value;
       json_error = field.value().get_string().get(value);
-      if (json_error) return JsonError(json_error, key, error);
+      if (json_error) {
+        return JsonError(json_error, key, error);
+      }
       if (position == 0) {
-        if (value == "mock")
+        if (value == "mock") {
           config.adapter = TradingAdapterKind::kMock;
-        else if (value == "simulated_futures") {
+        } else if (value == "simulated_futures") {
           config.adapter = TradingAdapterKind::kSimulatedFutures;
           config.initial_account.type = model::AccountType::kFutures;
         } else if (value == "ctp") {
           config.adapter = TradingAdapterKind::kCtp;
           config.initial_account.type = model::AccountType::kFutures;
-        } else
+        } else {
           return InvalidConfig(key, "must be mock, simulated_futures or ctp",
                                error);
+        }
       } else if (position == 1) {
-        if (value == "fill")
+        if (value == "fill") {
           config.mode = MockTradingMode::kFill;
-        else if (value == "working")
+        } else if (value == "working") {
           config.mode = MockTradingMode::kWorking;
-        else if (value == "reject")
+        } else if (value == "reject") {
           config.mode = MockTradingMode::kReject;
-        else
+        } else {
           return InvalidConfig(key, "must be fill, working or reject", error);
+        }
       }
     } else if (position == 2 || position == 3) {
-      std::uint64_t milliseconds;
+      uint64_t milliseconds;
       json_error = field.value().get_uint64().get(milliseconds);
-      if (json_error) return JsonError(json_error, key, error);
+      if (json_error) {
+        return JsonError(json_error, key, error);
+      }
       if (milliseconds < kMinimumTradingDurationMs ||
-          milliseconds > kMaximumTradingDurationMs)
+          milliseconds > kMaximumTradingDurationMs) {
         return InvalidConfig(key, "must be an integer from 1 to 60000", error);
+      }
       const auto duration = milliseconds * kTradingNanosecondsPerMillisecond;
-      if (position == 2)
+      if (position == 2) {
         config.report_interval_ns = duration;
-      else if (position == 3)
+      } else if (position == 3) {
         config.shutdown_timeout_ns = duration;
+      }
     } else if (position == 4) {
       json_error =
           field.value().get_int64().get(config.initial_account.cash_balance);
-      if (json_error) return JsonError(json_error, key, error);
+      if (json_error) {
+        return JsonError(json_error, key, error);
+      }
     } else if (position == 5 || position == 12) {
       const auto status =
           position == 5
               ? ParsePositions(field.value(), config.initial_account, error)
               : ParseFuturesPositions(field.value(), config.initial_account,
                                       error);
-      if (!status.ok()) return status;
+      if (!status.ok()) {
+        return status;
+      }
     } else if (position == 6 || position == 9) {
       std::string_view value;
       json_error = field.value().get_string().get(value);
-      if (json_error) return JsonError(json_error, key, error);
+      if (json_error) {
+        return JsonError(json_error, key, error);
+      }
       auto* destination = position == 6 ? config.ctp.address : config.ctp.token;
       const auto capacity =
           position == 6 ? sizeof(config.ctp.address) : sizeof(config.ctp.token);
       if (value.empty() || value.size() >= capacity ||
-          value.find('\0') != value.npos)
+          value.find('\0') != value.npos) {
         return InvalidConfig(key, "string is empty, too long or contains NUL",
                              error);
+      }
       std::memcpy(destination, value.data(), value.size());
       destination[value.size()] = '\0';
     } else if (position == 7) {
-      std::uint64_t port;
+      uint64_t port;
       json_error = field.value().get_uint64().get(port);
-      if (json_error) return JsonError(json_error, key, error);
-      if (port == 0 || port > UINT16_MAX)
+      if (json_error) {
+        return JsonError(json_error, key, error);
+      }
+      if (port == 0 || port > UINT16_MAX) {
         return InvalidConfig(key, "must be an integer from 1 to 65535", error);
-      config.ctp.port = static_cast<std::uint16_t>(port);
+      }
+      config.ctp.port = static_cast<uint16_t>(port);
     } else if (position == 10 || position == 11) {
-      std::uint64_t milliseconds;
+      uint64_t milliseconds;
       json_error = field.value().get_uint64().get(milliseconds);
-      if (json_error) return JsonError(json_error, key, error);
+      if (json_error) {
+        return JsonError(json_error, key, error);
+      }
       if (milliseconds < kMinimumTradingDurationMs ||
-          milliseconds > kMaximumTradingDurationMs)
+          milliseconds > kMaximumTradingDurationMs) {
         return InvalidConfig(key, "must be an integer from 1 to 60000", error);
-      if (position == 10)
+      }
+      if (position == 10) {
         config.ctp.connect_timeout_ns =
             milliseconds * kTradingNanosecondsPerMillisecond;
-      else
+      } else {
         config.ctp.heartbeat_timeout_ns =
             milliseconds * kTradingNanosecondsPerMillisecond;
+      }
     } else {
       return InvalidConfig(key, "field belongs to trading client configuration",
                            error);
     }
   }
-  constexpr std::uint32_t kMockFields = (1U << 6) - 1;
-  constexpr std::uint32_t kFuturesFields =
+  constexpr uint32_t kMockFields = (1U << 6) - 1;
+  constexpr uint32_t kFuturesFields =
       (1U << 0) | (1U << 2) | (1U << 3) | (1U << 4) | (1U << 12);
-  constexpr std::uint32_t kCtpFields = (1U << 0) | (1U << 3) | (1U << 6) |
-                                       (1U << 7) | (1U << 9) | (1U << 10) |
-                                       (1U << 11);
+  constexpr uint32_t kCtpFields = (1U << 0) | (1U << 3) | (1U << 6) |
+                                  (1U << 7) | (1U << 9) | (1U << 10) |
+                                  (1U << 11);
   const bool futures = config.adapter == TradingAdapterKind::kSimulatedFutures;
   const auto required = config.adapter == TradingAdapterKind::kCtp
                             ? kCtpFields
                             : (futures ? kFuturesFields : kMockFields);
   const auto allowed = required;
-  for (std::size_t position = 0; position < kFields.size(); ++position) {
+  for (size_t position = 0; position < kFields.size(); ++position) {
     const auto bit = 1U << position;
-    if ((seen & bit) != 0 && (allowed & bit) == 0)
+    if ((seen & bit) != 0 && (allowed & bit) == 0) {
       return InvalidConfig(kFields[position],
                            "field is not allowed for this adapter", error);
-    if ((required & bit) != 0 && (seen & bit) == 0)
+    }
+    if ((required & bit) != 0 && (seen & bit) == 0) {
       return InvalidConfig(kFields[position], "required field is missing",
                            error);
+    }
   }
   return {};
 }
@@ -423,112 +516,131 @@ base::Status Parse(const base::JsonConfigDocument& source,
 base::Status ValidateTradingConfig(const TradingConfig& config,
                                    base::ConfigError& error) noexcept {
   error.Clear();
-  constexpr std::uint64_t kMinimum =
+  constexpr uint64_t kMinimum =
       kMinimumTradingDurationMs * kTradingNanosecondsPerMillisecond;
-  constexpr std::uint64_t kMaximum =
+  constexpr uint64_t kMaximum =
       kMaximumTradingDurationMs * kTradingNanosecondsPerMillisecond;
   if (config.adapter != TradingAdapterKind::kMock &&
       config.adapter != TradingAdapterKind::kSimulatedFutures &&
-      config.adapter != TradingAdapterKind::kCtp)
+      config.adapter != TradingAdapterKind::kCtp) {
     return InvalidConfig("adapter", "must be mock, simulated_futures or ctp",
                          error);
+  }
   const bool ctp = config.adapter == TradingAdapterKind::kCtp;
   const bool futures = config.adapter != TradingAdapterKind::kMock;
   if (config.initial_account.type !=
-      (futures ? model::AccountType::kFutures : model::AccountType::kCash))
+      (futures ? model::AccountType::kFutures : model::AccountType::kCash)) {
     return InvalidConfig("adapter", "adapter and account type must agree",
                          error);
+  }
   if (config.shutdown_timeout_ns < kMinimum ||
-      config.shutdown_timeout_ns > kMaximum)
+      config.shutdown_timeout_ns > kMaximum) {
     return InvalidConfig("shutdown_timeout_ms",
                          "must be from 1 to 60000 milliseconds", error);
+  }
   if (ctp) {
     if (std::memchr(config.ctp.address, '\0', sizeof(config.ctp.address)) ==
             nullptr ||
-        std::strcmp(config.ctp.address, "127.0.0.1") != 0)
+        std::strcmp(config.ctp.address, "127.0.0.1") != 0) {
       return InvalidConfig("address", "CTP SDK bridge must use 127.0.0.1",
                            error);
-    if (config.ctp.port == 0)
+    }
+    if (config.ctp.port == 0) {
       return InvalidConfig("port", "must be from 1 to 65535", error);
+    }
     if (config.ctp.token[0] == '\0' ||
         std::memchr(config.ctp.token, '\0', sizeof(config.ctp.token)) ==
-            nullptr)
+            nullptr) {
       return InvalidConfig("token", "requires 1..64 bytes", error);
+    }
     if (config.ctp.connect_timeout_ns < kMinimum ||
-        config.ctp.connect_timeout_ns > kMaximum)
+        config.ctp.connect_timeout_ns > kMaximum) {
       return InvalidConfig("connect_timeout_ms", "must be from 1 to 60000",
                            error);
+    }
     if (config.ctp.heartbeat_timeout_ns < kMinimum ||
-        config.ctp.heartbeat_timeout_ns > kMaximum)
+        config.ctp.heartbeat_timeout_ns > kMaximum) {
       return InvalidConfig("heartbeat_timeout_ms", "must be from 1 to 60000",
                            error);
+    }
     if (config.initial_account.cash_balance != 0 ||
         config.initial_account.position_count != 0 ||
-        config.initial_account.futures_position_count != 0)
+        config.initial_account.futures_position_count != 0) {
       return InvalidConfig("initial_cash",
                            "CTP account must come from broker queries", error);
+    }
     return {};
   }
   if (config.mode != MockTradingMode::kFill &&
       config.mode != MockTradingMode::kWorking &&
-      config.mode != MockTradingMode::kReject)
+      config.mode != MockTradingMode::kReject) {
     return InvalidConfig("mode", "must be fill, working or reject", error);
+  }
   if (config.report_interval_ns < kMinimum ||
-      config.report_interval_ns > kMaximum)
+      config.report_interval_ns > kMaximum) {
     return InvalidConfig("report_interval_ms",
                          "must be from 1 to 60000 milliseconds", error);
+  }
   const auto& account = config.initial_account;
   if (account.cash_balance < 0) {
     return InvalidConfig("initial_cash",
                          "must be a nonnegative int64 microyuan value", error);
   }
   if ((futures && account.position_count != 0) ||
-      (!futures && account.futures_position_count != 0))
+      (!futures && account.futures_position_count != 0)) {
     return InvalidConfig(
         futures ? "initial_positions" : "initial_futures_positions",
         "account types cannot be mixed", error);
-  if (account.futures_position_count > account.futures_positions.size())
+  }
+  if (account.futures_position_count > account.futures_positions.size()) {
     return InvalidConfig("initial_futures_positions",
                          "at most 64 positions are allowed", error);
-  for (std::size_t index = 0; index < account.futures_position_count; ++index) {
+  }
+  for (size_t index = 0; index < account.futures_position_count; ++index) {
     const auto& position = account.futures_positions[index];
     if (!model::IsValidInstrumentId(position.instrument_id) ||
         !model::IsFuturesVenue(
-            static_cast<model::Venue>(position.instrument_id.value >> 32)))
+            static_cast<model::Venue>(position.instrument_id.value >> 32))) {
       return InvalidConfig(FuturesFieldPath(index, "symbol").text,
                            "invalid futures instrument identity", error);
-    if (position.reference_price <= 0)
+    }
+    if (position.reference_price <= 0) {
       return InvalidConfig(FuturesFieldPath(index, "reference_price").text,
                            "must be positive", error);
+    }
     const FuturesInitialBucket* buckets[] = {
         &position.long_today, &position.long_yesterday, &position.short_today,
         &position.short_yesterday};
     constexpr std::string_view kNames[] = {"long_today", "long_yesterday",
                                            "short_today", "short_yesterday"};
-    std::int64_t gross = 0;
-    for (std::size_t bucket = 0; bucket < std::size(buckets); ++bucket) {
+    int64_t gross = 0;
+    for (size_t bucket = 0; bucket < std::size(buckets); ++bucket) {
       const auto& entry = *buckets[bucket];
       if (entry.quantity < 0 || entry.open_price < 0 ||
-          ((entry.quantity == 0) != (entry.open_price == 0)))
+          ((entry.quantity == 0) != (entry.open_price == 0))) {
         return InvalidConfig(
             FuturesFieldPath(index, kNames[bucket]).text,
             "quantity and open_price must both be zero or positive", error);
-      if (entry.quantity > std::numeric_limits<std::int64_t>::max() - gross)
+      }
+      if (entry.quantity > std::numeric_limits<int64_t>::max() - gross) {
         return InvalidConfig(FuturesFieldPath(index, kNames[bucket]).text,
                              "gross quantity exceeds int64", error);
+      }
       gross += entry.quantity;
     }
-    for (std::size_t previous = 0; previous < index; ++previous)
+    for (size_t previous = 0; previous < index; ++previous) {
       if (account.futures_positions[previous].instrument_id ==
-          position.instrument_id)
+          position.instrument_id) {
         return InvalidConfig(FuturesFieldPath(index, "symbol").text,
                              "duplicate initial position", error);
+      }
+    }
   }
   if (account.position_count > account.positions.size()) {
     return InvalidConfig("initial_positions",
                          "at most 64 positions are allowed", error);
   }
-  for (std::size_t index = 0; index < account.position_count; ++index) {
+  for (size_t index = 0; index < account.position_count; ++index) {
     const auto& position = account.positions[index];
     // Stable IDs encode one of the three supported venues and six digits.
     // Dictionary membership is checked by the host during account Configure.
@@ -552,7 +664,7 @@ base::Status ValidateTradingConfig(const TradingConfig& config,
       return InvalidConfig(PositionFieldPath(index, "reserved_qty").text,
                            "initial reservations must be zero", error);
     }
-    for (std::size_t previous = 0; previous < index; ++previous) {
+    for (size_t previous = 0; previous < index; ++previous) {
       if (account.positions[previous].instrument_id == position.instrument_id) {
         return InvalidConfig(PositionFieldPath(index, "symbol").text,
                              "duplicate initial position", error);
@@ -573,8 +685,12 @@ base::Status TradingConfigLoader::Load(const char* path) noexcept {
   }
   TradingConfig parsed;
   status = Parse(source, parsed, error_);
-  if (status.ok()) status = ValidateTradingConfig(parsed, error_);
-  if (status.ok()) config_ = parsed;
+  if (status.ok()) {
+    status = ValidateTradingConfig(parsed, error_);
+  }
+  if (status.ok()) {
+    config_ = parsed;
+  }
   return status;
 }
 

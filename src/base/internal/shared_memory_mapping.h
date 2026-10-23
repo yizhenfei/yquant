@@ -1,6 +1,9 @@
 #ifndef YQUANT_BASE_INTERNAL_SHARED_MEMORY_MAPPING_H_
 #define YQUANT_BASE_INTERNAL_SHARED_MEMORY_MAPPING_H_
 
+#include <stddef.h>
+
+#include <cstddef>
 #include <span>
 #include <string>
 
@@ -18,7 +21,7 @@ class SharedMemoryMapping final {
   SharedMemoryMapping& operator=(const SharedMemoryMapping&) = delete;
   // Create reserves backing storage before touching pages. Both operations
   // require closed state; failure stays closed and cleans partially made names.
-  [[nodiscard]] Status Create(const std::string& name, std::size_t bytes);
+  [[nodiscard]] Status Create(const std::string& name, size_t bytes);
   [[nodiscard]] Status Open(const std::string& name);
   // Reopens the name and checks inode/size against the mapped descriptor.
   [[nodiscard]] Status VerifyName() const;
@@ -30,11 +33,11 @@ class SharedMemoryMapping final {
   std::string name_;
   int fd_ = -1;
   std::byte* memory_ = nullptr;
-  std::size_t bytes_ = 0;
+  size_t bytes_ = 0;
   int owner_pid_ = 0;
 };
 // Shared-memory resource budget and page rounding belong to the mapping layer.
 // Failure preserves bytes; logical queue size is computed separately.
-Status SharedMemoryBytes(std::size_t required, std::size_t& bytes) noexcept;
+Status SharedMemoryBytes(size_t required, size_t& bytes) noexcept;
 }  // namespace yquant::base::internal
 #endif  // YQUANT_BASE_INTERNAL_SHARED_MEMORY_MAPPING_H_

@@ -1,18 +1,20 @@
 #include "yquant/md/mock_quote_config.h"
 
 #include <fcntl.h>
+#include <stddef.h>
 #include <unistd.h>
 
 #include <cstdio>
 #include <cstdlib>
-#include <filesystem>
 #include <string>
 #include <string_view>
 #include <system_error>
 
+#include "file_test_support.h"
 #include "gtest/gtest.h"
 #include "scoped_working_directory.h"
 #include "test_config_file.h"
+#include "yquant/base/format.h"
 #include "yquant/base/json_config_document.h"
 #include "yquant/model/identifiers.h"
 
@@ -38,7 +40,9 @@ std::string Json(
 std::string Replace(std::string json, std::string_view from,
                     std::string_view to) {
   const auto position = json.find(from);
-  if (position != std::string::npos) json.replace(position, from.size(), to);
+  if (position != std::string::npos) {
+    json.replace(position, from.size(), to);
+  }
   return json;
 }
 
@@ -49,7 +53,8 @@ class CatalogConfigDirectory {
   ~CatalogConfigDirectory() {
     if (valid_) {
       std::error_code error;
-      std::filesystem::remove_all(path_, error);
+      ::yquant::testing::files::RemoveTree(
+          ::yquant::testing::files::FilePath(path_), error);
     }
   }
   CatalogConfigDirectory(const CatalogConfigDirectory&) = delete;
@@ -57,16 +62,23 @@ class CatalogConfigDirectory {
 
   bool valid() const { return valid_; }
   std::string File(std::string_view name) const {
-    return (std::filesystem::path(path_) / name).string();
+    return (::yquant::testing::files::FilePath(path_) / name).string();
   }
   bool Write(std::string_view name, std::string_view contents) const {
-    if (!valid_) return false;
-    const auto file_path = std::filesystem::path(path_) / name;
+    if (!valid_) {
+      return false;
+    }
+    const auto file_path = ::yquant::testing::files::FilePath(path_) / name;
     std::error_code error;
-    std::filesystem::create_directories(file_path.parent_path(), error);
-    if (error) return false;
+    ::yquant::testing::files::CreateDirectories(
+        ::yquant::testing::files::FilePath(file_path.Parent()), error);
+    if (error) {
+      return false;
+    }
     FILE* file = std::fopen(file_path.c_str(), "wb");
-    if (file == nullptr) return false;
+    if (file == nullptr) {
+      return false;
+    }
     const auto written = std::fwrite(contents.data(), 1, contents.size(), file);
     return std::fclose(file) == 0 && written == contents.size();
   }
@@ -250,13 +262,15 @@ INSTANTIATE_TEST_SUITE_P(
     });
 
 TEST(MockQuoteConfigTest, RequiresAnInstrumentArrayWithOneTo64DistinctItems) {
-  for (std::size_t count : {0U, 64U, 65U}) {
+  for (size_t count : {0U, 64U, 65U}) {
     std::string items;
-    for (std::size_t i = 0; i < count; ++i) {
-      if (i != 0) items += ',';
+    for (size_t i = 0; i < count; ++i) {
+      if (i != 0) {
+        items += ',';
+      }
       char symbol[model::kSymbolLength + 1];
-      std::snprintf(symbol, sizeof(symbol), "%0*zu",
-                    static_cast<int>(model::kSymbolLength), i);
+      ::yquant::base::FormatTo(symbol, sizeof(symbol), "{:0{}}", i,
+                               static_cast<int>(model::kSymbolLength));
       items += Replace(std::string(kInstrument), "600000", symbol);
     }
     ConfigFile file(Json(items));
@@ -305,9 +319,10 @@ TEST(MockQuoteConfigTest,
 // of whether its quote seeds come from the mock adapter or a SHM stream.
 std::string FutureInstrument(bool mock = true) {
   std::string instrument = R"({"venue":"SHFE","symbol":"rb2501")";
-  if (mock)
+  if (mock) {
     instrument +=
         R"(,"bid_price":3500,"bid_qty":10,"ask_price":3502,"ask_qty":20,"price_step":2)";
+  }
   return instrument + '}';
 }
 

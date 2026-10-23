@@ -1,8 +1,14 @@
 #include "yquant/trading/trading_persistence.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <memory>
+#include <optional>
+#include <span>
 #include <vector>
 
 #include "gtest/gtest.h"
@@ -15,45 +21,44 @@ using base::ErrorCode;
 
 class Clock final : public base::MonotonicClock {
  public:
-  std::uint64_t Now() const noexcept override { return now; }
-  std::uint64_t now = 1000;
+  uint64_t Now() const noexcept override { return now; }
+  uint64_t now = 1000;
 };
 
 class Adapter final : public TradingAdapter {
  public:
   base::Status Prepare(const TradingConfig&) noexcept override { return {}; }
-  base::Status Start(std::uint64_t) noexcept override { return {}; }
+  base::Status Start(uint64_t) noexcept override { return {}; }
   base::Status ReadAccountSnapshot(TradingAccountSnapshot&) noexcept override {
     return {};
   }
   base::Status SendOrder(model::ClientOrderId, const model::OrderRequest&,
-                         std::uint64_t) noexcept override {
+                         uint64_t) noexcept override {
     ++sends;
     return {};
   }
   base::Status SendCancel(model::ClientOrderId, const model::BrokerOrderId&,
-                          model::CancelRequestId,
-                          std::uint64_t) noexcept override {
+                          model::CancelRequestId, uint64_t) noexcept override {
     ++sends;
     return {};
   }
-  TradingPollResult Poll(std::uint64_t, TradingEvent&) noexcept override {
+  TradingPollResult Poll(uint64_t, TradingEvent&) noexcept override {
     return {};
   }
-  std::optional<std::uint64_t> next_deadline() const noexcept override {
-    return {};
-  }
+  std::optional<uint64_t> next_deadline() const noexcept override { return {}; }
   bool is_drained() const noexcept override { return true; }
   base::Status Stop() noexcept override { return {}; }
   const char* error_detail() const noexcept override { return ""; }
-  std::size_t sends = 0;
+  size_t sends = 0;
 };
 
 // Captures copies so tests can replay after the original callback returns.
 class Sink final : public TradingMutationSink {
  public:
   base::Status BeforeCommit(const TradingMutation& fact) noexcept override {
-    if (fail) return {ErrorCode::kIoError, {}};
+    if (fail) {
+      return {ErrorCode::kIoError, {}};
+    }
     facts.push_back(fact);
     return {};
   }
@@ -80,7 +85,7 @@ class TradingPersistenceTest : public ::testing::Test {
     ASSERT_TRUE(ledger.SetMutationSink(&sink).ok());
     ledger.SetRunning(true);
   }
-  model::ClientOrderId Submit(std::int64_t quantity = 100) {
+  model::ClientOrderId Submit(int64_t quantity = 100) {
     model::ClientOrderId id;
     ledger.BeginCallback(strategy::CallbackPhase::kTick);
     EXPECT_EQ(ledger.SubmitOrder({config.instruments[0].instrument.id,
@@ -90,7 +95,7 @@ class TradingPersistenceTest : public ::testing::Test {
     ledger.EndCallback();
     return id;
   }
-  TradingEvent Report(model::ClientOrderId id, std::uint64_t seq,
+  TradingEvent Report(model::ClientOrderId id, uint64_t seq,
                       model::OrderUpdateKind kind) const {
     TradingEvent report;
     report.client_order_id = id;
@@ -100,7 +105,7 @@ class TradingPersistenceTest : public ::testing::Test {
     report.receive_time_ns = clock.now;
     return report;
   }
-  TradingEvent Fill(model::ClientOrderId id, std::uint64_t seq = 2) const {
+  TradingEvent Fill(model::ClientOrderId id, uint64_t seq = 2) const {
     auto report = Report(id, seq, model::OrderUpdateKind::kFill);
     report.cumulative_filled_qty = 30;
     report.fill.client_order_id = id;
@@ -127,7 +132,7 @@ class TradingPersistenceTest : public ::testing::Test {
   std::vector<std::byte> Checkpoint(
       testing::TradingEngineHarness& trading) const {
     std::vector<std::byte> bytes(kMaxTradingCheckpointBytes);
-    std::size_t size = 0;
+    size_t size = 0;
     EXPECT_TRUE(trading.ExportCheckpoint(bytes, size).ok());
     bytes.resize(size);
     return bytes;
@@ -237,7 +242,7 @@ TEST_F(TradingPersistenceTest, ReplayRestoresFactsWithoutExternalCalls) {
   clock.now = 1;  // Replay uses the original monotonic clock domain.
   for (const auto& fact : sink.facts) {
     std::array<std::byte, kMaxEncodedTradingMutation> bytes;
-    std::size_t size = 0;
+    size_t size = 0;
     ASSERT_TRUE(EncodeTradingMutation(fact, bytes, size).ok());
     TradingMutation decoded;
     ASSERT_TRUE(
@@ -298,8 +303,9 @@ TEST_F(TradingPersistenceTest,
   EXPECT_EQ(Order(ledger, id).state, model::OrderState::kCanceled);
   testing::TradingEngineHarness recovered{clock, market};
   ASSERT_TRUE(recovered.Configure(account).ok());
-  for (const auto& fact : sink.facts)
+  for (const auto& fact : sink.facts) {
     ASSERT_TRUE(recovered.ReplayMutation(fact, &dispatch).ok());
+  }
   EXPECT_EQ(dispatch.update.kind, model::OrderUpdateKind::kCanceledBeforeSend);
   EXPECT_EQ(Order(recovered, id), Order(ledger, id));
   EXPECT_EQ(Cash(recovered), Cash(ledger));
@@ -332,8 +338,9 @@ TEST_F(TradingPersistenceTest, CancelHookFailureDoesNotConsumeIdentityOrQueue) {
   EXPECT_EQ(adapter.sends, 2U);
   testing::TradingEngineHarness recovered{clock, market};
   ASSERT_TRUE(recovered.Configure(account).ok());
-  for (const auto& fact : sink.facts)
+  for (const auto& fact : sink.facts) {
     ASSERT_TRUE(recovered.ReplayMutation(fact).ok());
+  }
   EXPECT_EQ(Order(recovered, id), Order(ledger, id));
   EXPECT_EQ(Checkpoint(recovered), Checkpoint(ledger));
 }
@@ -515,9 +522,10 @@ TEST_F(TradingPersistenceTest, CorruptCheckpointAndReplayPreserveLedger) {
       std::byte{0xff};  // Cash balance contradicts derived availability.
   EXPECT_EQ(recovered.RestoreCheckpoint(bytes).code, ErrorCode::kCorrupt);
   EXPECT_EQ(Checkpoint(recovered), before);
-  for (std::size_t size = 0; size < before.size(); ++size)
+  for (size_t size = 0; size < before.size(); ++size) {
     EXPECT_EQ(recovered.RestoreCheckpoint(std::span(before).first(size)).code,
               ErrorCode::kCorrupt);
+  }
   auto fact = sink.facts[0];
   fact.revision = recovered.mutation_revision() + 1;
   fact.order_id = id;  // Already allocated identity must not be reused.
@@ -556,7 +564,7 @@ TEST_F(TradingPersistenceTest,
             ErrorCode::kUnsupported);
   std::array<std::byte, 128> output{};
   const auto original = output;
-  std::size_t size = 77;
+  size_t size = 77;
   EXPECT_EQ(futures.ExportCheckpoint(output, size).code,
             ErrorCode::kUnsupported);
   EXPECT_EQ(size, 77U);
@@ -620,7 +628,7 @@ TEST_F(TradingPersistenceTest, CashMutationCodecRejectsFuturesEffect) {
                       model::OrderSide::kBuy, 1000, 10,
                       model::PositionEffect::kOpen};
   std::array<std::byte, kMaxEncodedTradingMutation> bytes{};
-  std::size_t size = 77;
+  size_t size = 77;
   EXPECT_EQ(EncodeTradingMutation(mutation, bytes, size).code,
             ErrorCode::kInvalidArgument);
   EXPECT_EQ(size, 77U);
@@ -646,7 +654,7 @@ TEST_F(TradingPersistenceTest, SinkCannotDetachFromItsMutationCallback) {
       return {};
     }
     base::Status detach;
-    std::size_t calls = 0;
+    size_t calls = 0;
 
    private:
     testing::TradingEngineHarness& owner_;

@@ -1,7 +1,7 @@
+#include <stdint.h>
 #include <unistd.h>
 
 #include <cerrno>
-#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <new>
@@ -79,8 +79,8 @@ class FixtureConfig final : public StrategyConfig {
     bool has_qty = false;
     bool has_label = false;
     bool has_large = false;
-    std::int64_t quote_qty = 0;
-    std::int64_t large_value = 0;
+    int64_t quote_qty = 0;
+    int64_t large_value = 0;
     std::string_view label;
     for (const auto field : object) {
       if (field.key == "quote_qty") {
@@ -163,8 +163,8 @@ class FixtureConfig final : public StrategyConfig {
     return ErrorCode::kOk;
   }
 
-  std::int64_t quote_qty_ = 0;
-  std::int64_t large_value_ = 0;
+  int64_t quote_qty_ = 0;
+  int64_t large_value_ = 0;
   char label_[64] = {};
   char venue_[5] = {};
   char symbol_[yquant::model::kSymbolLength + 1] = {};
@@ -306,7 +306,7 @@ class FixtureStrategy final : public Strategy {
 
   FixtureConfig config_;
   yquant::model::InstrumentId instrument_id_;
-  std::uint64_t last_sequence_ = 0;
+  uint64_t last_sequence_ = 0;
 };
 
 ErrorCode Create(Strategy*& strategy) noexcept {
@@ -337,7 +337,7 @@ void Destroy(Strategy* strategy) noexcept {
         : yquant::strategy::kStrategyPluginAbiVersion,
     YQUANT_TEST_PLUGIN_MODE == 3
         ? 0U
-        : static_cast<std::uint32_t>(sizeof(StrategyPlugin)),
+        : static_cast<uint32_t>(sizeof(StrategyPlugin)),
     YQUANT_TEST_PLUGIN_MODE == 4 ? nullptr : &Create,
     YQUANT_TEST_PLUGIN_MODE == 5 ? nullptr : &Destroy,
 };

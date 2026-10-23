@@ -1,4 +1,5 @@
-#include <cstdint>
+#include <stdint.h>
+
 #include <cstring>
 #include <set>
 #include <string_view>
@@ -27,9 +28,9 @@ TEST(MarketModelTest, InstrumentIdentityUsesStableVenueCodes) {
   ASSERT_EQ(MakeInstrumentId("SSE", "600000", sse), ErrorCode::kOk);
   ASSERT_EQ(MakeInstrumentId("SZSE", "600000", szse), ErrorCode::kOk);
   ASSERT_EQ(MakeInstrumentId("BSE", "600000", bse), ErrorCode::kOk);
-  EXPECT_EQ(sse.value, (std::uint64_t{1} << 32) | 600000);
-  EXPECT_EQ(szse.value, (std::uint64_t{2} << 32) | 600000);
-  EXPECT_EQ(bse.value, (std::uint64_t{3} << 32) | 600000);
+  EXPECT_EQ(sse.value, (uint64_t{1} << 32) | 600000);
+  EXPECT_EQ(szse.value, (uint64_t{2} << 32) | 600000);
+  EXPECT_EQ(bse.value, (uint64_t{3} << 32) | 600000);
   EXPECT_NE(sse, szse);
   EXPECT_NE(sse, bse);
   EXPECT_TRUE(IsValidInstrumentId(sse));
@@ -53,7 +54,7 @@ TEST(MarketModelTest, FuturesIdentityHasStableVenueAndCanonicalProductMonth) {
     SCOPED_TRACE(item.venue);
     InstrumentId id;
     ASSERT_EQ(MakeInstrumentId(item.venue, item.symbol, id), ErrorCode::kOk);
-    EXPECT_EQ(id.value >> 32, static_cast<std::uint64_t>(item.code));
+    EXPECT_EQ(id.value >> 32, static_cast<uint64_t>(item.code));
     EXPECT_NE(id.value & 0x80000000U, 0U);
     EXPECT_TRUE(IsValidInstrumentId(id));
     EXPECT_EQ(VenueName(item.code), item.venue);
@@ -61,14 +62,14 @@ TEST(MarketModelTest, FuturesIdentityHasStableVenueAndCanonicalProductMonth) {
   }
   InstrumentId rb;
   ASSERT_EQ(MakeInstrumentId("SHFE", "rb2501", rb), ErrorCode::kOk);
-  EXPECT_EQ(rb.value, (std::uint64_t{4} << 32) | 0x80000000U |
-                          ((18U * 27 + 2) << 14) | 3501U);
+  EXPECT_EQ(rb.value,
+            (uint64_t{4} << 32) | 0x80000000U | ((18U * 27 + 2) << 14) | 3501U);
   EXPECT_FALSE(IsFuturesVenue(Venue::kSse));
   EXPECT_TRUE(VenueName(static_cast<Venue>(255)).empty());
 }
 
 TEST(MarketModelTest, ProductLengthAndLeadingYearZerosCannotAlias) {
-  std::set<std::uint64_t> ids;
+  std::set<uint64_t> ids;
   // Base-27 digits are all nonzero, so varying product length is unambiguous.
   for (std::string_view symbol : {"a0001", "aa0001", "aaa0001", "z9912",
                                   "zz9912", "zzz9912", "a0002", "a0101"}) {
@@ -119,14 +120,13 @@ TEST(MarketModelTest, InvalidFuturesInputPreservesOutput) {
 }
 
 TEST(MarketModelTest, RejectsNoncanonicalEncodedIdentities) {
-  constexpr auto kMarker = std::uint64_t{0x80000000U};
-  constexpr auto kDce = std::uint64_t{5} << 32;
-  constexpr auto kCzce = std::uint64_t{6} << 32;
+  constexpr auto kMarker = uint64_t{0x80000000U};
+  constexpr auto kDce = uint64_t{5} << 32;
+  constexpr auto kCzce = uint64_t{6} << 32;
   for (const auto value :
-       {std::uint64_t{0}, std::uint64_t{10} << 32,
-        (std::uint64_t{257} << 32) | 1, (std::uint64_t{1} << 32) | kMarker,
-        kDce | (1U << 14) | 3501U, kDce | kMarker | 3501U,
-        kDce | kMarker | (27U << 14) | 3501U,
+       {uint64_t{0}, uint64_t{10} << 32, (uint64_t{257} << 32) | 1,
+        (uint64_t{1} << 32) | kMarker, kDce | (1U << 14) | 3501U,
+        kDce | kMarker | 3501U, kDce | kMarker | (27U << 14) | 3501U,
         kDce | kMarker | (19683U << 14) | 3501U,
         kDce | kMarker | (1U << 14) | 501U, kDce | kMarker | (1U << 14) | 1000U,
         kDce | kMarker | (1U << 14) | 3513U,
@@ -160,7 +160,7 @@ TEST(MarketModelTest, SixDigitIdentityRetainsLeadingZerosInDefinition) {
   std::memcpy(definition.symbol, "000001", 6);
   definition.price_decimals = 2;
 
-  EXPECT_EQ(definition.id.value, (std::uint64_t{2} << 32) | 1);
+  EXPECT_EQ(definition.id.value, (uint64_t{2} << 32) | 1);
   EXPECT_EQ(definition.symbol_view(), "000001");
   const auto copied = definition;
   std::memset(definition.symbol, '9', sizeof(definition.symbol));
@@ -209,12 +209,12 @@ TEST(MarketModelTest, PresenceUsesFlagsRatherThanZeroPrices) {
 }
 
 TEST(MarketModelTest, SettingQuoteFlagPreservesOtherBitsAndIsIdempotent) {
-  std::uint8_t flags = 0x80 | static_cast<std::uint8_t>(QuoteFlag::kAskValid);
+  uint8_t flags = 0x80 | static_cast<uint8_t>(QuoteFlag::kAskValid);
   const auto preserved_flags = flags;
 
   SetQuoteFlag(flags, QuoteFlag::kBidValid);
   EXPECT_TRUE(HasQuoteFlag(flags, QuoteFlag::kBidValid));
-  EXPECT_EQ(flags & ~static_cast<std::uint8_t>(QuoteFlag::kBidValid),
+  EXPECT_EQ(flags & ~static_cast<uint8_t>(QuoteFlag::kBidValid),
             preserved_flags);
   const auto enabled_flags = flags;
   SetQuoteFlag(flags, QuoteFlag::kBidValid);
@@ -234,7 +234,7 @@ TEST(MarketModelTest, SnapshotEqualityIgnoresPaddingAndChecksAllMembers) {
   std::memset(&second, 0x5a, sizeof(second));
   auto initialize = [](QuoteTick& quote) {
     quote.source_id = SourceId{1};
-    quote.instrument_id = InstrumentId{(std::uint64_t{1} << 32) | 600000};
+    quote.instrument_id = InstrumentId{(uint64_t{1} << 32) | 600000};
     quote.sequence = 7;
     quote.event_time_ns = 100;
     quote.receive_time_ns = 200;

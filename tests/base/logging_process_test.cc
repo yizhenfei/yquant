@@ -1,6 +1,8 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -38,7 +40,9 @@ class LoggingProcessTest : public testing::Test {
   }
 
   void TearDown() override {
-    if (pid_ > 0) (void)Stop(SIGKILL);
+    if (pid_ > 0) {
+      (void)Stop(SIGKILL);
+    }
     internal::SetLogBackendHooksForTesting(nullptr);
     for (int index = 1; index <= 100; ++index) {
       (void)unlink((output_ + "." + std::to_string(index)).c_str());
@@ -60,7 +64,9 @@ class LoggingProcessTest : public testing::Test {
       args.insert(args.end(), {"--channel", queue_ + "2", output_ + "2"});
     }
     std::vector<char*> argv;
-    for (auto& arg : args) argv.push_back(arg.data());
+    for (auto& arg : args) {
+      argv.push_back(arg.data());
+    }
     argv.push_back(nullptr);
     if (posix_spawn(&pid_, argv[0], nullptr, nullptr, argv.data(), environ) !=
         0) {
@@ -71,7 +77,9 @@ class LoggingProcessTest : public testing::Test {
         std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (access(queue_.c_str(), F_OK) != 0 ||
            (two_channels && access((queue_ + "2").c_str(), F_OK) != 0)) {
-      if (std::chrono::steady_clock::now() > deadline) return false;
+      if (std::chrono::steady_clock::now() > deadline) {
+        return false;
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     return true;
@@ -79,7 +87,9 @@ class LoggingProcessTest : public testing::Test {
 
   // Waits for the explicitly signaled child and returns its exit status.
   int Stop(int signal = SIGTERM) {
-    if (pid_ <= 0) return -1;
+    if (pid_ <= 0) {
+      return -1;
+    }
     (void)kill(pid_, signal);
     int status = 0;
     pid_t result;
@@ -90,14 +100,14 @@ class LoggingProcessTest : public testing::Test {
     return result > 0 && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
   }
 
-  LogConfig ProducerConfig(std::uint64_t timeout = 5000000000ULL) {
+  LogConfig ProducerConfig(uint64_t timeout = 5000000000ULL) {
     LogConfig config;
     config.backend = LogBackend::kLogd;
     config.shutdown_timeout_ns = timeout;
     return config;
   }
 
-  LoggerConfig ChannelConfig(std::uint64_t capacity = 1048576) {
+  LoggerConfig ChannelConfig(uint64_t capacity = 1048576) {
     LoggerConfig config;
     config.name = "process-test";
     config.queue_path = queue_;
@@ -132,7 +142,7 @@ TEST_F(LoggingProcessTest,
   EXPECT_EQ(manager.Shutdown().counters.enqueued_records_total, 1000U);
   EXPECT_TRUE(manager.channel_error(0).status.ok());
   const auto text = Contents(output_);
-  std::size_t position = 0;
+  size_t position = 0;
   for (int index = 0; index < 1000; ++index) {
     const auto found =
         text.find("sequence=" + std::to_string(index) + "\n", position);
@@ -269,7 +279,7 @@ TEST_F(LoggingProcessTest, RotationIsPerformedInDaemon) {
 // transport and shutdown handshake as the executable.
 TEST_F(LoggingProcessTest, FileErrorIsVisibleToProducerAndBothShutdowns) {
   internal::LogBackendHooks hooks;
-  hooks.write = [](void*, int, const void*, std::size_t) noexcept -> ssize_t {
+  hooks.write = [](void*, int, const void*, size_t) noexcept -> ssize_t {
     errno = ENOSPC;
     return -1;
   };

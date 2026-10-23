@@ -4,6 +4,10 @@
 // Defines CLI startup inputs and configuration ownership for runner assembly.
 // Strategy execution and shutdown remain runner duties.
 
+#include <stddef.h>
+
+#include <string_view>
+
 #include "strategyd/replay_market_data_source.h"
 #include "strategyd/shm_market_data_source.h"
 #include "strategyd/strategy_runner.h"
@@ -30,6 +34,9 @@ struct StrategyOptions {
 // alive during shutdown.
 class StrategyAssembly {
  public:
+  StrategyAssembly(const StrategyAssembly&) = delete;
+  StrategyAssembly& operator=(const StrategyAssembly&) = delete;
+
   // Borrows clock until destruction through the owned trading client.
   explicit StrategyAssembly(const base::MonotonicClock& clock) noexcept
       : trading_(clock, instruments_) {}
@@ -74,7 +81,7 @@ class StrategyAssembly {
                              const base::ConfigError& error) noexcept;
 
   // Diagnostic capacity in bytes, including the terminating null.
-  static constexpr std::size_t kErrorDetailSize = 1024;
+  static constexpr size_t kErrorDetailSize = 1024;
   StrategyConfigLoader strategy_config_;
   md::MarketDataConfigLoader market_config_;
   trading::TradingClientConfigLoader trading_config_;

@@ -1,7 +1,8 @@
 #ifndef YQUANT_MODEL_QUOTE_TICK_H_
 #define YQUANT_MODEL_QUOTE_TICK_H_
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <type_traits>
 
 #include "yquant/model/identifiers.h"
@@ -11,7 +12,7 @@ namespace yquant::model {
 // Bit flags for QuoteTick::flags.
 // Each enumerator must be a distinct power of two (one bit per flag).
 // Use SetQuoteFlag() to set or clear a flag, and HasQuoteFlag() to query it.
-enum class QuoteFlag : std::uint8_t {
+enum class QuoteFlag : uint8_t {
   // bid_price and bid_qty describe a present bid, even if bid_price is zero.
   kBidValid = 1,
   // ask_price and ask_qty describe a present ask, even if ask_price is zero.
@@ -23,21 +24,21 @@ enum class QuoteFlag : std::uint8_t {
 };
 
 // Mask of supported QuoteTick::flags bits; all other bits must be zero.
-inline constexpr std::uint8_t kKnownQuoteFlags = 0x0f;
+inline constexpr uint8_t kKnownQuoteFlags = 0x0f;
 
 // Returns whether the specified QuoteFlag bit is set in flags.
-constexpr bool HasQuoteFlag(std::uint8_t flags, QuoteFlag flag) noexcept {
-  return (flags & static_cast<std::uint8_t>(flag)) != 0;
+constexpr bool HasQuoteFlag(uint8_t flags, QuoteFlag flag) noexcept {
+  return (flags & static_cast<uint8_t>(flag)) != 0;
 }
 
 // Sets flag when enabled is true and clears it otherwise; preserves other bits.
-constexpr void SetQuoteFlag(std::uint8_t& flags, QuoteFlag flag,
+constexpr void SetQuoteFlag(uint8_t& flags, QuoteFlag flag,
                             bool enabled = true) noexcept {
-  const auto mask = static_cast<std::uint8_t>(flag);
+  const auto mask = static_cast<uint8_t>(flag);
   if (enabled) {
     flags |= mask;
   } else {
-    flags &= static_cast<std::uint8_t>(~mask);
+    flags &= static_cast<uint8_t>(~mask);
   }
 }
 
@@ -48,24 +49,24 @@ constexpr void SetQuoteFlag(std::uint8_t& flags, QuoteFlag flag,
 struct QuoteTick {
   SourceId source_id;
   InstrumentId instrument_id;
-  std::uint64_t sequence = 0;
+  uint64_t sequence = 0;
   // UTC nanoseconds since the Unix epoch; zero when kEventTimeValid is absent.
-  std::uint64_t event_time_ns = 0;
+  uint64_t event_time_ns = 0;
   // Nanoseconds in the same process-relative monotonic domain as Context::Now.
   // Preserved through dispatch so strategies can measure the data's age.
-  std::uint64_t receive_time_ns = 0;
+  uint64_t receive_time_ns = 0;
   // Prices use InstrumentDefinition::price_decimals; quantities use shares
   // for equities and lots for futures.
   // A missing side has zero price and quantity; a present side has qty > 0.
-  std::int64_t bid_price = 0;
-  std::int64_t bid_qty = 0;
-  std::int64_t ask_price = 0;
-  std::int64_t ask_qty = 0;
+  int64_t bid_price = 0;
+  int64_t bid_qty = 0;
+  int64_t ask_price = 0;
+  int64_t ask_qty = 0;
   // For a snapshot with both sides present:
   //   SetQuoteFlag(flags, QuoteFlag::kBidValid);
   //   SetQuoteFlag(flags, QuoteFlag::kAskValid);
   // Test presence with HasQuoteFlag(flags, QuoteFlag::kBidValid).
-  std::uint8_t flags = 0;
+  uint8_t flags = 0;
 
   friend constexpr bool operator==(const QuoteTick&,
                                    const QuoteTick&) noexcept = default;

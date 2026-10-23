@@ -1,12 +1,16 @@
 #include "strategyd/market_data.h"
 
+#include <stdint.h>
+
+#include <string_view>
+
 namespace yquant::strategyd {
 namespace {
 
 // Checks a book side's presence encoding. A present side requires positive
 // quantity but may have a zero or negative price; absent fields must be zero.
-bool ValidSide(std::uint8_t flags, model::QuoteFlag side, std::int64_t price,
-               std::int64_t quantity) noexcept {
+bool ValidSide(uint8_t flags, model::QuoteFlag side, int64_t price,
+               int64_t quantity) noexcept {
   return model::HasQuoteFlag(flags, side) ? quantity > 0
                                           : price == 0 && quantity == 0;
 }
@@ -97,8 +101,9 @@ base::ErrorCode MarketDataImpl::ApplyQuote(const model::QuoteTick& tick,
   if (tick.bid_price % definition.price_tick != 0 ||
       tick.ask_price % definition.price_tick != 0 ||
       tick.bid_qty % definition.quantity_step != 0 ||
-      tick.ask_qty % definition.quantity_step != 0)
+      tick.ask_qty % definition.quantity_step != 0) {
     return base::ErrorCode::kCorrupt;
+  }
   auto& slot = snapshots_[*index];
   // Validate even old quotes before ignoring them so stale sequence numbers
   // cannot hide malformed input from the configured source.

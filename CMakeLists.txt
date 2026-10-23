@@ -159,7 +159,7 @@ set_target_properties(yquant_marketd PROPERTIES
 
 function(yquant_add_strategy_example name)
   add_library(${name} MODULE examples/strategies/${name}.cc)
-  target_link_libraries(${name} PRIVATE yquant::strategy_api)
+  target_link_libraries(${name} PRIVATE yquant::strategy_api fmt::fmt)
   target_compile_options(${name} PRIVATE -Wall -Wextra -Wpedantic)
   set_target_properties(${name} PROPERTIES
     PREFIX ""
@@ -220,6 +220,7 @@ endforeach()
 add_library(yquant_base STATIC
   src/base/termination_signals.cc
   src/base/json_config_document.cc
+  src/base/file.cc
   src/base/path.cc
   src/base/broadcast_queue.cc
   src/base/shared_memory_mapping.cc
@@ -276,6 +277,11 @@ if(BUILD_TESTING)
 
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
+    add_test(NAME Project.HeaderSelfContainment
+      COMMAND "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/scripts/check_header_self_containment.py"
+        "${CMAKE_BINARY_DIR}")
+    set_tests_properties(Project.HeaderSelfContainment PROPERTIES TIMEOUT 180)
     add_test(NAME Futures.CtpScripts
       COMMAND "${Python3_EXECUTABLE}" -m unittest discover
         -s tests/scripts -v)
@@ -339,7 +345,16 @@ if(BUILD_TESTING)
     DISCOVERY_TIMEOUT 30
     PROPERTIES ${yquant_test_properties})
 
-  add_executable(path_test tests/base/path_test.cc)
+  add_executable(format_test tests/base/format_test.cc)
+  target_link_libraries(format_test PRIVATE yquant::base GTest::gtest_main)
+  target_compile_options(format_test PRIVATE -Wall -Wextra -Wpedantic)
+  gtest_discover_tests(format_test
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    DISCOVERY_MODE PRE_TEST
+    DISCOVERY_TIMEOUT 30
+    PROPERTIES ${yquant_test_properties})
+
+  add_executable(path_test tests/base/path_test.cc tests/base/file_test.cc)
   target_include_directories(path_test PRIVATE "${PROJECT_SOURCE_DIR}/tests")
   target_link_libraries(path_test PRIVATE yquant::base GTest::gtest_main)
   target_compile_options(path_test PRIVATE -Wall -Wextra -Wpedantic)

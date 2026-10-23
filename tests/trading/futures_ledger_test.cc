@@ -1,8 +1,11 @@
 #include "yquant/trading/futures_ledger.h"
 
-#include <cstdint>
+#include <stddef.h>
+#include <stdint.h>
+
 #include <cstring>
 #include <limits>
+#include <optional>
 
 #include "gtest/gtest.h"
 #include "trading_engine_harness.h"
@@ -15,11 +18,11 @@ namespace {
 using base::ErrorCode;
 using model::OrderSide;
 using model::PositionEffect;
-constexpr std::int64_t kYuan = 1000000;
+constexpr int64_t kYuan = 1000000;
 
 class FuturesClock final : public base::MonotonicClock {
  public:
-  std::uint64_t Now() const noexcept override { return 1000; }
+  uint64_t Now() const noexcept override { return 1000; }
 };
 
 class FuturesLedgerTest : public ::testing::Test {
@@ -54,8 +57,7 @@ class FuturesLedgerTest : public ::testing::Test {
   }
 
   model::OrderSnapshot Order(OrderSide side, PositionEffect effect,
-                             std::int64_t quantity,
-                             std::int64_t price = 100) const {
+                             int64_t quantity, int64_t price = 100) const {
     model::OrderSnapshot order;
     order.instrument_id = id;
     order.side = side;
@@ -76,7 +78,7 @@ class FuturesLedgerTest : public ::testing::Test {
   }
 
   ErrorCode Fill(model::OrderSnapshot& order, FuturesReservation& reservation,
-                 std::int64_t quantity, std::int64_t price) {
+                 int64_t quantity, int64_t price) {
     model::Fill fill;
     fill.instrument_id = id;
     fill.side = order.side;
@@ -101,13 +103,13 @@ class FuturesLedgerTest : public ::testing::Test {
     EXPECT_TRUE(ledger.TryGetPosition(id, out));
     return out;
   }
-  ErrorCode Mark(std::int64_t bid = 100, std::int64_t ask = 101) {
+  ErrorCode Mark(int64_t bid = 100, int64_t ask = 101) {
     model::QuoteTick quote;
     quote.instrument_id = id;
     quote.bid_price = bid;
     quote.ask_price = ask;
-    quote.flags = static_cast<std::uint8_t>(model::QuoteFlag::kBidValid) |
-                  static_cast<std::uint8_t>(model::QuoteFlag::kAskValid);
+    quote.flags = static_cast<uint8_t>(model::QuoteFlag::kBidValid) |
+                  static_cast<uint8_t>(model::QuoteFlag::kAskValid);
     return ledger.ApplyQuote(quote);
   }
 
@@ -266,17 +268,16 @@ TEST_F(FuturesLedgerTest, OverflowingFillAndMarkPreserveFifoAndBalances) {
   auto reservation = Reserve(open);
   const auto before = Cash();
   const auto position_before = Position();
-  EXPECT_EQ(
-      Fill(open, reservation, 1, std::numeric_limits<std::int64_t>::max()),
-      ErrorCode::kCorrupt);
+  EXPECT_EQ(Fill(open, reservation, 1, std::numeric_limits<int64_t>::max()),
+            ErrorCode::kCorrupt);
   EXPECT_EQ(Cash(), before);
   EXPECT_EQ(Position(), position_before);
   EXPECT_EQ(reservation.quantity, 1);
   ASSERT_EQ(Fill(open, reservation, 1, 100), ErrorCode::kOk);
   const auto after = Cash();
   const auto filled_position = Position();
-  EXPECT_EQ(Mark(std::numeric_limits<std::int64_t>::max(),
-                 std::numeric_limits<std::int64_t>::max()),
+  EXPECT_EQ(Mark(std::numeric_limits<int64_t>::max(),
+                 std::numeric_limits<int64_t>::max()),
             ErrorCode::kCorrupt);
   EXPECT_EQ(Cash(), after);
   EXPECT_EQ(Position(), filled_position);
@@ -322,11 +323,11 @@ TEST_F(FuturesLedgerTest, ReservationOverflowAndOffTickRequestsAreAtomic) {
   Configure();
   const auto before = Cash();
   FuturesReservation reservation{3, 7};
-  EXPECT_EQ(ledger.Reserve(
-                {id, OrderSide::kBuy, std::numeric_limits<std::int64_t>::max(),
-                 1, PositionEffect::kOpen},
-                reservation),
-            ErrorCode::kInvalidArgument);
+  EXPECT_EQ(
+      ledger.Reserve({id, OrderSide::kBuy, std::numeric_limits<int64_t>::max(),
+                      1, PositionEffect::kOpen},
+                     reservation),
+      ErrorCode::kInvalidArgument);
   EXPECT_EQ(reservation.quantity, 3);
   EXPECT_EQ(reservation.cash, 7);
   EXPECT_EQ(Cash(), before);
@@ -365,7 +366,7 @@ TEST_F(FuturesLedgerTest,
   Configure();
   constexpr auto kCapacity =
       kMaxTradingFills + 4 * md::kMaxMarketDataInstruments;
-  for (std::size_t i = 0; i != kCapacity; ++i) {
+  for (size_t i = 0; i != kCapacity; ++i) {
     auto order = Order(OrderSide::kBuy, PositionEffect::kOpen, 1);
     auto reservation = Reserve(order);
     ASSERT_EQ(Fill(order, reservation, 1, 100), ErrorCode::kOk) << i;
@@ -386,27 +387,24 @@ TEST_F(FuturesLedgerTest,
 class FuturesSendAdapter final : public TradingAdapter {
  public:
   base::Status Prepare(const TradingConfig&) noexcept override { return {}; }
-  base::Status Start(std::uint64_t) noexcept override { return {}; }
+  base::Status Start(uint64_t) noexcept override { return {}; }
   base::Status ReadAccountSnapshot(TradingAccountSnapshot&) noexcept override {
     return {};
   }
   base::Status SendOrder(model::ClientOrderId,
                          const model::OrderRequest& request,
-                         std::uint64_t) noexcept override {
+                         uint64_t) noexcept override {
     sent_effect = request.position_effect;
     return {};
   }
   base::Status SendCancel(model::ClientOrderId, const model::BrokerOrderId&,
-                          model::CancelRequestId,
-                          std::uint64_t) noexcept override {
+                          model::CancelRequestId, uint64_t) noexcept override {
     return {};
   }
-  TradingPollResult Poll(std::uint64_t, TradingEvent&) noexcept override {
+  TradingPollResult Poll(uint64_t, TradingEvent&) noexcept override {
     return {};
   }
-  std::optional<std::uint64_t> next_deadline() const noexcept override {
-    return {};
-  }
+  std::optional<uint64_t> next_deadline() const noexcept override { return {}; }
   bool is_drained() const noexcept override { return true; }
   base::Status Stop() noexcept override { return {}; }
   const char* error_detail() const noexcept override { return ""; }
@@ -477,7 +475,7 @@ TEST_F(FuturesLedgerTest, FullRequestQueueDoesNotReserveAnotherFuturesOrder) {
   trading.BeginCallback(strategy::CallbackPhase::kTick);
   const model::OrderRequest request{id, OrderSide::kBuy, 100, 1,
                                     PositionEffect::kOpen};
-  for (std::size_t i = 0; i != kMaxTradingRequests; ++i) {
+  for (size_t i = 0; i != kMaxTradingRequests; ++i) {
     model::ClientOrderId id;
     ASSERT_EQ(trading.SubmitOrder(request, id), ErrorCode::kOk) << i;
   }
@@ -605,8 +603,8 @@ TEST_F(FuturesLedgerTest, RuntimeDispatchMarksFuturesAccountBeforeQueries) {
   quote.instrument_id = id;
   quote.bid_price = 102;
   quote.ask_price = 103;
-  quote.flags = static_cast<std::uint8_t>(model::QuoteFlag::kBidValid) |
-                static_cast<std::uint8_t>(model::QuoteFlag::kAskValid);
+  quote.flags = static_cast<uint8_t>(model::QuoteFlag::kBidValid) |
+                static_cast<uint8_t>(model::QuoteFlag::kAskValid);
   ASSERT_EQ(runtime.ApplyQuote(quote), ErrorCode::kOk);
   model::FuturesAccountSnapshot snapshot;
   ASSERT_TRUE(runtime.TryGetFuturesAccount(snapshot));
@@ -625,7 +623,7 @@ class BrokerSnapshotAdapter final : public TradingAdapter {
   int stopping_calls = 0;
   void BeginStopping() noexcept override { ++stopping_calls; }
   base::Status Prepare(const TradingConfig&) noexcept override { return {}; }
-  base::Status Start(std::uint64_t) noexcept override { return {}; }
+  base::Status Start(uint64_t) noexcept override { return {}; }
   base::Status ReadAccountSnapshot(TradingAccountSnapshot&) noexcept override {
     return {ErrorCode::kUnsupported, {}};
   }
@@ -635,23 +633,24 @@ class BrokerSnapshotAdapter final : public TradingAdapter {
     return {};
   }
   base::Status SendOrder(model::ClientOrderId, const model::OrderRequest&,
-                         std::uint64_t) noexcept override {
+                         uint64_t) noexcept override {
     return {};
   }
   base::Status SendCancel(model::ClientOrderId, const model::BrokerOrderId&,
-                          model::CancelRequestId,
-                          std::uint64_t) noexcept override {
+                          model::CancelRequestId, uint64_t) noexcept override {
     return {};
   }
-  TradingPollResult Poll(std::uint64_t, TradingEvent& out) noexcept override {
+  TradingPollResult Poll(uint64_t, TradingEvent& out) noexcept override {
     const auto state = pending;
     pending = TradingPollState::kIdle;
-    if (state == TradingPollState::kEvent) out = fact;
+    if (state == TradingPollState::kEvent) {
+      out = fact;
+    }
     return {state, {}};
   }
-  std::optional<std::uint64_t> next_deadline() const noexcept override {
+  std::optional<uint64_t> next_deadline() const noexcept override {
     return pending == TradingPollState::kIdle ? std::nullopt
-                                              : std::optional<std::uint64_t>{0};
+                                              : std::optional<uint64_t>{0};
   }
   bool is_drained() const noexcept override {
     return pending == TradingPollState::kIdle;

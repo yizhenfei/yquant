@@ -1,4 +1,6 @@
-#include <cstdint>
+#include <stddef.h>
+#include <stdint.h>
+
 #include <string_view>
 
 #include "gtest/gtest.h"
@@ -13,7 +15,7 @@ using model::OrderSide;
 using model::OrderUpdateKind;
 using model::PositionEffect;
 
-constexpr std::uint64_t kInterval = 1000000;
+constexpr uint64_t kInterval = 1000000;
 
 TradingConfig ExchangeConfig() {
   TradingConfig config;
@@ -29,10 +31,9 @@ model::InstrumentId FutureId() {
   return id;
 }
 
-model::QuoteTick ExchangeQuote(std::uint64_t sequence = 1,
-                               std::int64_t bid = 3500, std::int64_t ask = 3501,
-                               std::int64_t bid_qty = 2,
-                               std::int64_t ask_qty = 3) {
+model::QuoteTick ExchangeQuote(uint64_t sequence = 1, int64_t bid = 3500,
+                               int64_t ask = 3501, int64_t bid_qty = 2,
+                               int64_t ask_qty = 3) {
   model::QuoteTick quote;
   quote.source_id = {1};
   quote.instrument_id = FutureId();
@@ -45,12 +46,11 @@ model::QuoteTick ExchangeQuote(std::uint64_t sequence = 1,
   return quote;
 }
 
-model::OrderRequest ExchangeOrder(std::int64_t limit = 3500,
-                                  std::int64_t quantity = 1) {
+model::OrderRequest ExchangeOrder(int64_t limit = 3500, int64_t quantity = 1) {
   return {FutureId(), OrderSide::kBuy, limit, quantity, PositionEffect::kOpen};
 }
 
-TradingEvent PollEvent(SimulatedFuturesExchange& exchange, std::uint64_t now) {
+TradingEvent PollEvent(SimulatedFuturesExchange& exchange, uint64_t now) {
   TradingEvent event;
   const auto result = exchange.Poll(now, event);
   EXPECT_EQ(result.state, TradingPollState::kEvent) << exchange.error_detail();
@@ -219,13 +219,13 @@ TEST(FuturesExchangeTest, FillHistoryCapacityFailureDoesNotConsumeTheLastLot) {
       exchange.SendOrder({1}, ExchangeOrder(3500, kMaxTradingFills + 1), 0)
           .ok());
   const auto accepted = PollEvent(exchange, kInterval);
-  for (std::size_t index = 0; index < kMaxTradingFills; ++index) {
+  for (size_t index = 0; index < kMaxTradingFills; ++index) {
     const auto now = kInterval + index;
     ASSERT_TRUE(
         exchange.OnQuote(ExchangeQuote(index + 1, 3499, 3500, 1, 1), now).ok());
     const auto fill = PollEvent(exchange, now);
     ASSERT_EQ(fill.fill.quantity, 1);
-    ASSERT_EQ(fill.cumulative_filled_qty, static_cast<std::int64_t>(index + 1));
+    ASSERT_EQ(fill.cumulative_filled_qty, static_cast<int64_t>(index + 1));
   }
   const auto now = 2 * kInterval;
   EXPECT_EQ(
@@ -240,7 +240,7 @@ TEST(FuturesExchangeTest, FillHistoryCapacityFailureDoesNotConsumeTheLastLot) {
   const auto canceled = PollEvent(exchange, now + kInterval);
   EXPECT_EQ(canceled.kind, OrderUpdateKind::kCanceled);
   EXPECT_EQ(canceled.cumulative_filled_qty,
-            static_cast<std::int64_t>(kMaxTradingFills));
+            static_cast<int64_t>(kMaxTradingFills));
   EXPECT_TRUE(exchange.is_drained());
 }
 

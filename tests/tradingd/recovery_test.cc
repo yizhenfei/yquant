@@ -1,16 +1,20 @@
 #include "tradingd/recovery.h"
 
+#include <stddef.h>
+#include <stdint.h>
 #include <unistd.h>
 
 #include <array>
-#include <cstdint>
+#include <cstddef>
 #include <cstring>
-#include <filesystem>
 #include <limits>
 #include <memory>
+#include <span>
 #include <string>
+#include <system_error>
 #include <vector>
 
+#include "file_test_support.h"
 #include "gtest/gtest.h"
 #include "trading_engine_harness.h"
 #include "tradingd/journal.h"
@@ -26,7 +30,7 @@ constexpr std::array<DurableStrategyIdentity, 1> kIdentities = {{{42, 7}}};
 constexpr BrokerRecoveryRequirements kRequirements{"mock/account-A/CNY", 10};
 
 model::BrokerOrderId RequestKey(
-    std::uint64_t identity = 42, std::uint64_t sequence = 9,
+    uint64_t identity = 42, uint64_t sequence = 9,
     ExternalRequestKind kind = ExternalRequestKind::kNewOrder) {
   char encoded[kExternalRequestKeyBytes + 1];
   EXPECT_TRUE(EncodeExternalRequestKey(identity, kind, sequence, encoded).ok());
@@ -49,7 +53,7 @@ class IndependentFakeBroker {
     order.cumulative_filled_qty = 10;
     order.fact_sequence = 100;
     orders.push_back(order);
-    for (std::size_t index = 0; index < 2; ++index) {
+    for (size_t index = 0; index < 2; ++index) {
       BrokerRecoveryFill fill;
       fill.request_key = order.request_key;
       fill.broker_order_id = order.broker_order_id;
@@ -88,14 +92,12 @@ class IndependentFakeBroker {
 
 class Clock final : public base::MonotonicClock {
  public:
-  std::uint64_t Now() const noexcept override { return 1000; }
+  uint64_t Now() const noexcept override { return 1000; }
 };
 
 TEST(BrokerRecoveryTest, RequestKeyRoundTripsWithoutTruncationOrAliasing) {
-  for (const auto identity :
-       std::array<std::uint64_t, 3>{1, 42, UINT64_MAX}) {
-    for (const auto sequence :
-         std::array<std::uint64_t, 3>{1, 9, UINT64_MAX}) {
+  for (const auto identity : std::array<uint64_t, 3>{1, 42, UINT64_MAX}) {
+    for (const auto sequence : std::array<uint64_t, 3>{1, 9, UINT64_MAX}) {
       for (const auto kind :
            {ExternalRequestKind::kNewOrder, ExternalRequestKind::kCancel}) {
         char encoded[kExternalRequestKeyBytes + 1];
@@ -134,7 +136,8 @@ TEST(BrokerRecoveryTest, RecoversFilledTerminalOrderAfterEntireWalDisappears) {
     const char* path;
     ~Cleanup() {
       std::error_code error;
-      std::filesystem::remove_all(path, error);
+      ::yquant::testing::files::RemoveTree(
+          ::yquant::testing::files::FilePath(path), error);
     }
   } cleanup{directory};
   {
@@ -146,15 +149,17 @@ TEST(BrokerRecoveryTest, RecoversFilledTerminalOrderAfterEntireWalDisappears) {
     ASSERT_TRUE(journal.Acquire(options).ok());
     ASSERT_TRUE(journal.Start(1).ok());
     const std::array<std::byte, 4> bytes{};
-    std::uint64_t lsn = 0;
-    for (unsigned record = 0; record < 4; ++record)
+    uint64_t lsn = 0;
+    for (unsigned record = 0; record < 4; ++record) {
       ASSERT_TRUE(journal.TryAppend(1, bytes, lsn).ok());
+    }
     ASSERT_TRUE(journal.Close().ok());
   }
   // The independent counter keeps its completed order and executions even
   // when the gateway's entire persisted state is unavailable.
   std::error_code removal_error;
-  std::filesystem::remove_all(directory, removal_error);
+  ::yquant::testing::files::RemoveTree(
+      ::yquant::testing::files::FilePath(directory), removal_error);
   ASSERT_FALSE(removal_error);
   auto output = std::make_unique<RecoveredBrokerState>();
   BrokerRecoveryError error = BrokerRecoveryError::kInvalidFact;
@@ -187,7 +192,7 @@ TEST(BrokerRecoveryTest, RecoversFilledTerminalOrderAfterEntireWalDisappears) {
   order.state = fact.state;
   order.report_sequence = fact.fact_sequence;
   std::array<model::Fill, 2> fills;
-  for (std::size_t index = 0; index < fills.size(); ++index) {
+  for (size_t index = 0; index < fills.size(); ++index) {
     const auto& execution = output->fills[index].fact;
     auto& fill = fills[index];
     fill.client_order_id = kLeasedCoreId;
@@ -368,8 +373,10 @@ TEST(BrokerRecoveryTest,
      RejectsExecutionNotionalOverflowBeforeInstallingOutput) {
   IndependentFakeBroker broker;
   broker.orders[0].request.side = model::OrderSide::kSell;
-  for (auto& fill : broker.fills) fill.side = model::OrderSide::kSell;
-  broker.fills[0].price = std::numeric_limits<std::int64_t>::max();
+  for (auto& fill : broker.fills) {
+    fill.side = model::OrderSide::kSell;
+  }
+  broker.fills[0].price = std::numeric_limits<int64_t>::max();
   auto output = std::make_unique<RecoveredBrokerState>();
   output->account.cash.balance = 123;
   output->order_count = 17;

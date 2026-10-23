@@ -3,11 +3,14 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/tcp.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstring>
 #include <span>
 #include <string>
@@ -18,10 +21,10 @@
 namespace yquant::trading {
 namespace {
 
-constexpr std::uint64_t kConnectTimeoutNs = 1000000000;
+constexpr uint64_t kConnectTimeoutNs = 1000000000;
 constexpr auto kWaitTimeout = std::chrono::seconds(2);
 
-trading::Message Heartbeat(std::uint64_t sequence = 1) {
+trading::Message Heartbeat(uint64_t sequence = 1) {
   trading::Message message;
   message.type = trading::MessageType::kHeartbeat;
   message.generation = 31;
@@ -35,7 +38,9 @@ trading::ReceiveResult WaitActive(trading::Connection& connection,
   trading::ReceiveResult result;
   do {
     result = connection.Poll(output);
-    if (result.state != trading::ReceiveState::kIdle) return result;
+    if (result.state != trading::ReceiveState::kIdle) {
+      return result;
+    }
     std::this_thread::yield();
   } while (std::chrono::steady_clock::now() < deadline);
   return result;
@@ -55,7 +60,9 @@ trading::ReceiveResult WaitActive(trading::Connection& connection,
              << ", system_error=" << status.system_error.message()
              << ", detail=" << connection.error_detail();
     }
-    if (accepted) return ::testing::AssertionSuccess();
+    if (accepted) {
+      return ::testing::AssertionSuccess();
+    }
     std::this_thread::yield();
   } while (std::chrono::steady_clock::now() < deadline);
   return ::testing::AssertionFailure()
@@ -111,10 +118,12 @@ class RawPeerEndpoints : public testing::Test {
     ASSERT_TRUE(accepted);
   }
   void TearDown() override {
-    if (raw_fd_ >= 0) close(raw_fd_);
+    if (raw_fd_ >= 0) {
+      close(raw_fd_);
+    }
   }
   void Send(std::span<const std::byte> bytes) {
-    std::size_t offset = 0;
+    size_t offset = 0;
     while (offset != bytes.size()) {
 #ifdef MSG_NOSIGNAL
       constexpr int kFlags = MSG_NOSIGNAL;
@@ -124,7 +133,7 @@ class RawPeerEndpoints : public testing::Test {
       const auto sent =
           send(raw_fd_, bytes.data() + offset, bytes.size() - offset, kFlags);
       ASSERT_GT(sent, 0);
-      offset += static_cast<std::size_t>(sent);
+      offset += static_cast<size_t>(sent);
     }
   }
   trading::Listener listener_;
@@ -152,14 +161,15 @@ TEST_F(ConnectedEndpoints, IndependentSequencesAreAssignedInBothDirections) {
 
 TEST_F(ConnectedEndpoints,
        FullQueueNeverOverwritesAndRejectedQueueConsumesNoSequence) {
-  for (std::size_t index = 0; index < 64; ++index)
+  for (size_t index = 0; index < 64; ++index) {
     ASSERT_TRUE(sender_.Queue(Heartbeat()).ok());
+  }
   EXPECT_FALSE(sender_.can_queue());
   EXPECT_FALSE(sender_.empty());
   EXPECT_EQ(sender_.Queue(Heartbeat()).code,
             base::ErrorCode::kResourceExhausted);
   trading::Message output;
-  for (std::uint64_t sequence = 1; sequence <= 64; ++sequence) {
+  for (uint64_t sequence = 1; sequence <= 64; ++sequence) {
     ASSERT_TRUE(sender_.Service().ok());
     ASSERT_EQ(WaitActive(receiver_, output).state,
               trading::ReceiveState::kMessage);
@@ -215,7 +225,7 @@ TEST_F(RawPeerEndpoints, FragmentedHeaderAndBodyAreRetainedAcrossPolls) {
   message.order_id = {5};
   message.request = {{0x1000927c0ULL}, model::OrderSide::kBuy, 1000, 300};
   std::array<std::byte, trading::kMaxFrameSize> bytes{};
-  std::size_t size = 0;
+  size_t size = 0;
   ASSERT_TRUE(trading::EncodeMessage(message, bytes, size).ok());
   trading::Message output;
   output.client_id = 39;
@@ -236,9 +246,9 @@ TEST_F(RawPeerEndpoints, FragmentedHeaderAndBodyAreRetainedAcrossPolls) {
 
 TEST_F(RawPeerEndpoints, CoalescedFramesAreDeliveredBeforePeerEof) {
   std::array<std::byte, trading::kMaxFrameSize> bytes{};
-  std::size_t first_size = 0;
+  size_t first_size = 0;
   ASSERT_TRUE(trading::EncodeMessage(Heartbeat(1), bytes, first_size).ok());
-  std::size_t second_size = 0;
+  size_t second_size = 0;
   ASSERT_TRUE(trading::EncodeMessage(Heartbeat(2),
                                      std::span(bytes).subspan(first_size),
                                      second_size)
@@ -259,7 +269,7 @@ TEST_F(RawPeerEndpoints, CoalescedFramesAreDeliveredBeforePeerEof) {
 
 TEST_F(RawPeerEndpoints, EofInHeaderIsCorruptAndDiagnosticSurvivesClose) {
   std::array<std::byte, trading::kMaxFrameSize> bytes{};
-  std::size_t size = 0;
+  size_t size = 0;
   ASSERT_TRUE(trading::EncodeMessage(Heartbeat(), bytes, size).ok());
   Send(std::span(bytes).first(5));
   ASSERT_EQ(shutdown(raw_fd_, SHUT_WR), 0);
@@ -283,7 +293,7 @@ TEST_F(RawPeerEndpoints, EofInBodyIsCorrupt) {
   message.error_code = base::ErrorCode::kCorrupt;
   message.reason.Set(4, "broken");
   std::array<std::byte, trading::kMaxFrameSize> bytes{};
-  std::size_t size = 0;
+  size_t size = 0;
   ASSERT_TRUE(trading::EncodeMessage(message, bytes, size).ok());
   Send(std::span(bytes).first(size - 1));
   ASSERT_EQ(shutdown(raw_fd_, SHUT_WR), 0);
@@ -294,7 +304,7 @@ TEST_F(RawPeerEndpoints, EofInBodyIsCorrupt) {
 
 TEST_F(RawPeerEndpoints, RejectsMissingFirstSequence) {
   std::array<std::byte, trading::kMaxFrameSize> bytes{};
-  std::size_t size = 0;
+  size_t size = 0;
   ASSERT_TRUE(trading::EncodeMessage(Heartbeat(2), bytes, size).ok());
   Send(std::span(bytes).first(size));
   trading::Message output;
@@ -308,7 +318,7 @@ TEST_F(RawPeerEndpoints, RejectsMissingFirstSequence) {
 
 TEST_F(RawPeerEndpoints, RejectsDuplicateSequenceAfterOneAcceptedFrame) {
   std::array<std::byte, trading::kMaxFrameSize> bytes{};
-  std::size_t size = 0;
+  size_t size = 0;
   ASSERT_TRUE(trading::EncodeMessage(Heartbeat(), bytes, size).ok());
   Send(std::span(bytes).first(size));
   Send(std::span(bytes).first(size));
@@ -321,7 +331,7 @@ TEST_F(RawPeerEndpoints, RejectsDuplicateSequenceAfterOneAcceptedFrame) {
 
 TEST_F(RawPeerEndpoints, RejectsInvalidHeaderWithoutReadingDeclaredBody) {
   std::array<std::byte, trading::kMaxFrameSize> bytes{};
-  std::size_t size = 0;
+  size_t size = 0;
   ASSERT_TRUE(trading::EncodeMessage(Heartbeat(), bytes, size).ok());
   bytes[12] = std::byte{1};
   Send(std::span(bytes).first(size));

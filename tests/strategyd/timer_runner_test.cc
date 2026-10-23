@@ -1,3 +1,5 @@
+#include <stdint.h>
+
 #include <algorithm>
 #include <string>
 
@@ -20,8 +22,8 @@ using loop_testing::TradingJson;
 struct TimerCase {
   const char* name;
   const char* plugin;
-  std::uint64_t stop_at;
-  std::uint64_t first_wait;
+  uint64_t stop_at;
+  uint64_t first_wait;
   const char* trace;
 };
 class TimerRunnerTest : public ::testing::TestWithParam<TimerCase> {};

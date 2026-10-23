@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <spawn.h>
+#include <stddef.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -46,21 +47,29 @@ class Process {
   int Start(const std::vector<std::string>& arguments) {
     auto adapted_arguments = arguments;
     const int feed_error = feed_.Prepare(adapted_arguments);
-    if (feed_error) return feed_error;
+    if (feed_error) {
+      return feed_error;
+    }
     const int gateway_error = gateway_.Prepare(adapted_arguments);
-    if (gateway_error) return gateway_error;
+    if (gateway_error) {
+      return gateway_error;
+    }
     int output[2] = {-1, -1};
     int events[2] = {-1, -1};
     if (pipe(output) != 0 || pipe(events) != 0) {
       const int error = errno;
-      for (int fd : {output[0], output[1], events[0], events[1]}) Close(fd);
+      for (int fd : {output[0], output[1], events[0], events[1]}) {
+        Close(fd);
+      }
       return error;
     }
     std::vector<std::string> storage{YQUANT_TEST_STRATEGYD_PATH};
     storage.insert(storage.end(), adapted_arguments.begin(),
                    adapted_arguments.end());
     std::vector<char*> argv;
-    for (auto& argument : storage) argv.push_back(argument.data());
+    for (auto& argument : storage) {
+      argv.push_back(argument.data());
+    }
     argv.push_back(nullptr);
     std::vector<std::string> env_storage;
     for (char** entry = environ; *entry != nullptr; ++entry) {
@@ -70,22 +79,28 @@ class Process {
     }
     env_storage.push_back("YQUANT_TEST_EVENT_FD=" + std::to_string(events[1]));
     std::vector<char*> env;
-    for (auto& entry : env_storage) env.push_back(entry.data());
+    for (auto& entry : env_storage) {
+      env.push_back(entry.data());
+    }
     env.push_back(nullptr);
     posix_spawn_file_actions_t actions;
     int error = posix_spawn_file_actions_init(&actions);
     if (error == 0) {
       error =
           posix_spawn_file_actions_adddup2(&actions, output[1], STDOUT_FILENO);
-      if (error == 0)
+      if (error == 0) {
         error = posix_spawn_file_actions_adddup2(&actions, output[1],
                                                  STDERR_FILENO);
-      for (int fd : {output[0], output[1], events[0]}) {
-        if (error == 0) error = posix_spawn_file_actions_addclose(&actions, fd);
       }
-      if (error == 0)
+      for (int fd : {output[0], output[1], events[0]}) {
+        if (error == 0) {
+          error = posix_spawn_file_actions_addclose(&actions, fd);
+        }
+      }
+      if (error == 0) {
         error = posix_spawn(&pid_, argv[0], &actions, nullptr, argv.data(),
                             env.data());
+      }
       posix_spawn_file_actions_destroy(&actions);
     }
     Close(output[1]);
@@ -97,8 +112,9 @@ class Process {
       return error;
     }
     if (fcntl(output_fd_, F_SETFL, O_NONBLOCK) == -1 ||
-        fcntl(event_fd_, F_SETFL, O_NONBLOCK) == -1)
+        fcntl(event_fd_, F_SETFL, O_NONBLOCK) == -1) {
       return errno;
+    }
     return 0;
   }
 
@@ -117,18 +133,21 @@ class Process {
 
  private:
   static void Close(int fd) {
-    if (fd >= 0) close(fd);
+    if (fd >= 0) {
+      close(fd);
+    }
   }
   static void Drain(int fd, std::string& out) {
     char bytes[512];
     for (;;) {
       const auto count = read(fd, bytes, sizeof(bytes));
-      if (count > 0)
-        out.append(bytes, static_cast<std::size_t>(count));
-      else if (count == -1 && errno == EINTR)
+      if (count > 0) {
+        out.append(bytes, static_cast<size_t>(count));
+      } else if (count == -1 && errno == EINTR) {
         continue;
-      else
+      } else {
         return;
+      }
     }
   }
 
@@ -146,20 +165,30 @@ class Process {
           exited_ = true;
           Drain(output_fd_, output_);
           Drain(event_fd_, events_);
-        } else if (result == -1 && errno != EINTR)
+        } else if (result == -1 && errno != EINTR) {
           return false;
+        }
       }
-      if (output_.find("Running") != std::string::npos) feed_.Release();
-      if (done()) return true;
-      if (pid_ < 0) return false;
+      if (output_.find("Running") != std::string::npos) {
+        feed_.Release();
+      }
+      if (done()) {
+        return true;
+      }
+      if (pid_ < 0) {
+        return false;
+      }
       const auto remaining =
           std::chrono::duration_cast<std::chrono::milliseconds>(
               deadline - std::chrono::steady_clock::now())
               .count();
-      if (remaining <= 0) return false;
-      pollfd fds[] = {{output_fd_, POLLIN, 0}, {event_fd_, POLLIN, 0}};
-      if (poll(fds, 2, static_cast<int>(remaining)) == -1 && errno != EINTR)
+      if (remaining <= 0) {
         return false;
+      }
+      pollfd fds[] = {{output_fd_, POLLIN, 0}, {event_fd_, POLLIN, 0}};
+      if (poll(fds, 2, static_cast<int>(remaining)) == -1 && errno != EINTR) {
+        return false;
+      }
     }
   }
 

@@ -1,8 +1,14 @@
 #include "yquant/trading/protocol.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
+#include <array>
 #include <bit>
+#include <cstddef>
 #include <cstring>
 #include <limits>
+#include <span>
 #include <string_view>
 
 #include "yquant/md/quote_codec.h"
@@ -11,10 +17,10 @@ namespace yquant::trading {
 namespace {
 
 // The byte spelling is YQTR. All integer fields use little-endian order.
-constexpr std::uint32_t kMagic = 0x52545159;
-constexpr std::uint16_t kVersion = 3;
-constexpr std::size_t kMaxReasonBytes = sizeof(model::OrderReason{}.text) - 1;
-constexpr std::uint8_t kMaxPriceDecimals = 6;
+constexpr uint32_t kMagic = 0x52545159;
+constexpr uint16_t kVersion = 3;
+constexpr size_t kMaxReasonBytes = sizeof(model::OrderReason{}.text) - 1;
+constexpr uint8_t kMaxPriceDecimals = 6;
 
 bool ValidType(MessageType type) noexcept {
   return type >= MessageType::kHello && type <= MessageType::kSimulationQuote;
@@ -44,9 +50,9 @@ bool ValidSide(model::OrderSide side) noexcept {
 
 // Validate the unscaled notional here; instrument-specific cash conversion is
 // an account-layer responsibility after the instrument dictionary is known.
-bool ValidAmount(std::int64_t price, std::int64_t quantity) noexcept {
+bool ValidAmount(int64_t price, int64_t quantity) noexcept {
   return price > 0 && quantity > 0 &&
-         price <= std::numeric_limits<std::int64_t>::max() / quantity;
+         price <= std::numeric_limits<int64_t>::max() / quantity;
 }
 
 bool ValidOrder(const model::OrderSnapshot& order) noexcept {
@@ -83,30 +89,37 @@ bool ValidFill(const model::Fill& fill,
 bool ValidAccount(const AccountView& account) noexcept {
   if (account.type == model::AccountType::kFutures) {
     if (account.position_count != 0 ||
-        account.futures_position_count > kMaxInstruments)
+        account.futures_position_count > kMaxInstruments) {
       return false;
+    }
     const auto& a = account.futures;
     const __int128 equity = static_cast<__int128>(a.balance) + a.unrealized_pnl;
     if (a.margin < 0 || a.reserved < 0 || a.commission < 0 ||
         (!account.broker_managed &&
-         (equity != a.equity || equity - a.margin - a.reserved != a.available)))
+         (equity != a.equity ||
+          equity - a.margin - a.reserved != a.available))) {
       return false;
-    for (std::size_t i = 0; i < account.futures_position_count; ++i) {
+    }
+    for (size_t i = 0; i < account.futures_position_count; ++i) {
       const auto& p = account.futures_positions[i];
       if (!ValidInstrument(p.instrument_id) ||
           !model::IsFuturesVenue(
               static_cast<model::Venue>(p.instrument_id.value >> 32)) ||
-          p.margin < 0)
+          p.margin < 0) {
         return false;
+      }
       __int128 gross = 0;
       for (const auto* b : {&p.long_today, &p.long_yesterday, &p.short_today,
                             &p.short_yesterday}) {
         if (b->quantity < 0 || b->frozen_qty < 0 ||
-            b->frozen_qty > b->quantity || b->open_notional < 0)
+            b->frozen_qty > b->quantity || b->open_notional < 0) {
           return false;
+        }
         gross += b->quantity;
       }
-      if (gross > INT64_MAX) return false;
+      if (gross > INT64_MAX) {
+        return false;
+      }
       const __int128 long_room = static_cast<__int128>(p.long_today.quantity) +
                                  p.long_yesterday.quantity -
                                  p.long_today.frozen_qty -
@@ -119,24 +132,28 @@ bool ValidAccount(const AccountView& account) noexcept {
           p.unallocated_long_frozen > long_room ||
           p.unallocated_short_frozen > short_room ||
           (!account.broker_managed &&
-           (p.unallocated_long_frozen || p.unallocated_short_frozen)))
+           (p.unallocated_long_frozen || p.unallocated_short_frozen))) {
         return false;
-      for (std::size_t j = 0; j < i; ++j)
-        if (account.futures_positions[j].instrument_id == p.instrument_id)
+      }
+      for (size_t j = 0; j < i; ++j) {
+        if (account.futures_positions[j].instrument_id == p.instrument_id) {
           return false;
+        }
+      }
     }
     return true;
   }
   if (account.type != model::AccountType::kCash || account.broker_managed ||
-      account.futures_position_count != 0)
+      account.futures_position_count != 0) {
     return false;
+  }
   if (account.position_count > kMaxInstruments || account.cash.balance < 0 ||
       account.cash.reserved < 0 ||
       account.cash.reserved > account.cash.balance ||
       account.cash.available != account.cash.balance - account.cash.reserved) {
     return false;
   }
-  for (std::size_t index = 0; index < account.position_count; ++index) {
+  for (size_t index = 0; index < account.position_count; ++index) {
     const auto& position = account.positions[index];
     if (!ValidInstrument(position.instrument_id) || position.total_qty < 0 ||
         position.available_qty < 0 || position.reserved_qty < 0 ||
@@ -144,9 +161,10 @@ bool ValidAccount(const AccountView& account) noexcept {
         position.reserved_qty > position.total_qty - position.available_qty) {
       return false;
     }
-    for (std::size_t previous = 0; previous < index; ++previous) {
-      if (account.positions[previous].instrument_id == position.instrument_id)
+    for (size_t previous = 0; previous < index; ++previous) {
+      if (account.positions[previous].instrument_id == position.instrument_id) {
         return false;
+      }
     }
   }
   return true;
@@ -154,15 +172,19 @@ bool ValidAccount(const AccountView& account) noexcept {
 
 bool ValidInstruments(const Message& message) noexcept {
   if (message.instrument_count == 0 ||
-      message.instrument_count > kMaxInstruments)
+      message.instrument_count > kMaxInstruments) {
     return false;
-  for (std::size_t index = 0; index < message.instrument_count; ++index) {
+  }
+  for (size_t index = 0; index < message.instrument_count; ++index) {
     const auto& instrument = message.instruments[index];
     if (!ValidInstrument(instrument.id) ||
-        instrument.price_decimals > kMaxPriceDecimals)
+        instrument.price_decimals > kMaxPriceDecimals) {
       return false;
-    for (std::size_t previous = 0; previous < index; ++previous) {
-      if (message.instruments[previous].id == instrument.id) return false;
+    }
+    for (size_t previous = 0; previous < index; ++previous) {
+      if (message.instruments[previous].id == instrument.id) {
+        return false;
+      }
     }
   }
   return true;
@@ -173,27 +195,32 @@ bool ValidInstruments(const Message& message) noexcept {
 class Writer {
  public:
   explicit Writer(std::span<std::byte> bytes) noexcept : bytes_(bytes) {}
-  void Uint(std::uint64_t value, std::size_t width) noexcept {
-    if (!Reserve(width)) return;
-    for (std::size_t index = 0; index < width; ++index) {
+  void Uint(uint64_t value, size_t width) noexcept {
+    if (!Reserve(width)) {
+      return;
+    }
+    for (size_t index = 0; index < width; ++index) {
       bytes_[size_++] = static_cast<std::byte>(value & 0xffU);
       value >>= 8;
     }
   }
-  void Signed(std::int64_t value) noexcept {
-    Uint(std::bit_cast<std::uint64_t>(value), sizeof(value));
+  void Signed(int64_t value) noexcept {
+    Uint(std::bit_cast<uint64_t>(value), sizeof(value));
   }
   void Bytes(std::string_view value) noexcept {
-    if (!Reserve(value.size())) return;
-    if (!value.empty())
+    if (!Reserve(value.size())) {
+      return;
+    }
+    if (!value.empty()) {
       std::memcpy(bytes_.data() + size_, value.data(), value.size());
+    }
     size_ += value.size();
   }
-  std::size_t size() const noexcept { return size_; }
+  size_t size() const noexcept { return size_; }
   bool ok() const noexcept { return ok_; }
 
  private:
-  bool Reserve(std::size_t size) noexcept {
+  bool Reserve(size_t size) noexcept {
     if (!ok_ || size > bytes_.size() - size_) {
       ok_ = false;
       return false;
@@ -201,36 +228,42 @@ class Writer {
     return true;
   }
   std::span<std::byte> bytes_;
-  std::size_t size_ = 0;
+  size_t size_ = 0;
   bool ok_ = true;
 };
 
 class Reader {
  public:
   explicit Reader(std::span<const std::byte> bytes,
-                  std::uint16_t version = kVersion) noexcept
+                  uint16_t version = kVersion) noexcept
       : bytes_(bytes), version_(version) {}
-  std::uint16_t version() const noexcept { return version_; }
-  std::uint64_t Uint(std::size_t width) noexcept {
-    if (!Reserve(width)) return 0;
-    std::uint64_t value = 0;
-    for (std::size_t index = 0; index < width; ++index) {
-      value |= static_cast<std::uint64_t>(bytes_[size_++]) << (index * 8);
+  uint16_t version() const noexcept { return version_; }
+  uint64_t Uint(size_t width) noexcept {
+    if (!Reserve(width)) {
+      return 0;
+    }
+    uint64_t value = 0;
+    for (size_t index = 0; index < width; ++index) {
+      value |= static_cast<uint64_t>(bytes_[size_++]) << (index * 8);
     }
     return value;
   }
-  std::int64_t Signed() noexcept {
-    return std::bit_cast<std::int64_t>(Uint(sizeof(std::int64_t)));
+  int64_t Signed() noexcept {
+    return std::bit_cast<int64_t>(Uint(sizeof(int64_t)));
   }
-  std::string_view Bytes(std::size_t size) noexcept {
-    if (!Reserve(size)) return {};
+  std::string_view Bytes(size_t size) noexcept {
+    if (!Reserve(size)) {
+      return {};
+    }
     const auto* begin = reinterpret_cast<const char*>(bytes_.data() + size_);
     size_ += size;
     return {begin, size};
   }
   bool Boolean() noexcept {
     const auto value = Uint(1);
-    if (value > 1) ok_ = false;
+    if (value > 1) {
+      ok_ = false;
+    }
     return value == 1;
   }
   bool done() const noexcept { return ok_ && size_ == bytes_.size(); }
@@ -238,7 +271,7 @@ class Reader {
   void Reject() noexcept { ok_ = false; }
 
  private:
-  bool Reserve(std::size_t size) noexcept {
+  bool Reserve(size_t size) noexcept {
     if (!ok_ || size > bytes_.size() - size_) {
       ok_ = false;
       return false;
@@ -246,8 +279,8 @@ class Reader {
     return true;
   }
   std::span<const std::byte> bytes_;
-  std::uint16_t version_;
-  std::size_t size_ = 0;
+  uint16_t version_;
+  size_t size_ = 0;
   bool ok_ = true;
 };
 
@@ -261,14 +294,16 @@ template <typename Id>
 void ReadId(Reader& reader, Id& id) noexcept {
   const auto size = reader.Uint(1);
   const auto value = reader.Bytes(size);
-  if (reader.ok() && size != 0 && id.Assign(value) != base::ErrorCode::kOk)
+  if (reader.ok() && size != 0 && id.Assign(value) != base::ErrorCode::kOk) {
     reader.Reject();
+  }
 }
 
 bool WriteReason(Writer& writer, const model::OrderReason& reason) noexcept {
-  if (reason.size > kMaxReasonBytes || reason.text[reason.size] != '\0')
+  if (reason.size > kMaxReasonBytes || reason.text[reason.size] != '\0') {
     return false;
-  writer.Uint(std::bit_cast<std::uint32_t>(reason.code), 4);
+  }
+  writer.Uint(std::bit_cast<uint32_t>(reason.code), 4);
   writer.Uint(reason.truncated, 1);
   writer.Uint(reason.size, 1);
   writer.Bytes(reason.view());
@@ -276,8 +311,7 @@ bool WriteReason(Writer& writer, const model::OrderReason& reason) noexcept {
 }
 
 void ReadReason(Reader& reader, model::OrderReason& reason) noexcept {
-  reason.code =
-      std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(reader.Uint(4)));
+  reason.code = std::bit_cast<int32_t>(static_cast<uint32_t>(reader.Uint(4)));
   reason.truncated = reader.Boolean();
   const auto size = reader.Uint(1);
   if (size > kMaxReasonBytes) {
@@ -285,19 +319,24 @@ void ReadReason(Reader& reader, model::OrderReason& reason) noexcept {
     return;
   }
   const auto value = reader.Bytes(size);
-  if (!reader.ok()) return;
-  if (size != 0) std::memcpy(reason.text, value.data(), size);
+  if (!reader.ok()) {
+    return;
+  }
+  if (size != 0) {
+    std::memcpy(reason.text, value.data(), size);
+  }
   reason.text[size] = '\0';
-  reason.size = static_cast<std::uint8_t>(size);
+  reason.size = static_cast<uint8_t>(size);
 }
 
 void WriteFutures(Writer& w, const AccountView& a) noexcept {
   const auto& f = a.futures;
   for (auto v : {f.balance, f.equity, f.available, f.margin, f.reserved,
-                 f.realized_pnl, f.unrealized_pnl, f.commission})
+                 f.realized_pnl, f.unrealized_pnl, f.commission}) {
     w.Signed(v);
+  }
   w.Uint(a.futures_position_count, 2);
-  for (std::size_t i = 0; i < a.futures_position_count; ++i) {
+  for (size_t i = 0; i < a.futures_position_count; ++i) {
     const auto& p = a.futures_positions[i];
     w.Uint(p.instrument_id.value, 8);
     for (const auto* b : {&p.long_today, &p.long_yesterday, &p.short_today,
@@ -315,14 +354,15 @@ void WriteFutures(Writer& w, const AccountView& a) noexcept {
 void ReadFutures(Reader& r, AccountView& a) noexcept {
   auto& f = a.futures;
   for (auto* v : {&f.balance, &f.equity, &f.available, &f.margin, &f.reserved,
-                  &f.realized_pnl, &f.unrealized_pnl, &f.commission})
+                  &f.realized_pnl, &f.unrealized_pnl, &f.commission}) {
     *v = r.Signed();
+  }
   a.futures_position_count = r.Uint(2);
   if (a.futures_position_count > kMaxInstruments) {
     r.Reject();
     return;
   }
-  for (std::size_t i = 0; i < a.futures_position_count; ++i) {
+  for (size_t i = 0; i < a.futures_position_count; ++i) {
     auto& p = a.futures_positions[i];
     p.instrument_id.value = r.Uint(8);
     for (auto* b : {&p.long_today, &p.long_yesterday, &p.short_today,
@@ -341,7 +381,7 @@ void ReadFutures(Reader& r, AccountView& a) noexcept {
 }
 void WriteAccount(Writer& writer, const AccountView& account) noexcept {
   writer.Uint(account.revision, 8);
-  writer.Uint(static_cast<std::uint8_t>(account.type), 1);
+  writer.Uint(static_cast<uint8_t>(account.type), 1);
   writer.Uint(account.broker_managed, 1);
   if (account.type == model::AccountType::kFutures) {
     WriteFutures(writer, account);
@@ -351,7 +391,7 @@ void WriteAccount(Writer& writer, const AccountView& account) noexcept {
   writer.Signed(account.cash.reserved);
   writer.Signed(account.cash.available);
   writer.Uint(account.position_count, 2);
-  for (std::size_t index = 0; index < account.position_count; ++index) {
+  for (size_t index = 0; index < account.position_count; ++index) {
     const auto& position = account.positions[index];
     writer.Uint(position.instrument_id.value, 8);
     writer.Signed(position.total_qty);
@@ -362,12 +402,17 @@ void WriteAccount(Writer& writer, const AccountView& account) noexcept {
 
 void ReadAccount(Reader& reader, AccountView& account) noexcept {
   account.revision = reader.Uint(8);
-  if (reader.version() >= 2)
+  if (reader.version() >= 2) {
     account.type = static_cast<model::AccountType>(reader.Uint(1));
-  if (reader.version() >= 3) account.broker_managed = reader.Boolean();
+  }
+  if (reader.version() >= 3) {
+    account.broker_managed = reader.Boolean();
+  }
   if (account.type == model::AccountType::kFutures) {
     ReadFutures(reader, account);
-    if (!ValidAccount(account)) reader.Reject();
+    if (!ValidAccount(account)) {
+      reader.Reject();
+    }
     return;
   }
   account.cash.balance = reader.Signed();
@@ -378,19 +423,21 @@ void ReadAccount(Reader& reader, AccountView& account) noexcept {
     reader.Reject();
     return;
   }
-  for (std::size_t index = 0; index < account.position_count; ++index) {
+  for (size_t index = 0; index < account.position_count; ++index) {
     auto& position = account.positions[index];
     position.instrument_id.value = reader.Uint(8);
     position.total_qty = reader.Signed();
     position.available_qty = reader.Signed();
     position.reserved_qty = reader.Signed();
   }
-  if (!ValidAccount(account)) reader.Reject();
+  if (!ValidAccount(account)) {
+    reader.Reject();
+  }
 }
 
 void WriteInstruments(Writer& writer, const Message& message) noexcept {
   writer.Uint(message.instrument_count, 2);
-  for (std::size_t index = 0; index < message.instrument_count; ++index) {
+  for (size_t index = 0; index < message.instrument_count; ++index) {
     writer.Uint(message.instruments[index].id.value, 8);
     writer.Uint(message.instruments[index].price_decimals, 1);
   }
@@ -402,29 +449,31 @@ void ReadInstruments(Reader& reader, Message& message) noexcept {
     reader.Reject();
     return;
   }
-  for (std::size_t index = 0; index < message.instrument_count; ++index) {
+  for (size_t index = 0; index < message.instrument_count; ++index) {
     message.instruments[index].id.value = reader.Uint(8);
     message.instruments[index].price_decimals =
-        static_cast<std::uint8_t>(reader.Uint(1));
+        static_cast<uint8_t>(reader.Uint(1));
   }
-  if (!ValidInstruments(message)) reader.Reject();
+  if (!ValidInstruments(message)) {
+    reader.Reject();
+  }
 }
 
 void WriteOrder(Writer& writer, const model::OrderSnapshot& order) noexcept {
   writer.Uint(order.client_order_id.value, 8);
   WriteId(writer, order.broker_order_id);
   writer.Uint(order.instrument_id.value, 8);
-  writer.Uint(static_cast<std::uint8_t>(order.side), 1);
+  writer.Uint(static_cast<uint8_t>(order.side), 1);
   writer.Signed(order.limit_price);
   writer.Signed(order.original_qty);
   writer.Signed(order.cumulative_filled_qty);
   writer.Signed(order.leaves_qty);
-  writer.Uint(static_cast<std::uint8_t>(order.state), 1);
+  writer.Uint(static_cast<uint8_t>(order.state), 1);
   writer.Uint(order.cancel_pending, 1);
   writer.Uint(order.cancel_request_id.value, 8);
   writer.Uint(order.report_sequence, 8);
   writer.Uint(order.receive_time_ns, 8);
-  writer.Uint(static_cast<std::uint8_t>(order.position_effect), 1);
+  writer.Uint(static_cast<uint8_t>(order.position_effect), 1);
 }
 
 void ReadOrder(Reader& reader, model::OrderSnapshot& order) noexcept {
@@ -441,9 +490,12 @@ void ReadOrder(Reader& reader, model::OrderSnapshot& order) noexcept {
   order.cancel_request_id.value = reader.Uint(8);
   order.report_sequence = reader.Uint(8);
   order.receive_time_ns = reader.Uint(8);
-  if (reader.version() >= 2)
+  if (reader.version() >= 2) {
     order.position_effect = static_cast<model::PositionEffect>(reader.Uint(1));
-  if (!ValidOrder(order)) reader.Reject();
+  }
+  if (!ValidOrder(order)) {
+    reader.Reject();
+  }
 }
 
 void WriteFill(Writer& writer, const model::Fill& fill) noexcept {
@@ -451,13 +503,13 @@ void WriteFill(Writer& writer, const model::Fill& fill) noexcept {
   WriteId(writer, fill.broker_order_id);
   WriteId(writer, fill.execution_id);
   writer.Uint(fill.instrument_id.value, 8);
-  writer.Uint(static_cast<std::uint8_t>(fill.side), 1);
+  writer.Uint(static_cast<uint8_t>(fill.side), 1);
   writer.Signed(fill.price);
   writer.Signed(fill.quantity);
   writer.Uint(fill.event_time_ns, 8);
   writer.Uint(fill.receive_time_ns, 8);
   writer.Uint(fill.has_event_time, 1);
-  writer.Uint(static_cast<std::uint8_t>(fill.position_effect), 1);
+  writer.Uint(static_cast<uint8_t>(fill.position_effect), 1);
 }
 
 void ReadFill(Reader& reader, model::Fill& fill) noexcept {
@@ -471,8 +523,9 @@ void ReadFill(Reader& reader, model::Fill& fill) noexcept {
   fill.event_time_ns = reader.Uint(8);
   fill.receive_time_ns = reader.Uint(8);
   fill.has_event_time = reader.Boolean();
-  if (reader.version() >= 2)
+  if (reader.version() >= 2) {
     fill.position_effect = static_cast<model::PositionEffect>(reader.Uint(1));
+  }
 }
 
 bool ValidUpdate(const Message& message) noexcept {
@@ -490,8 +543,9 @@ bool WritePayload(Writer& writer, const Message& message) noexcept {
       const auto* end = static_cast<const char*>(
           std::memchr(message.token, '\0', sizeof(message.token)));
       if (message.client_id == 0 || end == nullptr || end == message.token ||
-          !ValidInstruments(message))
+          !ValidInstruments(message)) {
         return false;
+      }
       writer.Uint(message.client_id, 8);
       const std::string_view token(message.token, end - message.token);
       writer.Uint(token.size(), 1);
@@ -500,8 +554,9 @@ bool WritePayload(Writer& writer, const Message& message) noexcept {
       break;
     }
     case MessageType::kWelcome:
-      if (!ValidInstruments(message) || !ValidAccount(message.account))
+      if (!ValidInstruments(message) || !ValidAccount(message.account)) {
         return false;
+      }
       WriteInstruments(writer, message);
       WriteAccount(writer, message.account);
       break;
@@ -511,51 +566,65 @@ bool WritePayload(Writer& writer, const Message& message) noexcept {
                        message.request.position_effect) ||
           !ValidInstrument(message.request.instrument_id) ||
           !ValidSide(message.request.side) ||
-          !ValidAmount(message.request.limit_price, message.request.quantity))
+          !ValidAmount(message.request.limit_price, message.request.quantity)) {
         return false;
+      }
       writer.Uint(message.order_id.value, 8);
       writer.Uint(message.request.instrument_id.value, 8);
-      writer.Uint(static_cast<std::uint8_t>(message.request.side), 1);
+      writer.Uint(static_cast<uint8_t>(message.request.side), 1);
       writer.Signed(message.request.limit_price);
       writer.Signed(message.request.quantity);
-      writer.Uint(static_cast<std::uint8_t>(message.request.position_effect),
-                  1);
+      writer.Uint(static_cast<uint8_t>(message.request.position_effect), 1);
       break;
     case MessageType::kCancelOrder:
-      if (message.order_id.value == 0 || message.cancel_id.value == 0)
+      if (message.order_id.value == 0 || message.cancel_id.value == 0) {
         return false;
+      }
       writer.Uint(message.order_id.value, 8);
       writer.Uint(message.cancel_id.value, 8);
       WriteId(writer, message.broker_order_id);
       break;
     case MessageType::kOrderUpdate:
-      if (!ValidUpdate(message) || !ValidAccount(message.account)) return false;
+      if (!ValidUpdate(message) || !ValidAccount(message.account)) {
+        return false;
+      }
       writer.Uint(message.notify_order, 1);
       writer.Uint(message.has_fill, 1);
       WriteOrder(writer, message.update.order);
-      writer.Uint(static_cast<std::uint8_t>(message.update.kind), 1);
+      writer.Uint(static_cast<uint8_t>(message.update.kind), 1);
       writer.Uint(message.update.cancel_request_id.value, 8);
-      if (!WriteReason(writer, message.update.reason)) return false;
-      if (message.has_fill) WriteFill(writer, message.fill);
+      if (!WriteReason(writer, message.update.reason)) {
+        return false;
+      }
+      if (message.has_fill) {
+        WriteFill(writer, message.fill);
+      }
       WriteAccount(writer, message.account);
       break;
     case MessageType::kAccount:
-      if (!ValidAccount(message.account)) return false;
+      if (!ValidAccount(message.account)) {
+        return false;
+      }
       WriteAccount(writer, message.account);
       break;
     case MessageType::kSimulationQuote: {
       md::QuoteFrame frame;
-      if (!md::EncodeQuote(message.quote, frame).ok()) return false;
+      if (!md::EncodeQuote(message.quote, frame).ok()) {
+        return false;
+      }
       writer.Bytes(std::string_view(reinterpret_cast<const char*>(frame.data()),
                                     frame.size()));
       break;
     }
     case MessageType::kError:
       if (message.error_code <= base::ErrorCode::kOk ||
-          message.error_code > base::ErrorCode::kInternalError)
+          message.error_code > base::ErrorCode::kInternalError) {
         return false;
-      writer.Uint(static_cast<std::uint8_t>(message.error_code), 1);
-      if (!WriteReason(writer, message.reason)) return false;
+      }
+      writer.Uint(static_cast<uint8_t>(message.error_code), 1);
+      if (!WriteReason(writer, message.reason)) {
+        return false;
+      }
       break;
     case MessageType::kStop:
     case MessageType::kDrained:
@@ -582,7 +651,9 @@ void ReadPayload(Reader& reader, Message& message) noexcept {
       std::memcpy(message.token, token.data(), size);
       message.token[size] = '\0';
       ReadInstruments(reader, message);
-      if (message.client_id == 0) reader.Reject();
+      if (message.client_id == 0) {
+        reader.Reject();
+      }
       break;
     }
     case MessageType::kWelcome:
@@ -595,23 +666,26 @@ void ReadPayload(Reader& reader, Message& message) noexcept {
       message.request.side = static_cast<model::OrderSide>(reader.Uint(1));
       message.request.limit_price = reader.Signed();
       message.request.quantity = reader.Signed();
-      if (reader.version() >= 2)
+      if (reader.version() >= 2) {
         message.request.position_effect =
             static_cast<model::PositionEffect>(reader.Uint(1));
+      }
       if (message.order_id.value == 0 ||
           !ValidEffect(message.request.instrument_id,
                        message.request.position_effect) ||
           !ValidInstrument(message.request.instrument_id) ||
           !ValidSide(message.request.side) ||
-          !ValidAmount(message.request.limit_price, message.request.quantity))
+          !ValidAmount(message.request.limit_price, message.request.quantity)) {
         reader.Reject();
+      }
       break;
     case MessageType::kCancelOrder:
       message.order_id.value = reader.Uint(8);
       message.cancel_id.value = reader.Uint(8);
       ReadId(reader, message.broker_order_id);
-      if (message.order_id.value == 0 || message.cancel_id.value == 0)
+      if (message.order_id.value == 0 || message.cancel_id.value == 0) {
         reader.Reject();
+      }
       break;
     case MessageType::kOrderUpdate:
       message.notify_order = reader.Boolean();
@@ -620,9 +694,13 @@ void ReadPayload(Reader& reader, Message& message) noexcept {
       message.update.kind = static_cast<model::OrderUpdateKind>(reader.Uint(1));
       message.update.cancel_request_id.value = reader.Uint(8);
       ReadReason(reader, message.update.reason);
-      if (message.has_fill) ReadFill(reader, message.fill);
+      if (message.has_fill) {
+        ReadFill(reader, message.fill);
+      }
       ReadAccount(reader, message.account);
-      if (!ValidUpdate(message)) reader.Reject();
+      if (!ValidUpdate(message)) {
+        reader.Reject();
+      }
       break;
     case MessageType::kAccount:
       ReadAccount(reader, message.account);
@@ -633,16 +711,18 @@ void ReadPayload(Reader& reader, Message& message) noexcept {
           !md::DecodeQuote(
                {reinterpret_cast<const std::byte*>(bytes.data()), bytes.size()},
                message.quote)
-               .ok())
+               .ok()) {
         reader.Reject();
+      }
       break;
     }
     case MessageType::kError:
       message.error_code = static_cast<base::ErrorCode>(reader.Uint(1));
       ReadReason(reader, message.reason);
       if (message.error_code <= base::ErrorCode::kOk ||
-          message.error_code > base::ErrorCode::kInternalError)
+          message.error_code > base::ErrorCode::kInternalError) {
         reader.Reject();
+      }
       break;
     case MessageType::kStop:
     case MessageType::kDrained:
@@ -654,20 +734,23 @@ void ReadPayload(Reader& reader, Message& message) noexcept {
 }  // namespace
 
 base::Status EncodeMessage(const Message& message, std::span<std::byte> output,
-                           std::size_t& size) noexcept {
-  if (!ValidType(message.type) || message.sequence == 0)
+                           size_t& size) noexcept {
+  if (!ValidType(message.type) || message.sequence == 0) {
     return {base::ErrorCode::kInvalidArgument, {}};
+  }
   std::array<std::byte, kMaxFrameSize> frame;
   Writer payload{std::span(frame).subspan(kFrameHeaderSize)};
-  if (!WritePayload(payload, message))
+  if (!WritePayload(payload, message)) {
     return {base::ErrorCode::kInvalidArgument, {}};
+  }
   const auto frame_size = kFrameHeaderSize + payload.size();
-  if (frame_size > output.size())
+  if (frame_size > output.size()) {
     return {base::ErrorCode::kResourceExhausted, {}};
+  }
   Writer header{std::span(frame).first(kFrameHeaderSize)};
   header.Uint(kMagic, 4);
   header.Uint(kVersion, 2);
-  header.Uint(static_cast<std::uint16_t>(message.type), 2);
+  header.Uint(static_cast<uint16_t>(message.type), 2);
   header.Uint(frame_size, 4);
   header.Uint(0, 4);
   header.Uint(message.generation, 8);
@@ -677,28 +760,39 @@ base::Status EncodeMessage(const Message& message, std::span<std::byte> output,
   return {};
 }
 
-std::size_t FrameSize(std::span<const std::byte> header) noexcept {
-  if (header.size() != kFrameHeaderSize) return 0;
+size_t FrameSize(std::span<const std::byte> header) noexcept {
+  if (header.size() != kFrameHeaderSize) {
+    return 0;
+  }
   Reader reader(header);
-  if (reader.Uint(4) != kMagic) return 0;
+  if (reader.Uint(4) != kMagic) {
+    return 0;
+  }
   const auto version = reader.Uint(2);
-  if (version != 1 && version != 2 && version != kVersion) return 0;
+  if (version != 1 && version != 2 && version != kVersion) {
+    return 0;
+  }
   const auto type = static_cast<MessageType>(reader.Uint(2));
-  if (!ValidType(type) || (version == 1 && type > MessageType::kError))
+  if (!ValidType(type) || (version == 1 && type > MessageType::kError)) {
     return 0;
+  }
   const auto size = reader.Uint(4);
-  if (size < kFrameHeaderSize || size > kMaxFrameSize || reader.Uint(4) != 0)
+  if (size < kFrameHeaderSize || size > kMaxFrameSize || reader.Uint(4) != 0) {
     return 0;
+  }
   (void)reader.Uint(8);  // Generation is checked by the application handshake.
-  if (reader.Uint(8) == 0 || !reader.done()) return 0;
+  if (reader.Uint(8) == 0 || !reader.done()) {
+    return 0;
+  }
   return size;
 }
 
 base::Status DecodeMessage(std::span<const std::byte> input,
                            Message& output) noexcept {
   if (input.size() < kFrameHeaderSize ||
-      FrameSize(input.first(kFrameHeaderSize)) != input.size())
+      FrameSize(input.first(kFrameHeaderSize)) != input.size()) {
     return {base::ErrorCode::kCorrupt, {}};
+  }
   Message message;
   Reader header(input.first(kFrameHeaderSize));
   (void)header.Uint(4);
@@ -710,7 +804,9 @@ base::Status DecodeMessage(std::span<const std::byte> input,
   message.sequence = header.Uint(8);
   Reader payload(input.subspan(kFrameHeaderSize), version);
   ReadPayload(payload, message);
-  if (!payload.done()) return {base::ErrorCode::kCorrupt, {}};
+  if (!payload.done()) {
+    return {base::ErrorCode::kCorrupt, {}};
+  }
   output = message;
   return {};
 }

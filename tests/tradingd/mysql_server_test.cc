@@ -1,4 +1,9 @@
+#include <stdint.h>
+
+#include <utility>
+
 #include "tradingd/server.h"
+#include "yquant/base/format.h"
 
 #if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
 #include <mysql.h>
@@ -12,8 +17,8 @@
 #include <thread>
 #include <vector>
 
-#include "../marketd/test_support.h"
 #include "gtest/gtest.h"
+#include "marketd/test_support.h"
 #include "yquant/trading/connection.h"
 
 namespace yquant::tradingd {
@@ -22,8 +27,8 @@ namespace {
 #if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
 class MysqlServerClock final : public base::MonotonicClock {
  public:
-  std::uint64_t Now() const noexcept override { return now; }
-  std::uint64_t now = 1000000;
+  uint64_t Now() const noexcept override { return now; }
+  uint64_t now = 1000000;
 };
 
 // Exercises the real socket owner and background database worker. SQL reads
@@ -32,39 +37,46 @@ class MysqlServerTest : public ::testing::Test {
  protected:
   void SetUp() override {
     const char* database = std::getenv("YQUANT_MYSQL_TEST_DATABASE");
-    if (database == nullptr || database[0] == '\0')
+    if (database == nullptr || database[0] == '\0') {
       GTEST_SKIP() << "YQUANT_MYSQL_TEST_DATABASE is not configured";
+    }
     ASSERT_TRUE(directory.valid());
     const char* host = std::getenv("YQUANT_MYSQL_TEST_HOST");
-    if (host == nullptr || host[0] == '\0') host = "127.0.0.1";
+    if (host == nullptr || host[0] == '\0') {
+      host = "127.0.0.1";
+    }
     const char* user = std::getenv("YQUANT_MYSQL_TEST_USER");
-    if (user == nullptr || user[0] == '\0') user = "root";
+    if (user == nullptr || user[0] == '\0') {
+      user = "root";
+    }
     const char* password = std::getenv("YQUANT_MYSQL_TEST_PASSWORD");
     const char* port = std::getenv("YQUANT_MYSQL_TEST_PORT");
     config.listen.port = 0;
-    std::snprintf(config.token, sizeof(config.token), "mysql-test-token");
+    ::yquant::base::FormatTo(config.token, sizeof(config.token),
+                             "mysql-test-token");
     config.market_data = marketd::testing::ScopeConfig();
     config.trading.mode = trading::MockTradingMode::kFill;
     config.trading.initial_account.cash_balance = 1000000000;
     config.heartbeat_timeout_ns = kMaximumTimeoutNs;
-    std::snprintf(config.persistence.directory,
-                  sizeof(config.persistence.directory), "%s/state",
-                  directory.path());
-    std::snprintf(config.persistence.account_key,
-                  sizeof(config.persistence.account_key), "mysql-server:%s",
-                  directory.path());
+    ::yquant::base::FormatTo(config.persistence.directory,
+                             sizeof(config.persistence.directory), "{}/state",
+                             directory.path());
+    ::yquant::base::FormatTo(config.persistence.account_key,
+                             sizeof(config.persistence.account_key),
+                             "mysql-server:{}", directory.path());
     config.persistence.wal_segment_bytes = 4 * 1024 * 1024;
     config.persistence.sync_interval_ms = 1;
     config.persistence.initialize = true;
     auto& archive = config.mysql_archive;
     archive.enabled = true;
-    std::snprintf(archive.host, sizeof(archive.host), "%s", host);
-    archive.port = static_cast<std::uint16_t>(
+    ::yquant::base::FormatTo(archive.host, sizeof(archive.host), "{}", host);
+    archive.port = static_cast<uint16_t>(
         port != nullptr ? std::strtoul(port, nullptr, 10) : 3306);
-    std::snprintf(archive.database, sizeof(archive.database), "%s", database);
-    std::snprintf(archive.user, sizeof(archive.user), "%s", user);
-    std::snprintf(archive.password_env, sizeof(archive.password_env),
-                  "YQUANT_MYSQL_TEST_PASSWORD");
+    ::yquant::base::FormatTo(archive.database, sizeof(archive.database), "{}",
+                             database);
+    ::yquant::base::FormatTo(archive.user, sizeof(archive.user), "{}", user);
+    ::yquant::base::FormatTo(archive.password_env, sizeof(archive.password_env),
+                             "YQUANT_MYSQL_TEST_PASSWORD");
     archive.timeout_seconds = 1;
     archive.poll_ms = 1;
     archive.retry_ms = 10;
@@ -86,19 +98,24 @@ class MysqlServerTest : public ::testing::Test {
   void TearDown() override {
     peer.Close();
     server.Close();
-    if (connection == nullptr) return;
+    if (connection == nullptr) {
+      return;
+    }
     const auto rows =
         Rows("SELECT HEX(ledger_id) FROM ledgers WHERE account_key=" +
              Quote(config.persistence.account_key));
     for (const auto& row : rows) {
-      if (row.empty()) continue;
+      if (row.empty()) {
+        continue;
+      }
       const auto where = " WHERE ledger_id=UNHEX('" + row[0] + "')";
       for (const char* table :
            {"account_positions", "account_cash", "order_updates", "fills",
             "orders", "archive_progress", "archive_gaps", "trade_events",
-            "strategy_sessions", "archive_runs", "ledgers"})
+            "strategy_sessions", "archive_runs", "ledgers"}) {
         (void)mysql_query(
             connection, (std::string("DELETE FROM ") + table + where).c_str());
+      }
     }
     mysql_close(connection);
     connection = nullptr;
@@ -127,18 +144,21 @@ class MysqlServerTest : public ::testing::Test {
     while (MYSQL_ROW row = mysql_fetch_row(result)) {
       const auto* sizes = mysql_fetch_lengths(result);
       std::vector<std::string> fields;
-      for (unsigned i = 0; i < columns; ++i)
+      for (unsigned i = 0; i < columns; ++i) {
         fields.emplace_back(row[i] != nullptr ? row[i] : "",
                             row[i] != nullptr ? sizes[i] : 0);
+      }
       rows.push_back(std::move(fields));
     }
     mysql_free_result(result);
     return rows;
   }
 
-  std::int64_t Number(const std::string& sql) {
+  int64_t Number(const std::string& sql) {
     const auto rows = Rows(sql);
-    if (rows.empty() || rows[0].empty() || rows[0][0].empty()) return -1;
+    if (rows.empty() || rows[0].empty() || rows[0][0].empty()) {
+      return -1;
+    }
     return std::strtoll(rows[0][0].c_str(), nullptr, 10);
   }
 
@@ -151,7 +171,7 @@ class MysqlServerTest : public ::testing::Test {
     ASSERT_TRUE(server.Init(config).ok()) << server.error_detail();
   }
 
-  void Connect(std::uint64_t client_id = 41) {
+  void Connect(uint64_t client_id = 41) {
     peer.Close();
     updates.clear();
     generation = 0;
@@ -161,34 +181,43 @@ class MysqlServerTest : public ::testing::Test {
     trading::Message hello;
     hello.type = trading::MessageType::kHello;
     hello.client_id = client_id;
-    std::snprintf(hello.token, sizeof(hello.token), "mysql-test-token");
+    ::yquant::base::FormatTo(hello.token, sizeof(hello.token),
+                             "mysql-test-token");
     hello.instrument_count = 1;
     hello.instruments[0] = {config.market_data.instruments[0].instrument.id, 2};
     ASSERT_TRUE(peer.Queue(hello).ok());
-    for (int i = 0; i < 20 && generation == 0; ++i) Pump();
+    for (int i = 0; i < 20 && generation == 0; ++i) {
+      Pump();
+    }
     ASSERT_NE(generation, 0);
   }
 
   void Pump() {
     clock.now += 1000000;
     for (int i = 0; i < 20; ++i) {
-      if (peer.open()) (void)peer.Service();
+      if (peer.open()) {
+        (void)peer.Service();
+      }
       const auto status = server.Service(clock.Now());
       ASSERT_TRUE(status.ok()) << server.error_detail();
       while (peer.open()) {
         trading::Message message;
         const auto result = peer.Poll(message);
-        if (result.state != trading::ReceiveState::kMessage) break;
-        if (message.type == trading::MessageType::kWelcome)
+        if (result.state != trading::ReceiveState::kMessage) {
+          break;
+        }
+        if (message.type == trading::MessageType::kWelcome) {
           generation = message.generation;
-        if (message.type == trading::MessageType::kOrderUpdate)
+        }
+        if (message.type == trading::MessageType::kOrderUpdate) {
           updates.push_back(message);
+        }
       }
       std::this_thread::yield();
     }
   }
 
-  void Order(std::uint64_t local_id = 1, std::int64_t quantity = 10) {
+  void Order(uint64_t local_id = 1, int64_t quantity = 10) {
     trading::Message message;
     message.type = trading::MessageType::kNewOrder;
     message.generation = generation;
@@ -196,7 +225,9 @@ class MysqlServerTest : public ::testing::Test {
     message.request = {config.market_data.instruments[0].instrument.id,
                        model::OrderSide::kBuy, 1000, quantity};
     ASSERT_TRUE(peer.Queue(message).ok());
-    for (int i = 0; i < 10; ++i) Pump();
+    for (int i = 0; i < 10; ++i) {
+      Pump();
+    }
   }
 
   template <typename Predicate>
@@ -205,18 +236,24 @@ class MysqlServerTest : public ::testing::Test {
         std::chrono::steady_clock::now() + std::chrono::seconds(5);
     do {
       Pump();
-      if (HasFatalFailure()) return false;
-      if (predicate()) return true;
+      if (HasFatalFailure()) {
+        return false;
+      }
+      if (predicate()) {
+        return true;
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
     } while (std::chrono::steady_clock::now() < deadline);
     return false;
   }
 
-  bool HasUpdate(std::uint64_t order, model::OrderState state) const {
-    for (const auto& message : updates)
+  bool HasUpdate(uint64_t order, model::OrderState state) const {
+    for (const auto& message : updates) {
       if (message.update.order.client_order_id.value == order &&
-          message.update.order.state == state)
+          message.update.order.state == state) {
         return true;
+      }
+    }
     return false;
   }
 
@@ -225,7 +262,7 @@ class MysqlServerTest : public ::testing::Test {
   ServerConfig config;
   Server server{clock};
   trading::Connection peer;
-  std::uint64_t generation = 0;
+  uint64_t generation = 0;
   std::vector<trading::Message> updates;
   MYSQL* connection = nullptr;
 };

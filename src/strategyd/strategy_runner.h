@@ -5,8 +5,9 @@
 // strategy runner. Market-data access, trading, and plugin loading are supplied
 // by separate components; this interface coordinates their use by one strategy.
 
-#include <cstddef>
-#include <cstdint>
+#include <stddef.h>
+#include <stdint.h>
+
 #include <optional>
 #include <string_view>
 
@@ -26,7 +27,7 @@ namespace yquant::strategyd {
 // Maximum market polls, trading events, and timer dispatches per batch, shared
 // across all sources to bound work between stop/deadline checks. Ignored and
 // duplicate quotes also consume this budget.
-inline constexpr std::size_t kMaxStrategyBatchSize = 64;
+inline constexpr size_t kMaxStrategyBatchSize = 64;
 
 // Lifecycle of a single load attempt. Finished is terminal, including after
 // startup failure; a new attempt requires a new runner.
@@ -96,9 +97,7 @@ class StrategyRunner final {
 
   // Returns the number of valid old or duplicate quotes ignored by this runner,
   // saturated at UINT64_MAX and retained after shutdown.
-  std::uint64_t ignored_quote_count() const noexcept {
-    return ignored_quote_count_;
-  }
+  uint64_t ignored_quote_count() const noexcept { return ignored_quote_count_; }
 
   [[nodiscard]] RunnerState state() const noexcept { return state_; }
   // Returns a view of the runner's copied ID, retained after plugin teardown.
@@ -162,7 +161,7 @@ class StrategyRunner final {
   // Returns the earliest work or shutdown deadline in clock's absolute
   // monotonic nanoseconds. nullopt means no deadline, including outside
   // kRunning and kStopping; environment stop requests are checked separately.
-  std::optional<std::uint64_t> next_deadline() const noexcept;
+  std::optional<uint64_t> next_deadline() const noexcept;
   // Enters a callback phase and enables trading requests only for business
   // callbacks while kRunning. Requires that no callback is already active;
   // each call must be paired with EndCallback.
@@ -202,7 +201,8 @@ class StrategyRunner final {
   // Records the first failure with tick's source, instrument, and sequence.
   // Requires a non-OK status. Skips later failures without formatting. Borrows
   // tick and non-null C-string detail only for this call; detail must not
-  // overlap error_detail_. stage follows SetErrorIfNotOK's lifetime requirement.
+  // overlap error_detail_. stage follows SetErrorIfNotOK's lifetime
+  // requirement.
   void SetQuoteError(base::Status status, const char* stage, const char* detail,
                      const model::QuoteTick& tick) noexcept;
   // Records the first failure with the client order ID and report sequence.
@@ -211,7 +211,7 @@ class StrategyRunner final {
   // error_detail_.
   // stage follows SetErrorIfNotOK's lifetime requirement.
   void SetOrderError(base::Status status, const char* stage, const char* detail,
-                     model::ClientOrderId id, std::uint64_t sequence) noexcept;
+                     model::ClientOrderId id, uint64_t sequence) noexcept;
   // Writes outstanding order/cancel diagnostics and available account/position
   // snapshots to stderr. Requires the trading view to remain available.
   void ReportUnconfirmed() const noexcept;
@@ -223,7 +223,7 @@ class StrategyRunner final {
   void Finalize() noexcept;
 
   // Diagnostic buffer capacity in bytes, including the terminating null.
-  static constexpr std::size_t kErrorDetailSize = 1024;
+  static constexpr size_t kErrorDetailSize = 1024;
   const base::MonotonicClock& clock_;
   base::EventLoopEnvironment& environment_;
   MarketDataSource& source_;
@@ -250,11 +250,11 @@ class StrategyRunner final {
   bool drain_viable_ = true;  // False permits finalization without draining.
   // 0=market, 1=trading, 2=timer. Retained across batches so a continually
   // rearmed immediate timer cannot starve another ready source.
-  std::uint8_t next_event_source_ = 0;
-  std::uint64_t shutdown_timeout_ns_ = trading::kDefaultTradingTimeoutNs;
+  uint8_t next_event_source_ = 0;
+  uint64_t shutdown_timeout_ns_ = trading::kDefaultTradingTimeoutNs;
   // Absolute monotonic nanoseconds; absent until the drain deadline is set.
-  std::optional<std::uint64_t> shutdown_deadline_;
-  std::uint64_t ignored_quote_count_ = 0;
+  std::optional<uint64_t> shutdown_deadline_;
+  uint64_t ignored_quote_count_ = 0;
   base::Status result_;
   // Borrowed stage identifier, valid until reset; empty if no error is stored.
   const char* error_stage_ = "";

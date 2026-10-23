@@ -1,11 +1,15 @@
 #include <signal.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <time.h>
 
 #include <charconv>
 #include <cstdio>
 #include <cstring>
 #include <string_view>
+#include <system_error>
 
+#include "yquant/base/format.h"
 #include "yquant/base/logging.h"
 
 namespace {
@@ -15,7 +19,7 @@ volatile sig_atomic_t stop_requested = 0;
 
 void Stop(int) noexcept { stop_requested = 1; }
 
-bool ParseNumber(const char* text, std::uint64_t& value) noexcept {
+bool ParseNumber(const char* text, uint64_t& value) noexcept {
   const std::string_view input(text);
   const auto result =
       std::from_chars(input.data(), input.data() + input.size(), value);
@@ -23,17 +27,19 @@ bool ParseNumber(const char* text, std::uint64_t& value) noexcept {
 }
 
 void Usage() noexcept {
-  std::fprintf(
+  ::yquant::base::Print(
       stderr,
       "usage: yquant-logd [--capacity BYTES] [--max-file-bytes BYTES] "
-      "--channel QUEUE_FILE LOG_FILE [--channel QUEUE_FILE LOG_FILE ...]"
-      "\nOptions apply to all channels and must precede --channel.\n");
+      "--channel QUEUE_FILE LOG_FILE [--channel QUEUE_FILE LOG_FILE "
+      "...]\nOptions apply to all channels and must precede --channel.\n");
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  using namespace yquant::base;
+  using yquant::base::LogConfig;
+  using yquant::base::LoggerConfig;
+  using yquant::base::LogManager;
   if (argc == 2 && std::strcmp(argv[1], "--help") == 0) {
     Usage();
     return 0;
@@ -46,7 +52,7 @@ int main(int argc, char** argv) {
       Usage();
       return 2;
     }
-    std::uint64_t value = 0;
+    uint64_t value = 0;
     if (!ParseNumber(argv[first_channel + 1], value)) {
       Usage();
       return 2;
@@ -80,14 +86,13 @@ int main(int argc, char** argv) {
     return 1;
   }
   LogConfig manager_config;
-  manager_config.max_loggers =
-      static_cast<std::size_t>((argc - first_channel) / 3);
+  manager_config.max_loggers = static_cast<size_t>((argc - first_channel) / 3);
   LogManager manager;
   auto status = manager.Initialize(manager_config);
   if (!status.ok()) {
-    std::fprintf(stderr,
-                 "logd initialization failed: code=%d system_error=%d\n",
-                 static_cast<int>(status.code), status.system_error.value());
+    ::yquant::base::Print(
+        stderr, "logd initialization failed: code={} system_error={}\n",
+        static_cast<int>(status.code), status.system_error.value());
     return 1;
   }
   for (int index = first_channel; index < argc; index += 3) {
@@ -95,9 +100,10 @@ int main(int argc, char** argv) {
     config.file_path = argv[index + 2];
     status = manager.CreateLogSink(config);
     if (!status.ok()) {
-      std::fprintf(stderr, "logd channel %s failed: code=%d system_error=%d\n",
-                   argv[index + 1], static_cast<int>(status.code),
-                   status.system_error.value());
+      ::yquant::base::Print(stderr,
+                            "logd channel {} failed: code={} system_error={}\n",
+                            argv[index + 1], static_cast<int>(status.code),
+                            status.system_error.value());
       (void)manager.Shutdown();
       return 1;
     }
@@ -107,10 +113,10 @@ int main(int argc, char** argv) {
   }
   const auto result = manager.Shutdown();
   if (!result.status.ok()) {
-    std::fprintf(stderr,
-                 "logd shutdown failed: channel=%zu stage=%d system_error=%d\n",
-                 result.channel_index, static_cast<int>(result.stage),
-                 result.status.system_error.value());
+    ::yquant::base::Print(
+        stderr, "logd shutdown failed: channel={} stage={} system_error={}\n",
+        result.channel_index, static_cast<int>(result.stage),
+        result.status.system_error.value());
     return 1;
   }
   return 0;

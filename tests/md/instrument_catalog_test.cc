@@ -1,6 +1,8 @@
 #include "yquant/md/instrument_catalog.h"
 
-#include <cstdint>
+#include <stddef.h>
+#include <stdint.h>
+
 #include <cstdio>
 #include <string>
 #include <string_view>
@@ -8,6 +10,7 @@
 
 #include "gtest/gtest.h"
 #include "test_config_file.h"
+#include "yquant/base/format.h"
 #include "yquant/model/identifiers.h"
 #include "yquant/model/instrument.h"
 
@@ -25,13 +28,15 @@ constexpr std::string_view kSingleInstrument =
 
 // Generates distinct identities for exercising catalog capacity independently
 // of a strategy process's smaller active instrument limit.
-std::string CatalogWithEntries(std::size_t count) {
+std::string CatalogWithEntries(size_t count) {
   std::string json = R"({"instruments":[)";
-  for (std::size_t index = 0; index < count; ++index) {
-    if (index != 0) json += ',';
+  for (size_t index = 0; index < count; ++index) {
+    if (index != 0) {
+      json += ',';
+    }
     char symbol[model::kSymbolLength + 1];
-    std::snprintf(symbol, sizeof(symbol), "%0*zu",
-                  static_cast<int>(model::kSymbolLength), index);
+    ::yquant::base::FormatTo(symbol, sizeof(symbol), "{:0{}}", index,
+                             static_cast<int>(model::kSymbolLength));
     json += R"({"venue":"SSE","symbol":")";
     json += symbol;
     json += R"(","price_decimals":2})";
@@ -48,7 +53,9 @@ struct InvalidField {
 std::string Replace(std::string json, std::string_view from,
                     std::string_view to) {
   const auto position = json.find(from);
-  if (position != std::string::npos) json.replace(position, from.size(), to);
+  if (position != std::string::npos) {
+    json.replace(position, from.size(), to);
+  }
   return json;
 }
 std::string FutureInstrument(bool mock = false) {
@@ -170,7 +177,7 @@ TEST(InstrumentCatalogTest, LoadsUnsortedVenuesAndPreservesLeadingZeros) {
   const struct {
     std::string_view venue;
     model::Venue expected_venue;
-    std::uint8_t expected_decimals;
+    uint8_t expected_decimals;
   } cases[] = {
       {"SSE", model::Venue::kSse, 0},
       {"SZSE", model::Venue::kSzse, 2},
@@ -202,7 +209,7 @@ TEST(InstrumentCatalogTest, LoadsUnsortedVenuesAndPreservesLeadingZeros) {
 }
 
 TEST(InstrumentCatalogTest, SupportsMoreThan64EntriesAndEnforces16384Limit) {
-  for (const std::size_t count : {65U, 16384U, 16385U}) {
+  for (const size_t count : {65U, 16384U, 16385U}) {
     SCOPED_TRACE(count);
     ConfigFile file(CatalogWithEntries(count));
     ASSERT_TRUE(file.valid());
@@ -212,7 +219,7 @@ TEST(InstrumentCatalogTest, SupportsMoreThan64EntriesAndEnforces16384Limit) {
       ASSERT_TRUE(result.ok()) << catalog.error().message;
       EXPECT_EQ(catalog.size(), count);
       model::InstrumentDefinition last;
-      EXPECT_TRUE(catalog.Find({(std::uint64_t{1} << 32) | (count - 1)}, last));
+      EXPECT_TRUE(catalog.Find({(uint64_t{1} << 32) | (count - 1)}, last));
     } else {
       EXPECT_EQ(result.code, ErrorCode::kInvalidArgument);
       EXPECT_EQ(catalog.size(), 0U);

@@ -1,11 +1,17 @@
 #include "yquant/trading/trading_engine.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
 #include <cstdio>
 #include <limits>
 #include <new>
+#include <optional>
+#include <string_view>
 
 #include "trading/trading_storage.h"
+#include "yquant/base/format.h"
 #include "yquant/trading/futures_ledger.h"
 #include "yquant/trading/trading_adapter.h"
 
@@ -15,9 +21,9 @@ using base::ErrorCode;
 using model::OrderState;
 using model::OrderUpdateKind;
 // Two hex characters per byte of a 64-byte opaque ID, plus the terminator.
-constexpr std::size_t kTradingIdHexSize = 129;
+constexpr size_t kTradingIdHexSize = 129;
 
-bool IsDue(std::optional<std::uint64_t> deadline, std::uint64_t now) noexcept {
+bool IsDue(std::optional<uint64_t> deadline, uint64_t now) noexcept {
   return deadline && *deadline <= now;
 }
 
@@ -25,7 +31,7 @@ bool IsDue(std::optional<std::uint64_t> deadline, std::uint64_t now) noexcept {
 void CopyIdHex(std::string_view value,
                char (&out)[kTradingIdHexSize]) noexcept {
   constexpr char kHex[] = "0123456789abcdef";
-  for (std::size_t index = 0; index < value.size(); ++index) {
+  for (size_t index = 0; index < value.size(); ++index) {
     const auto byte = static_cast<unsigned char>(value[index]);
     out[2 * index] = kHex[byte >> 4];
     out[2 * index + 1] = kHex[byte & 15];
@@ -33,7 +39,7 @@ void CopyIdHex(std::string_view value,
   out[2 * value.size()] = '\0';
 }
 
-constexpr std::uint64_t kCancelRetryNs = 10000000;
+constexpr uint64_t kCancelRetryNs = 10000000;
 
 bool ValidSide(model::OrderSide side) noexcept {
   return side == model::OrderSide::kBuy || side == model::OrderSide::kSell;
@@ -58,15 +64,17 @@ bool ValidKind(OrderUpdateKind kind) noexcept {
 
 // All supported prices convert exactly to micro-yuan; no floating point or
 // rounding is involved. Failure leaves out unchanged.
-bool CashAmount(std::int64_t price, std::int64_t quantity, std::int64_t scale,
-                std::int64_t& out) noexcept {
-  constexpr auto kMaximum = std::numeric_limits<std::int64_t>::max();
+bool CashAmount(int64_t price, int64_t quantity, int64_t scale,
+                int64_t& out) noexcept {
+  constexpr auto kMaximum = std::numeric_limits<int64_t>::max();
   if (price <= 0 || quantity <= 0 || scale <= 0 ||
       price > kMaximum / quantity) {
     return false;
   }
   const auto product = price * quantity;
-  if (product > kMaximum / scale) return false;
+  if (product > kMaximum / scale) {
+    return false;
+  }
   out = product * scale;
   return true;
 }
@@ -75,8 +83,7 @@ bool CashAmount(std::int64_t price, std::int64_t quantity, std::int64_t scale,
 // before changing either output, including share availability additions.
 bool ReleaseReservation(model::CashSnapshot& cash,
                         model::PositionSnapshot& position,
-                        std::int64_t reserved_cash,
-                        std::int64_t reserved_qty) noexcept {
+                        int64_t reserved_cash, int64_t reserved_qty) noexcept {
   if (reserved_cash < 0 || reserved_cash > cash.reserved ||
       cash.reserved > cash.balance || reserved_qty < 0 ||
       reserved_qty > position.reserved_qty || position.available_qty < 0 ||
@@ -134,7 +141,7 @@ base::Status TradingEngine::ConfigureAccount(
                  "invalid initial cash or position count"),
             {}};
   }
-  for (std::size_t index = 0; index < account.position_count; ++index) {
+  for (size_t index = 0; index < account.position_count; ++index) {
     const auto& position = account.positions[index];
     model::InstrumentDefinition instrument;
     if (!instruments_.TryGetInstrument(position.instrument_id, instrument) ||
@@ -148,7 +155,7 @@ base::Status TradingEngine::ConfigureAccount(
                    "invalid initial position or unknown instrument"),
               {}};
     }
-    for (std::size_t previous = 0; previous < index; ++previous) {
+    for (size_t previous = 0; previous < index; ++previous) {
       if (account.positions[previous].instrument_id == position.instrument_id) {
         return {Fail(ErrorCode::kInvalidArgument, "duplicate initial position"),
                 {}};
@@ -163,7 +170,7 @@ base::Status TradingEngine::ConfigureAccount(
   }
   storage->cash = {account.cash_balance, 0, account.cash_balance};
   storage->position_count = account.position_count;
-  for (std::size_t index = 0; index < account.position_count; ++index) {
+  for (size_t index = 0; index < account.position_count; ++index) {
     storage->positions[index] = account.positions[index];
   }
   storage_ = storage;
@@ -190,7 +197,9 @@ void TradingEngine::BeginStopping() noexcept {
   accept_requests_ = false;
   if (!stopping_) {
     stopping_ = true;
-    if (prepared_) adapter_.BeginStopping();
+    if (prepared_) {
+      adapter_.BeginStopping();
+    }
     if (storage_ != nullptr) {
       storage_->scan_cursor = 0;
       storage_->scan_pending = true;
@@ -212,16 +221,18 @@ ErrorCode TradingEngine::ValidateBrokerAccount(
   if (account.revision == 0 ||
       account.position_count > account.positions.size() ||
       account.account.margin < 0 || account.account.reserved < 0 ||
-      account.account.commission < 0)
+      account.account.commission < 0) {
     return Fail(ErrorCode::kCorrupt, "invalid broker account fields");
-  for (std::size_t i = 0; i < account.position_count; ++i) {
+  }
+  for (size_t i = 0; i < account.position_count; ++i) {
     const auto& position = account.positions[i];
     model::InstrumentDefinition instrument;
     if (!instruments_.TryGetInstrument(position.instrument_id, instrument) ||
         instrument.type != model::InstrumentType::kFutures ||
-        instrument.quantity_step <= 0 || position.margin < 0)
+        instrument.quantity_step <= 0 || position.margin < 0) {
       return Fail(ErrorCode::kCorrupt,
                   "broker holding is outside the futures dictionary");
+    }
     __int128 gross = 0;
     for (const auto* bucket :
          {&position.long_today, &position.long_yesterday, &position.short_today,
@@ -229,12 +240,14 @@ ErrorCode TradingEngine::ValidateBrokerAccount(
       if (bucket->quantity < 0 || bucket->frozen_qty < 0 ||
           bucket->frozen_qty > bucket->quantity || bucket->open_notional < 0 ||
           bucket->quantity % instrument.quantity_step != 0 ||
-          bucket->frozen_qty % instrument.quantity_step != 0)
+          bucket->frozen_qty % instrument.quantity_step != 0) {
         return Fail(ErrorCode::kCorrupt, "invalid broker position bucket");
+      }
       gross += bucket->quantity;
     }
-    if (gross > INT64_MAX)
+    if (gross > INT64_MAX) {
       return Fail(ErrorCode::kCorrupt, "broker gross holding overflows");
+    }
     const __int128 long_available =
         static_cast<__int128>(position.long_today.quantity) +
         position.long_yesterday.quantity - position.long_today.frozen_qty -
@@ -248,78 +261,95 @@ ErrorCode TradingEngine::ValidateBrokerAccount(
         position.unallocated_long_frozen > long_available ||
         position.unallocated_short_frozen > short_available ||
         position.unallocated_long_frozen % instrument.quantity_step != 0 ||
-        position.unallocated_short_frozen % instrument.quantity_step != 0)
+        position.unallocated_short_frozen % instrument.quantity_step != 0) {
       return Fail(ErrorCode::kCorrupt, "invalid unallocated broker freeze");
-    for (std::size_t j = 0; j < i; ++j)
-      if (account.positions[j].instrument_id == position.instrument_id)
+    }
+    for (size_t j = 0; j < i; ++j) {
+      if (account.positions[j].instrument_id == position.instrument_id) {
         return Fail(ErrorCode::kCorrupt, "duplicate broker holding");
+      }
+    }
   }
   if (broker_managed()) {
     const auto& old = storage_->broker_account;
-    if (account.revision < old.revision)
+    if (account.revision < old.revision) {
       return Fail(ErrorCode::kCorrupt, "broker account revision regressed");
+    }
     if (account.revision == old.revision) {
       if (account.account != old.account ||
-          account.position_count != old.position_count)
+          account.position_count != old.position_count) {
         return Fail(ErrorCode::kCorrupt,
                     "broker account changed at the same revision");
-      for (std::size_t i = 0; i < account.position_count; ++i)
-        if (account.positions[i] != old.positions[i])
+      }
+      for (size_t i = 0; i < account.position_count; ++i) {
+        if (account.positions[i] != old.positions[i]) {
           return Fail(ErrorCode::kCorrupt,
                       "broker holding changed at the same revision");
+        }
+      }
     }
   }
   return ErrorCode::kOk;
 }
 
-std::uint64_t TradingEngine::mutation_revision() const noexcept {
+uint64_t TradingEngine::mutation_revision() const noexcept {
   return storage_ != nullptr ? storage_->mutation_revision : 0;
 }
 
-std::uint64_t TradingEngine::next_order_id() const noexcept {
+uint64_t TradingEngine::next_order_id() const noexcept {
   return storage_ != nullptr ? storage_->next_order_id : 1;
 }
 
-std::uint64_t TradingEngine::next_cancel_id() const noexcept {
-  if (storage_ == nullptr) return 1;
+uint64_t TradingEngine::next_cancel_id() const noexcept {
+  if (storage_ == nullptr) {
+    return 1;
+  }
   return storage_->last_cancel_id != UINT64_MAX ? storage_->last_cancel_id + 1
                                                 : UINT64_MAX;
 }
 
-bool TradingEngine::TryGetOrderAt(std::size_t index,
+bool TradingEngine::TryGetOrderAt(size_t index,
                                   model::OrderSnapshot& out) const noexcept {
-  if (storage_ == nullptr || index >= storage_->order_count) return false;
+  if (storage_ == nullptr || index >= storage_->order_count) {
+    return false;
+  }
   out = storage_->orders[index].snapshot;
   return true;
 }
 
-std::size_t TradingEngine::fill_count() const noexcept {
+size_t TradingEngine::fill_count() const noexcept {
   return storage_ != nullptr ? storage_->fill_count : 0;
 }
 
-bool TradingEngine::TryGetFillAt(std::size_t index,
+bool TradingEngine::TryGetFillAt(size_t index,
                                  model::Fill& out) const noexcept {
-  if (storage_ == nullptr || index >= storage_->fill_count) return false;
+  if (storage_ == nullptr || index >= storage_->fill_count) {
+    return false;
+  }
   out = storage_->fills[index];
   return true;
 }
 
-base::Status TradingEngine::SetNextOrderIdAtLeast(std::uint64_t id) noexcept {
+base::Status TradingEngine::SetNextOrderIdAtLeast(uint64_t id) noexcept {
   if (storage_ == nullptr || accept_requests_ || id == 0) {
     return {Fail(ErrorCode::kInvalidState, "invalid cold order-ID reservation"),
             {}};
   }
-  if (id > storage_->next_order_id) storage_->next_order_id = id;
+  if (id > storage_->next_order_id) {
+    storage_->next_order_id = id;
+  }
   return {};
 }
 
-base::Status TradingEngine::SetNextCancelIdAtLeast(std::uint64_t id) noexcept {
+base::Status TradingEngine::SetNextCancelIdAtLeast(uint64_t id) noexcept {
   if (storage_ == nullptr || accept_requests_ || id == 0) {
     return {
         Fail(ErrorCode::kInvalidState, "invalid cold cancel-ID reservation"),
         {}};
   }
-  if (id - 1 > storage_->last_cancel_id) storage_->last_cancel_id = id - 1;
+  if (id - 1 > storage_->last_cancel_id) {
+    storage_->last_cancel_id = id - 1;
+  }
   return {};
 }
 
@@ -349,7 +379,9 @@ base::Status TradingEngine::SetMutationSink(
 ErrorCode TradingEngine::BeforeCommit(TradingMutation& fact) noexcept {
   // Futures execution has no journal sink; its resource transaction is already
   // atomic and must not encounter a fallible cash persistence step afterward.
-  if (storage_->type != model::AccountType::kCash) return ErrorCode::kOk;
+  if (storage_->type != model::AccountType::kCash) {
+    return ErrorCode::kOk;
+  }
   if (storage_->mutation_revision == UINT64_MAX) {
     return Fail(ErrorCode::kResourceExhausted, "ledger revision exhausted");
   }
@@ -358,34 +390,43 @@ ErrorCode TradingEngine::BeforeCommit(TradingMutation& fact) noexcept {
     invoking_sink_ = true;
     const auto status = sink_->BeforeCommit(fact);
     invoking_sink_ = false;
-    if (!status.ok())
+    if (!status.ok()) {
       return Fail(status.code, "ledger journal rejected mutation");
+    }
   }
   return ErrorCode::kOk;
 }
 
 ErrorCode TradingEngine::Fail(ErrorCode code, const char* detail) noexcept {
-  std::snprintf(error_detail_, sizeof(error_detail_), "%s", detail);
+  ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_), "{}", detail);
   return code;
 }
 
-std::optional<std::size_t> TradingEngine::FindIndex(
+std::optional<size_t> TradingEngine::FindIndex(
     model::ClientOrderId id) const noexcept {
-  if (storage_ == nullptr || id.value == 0) return {};
+  if (storage_ == nullptr || id.value == 0) {
+    return {};
+  }
   auto slot = TradingOrderHash(id);
   while (storage_->order_lookup[slot] != 0) {
     const auto index = storage_->order_lookup[slot] - 1;
-    if (storage_->orders[index].snapshot.client_order_id == id) return index;
+    if (storage_->orders[index].snapshot.client_order_id == id) {
+      return index;
+    }
     slot = (slot + 1) & (kOrderLookupCapacity - 1);
   }
   return {};
 }
 
-std::optional<std::size_t> TradingEngine::FindPosition(
+std::optional<size_t> TradingEngine::FindPosition(
     model::InstrumentId id) const noexcept {
-  if (storage_ == nullptr) return {};
-  for (std::size_t index = 0; index < storage_->position_count; ++index) {
-    if (storage_->positions[index].instrument_id == id) return index;
+  if (storage_ == nullptr) {
+    return {};
+  }
+  for (size_t index = 0; index < storage_->position_count; ++index) {
+    if (storage_->positions[index].instrument_id == id) {
+      return index;
+    }
   }
   return {};
 }
@@ -406,7 +447,7 @@ ErrorCode TradingEngine::SubmitOrder(const model::OrderRequest& request,
   }
   auto& s = *storage_;
   if (s.order_count == kMaxTradingOrders ||
-      s.next_order_id == std::numeric_limits<std::uint64_t>::max() ||
+      s.next_order_id == std::numeric_limits<uint64_t>::max() ||
       s.request_count == kMaxTradingRequests) {
     return Fail(ErrorCode::kResourceExhausted,
                 "order or request capacity exhausted");
@@ -431,14 +472,15 @@ ErrorCode TradingEngine::SubmitOrder(const model::OrderRequest& request,
                     : effect == model::PositionEffect::kClose)
              : effect == model::PositionEffect::kCloseToday ||
                    effect == model::PositionEffect::kCloseYesterday);
-    if (!valid_effect)
+    if (!valid_effect) {
       return Fail(ErrorCode::kInvalidArgument,
                   "unsupported closing effect for venue");
+    }
   }
-  constexpr std::array<std::int64_t, 7> kPriceScales = {
-      1000000, 100000, 10000, 1000, 100, 10, 1};
+  constexpr std::array<int64_t, 7> kPriceScales = {1000000, 100000, 10000, 1000,
+                                                   100,     10,     1};
   const auto scale = kPriceScales[instrument.price_decimals];
-  std::int64_t notional = 0;
+  int64_t notional = 0;
   if (!futures &&
       !CashAmount(request.limit_price, request.quantity, scale, notional)) {
     return Fail(ErrorCode::kInvalidArgument,
@@ -451,15 +493,18 @@ ErrorCode TradingEngine::SubmitOrder(const model::OrderRequest& request,
   }
   model::PositionSnapshot position;
   position.instrument_id = request.instrument_id;
-  if (existing_position) position = s.positions[*existing_position];
+  if (existing_position) {
+    position = s.positions[*existing_position];
+  }
   auto cash = s.cash;
   FuturesReservation futures_reservation;
   if (futures && !s.broker_managed) {
     // All fallible order/request checks precede the atomic account claim.
     // After it succeeds, the remaining order publication cannot fail.
     const auto reserved = s.futures.Reserve(request, futures_reservation);
-    if (reserved != ErrorCode::kOk)
+    if (reserved != ErrorCode::kOk) {
       return Fail(reserved, s.futures.error_detail());
+    }
   } else if (!futures && request.side == model::OrderSide::kBuy) {
     if (notional > cash.available) {
       return Fail(ErrorCode::kResourceExhausted, "insufficient available cash");
@@ -490,7 +535,9 @@ ErrorCode TradingEngine::SubmitOrder(const model::OrderRequest& request,
   fact.order_id = order.client_order_id;
   fact.request = request;
   const auto journal = BeforeCommit(fact);
-  if (journal != ErrorCode::kOk) return journal;
+  if (journal != ErrorCode::kOk) {
+    return journal;
+  }
   auto& record = s.orders[index];
   record.snapshot = order;
   record.position_index =
@@ -503,28 +550,33 @@ ErrorCode TradingEngine::SubmitOrder(const model::OrderRequest& request,
   record.futures_reservation = futures_reservation;
   if (!futures) {
     s.positions[record.position_index] = position;
-    if (!existing_position) ++s.position_count;
+    if (!existing_position) {
+      ++s.position_count;
+    }
     s.cash = cash;
   }
   s.requests[(s.request_head + s.request_count) % kMaxTradingRequests] = {
       Storage::RequestKind::kNew, index, {}};
   ++s.request_count;
   auto order_slot = TradingOrderHash(order.client_order_id);
-  while (s.order_lookup[order_slot] != 0)
+  while (s.order_lookup[order_slot] != 0) {
     order_slot = (order_slot + 1) & (kOrderLookupCapacity - 1);
-  s.order_lookup[order_slot] = static_cast<std::uint16_t>(index + 1);
+  }
+  s.order_lookup[order_slot] = static_cast<uint16_t>(index + 1);
   ++s.order_count;
   ++s.active_count;
   ++s.next_order_id;
-  if (s.type == model::AccountType::kCash) ++s.mutation_revision;
+  if (s.type == model::AccountType::kCash) {
+    ++s.mutation_revision;
+  }
   out = order.client_order_id;
   return ErrorCode::kOk;
 }
 
-ErrorCode TradingEngine::QueueCancel(std::size_t index) noexcept {
+ErrorCode TradingEngine::QueueCancel(size_t index) noexcept {
   auto& s = *storage_;
   if (s.request_count == kMaxTradingRequests ||
-      s.last_cancel_id == std::numeric_limits<std::uint64_t>::max()) {
+      s.last_cancel_id == std::numeric_limits<uint64_t>::max()) {
     return Fail(ErrorCode::kResourceExhausted,
                 "cancel request capacity or ID exhausted");
   }
@@ -535,7 +587,9 @@ ErrorCode TradingEngine::QueueCancel(std::size_t index) noexcept {
   fact.order_id = s.orders[index].snapshot.client_order_id;
   fact.cancel_id = id;
   const auto journal = BeforeCommit(fact);
-  if (journal != ErrorCode::kOk) return journal;
+  if (journal != ErrorCode::kOk) {
+    return journal;
+  }
   auto& record = s.orders[index];
   s.requests[(s.request_head + s.request_count) % kMaxTradingRequests] = {
       Storage::RequestKind::kCancel, index, id};
@@ -546,7 +600,9 @@ ErrorCode TradingEngine::QueueCancel(std::size_t index) noexcept {
   record.cancel_attempted = false;
   record.retry_not_before_ns = 0;
   ++s.pending_cancel_count;
-  if (s.type == model::AccountType::kCash) ++s.mutation_revision;
+  if (s.type == model::AccountType::kCash) {
+    ++s.mutation_revision;
+  }
   return ErrorCode::kOk;
 }
 
@@ -555,8 +611,9 @@ ErrorCode TradingEngine::CancelOrder(model::ClientOrderId id) noexcept {
     return Fail(ErrorCode::kInvalidState, "trading requests are not enabled");
   }
   const auto index = FindIndex(id);
-  if (!index)
+  if (!index) {
     return Fail(ErrorCode::kInvalidArgument, "unknown client order ID");
+  }
   const auto& order = storage_->orders[*index].snapshot;
   if (order.state != OrderState::kWorking || order.cancel_pending) {
     return Fail(ErrorCode::kInvalidState,
@@ -568,14 +625,17 @@ ErrorCode TradingEngine::CancelOrder(model::ClientOrderId id) noexcept {
 bool TradingEngine::TryGetOrder(model::ClientOrderId id,
                                 model::OrderSnapshot& out) const noexcept {
   const auto index = FindIndex(id);
-  if (!index) return false;
+  if (!index) {
+    return false;
+  }
   out = storage_->orders[*index].snapshot;
   return true;
 }
 
 bool TradingEngine::TryGetCash(model::CashSnapshot& out) const noexcept {
-  if (storage_ == nullptr || storage_->type != model::AccountType::kCash)
+  if (storage_ == nullptr || storage_->type != model::AccountType::kCash) {
     return false;
+  }
   out = storage_->cash;
   return true;
 }
@@ -585,8 +645,9 @@ bool TradingEngine::TryGetPosition(
   model::InstrumentDefinition instrument;
   if (storage_ == nullptr || storage_->type != model::AccountType::kCash ||
       !instruments_.TryGetInstrument(id, instrument) ||
-      instrument.type != model::InstrumentType::kEquity)
+      instrument.type != model::InstrumentType::kEquity) {
     return false;
+  }
   const auto index = FindPosition(id);
   if (index) {
     out = storage_->positions[*index];
@@ -613,13 +674,15 @@ bool TradingEngine::TryGetFuturesPosition(
   if (broker_managed()) {
     model::InstrumentDefinition instrument;
     if (!instruments_.TryGetInstrument(id, instrument) ||
-        instrument.type != model::InstrumentType::kFutures)
+        instrument.type != model::InstrumentType::kFutures) {
       return false;
-    for (std::size_t i = 0; i < storage_->broker_account.position_count; ++i)
+    }
+    for (size_t i = 0; i < storage_->broker_account.position_count; ++i) {
       if (storage_->broker_account.positions[i].instrument_id == id) {
         out = storage_->broker_account.positions[i];
         return true;
       }
+    }
     out = {};
     out.instrument_id = id;
     return true;
@@ -631,16 +694,17 @@ bool TradingEngine::TryGetFuturesPosition(
 
 ErrorCode TradingEngine::ApplyQuote(const model::QuoteTick& tick) noexcept {
   if (storage_ == nullptr || storage_->type == model::AccountType::kCash ||
-      broker_managed())
+      broker_managed()) {
     return ErrorCode::kOk;
+  }
   const auto applied = storage_->futures.ApplyQuote(tick);
   return applied == ErrorCode::kOk
              ? applied
              : Fail(applied, storage_->futures.error_detail());
 }
 
-base::Status TradingEngine::ProcessRequests(std::uint64_t now,
-                                            std::size_t limit) noexcept {
+base::Status TradingEngine::ProcessRequests(uint64_t now,
+                                            size_t limit) noexcept {
   error_stage_ = "trading_send";
   if (!prepared_ || storage_ == nullptr || accept_requests_) {
     return {
@@ -649,17 +713,21 @@ base::Status TradingEngine::ProcessRequests(std::uint64_t now,
         {}};
   }
   auto& s = *storage_;
-  for (std::size_t count = 0; count < limit && s.request_count != 0; ++count) {
+  for (size_t count = 0; count < limit && s.request_count != 0; ++count) {
     const auto request = s.requests[s.request_head];
     auto& record = s.orders[request.order_index];
     if (request.kind == Storage::RequestKind::kNew && stopping_) {
-      if (s.local_count == kMaxLocalOrderUpdates) break;
+      if (s.local_count == kMaxLocalOrderUpdates) {
+        break;
+      }
       TradingMutation fact;
       fact.now = replaying_ ? replay_now_ : clock_.Now();
       fact.kind = TradingMutationKind::kScheduleLocalCancel;
       fact.order_id = record.snapshot.client_order_id;
       const auto journal = BeforeCommit(fact);
-      if (journal != ErrorCode::kOk) return {journal, {}};
+      if (journal != ErrorCode::kOk) {
+        return {journal, {}};
+      }
       // Reserving the local event and removing the send are one commit. The
       // snapshot stays PendingNew until the local event consumes event budget.
       s.local_updates[(s.local_head + s.local_count) % kMaxLocalOrderUpdates] =
@@ -668,7 +736,9 @@ base::Status TradingEngine::ProcessRequests(std::uint64_t now,
       record.local_cancel_pending = true;
       s.request_head = (s.request_head + 1) % kMaxTradingRequests;
       --s.request_count;
-      if (s.type == model::AccountType::kCash) ++s.mutation_revision;
+      if (s.type == model::AccountType::kCash) {
+        ++s.mutation_revision;
+      }
       continue;
     }
     TradingMutation fact;
@@ -679,10 +749,14 @@ base::Status TradingEngine::ProcessRequests(std::uint64_t now,
     fact.order_id = record.snapshot.client_order_id;
     fact.cancel_id = request.cancel_id;
     const auto journal = BeforeCommit(fact);
-    if (journal != ErrorCode::kOk) return {journal, {}};
+    if (journal != ErrorCode::kOk) {
+      return {journal, {}};
+    }
     s.request_head = (s.request_head + 1) % kMaxTradingRequests;
     --s.request_count;
-    if (s.type == model::AccountType::kCash) ++s.mutation_revision;
+    if (s.type == model::AccountType::kCash) {
+      ++s.mutation_revision;
+    }
     base::Status result;
     if (request.kind == Storage::RequestKind::kNew) {
       record.new_attempted = true;
@@ -705,28 +779,36 @@ base::Status TradingEngine::ProcessRequests(std::uint64_t now,
   return {};
 }
 
-base::Status TradingEngine::ScheduleStopping(std::uint64_t now,
-                                             std::size_t max_scan) noexcept {
+base::Status TradingEngine::ScheduleStopping(uint64_t now,
+                                             size_t max_scan) noexcept {
   error_stage_ = "trading_drain";
-  if (!stopping_ || storage_ == nullptr) return {};
+  if (!stopping_ || storage_ == nullptr) {
+    return {};
+  }
   auto& s = *storage_;
   if (!s.scan_pending) {
     // Only due retries need a new full pass; state transitions explicitly
     // invalidate completed scans when they create newly cancellable work.
-    if (!s.next_retry || *s.next_retry > now) return {};
+    if (!s.next_retry || *s.next_retry > now) {
+      return {};
+    }
     s.scan_pending = true;
     s.scan_cursor = 0;
     s.next_retry.reset();
   }
-  for (std::size_t scanned = 0;
-       scanned < max_scan && s.scan_cursor < s.order_count; ++scanned) {
+  for (size_t scanned = 0; scanned < max_scan && s.scan_cursor < s.order_count;
+       ++scanned) {
     auto& record = s.orders[s.scan_cursor];
     const auto& order = record.snapshot;
     if (order.state == OrderState::kWorking && !order.cancel_pending &&
         record.retry_not_before_ns <= now) {
-      if (s.request_count == kMaxTradingRequests) return {};
+      if (s.request_count == kMaxTradingRequests) {
+        return {};
+      }
       const auto result = QueueCancel(s.scan_cursor);
-      if (result != ErrorCode::kOk) return {result, {}};
+      if (result != ErrorCode::kOk) {
+        return {result, {}};
+      }
     } else if (order.state == OrderState::kWorking && !order.cancel_pending &&
                record.retry_not_before_ns > now &&
                (!s.next_retry || record.retry_not_before_ns < *s.next_retry)) {
@@ -738,26 +820,32 @@ base::Status TradingEngine::ScheduleStopping(std::uint64_t now,
     s.scan_pending = s.rescan_required;
     s.rescan_required = false;
     s.scan_cursor = 0;
-    if (s.scan_pending) s.next_retry.reset();
+    if (s.scan_pending) {
+      s.next_retry.reset();
+    }
   }
   return {};
 }
 
-std::optional<std::uint64_t> TradingEngine::next_deadline() const noexcept {
-  if (storage_ == nullptr) return {};
+std::optional<uint64_t> TradingEngine::next_deadline() const noexcept {
+  if (storage_ == nullptr) {
+    return {};
+  }
   const auto& s = *storage_;
   if (s.request_count != 0 || s.local_count != 0 ||
-      (stopping_ && s.scan_pending))
+      (stopping_ && s.scan_pending)) {
     return 0;
+  }
   auto deadline = stopping_ ? s.next_retry : std::nullopt;
   const auto adapter_deadline =
       prepared_ ? adapter_.next_deadline() : std::nullopt;
-  if (adapter_deadline && (!deadline || *adapter_deadline < *deadline))
+  if (adapter_deadline && (!deadline || *adapter_deadline < *deadline)) {
     deadline = adapter_deadline;
+  }
   return deadline;
 }
 
-bool TradingEngine::has_ready_event(std::uint64_t now) const noexcept {
+bool TradingEngine::has_ready_event(uint64_t now) const noexcept {
   const auto deadline = prepared_ ? adapter_.next_deadline() : std::nullopt;
   return has_local_updates() || IsDue(deadline, now);
 }
@@ -771,7 +859,7 @@ bool TradingEngine::is_drained() const noexcept {
           storage_->request_count == 0 && storage_->local_count == 0 &&
           (!prepared_ || adapter_.is_drained()));
 }
-std::size_t TradingEngine::order_count() const noexcept {
+size_t TradingEngine::order_count() const noexcept {
   return storage_ != nullptr ? storage_->order_count : 0;
 }
 
@@ -798,8 +886,9 @@ ErrorCode TradingEngine::ApplyLocalUpdate(TradingDispatch& out) noexcept {
   if (s.type == model::AccountType::kFutures && !s.broker_managed) {
     const auto released =
         s.futures.Release(record.snapshot, record.futures_reservation);
-    if (released != ErrorCode::kOk)
+    if (released != ErrorCode::kOk) {
       return Fail(released, s.futures.error_detail());
+    }
   } else if (s.type == model::AccountType::kCash) {
     if (!ReleaseReservation(cash, position, record.reserved_cash,
                             record.reserved_qty)) {
@@ -811,7 +900,9 @@ ErrorCode TradingEngine::ApplyLocalUpdate(TradingDispatch& out) noexcept {
     fact.kind = TradingMutationKind::kLocalCancel;
     fact.order_id = record.snapshot.client_order_id;
     const auto journal = BeforeCommit(fact);
-    if (journal != ErrorCode::kOk) return journal;
+    if (journal != ErrorCode::kOk) {
+      return journal;
+    }
     s.cash = cash;
     s.positions[record.position_index] = position;
   }
@@ -822,7 +913,9 @@ ErrorCode TradingEngine::ApplyLocalUpdate(TradingDispatch& out) noexcept {
   --s.active_count;
   s.local_head = (s.local_head + 1) % kMaxLocalOrderUpdates;
   --s.local_count;
-  if (s.type == model::AccountType::kCash) ++s.mutation_revision;
+  if (s.type == model::AccountType::kCash) {
+    ++s.mutation_revision;
+  }
   out = dispatch;
   return ErrorCode::kOk;
 }
@@ -832,7 +925,9 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
   error_stage_ = "trading_event";
   const auto transaction_now = replaying_ ? replay_now_ : clock_.Now();
   const auto index = FindIndex(event.client_order_id);
-  if (!index) return Fail(ErrorCode::kCorrupt, "report for an unknown order");
+  if (!index) {
+    return Fail(ErrorCode::kCorrupt, "report for an unknown order");
+  }
   auto& s = *storage_;
   auto& record = s.orders[*index];
   const auto& old = record.snapshot;
@@ -887,7 +982,7 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
   auto next = old;
   const bool bind_broker =
       old.broker_order_id.empty() && !event.broker_order_id.empty();
-  std::size_t broker_slot = 0;
+  size_t broker_slot = 0;
   if (bind_broker) {
     broker_slot = TradingBrokerHash(event.broker_order_id);
     while (s.broker_lookup[broker_slot] != 0) {
@@ -900,8 +995,9 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
       broker_slot = (broker_slot + 1) & (kBrokerLookupCapacity - 1);
     }
   }
-  if (!event.broker_order_id.empty())
+  if (!event.broker_order_id.empty()) {
     next.broker_order_id = event.broker_order_id;
+  }
   next.report_sequence = event.report_sequence;
   next.receive_time_ns = event.receive_time_ns;
   TradingDispatch dispatch;
@@ -909,23 +1005,24 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
   dispatch.update.kind = event.kind;
   dispatch.update.cancel_request_id = event.cancel_request_id;
   dispatch.update.reason = event.reason;
-  std::size_t fill_slot = 0;
-  std::uint64_t retry = record.retry_not_before_ns;
+  size_t fill_slot = 0;
+  uint64_t retry = record.retry_not_before_ns;
   if (!is_fill && event.cumulative_filled_qty != old.cumulative_filled_qty) {
     return Fail(ErrorCode::kCorrupt,
                 "non-fill cumulative quantity disagrees with ledger");
   }
   switch (event.kind) {
     case OrderUpdateKind::kAccepted:
-      if (old.state == OrderState::kPendingNew)
+      if (old.state == OrderState::kPendingNew) {
         next.state = OrderState::kWorking;
-      else if (old.state == OrderState::kWorking ||
-               old.state == OrderState::kFilled ||
-               old.state == OrderState::kCanceled)
+      } else if (old.state == OrderState::kWorking ||
+                 old.state == OrderState::kFilled ||
+                 old.state == OrderState::kCanceled) {
         dispatch.notify_order = false;
-      else
+      } else {
         return Fail(ErrorCode::kCorrupt,
                     "acceptance would reverse a terminal order");
+      }
       break;
     case OrderUpdateKind::kRejected:
       if (old.state != OrderState::kPendingNew ||
@@ -944,9 +1041,10 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
         return Fail(ErrorCode::kCorrupt,
                     "execution reverses terminal state or overfills order");
       }
-      if (s.fill_count == kMaxTradingFills)
+      if (s.fill_count == kMaxTradingFills) {
         return Fail(ErrorCode::kResourceExhausted,
                     "execution ledger capacity exhausted");
+      }
       fill_slot =
           TradingFillHash(event.client_order_id, event.fill.execution_id);
       while (s.fill_lookup[fill_slot] != 0) {
@@ -978,16 +1076,18 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
       }
       if (event.kind == OrderUpdateKind::kCanceled) {
         if (old.state != OrderState::kWorking &&
-            !(external_cancel && old.state == OrderState::kPendingNew))
+            !(external_cancel && old.state == OrderState::kPendingNew)) {
           return Fail(ErrorCode::kCorrupt,
                       "cancellation would reverse a filled order");
+        }
         next.state = OrderState::kCanceled;
         next.leaves_qty = 0;
       } else if (old.state == OrderState::kWorking) {
         const auto now = transaction_now;
-        if (now > UINT64_MAX - kCancelRetryNs)
+        if (now > UINT64_MAX - kCancelRetryNs) {
           return Fail(ErrorCode::kResourceExhausted,
                       "cancel retry deadline overflows");
+        }
         retry = now + kCancelRetryNs;
       }
       next.cancel_pending = false;
@@ -1009,23 +1109,24 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
                event.kind == OrderUpdateKind::kCanceled) {
       applied = s.futures.Release(old, reservation);
     }
-    if (applied != ErrorCode::kOk)
+    if (applied != ErrorCode::kOk) {
       return Fail(applied, s.futures.error_detail());
+    }
     record.futures_reservation = reservation;
   } else if (s.type == model::AccountType::kCash && dispatch.has_fill) {
     const auto& fill = dispatch.fill;
-    std::int64_t actual_cash;
+    int64_t actual_cash;
     if (!CashAmount(fill.price, fill.quantity, record.price_scale,
                     actual_cash)) {
       return Fail(ErrorCode::kCorrupt, "execution cash amount overflows");
     }
     if (old.side == model::OrderSide::kBuy) {
-      std::int64_t limit_cash;
+      int64_t limit_cash;
       if (!CashAmount(old.limit_price, fill.quantity, record.price_scale,
                       limit_cash) ||
           limit_cash > reserved_cash || actual_cash > cash.balance ||
           fill.quantity >
-              std::numeric_limits<std::int64_t>::max() - position.total_qty ||
+              std::numeric_limits<int64_t>::max() - position.total_qty ||
           !ReleaseReservation(cash, position, limit_cash, 0)) {
         return Fail(ErrorCode::kCorrupt,
                     "buy execution violates cash or holding bounds");
@@ -1039,8 +1140,7 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
       if (fill.quantity > reserved_qty ||
           fill.quantity > position.reserved_qty ||
           fill.quantity > position.total_qty ||
-          actual_cash >
-              std::numeric_limits<std::int64_t>::max() - cash.balance) {
+          actual_cash > std::numeric_limits<int64_t>::max() - cash.balance) {
         return Fail(ErrorCode::kCorrupt,
                     "sell execution violates cash or holding bounds");
       }
@@ -1070,21 +1170,26 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
   fact.order_id = event.client_order_id;
   fact.event = event;
   const auto journal = BeforeCommit(fact);
-  if (journal != ErrorCode::kOk) return journal;
+  if (journal != ErrorCode::kOk) {
+    return journal;
+  }
   // All failure paths precede this transaction: no partial fill, sequence or
   // request completion can escape a rejected source event.
   if (dispatch.has_fill) {
     s.fills[s.fill_count] = dispatch.fill;
-    s.fill_lookup[fill_slot] = static_cast<std::uint16_t>(s.fill_count + 1);
+    s.fill_lookup[fill_slot] = static_cast<uint16_t>(s.fill_count + 1);
     ++s.fill_count;
   }
   if (bind_broker) {
-    s.broker_lookup[broker_slot] = static_cast<std::uint16_t>(*index + 1);
+    s.broker_lookup[broker_slot] = static_cast<uint16_t>(*index + 1);
   }
   if (!model::IsTerminalOrderState(old.state) &&
-      model::IsTerminalOrderState(next.state))
+      model::IsTerminalOrderState(next.state)) {
     --s.active_count;
-  if (old.cancel_pending && !next.cancel_pending) --s.pending_cancel_count;
+  }
+  if (old.cancel_pending && !next.cancel_pending) {
+    --s.pending_cancel_count;
+  }
   record.snapshot = next;
   if (s.type == model::AccountType::kCash) {
     s.cash = cash;
@@ -1093,7 +1198,9 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
   record.reserved_cash = reserved_cash;
   record.reserved_qty = reserved_qty;
   record.retry_not_before_ns = retry;
-  if (is_cancel) record.cancel_attempted = false;
+  if (is_cancel) {
+    record.cancel_attempted = false;
+  }
   if (stopping_) {
     if (!s.scan_pending) {
       s.scan_pending = true;
@@ -1106,16 +1213,19 @@ ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
     }
   }
   dispatch.update.order = next;
-  if (s.type == model::AccountType::kCash) ++s.mutation_revision;
+  if (s.type == model::AccountType::kCash) {
+    ++s.mutation_revision;
+  }
   out = dispatch;
   return ErrorCode::kOk;
 }
 base::Status TradingEngine::ReplayMutation(const TradingMutation& fact,
                                            TradingDispatch* out) noexcept {
-  if (storage_ != nullptr && storage_->type != model::AccountType::kCash)
+  if (storage_ != nullptr && storage_->type != model::AccountType::kCash) {
     return {Fail(ErrorCode::kUnsupported,
                  "futures ledger persistence is unsupported"),
             {}};
+  }
   if (storage_ == nullptr || accept_requests_ || replaying_ ||
       storage_->mutation_revision == UINT64_MAX ||
       fact.revision != storage_->mutation_revision + 1) {
@@ -1123,8 +1233,9 @@ base::Status TradingEngine::ReplayMutation(const TradingMutation& fact,
   }
   auto& s = *storage_;
   const auto index = FindIndex(fact.order_id);
-  if (fact.kind != TradingMutationKind::kNewOrder && !index)
+  if (fact.kind != TradingMutationKind::kNewOrder && !index) {
     return {Fail(ErrorCode::kCorrupt, "unknown replay order"), {}};
+  }
   replaying_ = true;
   replay_now_ = fact.now;
   ErrorCode result = ErrorCode::kOk;
@@ -1184,44 +1295,54 @@ base::Status TradingEngine::ReplayMutation(const TradingMutation& fact,
       }
       s.request_head = (s.request_head + 1) % kMaxTradingRequests;
       --s.request_count;
-      if (s.type == model::AccountType::kCash) ++s.mutation_revision;
+      if (s.type == model::AccountType::kCash) {
+        ++s.mutation_revision;
+      }
       break;
     }
     case TradingMutationKind::kLocalCancel:
-      if (s.local_count == 0 || s.local_updates[s.local_head] != *index)
+      if (s.local_count == 0 || s.local_updates[s.local_head] != *index) {
         result =
             Fail(ErrorCode::kCorrupt, "replay local cancellation mismatch");
-      else
+      } else {
         result = ApplyLocalUpdate(dispatch);
+      }
       break;
     case TradingMutationKind::kReport:
-      if (fact.event.client_order_id != fact.order_id)
+      if (fact.event.client_order_id != fact.order_id) {
         result = Fail(ErrorCode::kCorrupt, "replay report identity mismatch");
-      else
+      } else {
         result = ApplyEvent(fact.event, dispatch);
+      }
       break;
     default:
       result = Fail(ErrorCode::kCorrupt, "unknown replay mutation");
   }
   replaying_ = false;
   replay_now_ = 0;
-  if (result == ErrorCode::kOk && s.mutation_revision != fact.revision)
+  if (result == ErrorCode::kOk && s.mutation_revision != fact.revision) {
     return {Fail(ErrorCode::kCorrupt, "replay fact did not commit"), {}};
-  if (result == ErrorCode::kOk && out != nullptr) *out = dispatch;
+  }
+  if (result == ErrorCode::kOk && out != nullptr) {
+    *out = dispatch;
+  }
   return {result, {}};
 }
 
 void TradingEngine::AbandonRecoveredRequests() noexcept {
-  if (storage_ == nullptr || accept_requests_) return;
+  if (storage_ == nullptr || accept_requests_) {
+    return;
+  }
   auto& s = *storage_;
-  for (std::size_t offset = 0; offset < s.request_count; ++offset) {
+  for (size_t offset = 0; offset < s.request_count; ++offset) {
     const auto& request =
         s.requests[(s.request_head + offset) % kMaxTradingRequests];
     auto& record = s.orders[request.order_index];
-    if (request.kind == Storage::RequestKind::kNew)
+    if (request.kind == Storage::RequestKind::kNew) {
       record.new_attempted = true;
-    else
+    } else {
       record.cancel_attempted = true;
+    }
   }
   s.request_count = 0;
   s.request_head = 0;
@@ -1233,7 +1354,7 @@ void TradingEngine::AbandonRecoveredRequests() noexcept {
 base::Status TradingEngine::Fail(base::Status status, const char* stage,
                                  const char* detail) noexcept {
   error_stage_ = stage;
-  std::snprintf(error_detail_, sizeof(error_detail_), "%s", detail);
+  ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_), "{}", detail);
   return status;
 }
 
@@ -1252,22 +1373,28 @@ base::Status TradingEngine::Init(const TradingConfig& config,
   // Even failed Prepare may own resources; Stop must run exactly once.
   prepared_ = true;
   const auto prepared = adapter_.Prepare(config);
-  if (!prepared.ok())
+  if (!prepared.ok()) {
     return Fail(prepared, "trading_prepare", adapter_.error_detail());
+  }
   const auto started = adapter_.Start(clock_.Now());
-  if (!started.ok())
+  if (!started.ok()) {
     return Fail(started, "trading_start", adapter_.error_detail());
+  }
   if (config.adapter == TradingAdapterKind::kCtp) {
     BrokerAccountSnapshot account;
     const auto snapshot = adapter_.ReadBrokerAccountSnapshot(account);
-    if (!snapshot.ok())
+    if (!snapshot.ok()) {
       return Fail(snapshot, "trading_account", adapter_.error_detail());
+    }
     const auto valid = ValidateBrokerAccount(account);
-    if (valid != ErrorCode::kOk) return {valid, {}};
+    if (valid != ErrorCode::kOk) {
+      return {valid, {}};
+    }
     auto* storage = new (std::nothrow) Storage;
-    if (storage == nullptr)
+    if (storage == nullptr) {
       return Fail({ErrorCode::kResourceExhausted, {}}, "trading_account",
                   "cannot allocate broker order storage");
+    }
     storage->type = model::AccountType::kFutures;
     storage->broker_managed = true;
     storage->broker_account = account;
@@ -1276,34 +1403,41 @@ base::Status TradingEngine::Init(const TradingConfig& config,
   }
   TradingAccountSnapshot account;
   const auto snapshot = adapter_.ReadAccountSnapshot(account);
-  if (!snapshot.ok())
+  if (!snapshot.ok()) {
     return Fail(snapshot, "trading_account", adapter_.error_detail());
+  }
   error_stage_ = "trading_account";
   return ConfigureAccount(account);
 }
 
 base::Status TradingEngine::Stop() noexcept {
   accept_requests_ = false;
-  if (!prepared_) return {};
+  if (!prepared_) {
+    return {};
+  }
   prepared_ = false;
   const auto stopped = adapter_.Stop();
-  if (!stopped.ok())
+  if (!stopped.ok()) {
     return Fail(stopped, "trading_stop", adapter_.error_detail());
+  }
   return {};
 }
 
-base::Status TradingEngine::Poll(std::uint64_t now, TradingDispatch& out,
+base::Status TradingEngine::Poll(uint64_t now, TradingDispatch& out,
                                  bool& event) noexcept {
   error_stage_ = "trading_poll";
-  if (!prepared_ || storage_ == nullptr || accept_requests_)
+  if (!prepared_ || storage_ == nullptr || accept_requests_) {
     return Fail({base::ErrorCode::kInvalidState, {}}, "trading_poll",
                 "polling requires an initialized runtime with requests closed");
+  }
   TradingDispatch dispatch;
   if (has_local_updates() &&
       (!IsDue(adapter_.next_deadline(), now) || prefer_local_)) {
     prefer_local_ = false;
     const auto applied = ApplyLocalUpdate(dispatch);
-    if (applied != base::ErrorCode::kOk) return {applied, {}};
+    if (applied != base::ErrorCode::kOk) {
+      return {applied, {}};
+    }
   } else {
     prefer_local_ = true;
     TradingEvent input;
@@ -1315,23 +1449,28 @@ base::Status TradingEngine::Poll(std::uint64_t now, TradingDispatch& out,
                   "trading_poll", adapter_.error_detail());
     }
     if (polled.state == TradingPollState::kIdle) {
-      if (IsDue(adapter_.next_deadline(), now))
+      if (IsDue(adapter_.next_deadline(), now)) {
         return Fail({base::ErrorCode::kCorrupt, {}}, "trading_poll",
                     "idle trading adapter retained an already-due deadline");
+      }
       event = false;
       return {};
     }
     if (polled.state != TradingPollState::kEvent &&
-        !(broker_managed() && polled.state == TradingPollState::kAccount))
+        !(broker_managed() && polled.state == TradingPollState::kAccount)) {
       return Fail({base::ErrorCode::kCorrupt, {}}, "trading_poll",
                   "adapter returned an unknown polling state");
+    }
     BrokerAccountSnapshot broker;
     if (broker_managed()) {
       const auto snapshot = adapter_.ReadBrokerAccountSnapshot(broker);
-      if (!snapshot.ok())
+      if (!snapshot.ok()) {
         return Fail(snapshot, "trading_account", adapter_.error_detail());
+      }
       const auto valid = ValidateBrokerAccount(broker);
-      if (valid != ErrorCode::kOk) return {valid, {}};
+      if (valid != ErrorCode::kOk) {
+        return {valid, {}};
+      }
     }
     const auto applied = polled.state == TradingPollState::kEvent
                              ? ApplyEvent(input, dispatch)
@@ -1343,26 +1482,25 @@ base::Status TradingEngine::Poll(std::uint64_t now, TradingDispatch& out,
       CopyIdHex(input.fill.execution_id.view(), execution);
       error_stage_ = "trading_event";
       char detail[kErrorDetailSize];
-      std::snprintf(
+      ::yquant::base::FormatTo(
           detail, sizeof(detail),
-          "client_order_id=%llu sequence=%llu kind=%u cumulative=%lld "
-          "fill_price=%lld fill_qty=%lld cancel_request=%llu "
-          "broker_id_hex=%s execution_id_hex=%s: %s",
-          static_cast<unsigned long long>(input.client_order_id.value),
-          static_cast<unsigned long long>(input.report_sequence),
-          static_cast<unsigned>(input.kind),
-          static_cast<long long>(input.cumulative_filled_qty),
-          static_cast<long long>(input.fill.price),
-          static_cast<long long>(input.fill.quantity),
-          static_cast<unsigned long long>(input.cancel_request_id.value),
+          "client_order_id={} sequence={} kind={} cumulative={} fill_price={} "
+          "fill_qty={} cancel_request={} broker_id_hex={} execution_id_hex={}: "
+          "{}",
+          input.client_order_id.value, input.report_sequence,
+          static_cast<unsigned>(input.kind), input.cumulative_filled_qty,
+          input.fill.price, input.fill.quantity, input.cancel_request_id.value,
           broker, execution, error_detail_);
       (void)Fail({applied, {}}, "trading_event", detail);
       // Report even when the runner retains an earlier callback failure.
-      std::fprintf(stderr, "yquant-trading: unapplied_trading_event %s\n",
-                   error_detail_);
+      ::yquant::base::Print(stderr,
+                            "yquant-trading: unapplied_trading_event {}\n",
+                            error_detail_);
       return {applied, {}};
     }
-    if (broker_managed()) storage_->broker_account = broker;
+    if (broker_managed()) {
+      storage_->broker_account = broker;
+    }
   }
   out = dispatch;
   event = true;

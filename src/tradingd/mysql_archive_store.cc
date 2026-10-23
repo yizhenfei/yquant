@@ -1,16 +1,22 @@
 #include "tradingd/mysql_archive_store.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
 #include <new>
+#include <span>
 #include <string_view>
 
 #include "tradingd/archive_projection.h"
 #include "tradingd/state_codec.h"
+#include "yquant/base/format.h"
 
 #if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
 #include <mysql.h>
@@ -34,24 +40,26 @@ void InitializeMysqlLibrary() noexcept {
 struct MysqlThreadContext {
   MysqlThreadContext() noexcept : status(mysql_thread_init()) {}
   ~MysqlThreadContext() noexcept {
-    if (status == 0) mysql_thread_end();
+    if (status == 0) {
+      mysql_thread_end();
+    }
   }
   int status;
 };
 
 constexpr unsigned kCancelled = 65535;
-constexpr std::uint64_t kSchemaVersion = 1;
+constexpr uint64_t kSchemaVersion = 1;
 constexpr std::string_view kSchemaChecksum =
     "yquant-trading-archive-v1-20261021";
 
 struct Value {
   enum class Kind { kUnsigned, kSigned, kBytes, kNull };
   Kind kind = Kind::kUnsigned;
-  std::uint64_t unsigned_value = 0;
-  std::int64_t signed_value = 0;
+  uint64_t unsigned_value = 0;
+  int64_t signed_value = 0;
   std::span<const std::byte> bytes;
-  explicit Value(std::uint64_t value) noexcept : unsigned_value(value) {}
-  explicit Value(std::int64_t value) noexcept
+  explicit Value(uint64_t value) noexcept : unsigned_value(value) {}
+  explicit Value(int64_t value) noexcept
       : kind(Kind::kSigned), signed_value(value) {}
   explicit Value(std::span<const std::byte> value) noexcept
       : kind(Kind::kBytes), bytes(value) {}
@@ -69,17 +77,21 @@ bool IsTransient(unsigned code) noexcept {
 }
 
 std::array<std::byte, 16> LedgerBytes(
-    const std::array<std::uint64_t, 2>& id) noexcept {
+    const std::array<uint64_t, 2>& id) noexcept {
   std::array<std::byte, 16> bytes{};
-  for (std::size_t word = 0; word < id.size(); ++word)
-    for (unsigned i = 0; i < 8; ++i)
+  for (size_t word = 0; word < id.size(); ++word) {
+    for (unsigned i = 0; i < 8; ++i) {
       bytes[word * 8 + i] = std::byte(id[word] >> (56 - i * 8));
+    }
+  }
   return bytes;
 }
 
-std::array<std::byte, 8> CoreNamespace(std::uint64_t core) noexcept {
+std::array<std::byte, 8> CoreNamespace(uint64_t core) noexcept {
   std::array<std::byte, 8> bytes{};
-  for (unsigned i = 0; i < 8; ++i) bytes[i] = std::byte(core >> (56 - i * 8));
+  for (unsigned i = 0; i < 8; ++i) {
+    bytes[i] = std::byte(core >> (56 - i * 8));
+  }
   return bytes;
 }
 #endif
@@ -96,23 +108,29 @@ struct MysqlArchiveStore::Storage {
   bool transaction = false;
   std::array<std::byte, 16> ledger{};
   MysqlArchiveProgress progress;
-  std::uint64_t pending_run = 0;
-  std::uint64_t pending_lsn = 0;
-  std::uint64_t final_lsn = UINT64_MAX;
+  uint64_t pending_run = 0;
+  uint64_t pending_lsn = 0;
+  uint64_t final_lsn = UINT64_MAX;
 
   void Error(unsigned code, const char* message) noexcept {
     error = code;
-    std::snprintf(detail, sizeof(detail), "MySQL error %u: %.200s", code,
-                  message);
+    ::yquant::base::FormatTo(detail, sizeof(detail), "MySQL error {}: {:.200}",
+                             code, message);
   }
   bool Cancelled() noexcept {
-    if (cancelled == nullptr || !cancelled(cancellation_context)) return false;
+    if (cancelled == nullptr || !cancelled(cancellation_context)) {
+      return false;
+    }
     Error(kCancelled, "archive operation cancelled");
     return true;
   }
   bool Raw(const char* sql) noexcept {
-    if (Cancelled()) return false;
-    if (mysql_real_query(connection, sql, std::strlen(sql)) == 0) return true;
+    if (Cancelled()) {
+      return false;
+    }
+    if (mysql_real_query(connection, sql, std::strlen(sql)) == 0) {
+      return true;
+    }
     Error(mysql_errno(connection), mysql_error(connection));
     return false;
   }
@@ -121,10 +139,11 @@ struct MysqlArchiveStore::Storage {
   // Results contain only integral validation flags or progress coordinates.
   // SELECT results are fully buffered before statement closure.
   bool Query(const char* sql, std::initializer_list<Value> params,
-             std::span<std::uint64_t> output = {},
-             bool* found = nullptr) noexcept {
+             std::span<uint64_t> output = {}, bool* found = nullptr) noexcept {
     error = 0;
-    if (Cancelled()) return false;
+    if (Cancelled()) {
+      return false;
+    }
     MYSQL_STMT* statement = mysql_stmt_init(connection);
     if (statement == nullptr) {
       Error(mysql_errno(connection), mysql_error(connection));
@@ -136,8 +155,8 @@ struct MysqlArchiveStore::Storage {
       mysql_stmt_close(statement);
       return false;
     }
-    constexpr std::size_t kMaxParameters = 32;
-    constexpr std::size_t kLongChunkBytes = 64 * 1024;
+    constexpr size_t kMaxParameters = 32;
+    constexpr size_t kLongChunkBytes = 64 * 1024;
     std::array<MYSQL_BIND, kMaxParameters> bindings{};
     std::array<unsigned long, kMaxParameters> lengths{};
     if (params.size() > bindings.size() ||
@@ -146,18 +165,18 @@ struct MysqlArchiveStore::Storage {
       Error(0, "archive statement parameter mismatch");
       return false;
     }
-    std::size_t index = 0;
+    size_t index = 0;
     for (const auto& value : params) {
       auto& bind = bindings[index];
       switch (value.kind) {
         case Value::Kind::kUnsigned:
           bind.buffer_type = MYSQL_TYPE_LONGLONG;
-          bind.buffer = const_cast<std::uint64_t*>(&value.unsigned_value);
+          bind.buffer = const_cast<uint64_t*>(&value.unsigned_value);
           bind.is_unsigned = true;
           break;
         case Value::Kind::kSigned:
           bind.buffer_type = MYSQL_TYPE_LONGLONG;
-          bind.buffer = const_cast<std::int64_t*>(&value.signed_value);
+          bind.buffer = const_cast<int64_t*>(&value.signed_value);
           break;
         case Value::Kind::kBytes:
           bind.buffer_type = MYSQL_TYPE_LONG_BLOB;
@@ -181,7 +200,7 @@ struct MysqlArchiveStore::Storage {
     for (const auto& value : params) {
       if (value.kind == Value::Kind::kBytes &&
           value.bytes.size() > kLongChunkBytes) {
-        for (std::size_t offset = 0; ok && offset < value.bytes.size();) {
+        for (size_t offset = 0; ok && offset < value.bytes.size();) {
           const auto length =
               std::min(kLongChunkBytes, value.bytes.size() - offset);
           ok = mysql_stmt_send_long_data(
@@ -193,7 +212,9 @@ struct MysqlArchiveStore::Storage {
       }
       ++index;
     }
-    if (ok) ok = mysql_stmt_execute(statement) == 0;
+    if (ok) {
+      ok = mysql_stmt_execute(statement) == 0;
+    }
     if (ok && !output.empty()) {
       std::array<MYSQL_BIND, kMaxParameters> results{};
       if (output.size() > results.size() ||
@@ -202,7 +223,7 @@ struct MysqlArchiveStore::Storage {
         mysql_stmt_close(statement);
         return false;
       }
-      for (std::size_t i = 0; i < output.size(); ++i) {
+      for (size_t i = 0; i < output.size(); ++i) {
         results[i].buffer_type = MYSQL_TYPE_LONGLONG;
         results[i].buffer = &output[i];
         results[i].buffer_length = sizeof(output[i]);
@@ -218,11 +239,15 @@ struct MysqlArchiveStore::Storage {
           return false;
         }
         const auto result = mysql_stmt_fetch(statement);
-        if (found != nullptr) *found = result == 0;
+        if (found != nullptr) {
+          *found = result == 0;
+        }
         ok = result == 0 || result == MYSQL_NO_DATA;
       }
     }
-    if (!ok) Error(mysql_stmt_errno(statement), mysql_stmt_error(statement));
+    if (!ok) {
+      Error(mysql_stmt_errno(statement), mysql_stmt_error(statement));
+    }
     // Strict mode rejects conversion errors. Also reject warnings so schema
     // drift cannot silently truncate data even with a changed session mode.
     if (ok && mysql_warning_count(connection) != 0) {
@@ -234,10 +259,14 @@ struct MysqlArchiveStore::Storage {
   }
 
   bool Exact(const char* sql, std::initializer_list<Value> values) noexcept {
-    std::uint64_t match = 0;
+    uint64_t match = 0;
     bool found = false;
-    if (!Query(sql, values, {&match, 1}, &found)) return false;
-    if (found && match == 1) return true;
+    if (!Query(sql, values, {&match, 1}, &found)) {
+      return false;
+    }
+    if (found && match == 1) {
+      return true;
+    }
     Error(0, "immutable archive identity/content conflict");
     return false;
   }
@@ -248,8 +277,9 @@ struct MysqlArchiveStore::Storage {
         !Query("INSERT INTO ledgers (ledger_id,account_key,accounting_version) "
                "VALUES (?,?,1)",
                {Value(ledger), Value(projection.account_key())}) &&
-        error != 1062)
+        error != 1062) {
       return false;
+    }
     // Acquire the ledger's exclusive lock with a current read before any
     // consistent read establishes a REPEATABLE READ snapshot. After waiting for
     // another writer, both progress and its newly installed run/facts must be
@@ -262,7 +292,7 @@ struct MysqlArchiveStore::Storage {
   }
 
   bool ReadProgress(MysqlArchiveProgress& out, bool lock) noexcept {
-    std::array<std::uint64_t, 7> fields{};
+    std::array<uint64_t, 7> fields{};
     bool found = false;
     if (!Query(
             lock ? "SELECT run_id,baseline_installed,lsn,segment_no,"
@@ -271,8 +301,9 @@ struct MysqlArchiveStore::Storage {
                  : "SELECT run_id,baseline_installed,lsn,segment_no,"
                    "segment_offset,projection_version,1 FROM archive_progress "
                    "WHERE ledger_id=?",
-            {Value(ledger)}, fields, &found))
+            {Value(ledger)}, fields, &found)) {
       return false;
+    }
     if (found && fields[5] != kSchemaVersion) {
       Error(0, "unsupported archive projection version");
       return false;
@@ -292,7 +323,7 @@ MysqlArchiveStore::~MysqlArchiveStore() noexcept { Close(); }
 base::Status MysqlArchiveStore::Fail(base::ErrorCode code, const char* detail,
                                      bool retry) noexcept {
   retriable_ = retry;
-  std::snprintf(error_detail_, sizeof(error_detail_), "%s", detail);
+  ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_), "{}", detail);
   return {code, {}};
 }
 
@@ -314,17 +345,20 @@ base::Status MysqlArchiveStore::Connect(
   error_detail_[0] = '\0';
 #if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
   pthread_once(&mysql_library_once, InitializeMysqlLibrary);
-  if (mysql_library_status != 0)
+  if (mysql_library_status != 0) {
     return Fail(base::ErrorCode::kResourceExhausted,
                 "cannot initialize MySQL client library");
+  }
   thread_local MysqlThreadContext thread_context;
-  if (thread_context.status != 0)
+  if (thread_context.status != 0) {
     return Fail(base::ErrorCode::kResourceExhausted,
                 "cannot initialize MySQL client thread");
+  }
   storage_ = new (std::nothrow) Storage;
-  if (storage_ == nullptr)
+  if (storage_ == nullptr) {
     return Fail(base::ErrorCode::kResourceExhausted,
                 "cannot allocate MySQL archive connection");
+  }
   storage_->cancelled = cancelled_;
   storage_->cancellation_context = cancellation_context_;
   storage_->connection = mysql_init(nullptr);
@@ -426,9 +460,13 @@ void MysqlArchiveStore::SetCancellation(bool (*cancelled)(void*) noexcept,
 }
 
 void MysqlArchiveStore::Close() noexcept {
-  if (storage_ == nullptr) return;
+  if (storage_ == nullptr) {
+    return;
+  }
 #if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
-  if (storage_->connection != nullptr) mysql_close(storage_->connection);
+  if (storage_->connection != nullptr) {
+    mysql_close(storage_->connection);
+  }
 #endif
   delete storage_;
   storage_ = nullptr;
@@ -437,22 +475,27 @@ void MysqlArchiveStore::Close() noexcept {
 base::Status MysqlArchiveStore::GetProgress(
     const ArchiveProjection& projection, MysqlArchiveProgress& out) noexcept {
 #if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
-  if (storage_ == nullptr || storage_->transaction)
+  if (storage_ == nullptr || storage_->transaction) {
     return Fail(base::ErrorCode::kInvalidState, "MySQL connection is not idle");
+  }
   storage_->ledger = LedgerBytes(projection.ledger_id());
   // An absent ledger has no committed progress. Avoid creating it outside the
   // first baseline transaction, preserving all-or-nothing publication.
-  std::uint64_t match = 0;
+  uint64_t match = 0;
   bool found = false;
   if (!storage_->Query(
           "SELECT account_key=? AND accounting_version=1 "
           "FROM ledgers WHERE ledger_id=?",
           {Value(projection.account_key()), Value(storage_->ledger)},
-          {&match, 1}, &found))
+          {&match, 1}, &found)) {
     return DatabaseFailure();
-  if (found && match != 1)
+  }
+  if (found && match != 1) {
     return Fail(base::ErrorCode::kCorrupt, "archive ledger identity conflict");
-  if (!storage_->ReadProgress(out, false)) return DatabaseFailure();
+  }
+  if (!storage_->ReadProgress(out, false)) {
+    return DatabaseFailure();
+  }
   return {};
 #else
   (void)projection;
@@ -464,19 +507,27 @@ base::Status MysqlArchiveStore::GetProgress(
 base::Status MysqlArchiveStore::Begin(const ArchiveProjection& projection,
                                       MysqlArchiveProgress& out) noexcept {
 #if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
-  if (storage_ == nullptr || storage_->transaction)
+  if (storage_ == nullptr || storage_->transaction) {
     return Fail(base::ErrorCode::kInvalidState, "MySQL connection is not idle");
-  if (!storage_->Raw("START TRANSACTION")) return DatabaseFailure();
+  }
+  if (!storage_->Raw("START TRANSACTION")) {
+    return DatabaseFailure();
+  }
   storage_->transaction = true;
-  if (!storage_->Identity(projection, true)) return DatabaseFailure();
+  if (!storage_->Identity(projection, true)) {
+    return DatabaseFailure();
+  }
   if (!storage_->Query("INSERT INTO archive_progress (ledger_id,run_id,"
                        "baseline_installed,lsn,segment_no,segment_offset,"
                        "projection_version) VALUES (?,0,0,0,0,0,1)",
                        {Value(storage_->ledger)}) &&
-      storage_->error != 1062)
+      storage_->error != 1062) {
     return DatabaseFailure();
+  }
   MysqlArchiveProgress progress;
-  if (!storage_->ReadProgress(progress, true)) return DatabaseFailure();
+  if (!storage_->ReadProgress(progress, true)) {
+    return DatabaseFailure();
+  }
   storage_->progress = progress;
   storage_->pending_run = progress.cursor.stream_id;
   storage_->pending_lsn = progress.cursor.lsn;
@@ -487,13 +538,15 @@ base::Status MysqlArchiveStore::Begin(const ArchiveProjection& projection,
             "SELECT COALESCE(final_lsn,18446744073709551615) FROM archive_runs "
             "WHERE ledger_id=? AND run_id=?",
             {Value(storage_->ledger), Value(progress.cursor.stream_id)},
-            {&storage_->final_lsn, 1}, &found))
+            {&storage_->final_lsn, 1}, &found)) {
       return DatabaseFailure();
+    }
     if (!found || (storage_->final_lsn != UINT64_MAX &&
-                   storage_->final_lsn != progress.cursor.lsn))
+                   storage_->final_lsn != progress.cursor.lsn)) {
       return Fail(
           base::ErrorCode::kCorrupt,
           "archive run final boundary conflicts with committed progress");
+    }
   }
   out = progress;
   return {};
@@ -506,23 +559,25 @@ base::Status MysqlArchiveStore::Begin(const ArchiveProjection& projection,
 
 base::Status MysqlArchiveStore::InstallRun(std::span<const std::byte> baseline,
                                            const ArchiveProjection& projection,
-                                           std::uint64_t previous_run,
-                                           std::uint64_t previous_end,
+                                           uint64_t previous_run,
+                                           uint64_t previous_end,
                                            bool history_gap) noexcept {
 #if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
   if (storage_ == nullptr || !storage_->transaction ||
       projection.last_lsn() != 0 || projection.run_id() == 0 ||
       baseline.empty() || baseline.size() > kJournalMaxSnapshotBytes ||
       previous_run >= projection.run_id() ||
-      (previous_run == 0 && previous_end != 0))
+      (previous_run == 0 && previous_end != 0)) {
     return Fail(base::ErrorCode::kInvalidState,
                 "invalid archive baseline install");
+  }
   const auto& progress = storage_->progress;
   if (progress.exists && (progress.cursor.stream_id != previous_run ||
-                          progress.cursor.lsn != previous_end))
+                          progress.cursor.lsn != previous_end)) {
     return Fail(
         base::ErrorCode::kIoError,
         "archive predecessor progress changed; reload database progress", true);
+  }
   const auto ledger = Value(storage_->ledger);
   const auto run = Value(projection.run_id());
   if (progress.exists) {
@@ -532,17 +587,21 @@ base::Status MysqlArchiveStore::InstallRun(std::span<const std::byte> baseline,
             {Value(previous_end), ledger, Value(previous_run)}) ||
         !storage_->Query("UPDATE archive_runs SET final_lsn=? "
                          "WHERE ledger_id=? AND run_id=? AND final_lsn IS NULL",
-                         {Value(previous_end), ledger, Value(previous_run)}))
+                         {Value(previous_end), ledger, Value(previous_run)})) {
       return DatabaseFailure();
+    }
   }
-  if (!storage_->Exact("SELECT @@max_allowed_packet>=?",
-                       {Value(std::uint64_t(baseline.size() + 4096))}))
+  if (!storage_->Exact(
+          "SELECT @@max_allowed_packet>=?",
+          {Value(static_cast<uint64_t>(baseline.size() + 4096))})) {
     return DatabaseFailure();
-  if (!storage_->Query("INSERT INTO archive_runs (ledger_id,run_id,"
-                       "previous_run_id,previous_end_lsn,baseline_version,"
-                       "baseline,history_gap) VALUES (?,?,?,?,1,?,?)",
-                       {ledger, run, Value(previous_run), Value(previous_end),
-                        Value(baseline), Value(std::uint64_t(history_gap))})) {
+  }
+  if (!storage_->Query(
+          "INSERT INTO archive_runs (ledger_id,run_id,"
+          "previous_run_id,previous_end_lsn,baseline_version,"
+          "baseline,history_gap) VALUES (?,?,?,?,1,?,?)",
+          {ledger, run, Value(previous_run), Value(previous_end),
+           Value(baseline), Value(static_cast<uint64_t>(history_gap))})) {
     if (storage_->error != 1062 ||
         !storage_->Exact(
             "SELECT previous_run_id=? AND previous_end_lsn=? "
@@ -550,11 +609,12 @@ base::Status MysqlArchiveStore::InstallRun(std::span<const std::byte> baseline,
             "history_gap=? FROM archive_runs "
             "WHERE ledger_id=? AND run_id=?",
             {Value(previous_run), Value(previous_end), Value(baseline),
-             Value(std::uint64_t(history_gap)), ledger, run}))
+             Value(static_cast<uint64_t>(history_gap)), ledger, run})) {
       return DatabaseFailure();
+    }
   }
   if (history_gap) {
-    const std::uint64_t reason = progress.exists ? 2 : 1;
+    const uint64_t reason = progress.exists ? 2 : 1;
     const auto gap_run = previous_run == 0 ? Value() : Value(previous_run);
     const auto gap_end = previous_run == 0 ? Value() : Value(previous_end);
     if (!storage_->Query(
@@ -567,8 +627,9 @@ base::Status MysqlArchiveStore::InstallRun(std::span<const std::byte> baseline,
                            "(previous_end_lsn <=> ?) AND has_baseline=1 "
                            "FROM archive_gaps WHERE ledger_id=? AND run_id=? "
                            "AND gap_no=1",
-                           {Value(reason), gap_run, gap_end, ledger, run}))
+                           {Value(reason), gap_run, gap_end, ledger, run})) {
         return DatabaseFailure();
+      }
     }
   }
   storage_->pending_run = projection.run_id();
@@ -586,7 +647,7 @@ base::Status MysqlArchiveStore::InstallRun(std::span<const std::byte> baseline,
 }
 
 base::Status MysqlArchiveStore::AppendEvent(
-    std::uint16_t type, std::uint64_t lsn, std::span<const std::byte> payload,
+    uint16_t type, uint64_t lsn, std::span<const std::byte> payload,
     const ArchiveProjection& projection) noexcept {
 #if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
   if (storage_ == nullptr || !storage_->transaction ||
@@ -594,9 +655,10 @@ base::Status MysqlArchiveStore::AppendEvent(
       projection.last_lsn() != lsn || lsn == 0 ||
       storage_->pending_lsn == UINT64_MAX || lsn != storage_->pending_lsn + 1 ||
       lsn > storage_->final_lsn || type < 1 || type > 3 || payload.empty() ||
-      payload.size() > kJournalMaxPayloadBytes)
+      payload.size() > kJournalMaxPayloadBytes) {
     return Fail(base::ErrorCode::kCorrupt,
                 "archive event does not follow locked continuous progress");
+  }
   const auto ledger = Value(storage_->ledger);
   const auto run = Value(projection.run_id());
   const auto sequence = Value(lsn);
@@ -604,23 +666,24 @@ base::Status MysqlArchiveStore::AppendEvent(
           "INSERT INTO trade_events (ledger_id,run_id,lsn,"
           "record_type,encoding_version,payload,monotonic_time_ns) "
           "VALUES (?,?,?,?,1,?,?)",
-          {ledger, run, sequence, Value(std::uint64_t(type)), Value(payload),
-           Value(projection.last_record_time())})) {
+          {ledger, run, sequence, Value(static_cast<uint64_t>(type)),
+           Value(payload), Value(projection.last_record_time())})) {
     if (storage_->error != 1062 ||
         !storage_->Exact(
             "SELECT record_type=? AND encoding_version=1 AND "
             "payload=? AND monotonic_time_ns=? FROM trade_events "
             "WHERE ledger_id=? AND run_id=? AND lsn=?",
-            {Value(std::uint64_t(type)), Value(payload),
-             Value(projection.last_record_time()), ledger, run, sequence}))
+            {Value(static_cast<uint64_t>(type)), Value(payload),
+             Value(projection.last_record_time()), ledger, run, sequence})) {
       return DatabaseFailure();
+    }
   }
   if (projection.has_update()) {
     const auto& change = projection.last_update();
     const auto& update = change.update;
     std::array<std::byte, 144> reason;
     StateWriter writer(reason);
-    writer.U64(static_cast<std::uint64_t>(update.reason.code));
+    writer.U64(static_cast<uint64_t>(update.reason.code));
     writer.U64(update.reason.truncated ? 1 : 0);
     writer.Bytes(std::as_bytes(
         std::span(update.reason.view().data(), update.reason.view().size())));
@@ -632,12 +695,13 @@ base::Status MysqlArchiveStore::AppendEvent(
             "local_cancel_id,notify_order) VALUES "
             "(?,?,?,?,?,?,?,?,?,?,?,?)",
             {ledger, run, sequence, Value(change.session_id),
-             Value(change.local_order_id), Value(std::uint64_t(update.kind)),
-             Value(std::uint64_t(update.order.state)), Value(reason_bytes),
-             Value(update.order.cumulative_filled_qty),
+             Value(change.local_order_id),
+             Value(static_cast<uint64_t>(update.kind)),
+             Value(static_cast<uint64_t>(update.order.state)),
+             Value(reason_bytes), Value(update.order.cumulative_filled_qty),
              Value(update.order.report_sequence),
              Value(update.cancel_request_id.value),
-             Value(std::uint64_t(change.notify_order))})) {
+             Value(static_cast<uint64_t>(change.notify_order))})) {
       if (storage_->error != 1062 ||
           !storage_->Exact(
               "SELECT strategy_session_id=? AND local_order_id=? AND "
@@ -646,14 +710,15 @@ base::Status MysqlArchiveStore::AppendEvent(
               "local_cancel_id=? AND notify_order=? FROM order_updates "
               "WHERE ledger_id=? AND run_id=? AND lsn=?",
               {Value(change.session_id), Value(change.local_order_id),
-               Value(std::uint64_t(update.kind)),
-               Value(std::uint64_t(update.order.state)), Value(reason_bytes),
-               Value(update.order.cumulative_filled_qty),
+               Value(static_cast<uint64_t>(update.kind)),
+               Value(static_cast<uint64_t>(update.order.state)),
+               Value(reason_bytes), Value(update.order.cumulative_filled_qty),
                Value(update.order.report_sequence),
                Value(update.cancel_request_id.value),
-               Value(std::uint64_t(change.notify_order)), ledger, run,
-               sequence}))
+               Value(static_cast<uint64_t>(change.notify_order)), ledger, run,
+               sequence})) {
         return DatabaseFailure();
+      }
     }
   }
   storage_->pending_lsn = lsn;
@@ -676,20 +741,23 @@ base::Status MysqlArchiveStore::WriteProjection(
   const bool baseline =
       storage_->pending_run != storage_->progress.cursor.stream_id;
   for (const auto& session : projection.sessions()) {
-    if (session.session_id == 0) continue;
+    if (session.session_id == 0) {
+      continue;
+    }
     std::array<std::byte, 2048> metadata{};
     StateWriter writer(metadata);
     writer.U64(1);
     writer.U64(session.client_id);
     writer.U64(session.session_id);
     writer.U64(session.instrument_count);
-    for (std::size_t i = 0; i < session.instrument_count; ++i) {
+    for (size_t i = 0; i < session.instrument_count; ++i) {
       writer.U64(session.instruments[i].id.value);
       writer.U64(session.instruments[i].price_decimals);
     }
-    if (!writer.ok())
+    if (!writer.ok()) {
       return Fail(base::ErrorCode::kCorrupt,
                   "archive session metadata overflow");
+    }
     const auto bytes = Value(std::span(metadata).first(writer.size()));
     if (!storage_->Query("INSERT INTO strategy_sessions (ledger_id,"
                          "strategy_session_id,client_id,metadata) VALUES "
@@ -701,13 +769,15 @@ base::Status MysqlArchiveStore::WriteProjection(
                            "strategy_sessions WHERE ledger_id=? "
                            "AND strategy_session_id=?",
                            {Value(session.client_id), bytes, ledger,
-                            Value(session.session_id)}))
+                            Value(session.session_id)})) {
         return DatabaseFailure();
+      }
     }
   }
   for (const auto& order : projection.orders()) {
-    if (!baseline && order.source_lsn <= storage_->progress.cursor.lsn)
+    if (!baseline && order.source_lsn <= storage_->progress.cursor.lsn) {
       continue;
+    }
     const auto& value = order.snapshot;
     const auto core_namespace = CoreNamespace(order.core_id.value);
     const auto core =
@@ -716,7 +786,7 @@ base::Status MysqlArchiveStore::WriteProjection(
     // must match first, including when the core unique index caused a conflict.
     const auto session = Value(order.session_id);
     const auto local = Value(order.local_order_id);
-    std::uint64_t exists = 0;
+    uint64_t exists = 0;
     bool found = false;
     if (!storage_->Query("SELECT (core_order_id <=> ?) AND instrument_id=? AND "
                          "side=? AND position_effect=? AND limit_price=? AND "
@@ -724,15 +794,17 @@ base::Status MysqlArchiveStore::WriteProjection(
                          "WHERE ledger_id=? AND strategy_session_id=? "
                          "AND local_order_id=?",
                          {core, Value(value.instrument_id.value),
-                          Value(std::uint64_t(value.side)),
-                          Value(std::uint64_t(value.position_effect)),
+                          Value(static_cast<uint64_t>(value.side)),
+                          Value(static_cast<uint64_t>(value.position_effect)),
                           Value(value.limit_price), Value(value.original_qty),
                           ledger, session, local},
-                         {&exists, 1}, &found))
+                         {&exists, 1}, &found)) {
       return DatabaseFailure();
-    if (found && exists != 1)
+    }
+    if (found && exists != 1) {
       return Fail(base::ErrorCode::kCorrupt,
                   "archive order ownership conflict");
+    }
     if (!found && !storage_->Query(
                       "INSERT INTO orders (ledger_id,strategy_session_id,"
                       "local_order_id,core_order_id,instrument_id,side,"
@@ -747,22 +819,23 @@ base::Status MysqlArchiveStore::WriteProjection(
                        local,
                        core,
                        Value(value.instrument_id.value),
-                       Value(std::uint64_t(value.side)),
-                       Value(std::uint64_t(value.position_effect)),
+                       Value(static_cast<uint64_t>(value.side)),
+                       Value(static_cast<uint64_t>(value.position_effect)),
                        Value(value.limit_price),
                        Value(value.original_qty),
                        Value(value.cumulative_filled_qty),
                        Value(value.leaves_qty),
-                       Value(std::uint64_t(value.state)),
-                       Value(std::uint64_t(value.cancel_pending)),
+                       Value(static_cast<uint64_t>(value.state)),
+                       Value(static_cast<uint64_t>(value.cancel_pending)),
                        Value(order.local_cancel_id.value),
                        Value(order.report_sequence),
                        Value(core_namespace),
                        Value(value.broker_order_id.view()),
                        Value(value.receive_time_ns),
                        run,
-                       Value(order.source_lsn)}))
+                       Value(order.source_lsn)})) {
       return DatabaseFailure();
+    }
     if (found &&
         !storage_->Query(
             "UPDATE orders SET instrument_id=?,side=?,"
@@ -772,28 +845,34 @@ base::Status MysqlArchiveStore::WriteProjection(
             "broker_namespace=?,broker_order_id=?,receive_time_ns=?,"
             "source_run_id=?,source_lsn=? WHERE ledger_id=? "
             "AND strategy_session_id=? AND local_order_id=?",
-            {Value(value.instrument_id.value), Value(std::uint64_t(value.side)),
-             Value(std::uint64_t(value.position_effect)),
+            {Value(value.instrument_id.value),
+             Value(static_cast<uint64_t>(value.side)),
+             Value(static_cast<uint64_t>(value.position_effect)),
              Value(value.limit_price), Value(value.original_qty),
              Value(value.cumulative_filled_qty), Value(value.leaves_qty),
-             Value(std::uint64_t(value.state)),
-             Value(std::uint64_t(value.cancel_pending)),
+             Value(static_cast<uint64_t>(value.state)),
+             Value(static_cast<uint64_t>(value.cancel_pending)),
              Value(order.local_cancel_id.value), Value(order.report_sequence),
              Value(core_namespace), Value(value.broker_order_id.view()),
              Value(value.receive_time_ns), run, Value(order.source_lsn), ledger,
-             session, local}))
+             session, local})) {
       return DatabaseFailure();
+    }
   }
   const auto& trading = projection.trading();
-  for (std::size_t i = 0; i < trading.fill_count(); ++i) {
+  for (size_t i = 0; i < trading.fill_count(); ++i) {
     const auto source = projection.FillSourceLsn(i);
-    if (!baseline && source <= storage_->progress.cursor.lsn) continue;
+    if (!baseline && source <= storage_->progress.cursor.lsn) {
+      continue;
+    }
     model::Fill fill;
-    if (!trading.TryGetFillAt(i, fill))
+    if (!trading.TryGetFillAt(i, fill)) {
       return Fail(base::ErrorCode::kCorrupt, "archive fill projection missing");
+    }
     const auto* order = projection.FindOrder(fill.client_order_id);
-    if (order == nullptr)
+    if (order == nullptr) {
       return Fail(base::ErrorCode::kCorrupt, "archive fill has no order owner");
+    }
     // Mock execution IDs are unique within a durable core order. The binary
     // big-endian core identity is the complete namespace, without hashing.
     const auto namespace_bytes = CoreNamespace(fill.client_order_id.value);
@@ -809,11 +888,13 @@ base::Status MysqlArchiveStore::WriteProjection(
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             {ledger, name, execution, Value(order->session_id),
              Value(order->local_order_id), Value(fill.client_order_id.value),
-             Value(fill.instrument_id.value), Value(std::uint64_t(fill.side)),
-             Value(std::uint64_t(fill.position_effect)), Value(fill.price),
-             Value(fill.quantity), Value(fill.broker_order_id.view()), time,
+             Value(fill.instrument_id.value),
+             Value(static_cast<uint64_t>(fill.side)),
+             Value(static_cast<uint64_t>(fill.position_effect)),
+             Value(fill.price), Value(fill.quantity),
+             Value(fill.broker_order_id.view()), time,
              Value(fill.receive_time_ns), run, Value(source),
-             Value(std::uint64_t(baseline))})) {
+             Value(static_cast<uint64_t>(baseline))})) {
       // A baseline may rediscover an already archived fill with a different
       // source. Origin metadata remains immutable; business fields must match.
       if (storage_->error != 1062 ||
@@ -826,16 +907,20 @@ base::Status MysqlArchiveStore::WriteProjection(
               "AND execution_namespace=? AND execution_id=?",
               {Value(order->session_id), Value(order->local_order_id),
                Value(fill.client_order_id.value),
-               Value(fill.instrument_id.value), Value(std::uint64_t(fill.side)),
-               Value(std::uint64_t(fill.position_effect)), Value(fill.price),
-               Value(fill.quantity), Value(fill.broker_order_id.view()), time,
-               Value(fill.receive_time_ns), ledger, name, execution}))
+               Value(fill.instrument_id.value),
+               Value(static_cast<uint64_t>(fill.side)),
+               Value(static_cast<uint64_t>(fill.position_effect)),
+               Value(fill.price), Value(fill.quantity),
+               Value(fill.broker_order_id.view()), time,
+               Value(fill.receive_time_ns), ledger, name, execution})) {
         return DatabaseFailure();
+      }
     }
   }
   model::CashSnapshot cash;
-  if (!trading.TryGetCash(cash))
+  if (!trading.TryGetCash(cash)) {
     return Fail(base::ErrorCode::kCorrupt, "archive cash projection missing");
+  }
   if (!storage_->Query(
           "INSERT INTO account_cash (ledger_id,balance,available,"
           "reserved,source_run_id,source_lsn) VALUES (?,?,?,?,?,?) "
@@ -843,13 +928,15 @@ base::Status MysqlArchiveStore::WriteProjection(
           "reserved=?,source_run_id=?,source_lsn=?",
           {ledger, Value(cash.balance), Value(cash.available),
            Value(cash.reserved), run, sequence, Value(cash.balance),
-           Value(cash.available), Value(cash.reserved), run, sequence}))
+           Value(cash.available), Value(cash.reserved), run, sequence})) {
     return DatabaseFailure();
+  }
   // Replace positions atomically at every commit. Query state is bounded by
   // the immutable catalog; zero positions remain visible for known instruments.
   if (!storage_->Query("DELETE FROM account_positions WHERE ledger_id=?",
-                       {ledger}))
+                       {ledger})) {
     return DatabaseFailure();
+  }
   for (const auto& instrument : projection.instruments()) {
     model::PositionSnapshot position;
     if (!trading.TryGetPosition(instrument.id, position)) {
@@ -865,8 +952,9 @@ base::Status MysqlArchiveStore::WriteProjection(
              Value(position.reserved_qty),
              Value(position.total_qty - position.available_qty -
                    position.reserved_qty),
-             run, sequence}))
+             run, sequence})) {
       return DatabaseFailure();
+    }
   }
   return {};
 #else
@@ -876,13 +964,15 @@ base::Status MysqlArchiveStore::WriteProjection(
 }
 
 base::Status MysqlArchiveStore::FinalizeRun(const ArchiveProjection& projection,
-                                            std::uint64_t final_lsn) noexcept {
+                                            uint64_t final_lsn) noexcept {
 #if defined(YQUANT_WITH_MYSQL) && YQUANT_WITH_MYSQL
   if (storage_ == nullptr || !storage_->transaction ||
       projection.run_id() != storage_->pending_run ||
-      projection.last_lsn() != final_lsn || final_lsn != storage_->pending_lsn)
+      projection.last_lsn() != final_lsn ||
+      final_lsn != storage_->pending_lsn) {
     return Fail(base::ErrorCode::kInvalidState,
                 "archive final boundary mismatch");
+  }
   if (!storage_->Exact(
           "SELECT final_lsn IS NULL OR final_lsn=? FROM archive_runs "
           "WHERE ledger_id=? AND run_id=?",
@@ -892,8 +982,9 @@ base::Status MysqlArchiveStore::FinalizeRun(const ArchiveProjection& projection,
           "UPDATE archive_runs SET final_lsn=? WHERE ledger_id=? AND run_id=? "
           "AND final_lsn IS NULL",
           {Value(final_lsn), Value(storage_->ledger),
-           Value(projection.run_id())}))
+           Value(projection.run_id())})) {
     return DatabaseFailure();
+  }
   return {};
 #else
   (void)projection;
@@ -909,18 +1000,22 @@ base::Status MysqlArchiveStore::Commit(
       cursor.stream_id != storage_->pending_run ||
       cursor.lsn != storage_->pending_lsn ||
       projection.run_id() != cursor.stream_id ||
-      projection.last_lsn() != cursor.lsn)
+      projection.last_lsn() != cursor.lsn) {
     return Fail(base::ErrorCode::kInvalidState,
                 "archive commit cursor mismatch");
+  }
   auto status = WriteProjection(projection);
-  if (!status.ok()) return status;
+  if (!status.ok()) {
+    return status;
+  }
   if (!storage_->Query(
           "UPDATE archive_progress SET run_id=?,"
           "baseline_installed=1,lsn=?,segment_no=?,segment_offset=?,"
           "projection_version=1 WHERE ledger_id=?",
           {Value(cursor.stream_id), Value(cursor.lsn), Value(cursor.segment),
-           Value(cursor.offset), Value(storage_->ledger)}))
+           Value(cursor.offset), Value(storage_->ledger)})) {
     return DatabaseFailure();
+  }
   if (!storage_->Raw("COMMIT")) {
     // The server may have committed before the reply was lost. Never infer a
     // rollback from this failure or advance an in-memory acknowledgment.

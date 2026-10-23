@@ -1,7 +1,7 @@
 #ifndef YQUANT_TRADING_TRADING_CONFIG_H_
 #define YQUANT_TRADING_TRADING_CONFIG_H_
 
-#include <cstdint>
+#include <stdint.h>
 
 #include "yquant/base/config_error.h"
 #include "yquant/base/status.h"
@@ -18,12 +18,12 @@ enum class TradingAdapterKind { kMock, kSimulatedFutures, kCtp };
 // external trading account remain in the bridge process's environment.
 struct CtpTradingConfig {
   char address[16] = "127.0.0.1";
-  std::uint16_t port = 0;
+  uint16_t port = 0;
   char token[kMaxTokenBytes + 1] = {};
   // Account initialization runs rate-limited SDK queries on the cold path.
-  std::uint64_t connect_timeout_ns =
+  uint64_t connect_timeout_ns =
       kMaximumTradingDurationMs * kTradingNanosecondsPerMillisecond;
-  std::uint64_t heartbeat_timeout_ns = kDefaultTradingTimeoutNs;
+  uint64_t heartbeat_timeout_ns = kDefaultTradingTimeoutNs;
 };
 
 // Gateway-owned broker/account configuration. Strategy clients use the separate
@@ -31,8 +31,8 @@ struct CtpTradingConfig {
 struct TradingConfig {
   TradingAdapterKind adapter = TradingAdapterKind::kMock;
   MockTradingMode mode = MockTradingMode::kFill;
-  std::uint64_t report_interval_ns = kTradingNanosecondsPerMillisecond;
-  std::uint64_t shutdown_timeout_ns = kDefaultTradingTimeoutNs;
+  uint64_t report_interval_ns = kTradingNanosecondsPerMillisecond;
+  uint64_t shutdown_timeout_ns = kDefaultTradingTimeoutNs;
   TradingAccountSnapshot initial_account;
   CtpTradingConfig ctp;
 };
@@ -47,6 +47,10 @@ struct TradingConfig {
 // Main-thread strict JSON loader. Retains only typed values and diagnostics.
 class TradingConfigLoader {
  public:
+  TradingConfigLoader() = default;
+  TradingConfigLoader(const TradingConfigLoader&) = default;
+  TradingConfigLoader& operator=(const TradingConfigLoader&) = default;
+
   // Replaces previous values; failure resets config() to defaults and owns its
   // diagnostic until the next Load. path is borrowed only during this call.
   [[nodiscard]] base::Status Load(const char* path) noexcept;

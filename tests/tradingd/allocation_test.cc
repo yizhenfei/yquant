@@ -1,36 +1,43 @@
+#include <stddef.h>
+#include <stdint.h>
+
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
-#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <new>
+#include <system_error>
 #include <thread>
 #include <utility>
 
+#include "file_test_support.h"
 #include "gtest/gtest.h"
 #include "tradingd/journal.h"
 #include "tradingd/server.h"
+#include "yquant/base/format.h"
 #include "yquant/trading/connection.h"
 
 namespace {
 
 struct CppHeapActivity {
-  std::size_t allocation_calls = 0;
-  std::size_t deallocation_calls = 0;
+  size_t allocation_calls = 0;
+  size_t deallocation_calls = 0;
 };
 
-thread_local bool g_track_cpp_heap = false;
-thread_local CppHeapActivity g_cpp_heap_activity;
+constinit thread_local bool g_track_cpp_heap = false;
+constinit thread_local CppHeapActivity g_cpp_heap_activity;
 
 // Counts replacement C++ allocation functions on the observed owning thread.
 // Direct malloc/free and OS mappings are outside this counter's scope.
-void* AllocateCppHeap(std::size_t size, std::size_t alignment,
+void* AllocateCppHeap(size_t size, size_t alignment,
                       bool abort_on_failure) noexcept {
-  if (g_track_cpp_heap) ++g_cpp_heap_activity.allocation_calls;
-  size = std::max<std::size_t>(size, 1);
+  if (g_track_cpp_heap) {
+    ++g_cpp_heap_activity.allocation_calls;
+  }
+  size = std::max<size_t>(size, 1);
   void* result = nullptr;
   if (alignment == 0) {
     result = std::malloc(size);
@@ -38,12 +45,16 @@ void* AllocateCppHeap(std::size_t size, std::size_t alignment,
                             size) != 0) {
     result = nullptr;
   }
-  if (result == nullptr && abort_on_failure) std::abort();
+  if (result == nullptr && abort_on_failure) {
+    std::abort();
+  }
   return result;
 }
 
 void DeallocateCppHeap(void* memory) noexcept {
-  if (g_track_cpp_heap) ++g_cpp_heap_activity.deallocation_calls;
+  if (g_track_cpp_heap) {
+    ++g_cpp_heap_activity.deallocation_calls;
+  }
   std::free(memory);
 }
 
@@ -58,36 +69,34 @@ CppHeapActivity ObserveCppHeap(Action&& action) noexcept {
 
 }  // namespace
 
-void* operator new(std::size_t size) { return AllocateCppHeap(size, 0, true); }
-void* operator new[](std::size_t size) {
-  return AllocateCppHeap(size, 0, true);
-}
-void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
+void* operator new(size_t size) { return AllocateCppHeap(size, 0, true); }
+void* operator new[](size_t size) { return AllocateCppHeap(size, 0, true); }
+void* operator new(size_t size, const std::nothrow_t&) noexcept {
   return AllocateCppHeap(size, 0, false);
 }
-void* operator new[](std::size_t size, const std::nothrow_t&) noexcept {
+void* operator new[](size_t size, const std::nothrow_t&) noexcept {
   return AllocateCppHeap(size, 0, false);
 }
-void* operator new(std::size_t size, std::align_val_t alignment) {
-  return AllocateCppHeap(size, static_cast<std::size_t>(alignment), true);
+void* operator new(size_t size, std::align_val_t alignment) {
+  return AllocateCppHeap(size, static_cast<size_t>(alignment), true);
 }
-void* operator new[](std::size_t size, std::align_val_t alignment) {
-  return AllocateCppHeap(size, static_cast<std::size_t>(alignment), true);
+void* operator new[](size_t size, std::align_val_t alignment) {
+  return AllocateCppHeap(size, static_cast<size_t>(alignment), true);
 }
-void* operator new(std::size_t size, std::align_val_t alignment,
+void* operator new(size_t size, std::align_val_t alignment,
                    const std::nothrow_t&) noexcept {
-  return AllocateCppHeap(size, static_cast<std::size_t>(alignment), false);
+  return AllocateCppHeap(size, static_cast<size_t>(alignment), false);
 }
-void* operator new[](std::size_t size, std::align_val_t alignment,
+void* operator new[](size_t size, std::align_val_t alignment,
                      const std::nothrow_t&) noexcept {
-  return AllocateCppHeap(size, static_cast<std::size_t>(alignment), false);
+  return AllocateCppHeap(size, static_cast<size_t>(alignment), false);
 }
 void operator delete(void* memory) noexcept { DeallocateCppHeap(memory); }
 void operator delete[](void* memory) noexcept { DeallocateCppHeap(memory); }
-void operator delete(void* memory, std::size_t) noexcept {
+void operator delete(void* memory, size_t) noexcept {
   DeallocateCppHeap(memory);
 }
-void operator delete[](void* memory, std::size_t) noexcept {
+void operator delete[](void* memory, size_t) noexcept {
   DeallocateCppHeap(memory);
 }
 void operator delete(void* memory, const std::nothrow_t&) noexcept {
@@ -102,10 +111,10 @@ void operator delete(void* memory, std::align_val_t) noexcept {
 void operator delete[](void* memory, std::align_val_t) noexcept {
   DeallocateCppHeap(memory);
 }
-void operator delete(void* memory, std::size_t, std::align_val_t) noexcept {
+void operator delete(void* memory, size_t, std::align_val_t) noexcept {
   DeallocateCppHeap(memory);
 }
-void operator delete[](void* memory, std::size_t, std::align_val_t) noexcept {
+void operator delete[](void* memory, size_t, std::align_val_t) noexcept {
   DeallocateCppHeap(memory);
 }
 void operator delete(void* memory, std::align_val_t,
@@ -122,13 +131,13 @@ namespace {
 
 class TestClock final : public base::MonotonicClock {
  public:
-  std::uint64_t Now() const noexcept override { return now; }
-  std::uint64_t now = 1000000;
+  uint64_t Now() const noexcept override { return now; }
+  uint64_t now = 1000000;
 };
 
 struct Observation {
-  std::uint64_t generation = 0;
-  std::uint64_t previous_revision = 0;
+  uint64_t generation = 0;
+  uint64_t previous_revision = 0;
   bool saw_account = false;
   bool saw_accepted = false;
   bool saw_fill = false;
@@ -144,8 +153,9 @@ struct Observation {
 // GoogleTest or grows a container while allocation tracking is enabled.
 void Capture(const trading::Message& message,
              Observation& observation) noexcept {
-  if (message.type == trading::MessageType::kWelcome)
+  if (message.type == trading::MessageType::kWelcome) {
     observation.generation = message.generation;
+  }
   if (message.type == trading::MessageType::kWelcome ||
       message.type == trading::MessageType::kAccount ||
       message.type == trading::MessageType::kOrderUpdate) {
@@ -154,11 +164,15 @@ void Capture(const trading::Message& message,
     observation.previous_revision = message.account.revision;
     observation.account = message.account;
   }
-  if (message.type == trading::MessageType::kAccount)
+  if (message.type == trading::MessageType::kAccount) {
     observation.saw_account = true;
-  if (message.type != trading::MessageType::kOrderUpdate) return;
-  if (message.update.kind == model::OrderUpdateKind::kAccepted)
+  }
+  if (message.type != trading::MessageType::kOrderUpdate) {
+    return;
+  }
+  if (message.update.kind == model::OrderUpdateKind::kAccepted) {
     observation.saw_accepted = true;
+  }
   if (message.has_fill) {
     observation.saw_fill = true;
     observation.fill = message.fill;
@@ -174,15 +188,21 @@ void Capture(const trading::Message& message,
 // counter sees encoding, kernel I/O, account changes and complete decoding.
 const char* Cycle(Server& server, trading::Connection& client,
                   const TestClock& clock, Observation& observation) noexcept {
-  if (!client.Service().ok()) return "client service failed";
-  if (!server.Service(clock.now).ok()) return "server service failed";
-  for (std::size_t count = 0; count < trading::kConnectionQueueFrames;
-       ++count) {
+  if (!client.Service().ok()) {
+    return "client service failed";
+  }
+  if (!server.Service(clock.now).ok()) {
+    return "server service failed";
+  }
+  for (size_t count = 0; count < trading::kConnectionQueueFrames; ++count) {
     trading::Message message;
     const auto result = client.Poll(message);
-    if (result.state == trading::ReceiveState::kIdle) break;
-    if (result.state != trading::ReceiveState::kMessage)
+    if (result.state == trading::ReceiveState::kIdle) {
+      break;
+    }
+    if (result.state != trading::ReceiveState::kMessage) {
       return "client receive failed";
+    }
     Capture(message, observation);
   }
   return nullptr;
@@ -195,10 +215,12 @@ const char* PumpUntil(Server& server, trading::Connection& client,
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(2);
   while (!done()) {
-    if (const auto* failure = Cycle(server, client, clock, observation))
+    if (const auto* failure = Cycle(server, client, clock, observation)) {
       return failure;
-    if (std::chrono::steady_clock::now() >= deadline)
+    }
+    if (std::chrono::steady_clock::now() >= deadline) {
       return "message deadline expired";
+    }
     std::this_thread::yield();
   }
   return nullptr;
@@ -215,31 +237,39 @@ const char* Exercise(Server& server, trading::Connection& client,
   order.generation = observation.generation;
   order.order_id = {1};
   order.request = {instrument, model::OrderSide::kBuy, 1000, 10};
-  if (!client.Queue(order).ok()) return "order queue failed";
+  if (!client.Queue(order).ok()) {
+    return "order queue failed";
+  }
   if (const auto* failure = PumpUntil(server, client, clock, observation, [&] {
         return observation.account.revision >= 2;
-      }))
+      })) {
     return failure;
+  }
   clock.now += 1000000;
-  if (const auto* failure = PumpUntil(server, client, clock, observation,
-                                      [&] { return observation.saw_accepted; }))
+  if (const auto* failure = PumpUntil(server, client, clock, observation, [&] {
+        return observation.saw_accepted;
+      })) {
     return failure;
+  }
   clock.now += 500000;
   trading::Message cancel;
   cancel.type = trading::MessageType::kCancelOrder;
   cancel.generation = observation.generation;
   cancel.order_id = {1};
   cancel.cancel_id = {1};
-  if (!client.Queue(cancel).ok()) return "cancel queue failed";
-  for (std::size_t count = 0; count < trading::kConnectionQueueFrames;
-       ++count) {
-    if (const auto* failure = Cycle(server, client, clock, observation))
+  if (!client.Queue(cancel).ok()) {
+    return "cancel queue failed";
+  }
+  for (size_t count = 0; count < trading::kConnectionQueueFrames; ++count) {
+    if (const auto* failure = Cycle(server, client, clock, observation)) {
       return failure;
+    }
   }
   clock.now += 500000;
   if (const auto* failure = PumpUntil(server, client, clock, observation,
-                                      [&] { return observation.saw_fill; }))
+                                      [&] { return observation.saw_fill; })) {
     return failure;
+  }
   clock.now += 500000;
   return PumpUntil(server, client, clock, observation,
                    [&] { return observation.saw_canceled; });
@@ -257,7 +287,9 @@ TEST(TradingdCppHeapCounter, CountsAllReplacementAllocationForms) {
     pointers[5] = ::operator new[](16, std::align_val_t{128});
     pointers[6] = ::operator new(16, std::align_val_t{128}, std::nothrow);
     pointers[7] = ::operator new[](16, std::align_val_t{128}, std::nothrow);
-    for (const auto pointer : pointers) succeeded &= pointer != nullptr;
+    for (const auto pointer : pointers) {
+      succeeded &= pointer != nullptr;
+    }
     ::operator delete(pointers[0]);
     ::operator delete[](pointers[1]);
     ::operator delete(pointers[2], std::nothrow);
@@ -276,13 +308,18 @@ TEST(TradingdCppHeapCounter, CountsAllReplacementAllocationForms) {
 // and segment preparation finish before observing the owning thread.
 void CheckEstablishedTradingHeap(bool persistent) {
   char directory[] = "/tmp/yquant-persistent-allocation-XXXXXX";
-  if (persistent) ASSERT_NE(mkdtemp(directory), nullptr);
+  if (persistent) {
+    ASSERT_NE(mkdtemp(directory), nullptr);
+  }
   struct Cleanup {
     const char* path;
     bool enabled;
     ~Cleanup() {
       std::error_code error;
-      if (enabled) std::filesystem::remove_all(path, error);
+      if (enabled) {
+        ::yquant::testing::files::RemoveTree(
+            ::yquant::testing::files::FilePath(path), error);
+      }
     }
   } cleanup{directory, persistent};
   TestClock clock;
@@ -303,11 +340,12 @@ void CheckEstablishedTradingHeap(bool persistent) {
   config.trading.report_interval_ns = 1000000;
   config.trading.initial_account.cash_balance = 1000000000;
   if (persistent) {
-    std::snprintf(config.persistence.directory,
-                  sizeof(config.persistence.directory), "%s", directory);
-    std::snprintf(config.persistence.account_key,
-                  sizeof(config.persistence.account_key), "%s",
-                  "simulation/allocation/CNY");
+    ::yquant::base::FormatTo(config.persistence.directory,
+                             sizeof(config.persistence.directory), "{}",
+                             directory);
+    ::yquant::base::FormatTo(config.persistence.account_key,
+                             sizeof(config.persistence.account_key), "{}",
+                             "simulation/allocation/CNY");
     config.persistence.initialize = true;
     config.persistence.wal_segment_bytes = kMinWalSegmentBytes;
   }
@@ -369,7 +407,8 @@ TEST(TradingdCppHeap, JournalAppendAndRotationHaveNoCppHeapActivity) {
     const char* path;
     ~DirectoryCleanup() {
       std::error_code error;
-      std::filesystem::remove_all(path, error);
+      ::yquant::testing::files::RemoveTree(
+          ::yquant::testing::files::FilePath(path), error);
     }
   } cleanup{directory};
   Journal journal;
@@ -380,12 +419,14 @@ TEST(TradingdCppHeap, JournalAppendAndRotationHaveNoCppHeapActivity) {
   ASSERT_TRUE(journal.Acquire(options).ok());
   ASSERT_TRUE(journal.Start(1).ok());
   std::array<std::byte, kJournalMaxPayloadBytes> payload{};
-  std::uint64_t lsn = 0;
+  uint64_t lsn = 0;
   base::Status status;
   const auto activity = ObserveCppHeap([&]() noexcept {
     for (unsigned i = 0; i < 8; ++i) {
       status = journal.TryAppend(7, payload, lsn);
-      if (!status.ok()) break;
+      if (!status.ok()) {
+        break;
+      }
     }
   });
   EXPECT_TRUE(status.ok()) << journal.error_detail();

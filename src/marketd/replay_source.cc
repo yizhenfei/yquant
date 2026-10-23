@@ -1,5 +1,8 @@
 #include "marketd/replay_source.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -9,6 +12,7 @@
 
 #include "marketd/csv_replay.h"
 #include "marketd/recording.h"
+#include "yquant/base/format.h"
 
 namespace yquant::marketd {
 
@@ -46,27 +50,29 @@ base::Status ReplaySource::Init(const ReplayConfig& config) noexcept {
   }
   if (!status.ok()) {
     failure_ = status;
-    if (error_detail_[0] == '\0')
-      std::snprintf(error_detail_, sizeof(error_detail_),
-                    "cannot load replay input");
+    if (error_detail_[0] == '\0') {
+      ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_),
+                               "cannot load replay input");
+    }
     return status;
   }
 
   // Comparing to 2^64 remains safe when long double has only double precision;
   // converting UINT64_MAX to that type may round up to the same boundary.
   const long double limit =
-      std::ldexp(1.0L, std::numeric_limits<std::uint64_t>::digits);
-  for (std::size_t i = 0; i < loaded.size(); ++i) {
+      std::ldexp(1.0L, std::numeric_limits<uint64_t>::digits);
+  for (size_t i = 0; i < loaded.size(); ++i) {
     if (config.speed == 0) {
       loaded[i].offset_ns = 0;
     } else if (config.speed != 1) {
       const long double scaled =
           static_cast<long double>(loaded[i].offset_ns) / config.speed;
-      if (!std::isfinite(scaled) || scaled >= limit)
+      if (!std::isfinite(scaled) || scaled >= limit) {
         return Fail({base::ErrorCode::kInvalidArgument, {}},
                     "scaled replay duration exceeds the clock range")
             .status;
-      loaded[i].offset_ns = static_cast<std::uint64_t>(scaled);
+      }
+      loaded[i].offset_ns = static_cast<uint64_t>(scaled);
     }
   }
   data_ = std::move(loaded);
@@ -79,17 +85,22 @@ PollResult ReplaySource::Fail(base::Status status,
                               const char* detail) noexcept {
   if (failure_.ok()) {
     failure_ = status;
-    std::snprintf(error_detail_, sizeof(error_detail_), "%s", detail);
+    ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_), "{}",
+                             detail);
   }
   return {PollState::kError, failure_};
 }
 
-PollResult ReplaySource::Poll(std::uint64_t now,
-                              model::QuoteTick& out) noexcept {
-  if (!failure_.ok()) return {PollState::kError, failure_};
-  if (!active_)
+PollResult ReplaySource::Poll(uint64_t now, model::QuoteTick& out) noexcept {
+  if (!failure_.ok()) {
+    return {PollState::kError, failure_};
+  }
+  if (!active_) {
     return Fail({base::ErrorCode::kInvalidState, {}}, "replay input is closed");
-  if (index_ == data_.size()) return {PollState::kEnd, {}};
+  }
+  if (index_ == data_.size()) {
+    return {PollState::kEnd, {}};
+  }
   if (!started_) {
     start_time_ = now;
     last_time_ = now;
@@ -102,8 +113,9 @@ PollResult ReplaySource::Poll(std::uint64_t now,
   // Separate subtractions avoid overflowing start + delay + offset.
   const auto elapsed = now - start_time_;
   if (elapsed < start_delay_ ||
-      elapsed - start_delay_ < data_[index_].offset_ns)
+      elapsed - start_delay_ < data_[index_].offset_ns) {
     return {};
+  }
   out = data_[index_++].quote;
   out.receive_time_ns = now;
   return {PollState::kEvent, {}};

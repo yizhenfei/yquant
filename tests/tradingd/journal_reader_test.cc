@@ -1,22 +1,26 @@
 #include <fcntl.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <unistd.h>
 
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
-#include <filesystem>
+#include <span>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
+#include "file_test_support.h"
 #include "gtest/gtest.h"
 #include "tradingd/journal.h"
+#include "yquant/base/format.h"
 
 namespace yquant::tradingd {
 namespace {
-
-using namespace std::chrono_literals;
 
 class JournalReaderTest : public ::testing::Test {
  protected:
@@ -31,14 +35,15 @@ class JournalReaderTest : public ::testing::Test {
 
   void TearDown() override {
     std::error_code error;
-    std::filesystem::remove_all(directory_, error);
+    ::yquant::testing::files::RemoveTree(
+        ::yquant::testing::files::FilePath(directory_), error);
     EXPECT_FALSE(error);
   }
 
   std::string Segment(unsigned sequence = 0) const {
     char suffix[128];
-    std::snprintf(suffix, sizeof(suffix), "/stream-%020u/segment-%020u.wal", 1U,
-                  sequence);
+    ::yquant::base::FormatTo(suffix, sizeof(suffix),
+                             "/stream-{:020}/segment-{:020}.wal", 1U, sequence);
     return directory_ + suffix;
   }
 
@@ -50,12 +55,12 @@ class JournalReaderTest : public ::testing::Test {
     EXPECT_EQ(::close(fd), 0);
   }
 
-  static base::Status Collect(void* context, std::uint16_t type,
-                              std::uint64_t lsn,
+  static base::Status Collect(void* context, uint16_t type, uint64_t lsn,
                               std::span<const std::byte> payload) noexcept {
-    if (type != 7 || payload.empty() || payload.front() != std::byte{3})
+    if (type != 7 || payload.empty() || payload.front() != std::byte{3}) {
       return {base::ErrorCode::kCorrupt, {}};
-    auto& records = *static_cast<std::vector<std::uint64_t>*>(context);
+    }
+    auto& records = *static_cast<std::vector<uint64_t>*>(context);
     records.push_back(lsn);
     return {};
   }
@@ -77,16 +82,17 @@ TEST_F(JournalReaderTest, StopsAtBoundAndResumesWhileWriterRetainsLock) {
   ASSERT_TRUE(journal.Acquire(options_).ok());
   ASSERT_TRUE(journal.Start(1).ok());
   const std::array payload{std::byte{3}};
-  std::uint64_t lsn = 0;
-  for (unsigned i = 0; i < 3; ++i)
+  uint64_t lsn = 0;
+  for (unsigned i = 0; i < 3; ++i) {
     ASSERT_TRUE(journal.TryAppend(7, payload, lsn).ok());
+  }
   ASSERT_TRUE(journal.Flush().ok());
 
   auto cursor = JournalStartCursor(1);
-  std::vector<std::uint64_t> records;
+  std::vector<uint64_t> records;
   ASSERT_TRUE(
       ScanJournal(directory_.c_str(), cursor, 2, Collect, &records).ok());
-  EXPECT_EQ(records, (std::vector<std::uint64_t>{1, 2}));
+  EXPECT_EQ(records, (std::vector<uint64_t>{1, 2}));
   EXPECT_EQ(cursor.segment, 0);
   EXPECT_EQ(cursor.offset, 64 + 2 * 56);
   EXPECT_EQ(cursor.lsn, 2);
@@ -96,7 +102,7 @@ TEST_F(JournalReaderTest, StopsAtBoundAndResumesWhileWriterRetainsLock) {
   ExpectCursor(cursor, at_two);
   ASSERT_TRUE(
       ScanJournal(directory_.c_str(), cursor, 3, Collect, &records).ok());
-  EXPECT_EQ(records, (std::vector<std::uint64_t>{1, 2, 3}));
+  EXPECT_EQ(records, (std::vector<uint64_t>{1, 2, 3}));
   EXPECT_EQ(cursor.lsn, 3);
   EXPECT_TRUE(journal.Close().ok());
 }
@@ -106,21 +112,22 @@ TEST_F(JournalReaderTest, DamagedRecordBeyondBoundDoesNotAffectEarlierBatch) {
   ASSERT_TRUE(journal.Acquire(options_).ok());
   ASSERT_TRUE(journal.Start(1).ok());
   const std::array payload{std::byte{3}};
-  std::uint64_t lsn = 0;
-  for (unsigned i = 0; i < 3; ++i)
+  uint64_t lsn = 0;
+  for (unsigned i = 0; i < 3; ++i) {
     ASSERT_TRUE(journal.TryAppend(7, payload, lsn).ok());
+  }
   ASSERT_TRUE(journal.Close().ok());
   ChangeByte(Segment(), 64 + 56 + 40);
 
   auto cursor = JournalStartCursor(1);
-  std::vector<std::uint64_t> records;
+  std::vector<uint64_t> records;
   ASSERT_TRUE(
       ScanJournal(directory_.c_str(), cursor, 1, Collect, &records).ok());
   const auto at_one = cursor;
   EXPECT_EQ(ScanJournal(directory_.c_str(), cursor, 3, Collect, &records).code,
             base::ErrorCode::kCorrupt);
   ExpectCursor(cursor, at_one);
-  EXPECT_EQ(records, (std::vector<std::uint64_t>{1}));
+  EXPECT_EQ(records, (std::vector<uint64_t>{1}));
 
   JournalReplayResult result;
   ASSERT_TRUE(ProbeJournal(directory_.c_str(), 1, result).ok());
@@ -136,19 +143,21 @@ TEST_F(JournalReaderTest,
   ASSERT_TRUE(journal.Start(1).ok());
   std::array<std::byte, kJournalMaxPayloadBytes> payload{};
   payload.front() = std::byte{3};
-  std::uint64_t lsn = 0;
-  for (unsigned i = 0; i < 4; ++i)
+  uint64_t lsn = 0;
+  for (unsigned i = 0; i < 4; ++i) {
     ASSERT_TRUE(journal.TryAppend(7, payload, lsn).ok());
+  }
   ASSERT_TRUE(journal.Close().ok());
-  ASSERT_TRUE(std::filesystem::remove(Segment(1)));
+  ASSERT_TRUE(::yquant::testing::files::RemoveFile(
+      ::yquant::testing::files::FilePath(Segment(1))));
 
   auto cursor = JournalStartCursor(1);
   const auto start = cursor;
-  std::vector<std::uint64_t> records;
+  std::vector<uint64_t> records;
   EXPECT_EQ(ScanJournal(directory_.c_str(), cursor, 4, Collect, &records).code,
             base::ErrorCode::kCorrupt);
   ExpectCursor(cursor, start);
-  EXPECT_EQ(records, (std::vector<std::uint64_t>{1, 2, 3}));
+  EXPECT_EQ(records, (std::vector<uint64_t>{1, 2, 3}));
   JournalReplayResult result;
   ASSERT_TRUE(ProbeJournal(directory_.c_str(), 1, result).ok());
   EXPECT_EQ(result.last_lsn, 3);
@@ -160,9 +169,10 @@ TEST_F(JournalReaderTest, ValidCrcDoesNotAllowAnLsnGap) {
   ASSERT_TRUE(journal.Acquire(options_).ok());
   ASSERT_TRUE(journal.Start(1).ok());
   const std::array payload{std::byte{3}};
-  std::uint64_t lsn = 0;
-  for (unsigned i = 0; i < 3; ++i)
+  uint64_t lsn = 0;
+  for (unsigned i = 0; i < 3; ++i) {
     ASSERT_TRUE(journal.TryAppend(7, payload, lsn).ok());
+  }
   ASSERT_TRUE(journal.Close().ok());
   const int fd = ::open(Segment().c_str(), O_RDWR);
   ASSERT_GE(fd, 0);
@@ -173,11 +183,11 @@ TEST_F(JournalReaderTest, ValidCrcDoesNotAllowAnLsnGap) {
 
   auto cursor = JournalStartCursor(1);
   const auto start = cursor;
-  std::vector<std::uint64_t> records;
+  std::vector<uint64_t> records;
   EXPECT_EQ(ScanJournal(directory_.c_str(), cursor, 3, Collect, &records).code,
             base::ErrorCode::kCorrupt);
   ExpectCursor(cursor, start);
-  EXPECT_EQ(records, (std::vector<std::uint64_t>{1}));
+  EXPECT_EQ(records, (std::vector<uint64_t>{1}));
 }
 
 TEST_F(JournalReaderTest,
@@ -200,12 +210,12 @@ TEST_F(JournalReaderTest, CallbackFailureLeavesCursorAtPreviousCommittedBatch) {
   ASSERT_TRUE(journal.Acquire(options_).ok());
   ASSERT_TRUE(journal.Start(1).ok());
   const std::array payload{std::byte{3}};
-  std::uint64_t lsn = 0;
+  uint64_t lsn = 0;
   ASSERT_TRUE(journal.TryAppend(7, payload, lsn).ok());
   ASSERT_TRUE(journal.Flush().ok());
   auto cursor = JournalStartCursor(1);
   const auto start = cursor;
-  const auto reject = [](void*, std::uint16_t, std::uint64_t,
+  const auto reject = [](void*, uint16_t, uint64_t,
                          std::span<const std::byte>) noexcept -> base::Status {
     return {base::ErrorCode::kIoError, {}};
   };
@@ -220,7 +230,7 @@ TEST_F(JournalReaderTest, ReadsStableDurablePrefixesDuringAppendAndRotation) {
   ASSERT_TRUE(journal.Acquire(options_).ok());
   ASSERT_TRUE(journal.Start(1).ok());
   std::atomic<bool> finished{false};
-  std::vector<std::uint64_t> records;
+  std::vector<uint64_t> records;
   auto cursor = JournalStartCursor(1);
   base::Status scan_status;
   std::thread reader([&] {
@@ -230,26 +240,37 @@ TEST_F(JournalReaderTest, ReadsStableDurablePrefixesDuringAppendAndRotation) {
       if (target > cursor.lsn) {
         scan_status =
             ScanJournal(directory_.c_str(), cursor, target, Collect, &records);
-        if (!scan_status.ok()) return;
+        if (!scan_status.ok()) {
+          return;
+        }
       }
-      if (done && cursor.lsn == journal.durable_lsn()) return;
+      if (done && cursor.lsn == journal.durable_lsn()) {
+        return;
+      }
       std::this_thread::yield();
     }
   });
   std::array<std::byte, 4096> payload{};
   payload.front() = std::byte{3};
-  std::uint64_t lsn = 0;
+  uint64_t lsn = 0;
   for (unsigned i = 0; i < 120; ++i) {
-    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
     base::Status status;
     do {
       status = journal.TryAppend(7, payload, lsn);
-      if (status.ok() || !journal.healthy()) break;
-      std::this_thread::sleep_for(1ms);
+      if (status.ok() || !journal.healthy()) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
     } while (std::chrono::steady_clock::now() < deadline);
     EXPECT_TRUE(status.ok());
-    if (!status.ok()) break;
-    if (i % 20 == 19) EXPECT_TRUE(journal.Flush().ok());
+    if (!status.ok()) {
+      break;
+    }
+    if (i % 20 == 19) {
+      EXPECT_TRUE(journal.Flush().ok());
+    }
   }
   EXPECT_TRUE(journal.Flush().ok());
   finished.store(true, std::memory_order_release);
@@ -257,7 +278,9 @@ TEST_F(JournalReaderTest, ReadsStableDurablePrefixesDuringAppendAndRotation) {
   EXPECT_TRUE(scan_status.ok());
   EXPECT_EQ(cursor.lsn, 120);
   ASSERT_EQ(records.size(), 120);
-  for (std::size_t i = 0; i < records.size(); ++i) EXPECT_EQ(records[i], i + 1);
+  for (size_t i = 0; i < records.size(); ++i) {
+    EXPECT_EQ(records[i], i + 1);
+  }
   EXPECT_TRUE(journal.Close().ok());
 }
 
@@ -267,7 +290,7 @@ TEST_F(JournalReaderTest, ControlFilesCanBeReadUnderWriterLockAndValidateCrc) {
   const std::array payload{std::byte{3}, std::byte{5}};
   ASSERT_TRUE(journal.SaveFile("IDENTITY", payload).ok());
   std::array<std::byte, 8> storage{};
-  std::size_t size = 99;
+  size_t size = 99;
   ASSERT_TRUE(
       ReadJournalFile(directory_.c_str(), "IDENTITY", storage, size).ok());
   EXPECT_EQ(size, 2);

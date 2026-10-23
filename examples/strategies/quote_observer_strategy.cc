@@ -8,12 +8,12 @@
 // The first quote emits a readiness marker; OnStop prints the final summary.
 // YQuantGetStrategyPlugin exports the module's creation and destruction hooks.
 
+#include <stddef.h>
+#include <stdint.h>
 #include <unistd.h>
 
 #include <cerrno>
 #include <cinttypes>
-#include <cstddef>
-#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -21,6 +21,7 @@
 #include <string_view>
 
 #include "simdjson.h"
+#include "yquant/base/format.h"
 #include "yquant/model/identifiers.h"
 #include "yquant/model/instrument.h"
 #include "yquant/model/quote_tick.h"
@@ -54,7 +55,7 @@ ErrorCode WriteReadiness(std::string_view text) noexcept {
   while (!text.empty()) {
     const ssize_t written = write(STDOUT_FILENO, text.data(), text.size());
     if (written > 0) {
-      text.remove_prefix(static_cast<std::size_t>(written));
+      text.remove_prefix(static_cast<size_t>(written));
     } else if (written == -1 && errno == EINTR) {
       continue;
     } else {
@@ -151,7 +152,7 @@ class QuoteObserverConfig final : public StrategyConfig {
 
  private:
   char venue_[4] = {};
-  std::size_t venue_size_ = 0;
+  size_t venue_size_ = 0;
   char symbol_[yquant::model::kSymbolLength] = {};
 };
 
@@ -197,7 +198,7 @@ class QuoteObserverStrategy final : public Strategy {
     if (now < tick.receive_time_ns) {
       return ErrorCode::kCorrupt;
     }
-    if (ticks_ == std::numeric_limits<std::uint64_t>::max()) {
+    if (ticks_ == std::numeric_limits<uint64_t>::max()) {
       return ErrorCode::kResourceExhausted;
     }
     ++ticks_;
@@ -218,11 +219,9 @@ class QuoteObserverStrategy final : public Strategy {
     }
     state_ = State::kStopped;
     // Summary formatting is confined to the low-frequency shutdown callback.
-    const int written =
-        std::fprintf(stdout,
-                     "quote_observer: ticks=%" PRIu64 " last_sequence=%" PRIu64
-                     " max_age_ns=%" PRIu64 "\n",
-                     ticks_, last_sequence_, max_age_ns_);
+    const int written = ::yquant::base::Print(
+        stdout, "quote_observer: ticks={} last_sequence={} max_age_ns={}\n",
+        ticks_, last_sequence_, max_age_ns_);
     const int flush_result = std::fflush(stdout);
     return written < 0 || flush_result != 0 ? ErrorCode::kIoError
                                             : ErrorCode::kOk;
@@ -234,9 +233,9 @@ class QuoteObserverStrategy final : public Strategy {
   QuoteObserverConfig config_;
   InstrumentDefinition instrument_;
   State state_ = State::kIdle;
-  std::uint64_t ticks_ = 0;
-  std::uint64_t last_sequence_ = 0;
-  std::uint64_t max_age_ns_ = 0;
+  uint64_t ticks_ = 0;
+  uint64_t last_sequence_ = 0;
+  uint64_t max_age_ns_ = 0;
 };
 
 // A failed creation leaves output null; successful instances are destroyed by
@@ -253,10 +252,9 @@ ErrorCode CreateStrategy(Strategy*& output) noexcept {
 
 void DestroyStrategy(Strategy* strategy) noexcept { delete strategy; }
 
-const StrategyPlugin kPlugin = {
-    yquant::strategy::kStrategyPluginAbiVersion,
-    static_cast<std::uint32_t>(sizeof(StrategyPlugin)), CreateStrategy,
-    DestroyStrategy};
+const StrategyPlugin kPlugin = {yquant::strategy::kStrategyPluginAbiVersion,
+                                static_cast<uint32_t>(sizeof(StrategyPlugin)),
+                                CreateStrategy, DestroyStrategy};
 
 }  // namespace
 

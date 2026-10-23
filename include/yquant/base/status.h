@@ -1,12 +1,13 @@
 #ifndef YQUANT_BASE_STATUS_H_
 #define YQUANT_BASE_STATUS_H_
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <system_error>
 
 namespace yquant::base {
 
-enum class ErrorCode : std::uint8_t {
+enum class ErrorCode : uint8_t {
   kOk,
   kInvalidArgument,
   kInvalidState,

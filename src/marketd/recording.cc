@@ -1,19 +1,26 @@
 #include "marketd/recording.h"
 
 #include <fcntl.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cerrno>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <span>
+#include <system_error>
 #include <utility>
 
+#include "yquant/base/format.h"
 #include "yquant/md/quote_codec.h"
 
 namespace yquant::marketd {
@@ -22,14 +29,14 @@ namespace {
 using Header = std::array<std::byte, kRecordingHeaderSize>;
 using Record = std::array<std::byte, kRecordingRecordSize>;
 constexpr char kMagic[] = "YQREC001";
-constexpr std::uint32_t kVersion = 1;
-constexpr std::uint32_t kSealed = 1;
-constexpr std::size_t kBatchRecords = 256;
+constexpr uint32_t kVersion = 1;
+constexpr uint32_t kSealed = 1;
+constexpr size_t kBatchRecords = 256;
 
 // All persistent integers are little endian; no native structs reach disk.
 template <typename Integer>
 void Store(std::byte* destination, Integer value) noexcept {
-  for (std::size_t i = 0; i < sizeof(Integer); ++i) {
+  for (size_t i = 0; i < sizeof(Integer); ++i) {
     destination[i] = static_cast<std::byte>(value & 0xff);
     value >>= 8;
   }
@@ -38,29 +45,30 @@ void Store(std::byte* destination, Integer value) noexcept {
 template <typename Integer>
 Integer Load(const std::byte* source) noexcept {
   Integer value = 0;
-  for (std::size_t i = 0; i < sizeof(Integer); ++i)
+  for (size_t i = 0; i < sizeof(Integer); ++i) {
     value |= std::to_integer<Integer>(source[i]) << (i * 8);
+  }
   return value;
 }
 
 // FNV-1a detects accidental corruption; it is not an authenticity mechanism.
-std::uint64_t Checksum(std::span<const std::byte> bytes) noexcept {
-  std::uint64_t value = 14695981039346656037ULL;
+uint64_t Checksum(std::span<const std::byte> bytes) noexcept {
+  uint64_t value = 14695981039346656037ULL;
   for (const auto byte : bytes) {
-    value ^= std::to_integer<std::uint8_t>(byte);
+    value ^= std::to_integer<uint8_t>(byte);
     value *= 1099511628211ULL;
   }
   return value;
 }
 
-Header EncodeHeader(bool sealed, std::uint64_t count,
-                    std::uint64_t last_offset) noexcept {
+Header EncodeHeader(bool sealed, uint64_t count,
+                    uint64_t last_offset) noexcept {
   Header header{};
   std::memcpy(header.data(), kMagic, 8);
   Store(header.data() + 8, kVersion);
-  Store(header.data() + 12, std::uint32_t{kRecordingHeaderSize});
-  Store(header.data() + 16, std::uint32_t{kRecordingRecordSize});
-  Store(header.data() + 20, std::uint32_t{md::kQuoteFrameSize});
+  Store(header.data() + 12, uint32_t{kRecordingHeaderSize});
+  Store(header.data() + 16, uint32_t{kRecordingRecordSize});
+  Store(header.data() + 20, uint32_t{md::kQuoteFrameSize});
   Store(header.data() + 24, sealed ? kSealed : 0U);
   Store(header.data() + 32, count);
   Store(header.data() + 40, last_offset);
@@ -75,8 +83,9 @@ base::Status IoError(int error) noexcept {
 
 base::Status ReaderFailure(base::Status status, std::span<char> detail,
                            const char* message) noexcept {
-  if (!detail.empty())
-    std::snprintf(detail.data(), detail.size(), "%s", message);
+  if (!detail.empty()) {
+    ::yquant::base::FormatTo(detail.data(), detail.size(), "{}", message);
+  }
   return status;
 }
 
@@ -84,10 +93,16 @@ base::Status ReaderFailure(base::Status status, std::span<char> detail,
 base::Status ReadAll(int fd, std::span<std::byte> bytes) noexcept {
   while (!bytes.empty()) {
     const auto count = ::read(fd, bytes.data(), bytes.size());
-    if (count < 0 && errno == EINTR) continue;
-    if (count < 0) return IoError(errno);
-    if (count == 0) return {base::ErrorCode::kCorrupt, {}};
-    bytes = bytes.subspan(static_cast<std::size_t>(count));
+    if (count < 0 && errno == EINTR) {
+      continue;
+    }
+    if (count < 0) {
+      return IoError(errno);
+    }
+    if (count == 0) {
+      return {base::ErrorCode::kCorrupt, {}};
+    }
+    bytes = bytes.subspan(static_cast<size_t>(count));
   }
   return {};
 }
@@ -100,25 +115,36 @@ int WriteAll(int fd, std::span<const std::byte> bytes,
         hooks != nullptr && hooks->write != nullptr
             ? hooks->write(hooks->context, fd, bytes.data(), bytes.size())
             : ::write(fd, bytes.data(), bytes.size());
-    if (count < 0 && errno == EINTR) continue;
-    if (count < 0) return errno == 0 ? EIO : errno;
-    if (count == 0 || static_cast<std::size_t>(count) > bytes.size())
+    if (count < 0 && errno == EINTR) {
+      continue;
+    }
+    if (count < 0) {
+      return errno == 0 ? EIO : errno;
+    }
+    if (count == 0 || static_cast<size_t>(count) > bytes.size()) {
       return EIO;
-    bytes = bytes.subspan(static_cast<std::size_t>(count));
+    }
+    bytes = bytes.subspan(static_cast<size_t>(count));
   }
   return 0;
 }
 
 int WriteHeader(int fd, const Header& header) noexcept {
-  std::size_t written = 0;
+  size_t written = 0;
   while (written < header.size()) {
     const auto count =
         ::pwrite(fd, header.data() + written, header.size() - written,
                  static_cast<off_t>(written));
-    if (count < 0 && errno == EINTR) continue;
-    if (count < 0) return errno == 0 ? EIO : errno;
-    if (count == 0) return EIO;
-    written += static_cast<std::size_t>(count);
+    if (count < 0 && errno == EINTR) {
+      continue;
+    }
+    if (count < 0) {
+      return errno == 0 ? EIO : errno;
+    }
+    if (count == 0) {
+      return EIO;
+    }
+    written += static_cast<size_t>(count);
   }
   return 0;
 }
@@ -134,10 +160,12 @@ int SyncFile(int fd, const RecordIoHooks& hooks) noexcept {
 
 }  // namespace
 
-base::Status LoadRecordingFile(const char* path, std::size_t max_records,
+base::Status LoadRecordingFile(const char* path, size_t max_records,
                                ReplayData& output,
                                std::span<char> error_detail) noexcept {
-  if (!error_detail.empty()) error_detail.front() = '\0';
+  if (!error_detail.empty()) {
+    error_detail.front() = '\0';
+  }
   if (path == nullptr || path[0] == '\0' || max_records == 0 ||
       max_records > kMaxReplayRecords) {
     return ReaderFailure({base::ErrorCode::kInvalidArgument, {}}, error_detail,
@@ -145,95 +173,110 @@ base::Status LoadRecordingFile(const char* path, std::size_t max_records,
   }
   // Nonblocking open lets fstat reject FIFOs without waiting for a writer.
   const int fd = ::open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
-  if (fd < 0)
+  if (fd < 0) {
     return ReaderFailure(IoError(errno), error_detail, "cannot open recording");
+  }
   ReplayData loaded;
   // One exit path below keeps descriptor ownership local to this loader.
   auto status = [&]() noexcept -> base::Status {
     struct stat metadata{};
-    if (::fstat(fd, &metadata) != 0)
+    if (::fstat(fd, &metadata) != 0) {
       return ReaderFailure(IoError(errno), error_detail,
                            "cannot stat recording");
-    if (!S_ISREG(metadata.st_mode))
+    }
+    if (!S_ISREG(metadata.st_mode)) {
       return ReaderFailure({base::ErrorCode::kInvalidArgument, {}},
                            error_detail, "recording must be a regular file");
+    }
     Header header;
     auto read_status = ReadAll(fd, header);
-    if (!read_status.ok())
+    if (!read_status.ok()) {
       return ReaderFailure(read_status, error_detail,
                            "recording header is truncated or unreadable");
+    }
     if (std::memcmp(header.data(), kMagic, 8) != 0 ||
-        Load<std::uint32_t>(header.data() + 8) != kVersion ||
-        Load<std::uint32_t>(header.data() + 12) != kRecordingHeaderSize ||
-        Load<std::uint32_t>(header.data() + 16) != kRecordingRecordSize ||
-        Load<std::uint32_t>(header.data() + 20) != md::kQuoteFrameSize ||
-        Load<std::uint32_t>(header.data() + 28) != 0 ||
-        Load<std::uint64_t>(header.data() + 48) != 0 ||
-        Load<std::uint64_t>(header.data() + 56) !=
+        Load<uint32_t>(header.data() + 8) != kVersion ||
+        Load<uint32_t>(header.data() + 12) != kRecordingHeaderSize ||
+        Load<uint32_t>(header.data() + 16) != kRecordingRecordSize ||
+        Load<uint32_t>(header.data() + 20) != md::kQuoteFrameSize ||
+        Load<uint32_t>(header.data() + 28) != 0 ||
+        Load<uint64_t>(header.data() + 48) != 0 ||
+        Load<uint64_t>(header.data() + 56) !=
             Checksum(std::span(header).first(56))) {
       return ReaderFailure({base::ErrorCode::kCorrupt, {}}, error_detail,
                            "recording header layout or checksum is invalid");
     }
-    if (Load<std::uint32_t>(header.data() + 24) != kSealed)
+    if (Load<uint32_t>(header.data() + 24) != kSealed) {
       return ReaderFailure({base::ErrorCode::kCorrupt, {}}, error_detail,
                            "recording was not sealed by a successful Finish");
-    const auto count = Load<std::uint64_t>(header.data() + 32);
-    const auto last_offset = Load<std::uint64_t>(header.data() + 40);
-    if (count > max_records)
+    }
+    const auto count = Load<uint64_t>(header.data() + 32);
+    const auto last_offset = Load<uint64_t>(header.data() + 40);
+    if (count > max_records) {
       return ReaderFailure({base::ErrorCode::kResourceExhausted, {}},
                            error_detail, "recording exceeds max_records");
+    }
     const auto expected_size =
         kRecordingHeaderSize + count * kRecordingRecordSize;
     if (metadata.st_size < 0 ||
-        static_cast<std::uint64_t>(metadata.st_size) != expected_size)
+        static_cast<uint64_t>(metadata.st_size) != expected_size) {
       return ReaderFailure({base::ErrorCode::kCorrupt, {}}, error_detail,
                            "recording length does not match its record count");
+    }
     ReplayData data;
-    read_status = data.Reserve(static_cast<std::size_t>(count));
-    if (!read_status.ok())
+    read_status = data.Reserve(static_cast<size_t>(count));
+    if (!read_status.ok()) {
       return ReaderFailure(read_status, error_detail,
                            "cannot allocate recording replay storage");
-    std::uint64_t previous_offset = 0;
+    }
+    uint64_t previous_offset = 0;
     std::array<std::byte, kRecordingRecordSize * kBatchRecords> batch;
-    for (std::uint64_t i = 0; i < count; ++i) {
+    for (uint64_t i = 0; i < count; ++i) {
       if (i % kBatchRecords == 0) {
-        const auto batch_count =
-            std::min<std::uint64_t>(count - i, kBatchRecords);
+        const auto batch_count = std::min<uint64_t>(count - i, kBatchRecords);
         read_status = ReadAll(
             fd, std::span(batch).first(batch_count * kRecordingRecordSize));
-        if (!read_status.ok())
+        if (!read_status.ok()) {
           return ReaderFailure(read_status, error_detail,
                                "recording frame is truncated or unreadable");
+        }
       }
       const auto encoded = std::span(batch).subspan(
           (i % kBatchRecords) * kRecordingRecordSize, kRecordingRecordSize);
-      const auto offset = Load<std::uint64_t>(encoded.data());
-      if (Load<std::uint64_t>(encoded.data() + 88) !=
-              Checksum(encoded.first(88)) ||
-          (i == 0 && offset != 0) || offset < previous_offset)
+      const auto offset = Load<uint64_t>(encoded.data());
+      if (Load<uint64_t>(encoded.data() + 88) != Checksum(encoded.first(88)) ||
+          (i == 0 && offset != 0) || offset < previous_offset) {
         return ReaderFailure({base::ErrorCode::kCorrupt, {}}, error_detail,
                              "recording checksum or arrival order is invalid");
+      }
       ReplayRecord record;
       record.offset_ns = offset;
       read_status = md::DecodeQuote(encoded.subspan(8, 80), record.quote);
-      if (!read_status.ok())
+      if (!read_status.ok()) {
         return ReaderFailure(read_status, error_detail,
                              "recording quote frame is invalid");
+      }
       read_status = data.Append(record);
-      if (!read_status.ok()) return read_status;
+      if (!read_status.ok()) {
+        return read_status;
+      }
       previous_offset = offset;
     }
-    if (last_offset != previous_offset)
+    if (last_offset != previous_offset) {
       return ReaderFailure({base::ErrorCode::kCorrupt, {}}, error_detail,
                            "recording duration does not match its final frame");
+    }
     loaded = std::move(data);
     return {};
   }();
   const int close_result = ::close(fd);
-  if (status.ok() && close_result != 0)
+  if (status.ok() && close_result != 0) {
     status = ReaderFailure(IoError(errno), error_detail,
                            "cannot close recording input");
-  if (status.ok()) output = std::move(loaded);
+  }
+  if (status.ok()) {
+    output = std::move(loaded);
+  }
   return status;
 }
 
@@ -241,14 +284,17 @@ base::Status RecordPublisher::Fail(base::Status status,
                                    const char* detail) noexcept {
   if (failure_.ok()) {
     failure_ = status;
-    std::snprintf(error_detail_, sizeof(error_detail_), "%s", detail);
+    ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_), "{}",
+                             detail);
   }
   return failure_;
 }
 
 base::Status RecordPublisher::CheckWorker() noexcept {
   const int error = worker_error_.load(std::memory_order_acquire);
-  if (error != 0) return Fail(IoError(error), "recording backend write failed");
+  if (error != 0) {
+    return Fail(IoError(error), "recording backend write failed");
+  }
   return failure_;
 }
 
@@ -261,26 +307,31 @@ void RecordPublisher::ReleaseStorage() noexcept {
 
 base::Status RecordPublisher::Init(const RecordConfig& config,
                                    const RecordIoHooks* hooks) noexcept {
-  if (active_) return {base::ErrorCode::kInvalidState, {}};
+  if (active_) {
+    return {base::ErrorCode::kInvalidState, {}};
+  }
   failure_ = {};
   error_detail_[0] = '\0';
   const auto path_length = ::strnlen(config.path, sizeof(config.path));
   if (path_length == 0 || path_length == sizeof(config.path) ||
       !std::has_single_bit(config.queue_capacity) ||
       config.queue_capacity < 256 ||
-      config.queue_capacity > kMaxRecordingQueueBytes)
+      config.queue_capacity > kMaxRecordingQueueBytes) {
     return Fail({base::ErrorCode::kInvalidArgument, {}},
                 "recording requires a path and a power-of-two queue >= 256");
+  }
   const auto required = base::SpscQueue::RequiredBytes(config.queue_capacity);
-  if (required.status != base::SpscStatus::kSuccess)
+  if (required.status != base::SpscStatus::kSuccess) {
     return Fail({base::ErrorCode::kInvalidArgument, {}},
                 "recording queue capacity is invalid");
+  }
   const int allocation_error = ::posix_memalign(
       &queue_memory_, base::SpscQueue::required_alignment(), required.bytes);
-  if (allocation_error != 0)
+  if (allocation_error != 0) {
     return Fail({base::ErrorCode::kResourceExhausted,
                  std::error_code(allocation_error, std::generic_category())},
                 "cannot allocate recording queue");
+  }
   const auto memory =
       std::span(static_cast<std::byte*>(queue_memory_), required.bytes);
   if (base::SpscQueue::Initialize(memory, config.queue_capacity) !=
@@ -299,9 +350,8 @@ base::Status RecordPublisher::Init(const RecordConfig& config,
   if (slash == nullptr) {
     std::memcpy(directory, ".", 2);
   } else {
-    const std::size_t length =
-        slash == config.path ? 1
-                             : static_cast<std::size_t>(slash - config.path);
+    const size_t length =
+        slash == config.path ? 1 : static_cast<size_t>(slash - config.path);
     std::memcpy(directory, config.path, length);
     directory[length] = '\0';
   }
@@ -329,8 +379,9 @@ base::Status RecordPublisher::Init(const RecordConfig& config,
   first_receive_time_ns_ = 0;
   last_offset_ns_ = 0;
   record_count_ = 0;
-  if (error == 0)
+  if (error == 0) {
     error = ::pthread_create(&thread_, nullptr, ThreadEntry, this);
+  }
   if (error != 0) {
     (void)::close(fd_);
     fd_ = -1;
@@ -345,42 +396,53 @@ base::Status RecordPublisher::Init(const RecordConfig& config,
 }
 
 base::Status RecordPublisher::Publish(const model::QuoteTick& quote) noexcept {
-  if (!active_) return {base::ErrorCode::kInvalidState, {}};
+  if (!active_) {
+    return {base::ErrorCode::kInvalidState, {}};
+  }
   auto status = CheckWorker();
-  if (!status.ok()) return status;
+  if (!status.ok()) {
+    return status;
+  }
   md::QuoteFrame frame;
   status = md::EncodeQuote(quote, frame);
-  if (!status.ok()) return Fail(status, "cannot record an invalid quote");
+  if (!status.ok()) {
+    return Fail(status, "cannot record an invalid quote");
+  }
   const auto first =
       record_count_ == 0 ? quote.receive_time_ns : first_receive_time_ns_;
   if (quote.receive_time_ns < first ||
-      quote.receive_time_ns - first < last_offset_ns_)
+      quote.receive_time_ns - first < last_offset_ns_) {
     return Fail({base::ErrorCode::kInvalidArgument, {}},
                 "recording receive_time_ns moved backwards");
-  if (record_count_ == std::numeric_limits<std::uint64_t>::max())
+  }
+  if (record_count_ == std::numeric_limits<uint64_t>::max()) {
     return Fail({base::ErrorCode::kResourceExhausted, {}},
                 "recording record count overflow");
+  }
   const auto offset = quote.receive_time_ns - first;
   Record record;
   Store(record.data(), offset);
   std::memcpy(record.data() + 8, frame.data(), frame.size());
   Store(record.data() + 88, Checksum(std::span(record).first(88)));
   const auto result = producer_.TryWrite(record);
-  if (result != base::SpscStatus::kSuccess)
+  if (result != base::SpscStatus::kSuccess) {
     return Fail(
         {result == base::SpscStatus::kFull ? base::ErrorCode::kResourceExhausted
                                            : base::ErrorCode::kInternalError,
          {}},
         result == base::SpscStatus::kFull ? "recording queue is full"
                                           : "recording queue rejected a frame");
+  }
   first_receive_time_ns_ = first;
   last_offset_ns_ = offset;
   ++record_count_;
   return {};
 }
 
-base::Status RecordPublisher::Service(std::uint64_t /*now*/) noexcept {
-  if (!active_) return {base::ErrorCode::kInvalidState, {}};
+base::Status RecordPublisher::Service(uint64_t /*now*/) noexcept {
+  if (!active_) {
+    return {base::ErrorCode::kInvalidState, {}};
+  }
   return CheckWorker();
 }
 
@@ -395,7 +457,7 @@ void RecordPublisher::RunWorker() noexcept {
     // Observe the stop release before checking the queue. A stop observed after
     // an earlier empty result could otherwise miss the final producer commit.
     const bool stopping = stopping_.load(std::memory_order_acquire);
-    std::size_t used = 0;
+    size_t used = 0;
     bool empty = false;
     while (used < batch.size()) {
       const auto result = consumer_.TryRead(
@@ -419,7 +481,9 @@ void RecordPublisher::RunWorker() noexcept {
       }
     }
     if (empty) {
-      if (stopping) return;
+      if (stopping) {
+        return;
+      }
       // The producer never wakes the backend through a lock or syscall.
       const timespec delay{0, 200000};
       (void)::nanosleep(&delay, nullptr);
@@ -428,7 +492,9 @@ void RecordPublisher::RunWorker() noexcept {
 }
 
 base::Status RecordPublisher::Finish() noexcept {
-  if (!active_) return failure_;
+  if (!active_) {
+    return failure_;
+  }
   stopping_.store(true, std::memory_order_release);
   const int join_error = ::pthread_join(thread_, nullptr);
   if (join_error != 0) {
@@ -439,24 +505,33 @@ base::Status RecordPublisher::Finish() noexcept {
   (void)CheckWorker();
   if (failure_.ok()) {
     int error = SyncFile(fd_, hooks_);
-    if (error == 0)
+    if (error == 0) {
       error =
           WriteHeader(fd_, EncodeHeader(true, record_count_, last_offset_ns_));
-    if (error == 0) error = SyncFile(fd_, hooks_);
-    if (error != 0) (void)Fail(IoError(error), "cannot seal or sync recording");
+    }
+    if (error == 0) {
+      error = SyncFile(fd_, hooks_);
+    }
+    if (error != 0) {
+      (void)Fail(IoError(error), "cannot seal or sync recording");
+    }
   }
   const int closed = hooks_.close != nullptr ? hooks_.close(hooks_.context, fd_)
                                              : ::close(fd_);
-  if (closed != 0) (void)Fail(IoError(errno), "cannot close recording output");
+  if (closed != 0) {
+    (void)Fail(IoError(errno), "cannot close recording output");
+  }
   fd_ = -1;
   if (failure_.ok()) {
     // Persist the new directory entry only after all file operations succeed.
     const int error = SyncFile(directory_fd_, {});
-    if (error != 0)
+    if (error != 0) {
       (void)Fail(IoError(error), "cannot sync recording parent directory");
+    }
   }
-  if (::close(directory_fd_) != 0)
+  if (::close(directory_fd_) != 0) {
     (void)Fail(IoError(errno), "cannot close recording parent directory");
+  }
   directory_fd_ = -1;
   ReleaseStorage();
   return failure_;

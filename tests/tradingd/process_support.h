@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <spawn.h>
+#include <stddef.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -34,7 +35,9 @@ class ChildProcess {
       while (waitpid(pid_, &status_, 0) == -1 && errno == EINTR) {
       }
     }
-    if (output_fd_ >= 0) close(output_fd_);
+    if (output_fd_ >= 0) {
+      close(output_fd_);
+    }
   }
   ChildProcess(const ChildProcess&) = delete;
   ChildProcess& operator=(const ChildProcess&) = delete;
@@ -42,30 +45,40 @@ class ChildProcess {
   int Start(const char* executable, const std::vector<std::string>& arguments) {
     auto adapted_arguments = arguments;
     const int feed_error = feed_.Prepare(adapted_arguments);
-    if (feed_error) return feed_error;
+    if (feed_error) {
+      return feed_error;
+    }
     int output[2];
-    if (pipe(output) != 0) return errno;
+    if (pipe(output) != 0) {
+      return errno;
+    }
     std::vector<std::string> storage{executable};
     storage.insert(storage.end(), adapted_arguments.begin(),
                    adapted_arguments.end());
     std::vector<char*> argv;
-    for (auto& argument : storage) argv.push_back(argument.data());
+    for (auto& argument : storage) {
+      argv.push_back(argument.data());
+    }
     argv.push_back(nullptr);
     posix_spawn_file_actions_t actions;
     int error = posix_spawn_file_actions_init(&actions);
     if (error == 0) {
       error =
           posix_spawn_file_actions_adddup2(&actions, output[1], STDOUT_FILENO);
-      if (error == 0)
+      if (error == 0) {
         error = posix_spawn_file_actions_adddup2(&actions, output[1],
                                                  STDERR_FILENO);
-      if (error == 0)
+      }
+      if (error == 0) {
         error = posix_spawn_file_actions_addclose(&actions, output[0]);
-      if (error == 0)
+      }
+      if (error == 0) {
         error = posix_spawn_file_actions_addclose(&actions, output[1]);
-      if (error == 0)
+      }
+      if (error == 0) {
         error = posix_spawn(&pid_, executable, &actions, nullptr, argv.data(),
                             environ);
+      }
       posix_spawn_file_actions_destroy(&actions);
     }
     close(output[1]);
@@ -75,8 +88,12 @@ class ChildProcess {
       return error;
     }
     output_fd_ = output[0];
-    if (fcntl(output_fd_, F_SETFL, O_NONBLOCK) != 0) return errno;
-    if (fcntl(output_fd_, F_SETFD, FD_CLOEXEC) != 0) return errno;
+    if (fcntl(output_fd_, F_SETFL, O_NONBLOCK) != 0) {
+      return errno;
+    }
+    if (fcntl(output_fd_, F_SETFD, FD_CLOEXEC) != 0) {
+      return errno;
+    }
     return 0;
   }
 
@@ -99,12 +116,13 @@ class ChildProcess {
     char buffer[1024];
     for (;;) {
       const auto count = read(output_fd_, buffer, sizeof(buffer));
-      if (count > 0)
-        output_.append(buffer, static_cast<std::size_t>(count));
-      else if (count < 0 && errno == EINTR)
+      if (count > 0) {
+        output_.append(buffer, static_cast<size_t>(count));
+      } else if (count < 0 && errno == EINTR) {
         continue;
-      else
+      } else {
         return;
+      }
     }
   }
 
@@ -124,17 +142,26 @@ class ChildProcess {
           return false;
         }
       }
-      if (output_.find("Running") != std::string::npos) feed_.Release();
-      if (done()) return true;
-      if (pid_ < 0) return false;
+      if (output_.find("Running") != std::string::npos) {
+        feed_.Release();
+      }
+      if (done()) {
+        return true;
+      }
+      if (pid_ < 0) {
+        return false;
+      }
       const auto remaining =
           std::chrono::duration_cast<std::chrono::milliseconds>(
               deadline - std::chrono::steady_clock::now());
-      if (remaining.count() <= 0) return false;
+      if (remaining.count() <= 0) {
+        return false;
+      }
       pollfd descriptor{output_fd_, POLLIN, 0};
       if (poll(&descriptor, 1, static_cast<int>(remaining.count())) < 0 &&
-          errno != EINTR)
+          errno != EINTR) {
         return false;
+      }
     }
   }
 

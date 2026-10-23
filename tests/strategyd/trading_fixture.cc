@@ -1,8 +1,9 @@
+#include <stddef.h>
+#include <stdint.h>
 #include <unistd.h>
 
 #include <array>
 #include <cerrno>
-#include <cstdint>
 #include <cstdlib>
 #include <new>
 #include <string_view>
@@ -42,7 +43,9 @@ using yquant::strategy::StrategyPlugin;
 // Records bounded callback facts using the descriptor inherited by tests.
 void Emit(char event) noexcept {
   const char* value = std::getenv("YQUANT_TEST_EVENT_FD");
-  if (value == nullptr) return;
+  if (value == nullptr) {
+    return;
+  }
   const int fd = static_cast<int>(std::strtol(value, nullptr, 10));
   while (write(fd, &event, 1) == -1 && errno == EINTR) {
   }
@@ -50,9 +53,9 @@ void Emit(char event) noexcept {
 
 class TradingFixtureConfig final : public StrategyConfig {
  public:
-  std::int64_t quantity() const noexcept { return quantity_; }
+  int64_t quantity() const noexcept { return quantity_; }
   OrderSide side() const noexcept { return side_; }
-  std::int64_t price_improvement() const noexcept { return price_improvement_; }
+  int64_t price_improvement() const noexcept { return price_improvement_; }
 
  protected:
   ErrorCode LoadParameters(std::string_view json,
@@ -64,9 +67,9 @@ class TradingFixtureConfig final : public StrategyConfig {
       error.Set("", "expected an object");
       return ErrorCode::kInvalidArgument;
     }
-    std::int64_t quantity = 200;
+    int64_t quantity = 200;
     OrderSide side = OrderSide::kBuy;
-    std::int64_t price_improvement = 0;
+    int64_t price_improvement = 0;
     for (const auto field : object) {
       if (field.key == "quantity") {
         if (field.value.get_int64().get(quantity) || quantity <= 0) {
@@ -99,9 +102,9 @@ class TradingFixtureConfig final : public StrategyConfig {
   }
 
  private:
-  std::int64_t quantity_ = 200;
+  int64_t quantity_ = 200;
   OrderSide side_ = OrderSide::kBuy;
-  std::int64_t price_improvement_ = 0;
+  int64_t price_improvement_ = 0;
 };
 
 // Exercises strategy-visible contracts only. Modes inject callback behavior;
@@ -113,12 +116,15 @@ class TradingFixture final : public Strategy {
   ErrorCode OnStart(StrategyContext& context) noexcept override {
     auto& data = context.market_data();
     const auto found = data.FindInstrument("SSE", "600000", instrument_);
-    if (found != ErrorCode::kOk) return found;
+    if (found != ErrorCode::kOk) {
+      return found;
+    }
     if (context.trading().accepting_orders() ||
         !context.trading().TryGetCash(initial_cash_) ||
         !context.trading().TryGetPosition(instrument_.id, initial_position_) ||
-        CheckAccount(context) != ErrorCode::kOk)
+        CheckAccount(context) != ErrorCode::kOk) {
       return ErrorCode::kCorrupt;
+    }
     const auto request = Request(1001);
     ClientOrderId untouched{999};
     if (context.trading().SubmitOrder(request, untouched) !=
@@ -128,7 +134,9 @@ class TradingFixture final : public Strategy {
       return ErrorCode::kCorrupt;
     }
     const auto subscribed = data.SubscribeQuotes(instrument_.id);
-    if (subscribed != ErrorCode::kOk) return subscribed;
+    if (subscribed != ErrorCode::kOk) {
+      return subscribed;
+    }
     Emit('S');
     return ErrorCode::kOk;
   }
@@ -136,13 +144,19 @@ class TradingFixture final : public Strategy {
   ErrorCode OnTick(StrategyContext& context,
                    const QuoteTick& tick) noexcept override {
     Emit('Q');
-    if (order_count_ != 0) return ErrorCode::kOk;
-    if (!context.trading().accepting_orders()) return ErrorCode::kUnsupported;
-    constexpr std::size_t kOrders = YQUANT_TEST_TRADING_MODE == 4 ? 200 : 1;
+    if (order_count_ != 0) {
+      return ErrorCode::kOk;
+    }
+    if (!context.trading().accepting_orders()) {
+      return ErrorCode::kUnsupported;
+    }
+    constexpr size_t kOrders = YQUANT_TEST_TRADING_MODE == 4 ? 200 : 1;
     const auto request = Request(
         config_.side() == OrderSide::kBuy ? tick.ask_price : tick.bid_price);
     if constexpr (YQUANT_TEST_TRADING_MODE == 8) {
-      if (local_failure_checked_) return ErrorCode::kOk;
+      if (local_failure_checked_) {
+        return ErrorCode::kOk;
+      }
       local_failure_checked_ = true;
       ClientOrderId untouched{999};
       OrderSnapshot unknown;
@@ -158,11 +172,13 @@ class TradingFixture final : public Strategy {
       Emit('L');
       return ErrorCode::kOk;
     }
-    for (std::size_t index = 0; index < kOrders; ++index) {
+    for (size_t index = 0; index < kOrders; ++index) {
       inside_submit_ = true;
       const auto result = context.trading().SubmitOrder(request, ids_[index]);
       inside_submit_ = false;
-      if (result != ErrorCode::kOk) return result;
+      if (result != ErrorCode::kOk) {
+        return result;
+      }
       ++order_count_;
       OrderSnapshot snapshot;
       if (!context.trading().TryGetOrder(ids_[index], snapshot) ||
@@ -174,7 +190,9 @@ class TradingFixture final : public Strategy {
           snapshot.report_sequence != 0) {
         return ErrorCode::kCorrupt;
       }
-      if (CheckAccount(context) != ErrorCode::kOk) return ErrorCode::kCorrupt;
+      if (CheckAccount(context) != ErrorCode::kOk) {
+        return ErrorCode::kCorrupt;
+      }
       Emit('N');
     }
     return ErrorCode::kOk;
@@ -187,8 +205,9 @@ class TradingFixture final : public Strategy {
         awaiting_fill_ ||
         !context.trading().TryGetOrder(update.order.client_order_id,
                                        snapshot) ||
-        snapshot != update.order)
+        snapshot != update.order) {
       return ErrorCode::kCorrupt;
+    }
     awaiting_fill_ = update.kind == OrderUpdateKind::kFill;
     switch (update.kind) {
       case OrderUpdateKind::kAccepted:
@@ -222,7 +241,9 @@ class TradingFixture final : public Strategy {
       if (cancel_now && context.trading().accepting_orders()) {
         const auto canceled =
             context.trading().CancelOrder(snapshot.client_order_id);
-        if (canceled != ErrorCode::kOk) return canceled;
+        if (canceled != ErrorCode::kOk) {
+          return canceled;
+        }
         OrderSnapshot pending;
         if (!context.trading().TryGetOrder(snapshot.client_order_id, pending) ||
             !pending.cancel_pending ||
@@ -249,15 +270,21 @@ class TradingFixture final : public Strategy {
         fill.price !=
             (fill.side == OrderSide::kBuy
                  ? snapshot.limit_price - config_.price_improvement()
-                 : snapshot.limit_price + config_.price_improvement()))
+                 : snapshot.limit_price + config_.price_improvement())) {
       return ErrorCode::kCorrupt;
+    }
     awaiting_fill_ = false;
     filled_qty_ += fill.quantity;
     Emit('F');
-    if (fill.quantity == 100) Emit('H');
-    if (fill.quantity == 1) Emit('I');
-    if constexpr (YQUANT_TEST_TRADING_MODE == 3)
+    if (fill.quantity == 100) {
+      Emit('H');
+    }
+    if (fill.quantity == 1) {
+      Emit('I');
+    }
+    if constexpr (YQUANT_TEST_TRADING_MODE == 3) {
       return ErrorCode::kInvalidArgument;
+    }
     return ErrorCode::kOk;
   }
 
@@ -266,10 +293,11 @@ class TradingFixture final : public Strategy {
         CheckAccount(context) != ErrorCode::kOk) {
       return ErrorCode::kCorrupt;
     }
-    for (std::size_t index = 0; index < order_count_; ++index) {
+    for (size_t index = 0; index < order_count_; ++index) {
       OrderSnapshot snapshot;
-      if (!context.trading().TryGetOrder(ids_[index], snapshot))
+      if (!context.trading().TryGetOrder(ids_[index], snapshot)) {
         return ErrorCode::kCorrupt;
+      }
       ClientOrderId unchanged{999};
       if (context.trading().SubmitOrder(Request(1001), unchanged) !=
               ErrorCode::kInvalidState ||
@@ -310,12 +338,13 @@ class TradingFixture final : public Strategy {
         position.total_qty < 0 || position.available_qty < 0 ||
         position.available_qty > position.total_qty ||
         position.reserved_qty < 0 ||
-        position.reserved_qty > position.total_qty - position.available_qty)
+        position.reserved_qty > position.total_qty - position.available_qty) {
       return ErrorCode::kCorrupt;
+    }
     return ErrorCode::kOk;
   }
 
-  OrderRequest Request(std::int64_t price) const noexcept {
+  OrderRequest Request(int64_t price) const noexcept {
     OrderRequest request;
     request.instrument_id = instrument_.id;
     request.side = config_.side();
@@ -328,8 +357,8 @@ class TradingFixture final : public Strategy {
   CashSnapshot initial_cash_;
   PositionSnapshot initial_position_;
   std::array<ClientOrderId, 200> ids_ = {};
-  std::size_t order_count_ = 0;
-  std::int64_t filled_qty_ = 0;
+  size_t order_count_ = 0;
+  int64_t filled_qty_ = 0;
   bool local_failure_checked_ = false;
   bool inside_submit_ = false;
   bool awaiting_fill_ = false;
@@ -344,9 +373,9 @@ void Destroy(Strategy* strategy) noexcept {
   delete strategy;
   Emit('D');
 }
-const StrategyPlugin kPlugin = {
-    yquant::strategy::kStrategyPluginAbiVersion,
-    static_cast<std::uint32_t>(sizeof(StrategyPlugin)), Create, Destroy};
+const StrategyPlugin kPlugin = {yquant::strategy::kStrategyPluginAbiVersion,
+                                static_cast<uint32_t>(sizeof(StrategyPlugin)),
+                                Create, Destroy};
 
 }  // namespace
 

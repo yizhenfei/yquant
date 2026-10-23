@@ -1,3 +1,8 @@
+#include <stddef.h>
+#include <stdint.h>
+
+#include <array>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -19,9 +24,9 @@ using loop_testing::SummaryNumber;
 using loop_testing::TradingJson;
 using model::OrderSide;
 
-std::string BboJson(std::int64_t minimum = 0, std::int64_t maximum = 1200,
-                    std::int64_t quantity = 100, std::uint64_t timeout_ms = 100,
-                    std::uint64_t retry_ms = 5) {
+std::string BboJson(int64_t minimum = 0, int64_t maximum = 1200,
+                    int64_t quantity = 100, uint64_t timeout_ms = 100,
+                    uint64_t retry_ms = 5) {
   return R"({"strategy_id":"bbo-test","parameters":{"venue":"SSE",)"
          R"("symbol":"600000","quote_qty":)" +
          std::to_string(quantity) + R"(,"min_position":)" +
@@ -49,19 +54,21 @@ std::string BboStringQuantityJson() {
 class BboScenario {
  public:
   BboScenario() : environment(clock) { environment.stop_at = 3 * kMs; }
-  base::Status Run(std::string_view config = {},
-                   std::int64_t cash = 100000000000000,
-                   std::int64_t total = 1000, std::int64_t available = 800) {
+  base::Status Run(std::string_view config = {}, int64_t cash = 100000000000000,
+                   int64_t total = 1000, int64_t available = 800) {
     testing::ConfigFile strategy(config.empty() ? BboJson()
                                                 : std::string(config));
     testing::ConfigFile trading(TradingJson(cash, total, available));
-    if (!strategy.valid() || !trading.valid())
+    if (!strategy.valid() || !trading.valid()) {
       return {base::ErrorCode::kIoError, {}};
+    }
     loop_testing::LoopRunner runner(clock, environment, source, broker);
     auto result = runner.LoadAndStart(
         StrategyOptions{YQUANT_TEST_BBO_EXAMPLE_PATH, strategy.path(),
                         YQUANT_TEST_MARKET_DATA_CONFIG_PATH, trading.path()});
-    if (result.ok()) result = runner.Run();
+    if (result.ok()) {
+      result = runner.Run();
+    }
     stage = runner.error_stage();
     detail = runner.error_detail();
     output = capture.Read();
@@ -77,10 +84,12 @@ class BboScenario {
   std::string output;
 };
 
-std::size_t CountSide(const Broker& broker, OrderSide side) {
-  std::size_t count = 0;
-  for (std::size_t index = 0; index < broker.sent_count; ++index) {
-    if (broker.orders[index].request.side == side) ++count;
+size_t CountSide(const Broker& broker, OrderSide side) {
+  size_t count = 0;
+  for (size_t index = 0; index < broker.sent_count; ++index) {
+    if (broker.orders[index].request.side == side) {
+      ++count;
+    }
   }
   return count;
 }
@@ -100,8 +109,9 @@ TEST(BboStrategyTest, PostsBothSidesAndRetainsOrdersForRepeatedPrices) {
   EXPECT_EQ(scenario.broker.orders[0].request.quantity, 100);
   EXPECT_EQ(scenario.broker.orders[1].request.quantity, 100);
   ASSERT_EQ(scenario.broker.cancel_count, 2U);
-  for (std::size_t index = 0; index < 2; ++index)
+  for (size_t index = 0; index < 2; ++index) {
     EXPECT_GE(scenario.broker.cancels[index].at, 3 * kMs);
+  }
   EXPECT_EQ(SummaryNumber(scenario.output, "submitted="), 2);
   EXPECT_EQ(SummaryNumber(scenario.output, "slots="), 0);
   EXPECT_TRUE(scenario.broker.is_drained());
@@ -120,7 +130,7 @@ TEST(BboStrategyTest,
   scenario.environment.stop_at = 8 * kMs;
   ASSERT_TRUE(scenario.Run().ok()) << scenario.stage << ": " << scenario.detail;
   ASSERT_EQ(scenario.broker.sent_count, 4U);
-  for (std::size_t index = 2; index < 4; ++index) {
+  for (size_t index = 2; index < 4; ++index) {
     const auto& sent = scenario.broker.orders[index];
     EXPECT_GE(sent.at, 6 * kMs);
     EXPECT_EQ(sent.request.limit_price,
@@ -142,10 +152,10 @@ TEST(BboStrategyTest,
   ASSERT_TRUE(scenario.Run().ok()) << scenario.stage << ": " << scenario.detail;
   ASSERT_EQ(scenario.broker.sent_count, 4U);
   ASSERT_GE(scenario.broker.cancel_count, 2U);
-  for (std::size_t index = 0; index < scenario.broker.cancel_count; ++index) {
+  for (size_t index = 0; index < scenario.broker.cancel_count; ++index) {
     EXPECT_GE(scenario.broker.cancels[index].at, 3 * kMs);
   }
-  for (std::size_t index = 2; index < 4; ++index) {
+  for (size_t index = 2; index < 4; ++index) {
     const auto& order = scenario.broker.orders[index];
     EXPECT_GE(order.at, 3 * kMs + scenario.broker.buy_cancel_delay);
     EXPECT_EQ(order.request.limit_price,
@@ -163,7 +173,7 @@ TEST(BboStrategyTest, ExistingQuotesIgnoreTheirOwnFullyReservedCashAndShares) {
       << scenario.stage << ": " << scenario.detail;
   ASSERT_EQ(scenario.broker.sent_count, 2U);
   ASSERT_EQ(scenario.broker.cancel_count, 2U);
-  for (std::size_t index = 0; index < 2; ++index) {
+  for (size_t index = 0; index < 2; ++index) {
     EXPECT_GE(scenario.broker.cancels[index].at, 3 * kMs);
   }
   EXPECT_EQ(SummaryNumber(scenario.output, "cancel_requests="), 0);
@@ -178,7 +188,7 @@ TEST_P(InvalidQuoteStateTest,
        CancelsQuotesAndOnlyReopensWhenAValidQuoteArrives) {
   BboScenario scenario;
   ASSERT_TRUE(scenario.capture.valid());
-  const std::uint8_t flags = GetParam() ? 5 : 3;
+  const uint8_t flags = GetParam() ? 5 : 3;
   scenario.source.frames[0] = {0, 1000, 1001};
   scenario.source.frames[1] = {kMs, 1000, 1001, flags};
   scenario.source.frames[2] = {2 * kMs, 1000, 1001, flags};
@@ -190,7 +200,7 @@ TEST_P(InvalidQuoteStateTest,
   ASSERT_GE(scenario.broker.cancel_count, 2U);
   EXPECT_EQ(scenario.broker.cancels[0].at, kMs);
   EXPECT_EQ(scenario.broker.cancels[1].at, kMs);
-  for (std::size_t index = 2; index < 4; ++index) {
+  for (size_t index = 2; index < 4; ++index) {
     const auto& order = scenario.broker.orders[index];
     EXPECT_EQ(order.at, 3 * kMs);
     EXPECT_EQ(order.request.limit_price,
@@ -230,10 +240,10 @@ TEST(BboStrategyTest,
 
 struct SideGate {
   const char* name;
-  std::int64_t cash;
-  std::int64_t available;
-  std::int64_t minimum;
-  std::int64_t maximum;
+  int64_t cash;
+  int64_t available;
+  int64_t minimum;
+  int64_t maximum;
   OrderSide expected;
 };
 class BboSideGateTest : public ::testing::TestWithParam<SideGate> {};
@@ -321,13 +331,14 @@ TEST(BboStrategyTest,
   scenario.broker.reject_cancels = 1;
   scenario.environment.stop_at = 8 * kMs;
   ASSERT_TRUE(scenario.Run().ok()) << scenario.detail;
-  std::array<std::uint64_t, 2> attempts = {};
-  std::size_t count = 0;
+  std::array<uint64_t, 2> attempts = {};
+  size_t count = 0;
   const auto first_buy = scenario.broker.orders[0].id;
-  for (std::size_t index = 0; index < scenario.broker.cancel_count; ++index) {
+  for (size_t index = 0; index < scenario.broker.cancel_count; ++index) {
     if (scenario.broker.cancels[index].id == first_buy &&
-        count < attempts.size())
+        count < attempts.size()) {
       attempts[count++] = scenario.broker.cancels[index].at;
+    }
   }
   ASSERT_EQ(count, 2U);
   EXPECT_EQ(attempts[0], kMs);
@@ -344,7 +355,7 @@ TEST(BboStrategyTest, DoesNotCrossAnOppositeOrderStillWaitingForCancellation) {
   scenario.environment.stop_at = 8 * kMs;
   ASSERT_TRUE(scenario.Run().ok()) << scenario.detail;
   ASSERT_EQ(CountSide(scenario.broker, OrderSide::kBuy), 2U);
-  for (std::size_t index = 2; index < scenario.broker.sent_count; ++index) {
+  for (size_t index = 2; index < scenario.broker.sent_count; ++index) {
     if (scenario.broker.orders[index].request.side == OrderSide::kBuy) {
       EXPECT_GE(scenario.broker.orders[index].at, 6 * kMs);
       EXPECT_EQ(scenario.broker.orders[index].request.limit_price, 1003);
@@ -366,21 +377,24 @@ TEST(BboStrategyTest,
   scenario.environment.stop_at = 9 * kMs;
   ASSERT_TRUE(scenario.Run(BboJson(0, 1500)).ok()) << scenario.detail;
   std::optional<model::ClientOrderId> replacement;
-  std::size_t early_buys = 0;
-  for (std::size_t index = 0; index < scenario.broker.sent_count; ++index) {
+  size_t early_buys = 0;
+  for (size_t index = 0; index < scenario.broker.sent_count; ++index) {
     const auto& order = scenario.broker.orders[index];
     if (order.request.side == OrderSide::kBuy && order.at < 6500000) {
       ++early_buys;
-      if (order.at >= 2 * kMs) replacement = order.id;
+      if (order.at >= 2 * kMs) {
+        replacement = order.id;
+      }
     }
   }
   ASSERT_EQ(early_buys, 2U);
   ASSERT_TRUE(replacement.has_value());
   bool canceled_on_update = false;
-  for (std::size_t index = 0; index < scenario.broker.cancel_count; ++index) {
+  for (size_t index = 0; index < scenario.broker.cancel_count; ++index) {
     const auto& cancel = scenario.broker.cancels[index];
-    if (cancel.id == *replacement && cancel.at == 6500000)
+    if (cancel.id == *replacement && cancel.at == 6500000) {
       canceled_on_update = true;
+    }
   }
   EXPECT_TRUE(canceled_on_update);
   EXPECT_EQ(SummaryNumber(scenario.output, "slots="), 0);

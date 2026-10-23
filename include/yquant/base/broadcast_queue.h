@@ -1,8 +1,10 @@
 #ifndef YQUANT_BASE_BROADCAST_QUEUE_H_
 #define YQUANT_BASE_BROADCAST_QUEUE_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <cstddef>
-#include <cstdint>
 #include <optional>
 #include <span>
 
@@ -16,40 +18,40 @@ struct BroadcastHeader;
 // Caller-provided identity of one initialization; never reuse it while an old
 // endpoint or gap token can still be used.
 struct BroadcastId {
-  std::uint64_t high = 0;
-  std::uint64_t low = 0;
+  uint64_t high = 0;
+  uint64_t low = 0;
   friend bool operator==(const BroadcastId&, const BroadcastId&) = default;
 };
 
 struct BroadcastConfig {
-  std::size_t capacity = 1024;  // Nonzero power of two, measured in records.
-  std::size_t max_record_size = 256;
+  size_t capacity = 1024;  // Nonzero power of two, measured in records.
+  size_t max_record_size = 256;
 };
 
 struct BroadcastStartPosition {
   enum class Mode { kLive, kSequence } mode = Mode::kLive;
-  std::uint64_t sequence = 0;
+  uint64_t sequence = 0;
   std::optional<BroadcastId> generation;
   static BroadcastStartPosition Live() { return {}; }
-  static BroadcastStartPosition At(std::uint64_t sequence) {
+  static BroadcastStartPosition At(uint64_t sequence) {
     return {Mode::kSequence, sequence, std::nullopt};
   }
-  static BroadcastStartPosition At(BroadcastId id, std::uint64_t sequence) {
+  static BroadcastStartPosition At(BroadcastId id, uint64_t sequence) {
     return {Mode::kSequence, sequence, id};
   }
 };
 
 // Maximum slot-copy attempts, including attempts discarded after a conflict.
 struct BroadcastReadBudget {
-  std::size_t max_attempts = 128;
+  size_t max_attempts = 128;
 };
 
 // Bound to one queue initialization, reader attach session and pending gap.
 struct BroadcastGapToken {
   BroadcastId generation;
-  std::uint64_t id = 0;
-  std::uint64_t expected_sequence = 0;
-  std::uint64_t resume_candidate = 0;
+  uint64_t id = 0;
+  uint64_t expected_sequence = 0;
+  uint64_t resume_candidate = 0;
   BroadcastId reader_instance;
   friend bool operator==(const BroadcastGapToken&,
                          const BroadcastGapToken&) = default;
@@ -57,10 +59,10 @@ struct BroadcastGapToken {
 
 struct BroadcastResumePosition {
   enum class Mode { kCandidate, kLive, kSequence } mode = Mode::kCandidate;
-  std::uint64_t sequence = 0;
+  uint64_t sequence = 0;
   static BroadcastResumePosition Candidate() { return {}; }
   static BroadcastResumePosition Live() { return {Mode::kLive, 0}; }
-  static BroadcastResumePosition At(std::uint64_t sequence) {
+  static BroadcastResumePosition At(uint64_t sequence) {
     return {Mode::kSequence, sequence};
   }
 };
@@ -78,8 +80,8 @@ enum class BroadcastReadStatus {
 struct BroadcastReadResult {
   BroadcastReadStatus status = BroadcastReadStatus::kEmpty;
   BroadcastId generation;
-  std::uint64_t sequence = 0;
-  std::size_t attempts = 0;
+  uint64_t sequence = 0;
+  size_t attempts = 0;
   // Consistent private copy; valid until the next TryRead or Detach. Empty on
   // non-record results. Even a failed next read may overwrite old scratch data.
   std::span<const std::byte> record;
@@ -95,11 +97,15 @@ struct BroadcastReadResult {
 // additionally requires a platform with validated cross-process atomic support.
 class BroadcastQueue final {
  public:
+  BroadcastQueue() = default;
+  BroadcastQueue(const BroadcastQueue&) = default;
+  BroadcastQueue& operator=(const BroadcastQueue&) = default;
+
   struct SizeResult {
     Status status;
-    std::size_t bytes = 0;
+    size_t bytes = 0;
   };
-  static constexpr std::size_t required_alignment() noexcept { return 128; }
+  static constexpr size_t required_alignment() noexcept { return 128; }
   // Returns zero bytes on failure; checks arithmetic overflow without touching
   // storage. The returned size excludes any OS page rounding.
   [[nodiscard]] static SizeResult RequiredBytes(
@@ -116,8 +122,8 @@ class BroadcastQueue final {
   [[nodiscard]] Status Attach(std::span<std::byte> memory) noexcept;
   void Detach() noexcept;
   bool attached() const noexcept { return header_ != nullptr; }
-  std::size_t capacity() const noexcept { return capacity_; }
-  std::size_t max_record_size() const noexcept { return max_record_size_; }
+  size_t capacity() const noexcept { return capacity_; }
+  size_t max_record_size() const noexcept { return max_record_size_; }
   BroadcastId generation() const noexcept { return generation_; }
   // True after Finish; detached views return false.
   bool finished() const noexcept;
@@ -128,10 +134,10 @@ class BroadcastQueue final {
   std::span<std::byte> memory_;
   internal::BroadcastHeader* header_ = nullptr;
   std::byte* slots_ = nullptr;
-  std::size_t capacity_ = 0;
-  std::size_t max_record_size_ = 0;
-  std::size_t word_count_ = 0;
-  std::size_t slot_stride_ = 0;
+  size_t capacity_ = 0;
+  size_t max_record_size_ = 0;
+  size_t word_count_ = 0;
+  size_t slot_stride_ = 0;
   BroadcastId generation_;
 };
 
@@ -150,7 +156,7 @@ class BroadcastWriter final {
   // commits nothing and leaves optional sequence unchanged. No reader blocks
   // it.
   [[nodiscard]] Status TryWrite(std::span<const std::byte> record,
-                                std::uint64_t* sequence = nullptr) noexcept;
+                                uint64_t* sequence = nullptr) noexcept;
   // Idempotent while attached. Readers drain the final commit before kEnd.
   [[nodiscard]] Status Finish() noexcept;
   void Detach() noexcept;
@@ -158,7 +164,7 @@ class BroadcastWriter final {
 
  private:
   BroadcastQueue queue_;
-  std::uint64_t next_sequence_ = 1;
+  uint64_t next_sequence_ = 1;
 };
 
 // Non-owning, single-thread-owned reader with an independent private cursor.
@@ -186,10 +192,10 @@ class BroadcastReader final {
   // Requires this attach session's current token. Failure preserves gap,
   // cursor and output. Candidate may already have been overwritten again.
   [[nodiscard]] Status Resume(const BroadcastGapToken& token,
-                              std::uint64_t& sequence,
+                              uint64_t& sequence,
                               BroadcastResumePosition position = {}) noexcept;
   void Detach() noexcept;
-  std::uint64_t next_sequence() const noexcept {
+  uint64_t next_sequence() const noexcept {
     return queue_.attached() ? next_sequence_ : 0;
   }
   const BroadcastQueue& queue() const noexcept { return queue_; }
@@ -197,13 +203,13 @@ class BroadcastReader final {
  private:
   // Builds a result at the current cursor, without exposing scratch contents.
   BroadcastReadResult Result(BroadcastReadStatus status,
-                             std::size_t attempts = 0) const noexcept;
+                             size_t attempts = 0) const noexcept;
   // Records corruption, which must not be skipped by subsequent calls.
-  BroadcastReadResult Fail(std::size_t attempts) noexcept;
+  BroadcastReadResult Fail(size_t attempts) noexcept;
   BroadcastQueue queue_;
   std::span<std::byte> scratch_;
-  std::uint64_t next_sequence_ = 1;
-  std::uint64_t gap_id_ = 0;
+  uint64_t next_sequence_ = 1;
+  uint64_t gap_id_ = 0;
   BroadcastId session_;
   std::optional<BroadcastGapToken> pending_gap_;
   bool corrupt_ = false;

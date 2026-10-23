@@ -1,14 +1,14 @@
 #ifndef YQUANT_MODEL_FUTURES_H_
 #define YQUANT_MODEL_FUTURES_H_
 
-#include <cstdint>
+#include <stdint.h>
 
 #include "yquant/model/identifiers.h"
 
 namespace yquant::model {
 
-enum class AccountType : std::uint8_t { kCash, kFutures };
-enum class PositionEffect : std::uint8_t {
+enum class AccountType : uint8_t { kCash, kFutures };
+enum class PositionEffect : uint8_t {
   kNone,
   kOpen,
   kCloseToday,
@@ -23,9 +23,9 @@ enum class PositionEffect : std::uint8_t {
 // broker-managed account. It is never a rounded average price. Frozen lots
 // cannot be closed by another order. Published fields are nonnegative.
 struct FuturesPositionBucket {
-  std::int64_t quantity = 0;
-  std::int64_t frozen_qty = 0;
-  std::int64_t open_notional = 0;
+  int64_t quantity = 0;
+  int64_t frozen_qty = 0;
+  int64_t open_notional = 0;
   friend bool operator==(const FuturesPositionBucket&,
                          const FuturesPositionBucket&) noexcept = default;
 };
@@ -38,16 +38,16 @@ struct FuturesPositionSnapshot {
   FuturesPositionBucket long_yesterday;
   FuturesPositionBucket short_today;
   FuturesPositionBucket short_yesterday;
-  std::int64_t margin = 0;
-  std::int64_t unrealized_pnl = 0;
+  int64_t margin = 0;
+  int64_t unrealized_pnl = 0;
   // Broker-reported closing freezes that cannot be allocated between today's
   // and yesterday's bucket. They exclude all bucket frozen_qty values. Each
   // direction's bucket freezes plus this value may not exceed its holdings.
   // Simulated FIFO accounts always leave both fields zero.
-  std::int64_t unallocated_long_frozen = 0;
-  std::int64_t unallocated_short_frozen = 0;
+  int64_t unallocated_long_frozen = 0;
+  int64_t unallocated_short_frozen = 0;
 
-  std::int64_t net_qty() const noexcept {
+  int64_t net_qty() const noexcept {
     return (long_today.quantity + long_yesterday.quantity) -
            (short_today.quantity + short_yesterday.quantity);
   }
@@ -65,14 +65,14 @@ struct FuturesPositionSnapshot {
 // FrozenMargin/FrozenCash/FrozenCommission. Broker available is not forced to
 // satisfy the simulated accounting equation.
 struct FuturesAccountSnapshot {
-  std::int64_t balance = 0;
-  std::int64_t equity = 0;
-  std::int64_t available = 0;
-  std::int64_t margin = 0;
-  std::int64_t reserved = 0;
-  std::int64_t realized_pnl = 0;
-  std::int64_t unrealized_pnl = 0;
-  std::int64_t commission = 0;
+  int64_t balance = 0;
+  int64_t equity = 0;
+  int64_t available = 0;
+  int64_t margin = 0;
+  int64_t reserved = 0;
+  int64_t realized_pnl = 0;
+  int64_t unrealized_pnl = 0;
+  int64_t commission = 0;
   friend bool operator==(const FuturesAccountSnapshot&,
                          const FuturesAccountSnapshot&) noexcept = default;
 };

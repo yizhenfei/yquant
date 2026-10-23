@@ -1,6 +1,8 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <spawn.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -9,16 +11,15 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
-#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <vector>
 
+#include "file_test_support.h"
 #include "gtest/gtest.h"
 #include "market_data_feed.h"
 #include "test_config_file.h"
@@ -59,7 +60,8 @@ class TemporaryDirectory {
   ~TemporaryDirectory() {
     if (valid_) {
       std::error_code error;
-      std::filesystem::remove_all(path_, error);
+      ::yquant::testing::files::RemoveTree(
+          ::yquant::testing::files::FilePath(path_), error);
     }
   }
 
@@ -92,9 +94,13 @@ class ChildProcess {
             InheritedSignals signals = InheritedSignals::kUnchanged) {
     auto adapted_arguments = arguments;
     const int feed_error = feed_.Prepare(adapted_arguments);
-    if (feed_error) return feed_error;
+    if (feed_error) {
+      return feed_error;
+    }
     const int gateway_error = gateway_.Prepare(adapted_arguments);
-    if (gateway_error) return gateway_error;
+    if (gateway_error) {
+      return gateway_error;
+    }
     int output[2] = {-1, -1};
     int events[2] = {-1, -1};
     int release[2] = {-1, -1};
@@ -191,9 +197,9 @@ class ChildProcess {
         [&] { return events_.find(event) != std::string::npos; });
   }
 
-  bool WaitForEventCount(char event, std::size_t count) {
+  bool WaitForEventCount(char event, size_t count) {
     return ObserveUntil([&] {
-      return static_cast<std::size_t>(
+      return static_cast<size_t>(
                  std::count(events_.begin(), events_.end(), event)) >= count;
     });
   }
@@ -256,7 +262,9 @@ class ChildProcess {
           return false;
         }
       }
-      if (output_.find("Running") != std::string::npos) feed_.Release();
+      if (output_.find("Running") != std::string::npos) {
+        feed_.Release();
+      }
       if (done()) {
         return true;
       }
@@ -299,7 +307,7 @@ void ExpectCompletedLifecycle(const std::string& events,
 }
 
 // Quote fixtures use one subscription, so Q must occur only between S and T.
-void ExpectQuoteLifecycle(const std::string& events, std::size_t min_quotes) {
+void ExpectQuoteLifecycle(const std::string& events, size_t min_quotes) {
   const std::string trace = events.substr(0, events.find('U'));
   ASSERT_GE(trace.size(), 5U + min_quotes) << trace;
   EXPECT_EQ(trace.substr(0, 3), "CPS");
@@ -310,7 +318,7 @@ void ExpectQuoteLifecycle(const std::string& events, std::size_t min_quotes) {
 }
 
 std::string HostMarketConfig(
-    std::uint32_t interval_ms, std::uint32_t source_id = 1,
+    uint32_t interval_ms, uint32_t source_id = 1,
     std::string_view catalog = YQUANT_TEST_INSTRUMENT_CATALOG_PATH) {
   return R"({"source_id":)" + std::to_string(source_id) +
          R"(,"instrument_catalog":")" + std::string(catalog) +
@@ -449,10 +457,11 @@ TEST(StrategydProcessTest, LoadsTheParameterizedExampleStrategy) {
 
 TEST(StrategydProcessTest, LoadsRelativeToTheWorkingDirectory) {
   std::error_code error;
-  const auto working_directory = std::filesystem::current_path(error);
+  const auto working_directory = ::yquant::testing::files::CurrentPath(error);
   ASSERT_FALSE(error) << error.message();
-  const auto relative_path = std::filesystem::relative(
-      YQUANT_TEST_PLUGIN_GOOD_PATH, working_directory, error);
+  const auto relative_path = ::yquant::testing::files::RelativePath(
+      ::yquant::testing::files::FilePath(YQUANT_TEST_PLUGIN_GOOD_PATH),
+      ::yquant::testing::files::FilePath(working_directory), error);
   ASSERT_FALSE(error) << error.message();
   ASSERT_TRUE(relative_path.is_relative());
   ChildProcess child;
@@ -471,11 +480,12 @@ TEST(StrategydProcessTest, LoadsRelativeToTheWorkingDirectory) {
 TEST(StrategydProcessTest, LoadsAPathWithSpacesAndNoExtension) {
   TemporaryDirectory directory;
   ASSERT_TRUE(directory.valid());
-  const auto path =
-      std::filesystem::path(directory.path()) / "strategy with spaces";
+  const auto path = ::yquant::testing::files::FilePath(directory.path()) /
+                    "strategy with spaces";
   std::error_code error;
-  ASSERT_TRUE(
-      std::filesystem::copy_file(YQUANT_TEST_PLUGIN_GOOD_PATH, path, error))
+  ASSERT_TRUE(::yquant::testing::files::CopyFile(
+      ::yquant::testing::files::FilePath(YQUANT_TEST_PLUGIN_GOOD_PATH),
+      ::yquant::testing::files::FilePath(path), error))
       << error.message();
   ChildProcess child;
   ASSERT_EQ(child.Start({"--strategy", path.string(), "--config",
@@ -493,10 +503,13 @@ TEST(StrategydProcessTest, LoadsAPathWithSpacesAndNoExtension) {
 TEST(StrategydProcessTest, MissingDependencyFailsBeforeCreatingTheStrategy) {
   TemporaryDirectory directory;
   ASSERT_TRUE(directory.valid());
-  const auto path = std::filesystem::path(directory.path()) / "strategy.so";
+  const auto path =
+      ::yquant::testing::files::FilePath(directory.path()) / "strategy.so";
   std::error_code error;
-  ASSERT_TRUE(std::filesystem::copy_file(
-      YQUANT_TEST_PLUGIN_MISSING_DEPENDENCY_PATH, path, error))
+  ASSERT_TRUE(::yquant::testing::files::CopyFile(
+      ::yquant::testing::files::FilePath(
+          YQUANT_TEST_PLUGIN_MISSING_DEPENDENCY_PATH),
+      ::yquant::testing::files::FilePath(path), error))
       << error.message();
   ChildProcess child;
   ASSERT_EQ(child.Start({"--strategy", path.string(), "--config",
@@ -636,10 +649,11 @@ TEST(StrategydProcessTest, StopFailureStillDestroysAndReturnsRuntimeError) {
 
 TEST(StrategydProcessTest, AcceptsConfigBeforeStrategyAndRelativeConfigPath) {
   std::error_code error;
-  const auto working_directory = std::filesystem::current_path(error);
+  const auto working_directory = ::yquant::testing::files::CurrentPath(error);
   ASSERT_FALSE(error) << error.message();
-  const auto config = std::filesystem::relative(YQUANT_TEST_CONFIG_PATH,
-                                                working_directory, error);
+  const auto config = ::yquant::testing::files::RelativePath(
+      ::yquant::testing::files::FilePath(YQUANT_TEST_CONFIG_PATH),
+      ::yquant::testing::files::FilePath(working_directory), error);
   ASSERT_FALSE(error) << error.message();
   ChildProcess child;
   ASSERT_EQ(child.Start({"--config", config.string(), "--strategy",
@@ -657,10 +671,12 @@ TEST(StrategydProcessTest, AcceptsConfigBeforeStrategyAndRelativeConfigPath) {
 TEST(StrategydProcessTest, AcceptsConfigPathsWithSpaces) {
   TemporaryDirectory directory;
   ASSERT_TRUE(directory.valid());
-  const auto path =
-      std::filesystem::path(directory.path()) / "config with spaces";
+  const auto path = ::yquant::testing::files::FilePath(directory.path()) /
+                    "config with spaces";
   std::error_code error;
-  ASSERT_TRUE(std::filesystem::copy_file(YQUANT_TEST_CONFIG_PATH, path, error))
+  ASSERT_TRUE(::yquant::testing::files::CopyFile(
+      ::yquant::testing::files::FilePath(YQUANT_TEST_CONFIG_PATH),
+      ::yquant::testing::files::FilePath(path), error))
       << error.message();
   ChildProcess child;
   ASSERT_EQ(child.Start({"--strategy", YQUANT_TEST_PLUGIN_GOOD_PATH, "--config",
@@ -759,8 +775,7 @@ TEST(StrategydMarketProcessTest, ContinuesReceivingQuotesUntilSignal) {
   ExpectQuoteLifecycle(child.events(), 2);
 }
 
-class QuoteObserverSourceTest : public ::testing::TestWithParam<std::uint32_t> {
-};
+class QuoteObserverSourceTest : public ::testing::TestWithParam<uint32_t> {};
 
 TEST_P(QuoteObserverSourceTest, ReusesStrategyConfigAcrossHostSources) {
   testing::ConfigFile market(HostMarketConfig(1, GetParam()));

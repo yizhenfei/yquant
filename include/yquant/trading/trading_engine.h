@@ -1,6 +1,13 @@
 #ifndef YQUANT_TRADING_TRADING_ENGINE_H_
 #define YQUANT_TRADING_TRADING_ENGINE_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
+#include <cstddef>
+#include <optional>
+#include <span>
+
 #include "yquant/base/monotonic_clock.h"
 #include "yquant/md/instrument_scope.h"
 #include "yquant/trading/trading_adapter.h"
@@ -71,19 +78,19 @@ class TradingEngine final {
   // Requires requests closed. Marks each attempt before sending; uncertain
   // failures never requeue it. Stopping converts unsent orders to local
   // cancels.
-  [[nodiscard]] base::Status ProcessRequests(std::uint64_t now,
-                                             std::size_t limit = 64) noexcept;
+  [[nodiscard]] base::Status ProcessRequests(uint64_t now,
+                                             size_t limit = 64) noexcept;
   // Scans a bounded number of slots for cancels, retaining progress on a full
   // queue. Rejected cancels wait at least 10ms before retrying.
-  [[nodiscard]] base::Status ScheduleStopping(
-      std::uint64_t now, std::size_t max_scan = 64) noexcept;
-  std::optional<std::uint64_t> next_deadline() const noexcept;
-  bool has_ready_event(std::uint64_t now) const noexcept;
+  [[nodiscard]] base::Status ScheduleStopping(uint64_t now,
+                                              size_t max_scan = 64) noexcept;
+  std::optional<uint64_t> next_deadline() const noexcept;
+  bool has_ready_event(uint64_t now) const noexcept;
   bool is_drained() const noexcept;
-  std::size_t order_count() const noexcept;
+  size_t order_count() const noexcept;
   const char* error_stage() const noexcept { return error_stage_; }
   const char* error_detail() const noexcept { return error_detail_; }
-  [[nodiscard]] base::Status Poll(std::uint64_t now, TradingDispatch& out,
+  [[nodiscard]] base::Status Poll(uint64_t now, TradingDispatch& out,
                                   bool& event) noexcept;
 
   // Commits a supplied normalized report, preserving state and out on failure.
@@ -102,29 +109,29 @@ class TradingEngine final {
   [[nodiscard]] base::Status SetMutationSink(
       TradingMutationSink* sink) noexcept;
   // Cash journal revision; futures execution leaves this zero.
-  std::uint64_t mutation_revision() const noexcept;
-  std::uint64_t next_order_id() const noexcept;
-  std::uint64_t next_cancel_id() const noexcept;
+  uint64_t mutation_revision() const noexcept;
+  uint64_t next_order_id() const noexcept;
+  uint64_t next_cancel_id() const noexcept;
   // Cold/bounded retained-slot iteration; false preserves out.
-  [[nodiscard]] bool TryGetOrderAt(std::size_t index,
+  [[nodiscard]] bool TryGetOrderAt(size_t index,
                                    model::OrderSnapshot& out) const noexcept;
-  std::size_t fill_count() const noexcept;
+  size_t fill_count() const noexcept;
   // Cold retained execution iteration; false preserves out. Access must be
   // serialized with ledger mutations, matching the order iteration contract.
-  [[nodiscard]] bool TryGetFillAt(std::size_t index,
+  [[nodiscard]] bool TryGetFillAt(size_t index,
                                   model::Fill& out) const noexcept;
   // Cold identity allocation: never lowers the next ID, allocates no storage,
   // and changes no existing order. The owner persists its lease before use.
-  [[nodiscard]] base::Status SetNextOrderIdAtLeast(std::uint64_t id) noexcept;
+  [[nodiscard]] base::Status SetNextOrderIdAtLeast(uint64_t id) noexcept;
   // Same cold lease contract for cancel IDs; id is the next assignable value.
-  [[nodiscard]] base::Status SetNextCancelIdAtLeast(std::uint64_t id) noexcept;
+  [[nodiscard]] base::Status SetNextCancelIdAtLeast(uint64_t id) noexcept;
   // Cash-only cold codec operations; futures return kUnsupported.
   // Export does not allocate and preserves size on failure. Restore validates
   // a private candidate and preserves this ledger
   // on failure; successful restore leaves execution stopped and callbacks off.
   // The checkpoint includes pending queues, reservations and dedup identities.
   [[nodiscard]] base::Status ExportCheckpoint(std::span<std::byte> bytes,
-                                              std::size_t& size) const noexcept;
+                                              size_t& size) const noexcept;
   [[nodiscard]] base::Status RestoreCheckpoint(
       std::span<const std::byte> bytes) noexcept;
   // Installs an independently reconciled cash baseline without financially
@@ -162,12 +169,11 @@ class TradingEngine final {
   [[nodiscard]] base::ErrorCode ValidateBrokerAccount(
       const BrokerAccountSnapshot& account) noexcept;
   // Finds a retained order; cold-leased IDs may be sparse and are never reused.
-  std::optional<std::size_t> FindIndex(model::ClientOrderId id) const noexcept;
+  std::optional<size_t> FindIndex(model::ClientOrderId id) const noexcept;
   // Finds a retained position; a known untouched instrument has no slot yet.
-  std::optional<std::size_t> FindPosition(
-      model::InstrumentId id) const noexcept;
+  std::optional<size_t> FindPosition(model::InstrumentId id) const noexcept;
   // Atomically reserves queue space and marks an eligible order pending.
-  [[nodiscard]] base::ErrorCode QueueCancel(std::size_t index) noexcept;
+  [[nodiscard]] base::ErrorCode QueueCancel(size_t index) noexcept;
   // Copies diagnostics without changing business facts. Detail must not alias
   // this runtime's diagnostic buffer.
   base::ErrorCode Fail(base::ErrorCode code, const char* detail) noexcept;
@@ -177,9 +183,9 @@ class TradingEngine final {
   TradingMutationSink* sink_ = nullptr;
   bool replaying_ = false;
   bool invoking_sink_ = false;
-  std::uint64_t replay_now_ = 0;
+  uint64_t replay_now_ = 0;
 
-  static constexpr std::size_t kErrorDetailSize = 1024;
+  static constexpr size_t kErrorDetailSize = 1024;
   const base::MonotonicClock& clock_;
   const md::InstrumentScope& instruments_;
   TradingAdapter& adapter_;

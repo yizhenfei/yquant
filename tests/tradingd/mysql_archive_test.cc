@@ -1,19 +1,23 @@
 #include "tradingd/mysql_archive.h"
 
-#include <gtest/gtest.h>
+#include <stdint.h>
 
+#include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
-#include <filesystem>
 #include <limits>
+#include <span>
 #include <string>
 #include <thread>
 
+#include "file_test_support.h"
+#include "gtest/gtest.h"
 #include "tradingd/state_codec.h"
+#include "yquant/base/format.h"
 
 namespace yquant::tradingd {
 namespace {
-using namespace std::chrono_literals;
 
 class ArchiveFilesTest : public ::testing::Test {
  protected:
@@ -27,29 +31,32 @@ class ArchiveFilesTest : public ::testing::Test {
   }
   void TearDown() override {
     EXPECT_TRUE(journal_.Close().ok());
-    std::filesystem::remove_all(directory_);
+    ::yquant::testing::files::RemoveTree(
+        ::yquant::testing::files::FilePath(directory_));
   }
   std::string directory_;
   Journal journal_;
 
   ServerConfig WorkerConfig() const {
     ServerConfig config;
-    std::snprintf(config.persistence.directory,
-                  sizeof(config.persistence.directory), "%s",
-                  directory_.c_str());
+    ::yquant::base::FormatTo(config.persistence.directory,
+                             sizeof(config.persistence.directory), "{}",
+                             directory_.c_str());
     config.mysql_archive.enabled = true;
-    config.mysql_archive.min_free_bytes =
-        std::numeric_limits<std::uint64_t>::max();
+    config.mysql_archive.min_free_bytes = std::numeric_limits<uint64_t>::max();
     config.mysql_archive.retry_ms = 30000;
     config.mysql_archive.shutdown_ms = 50;
     return config;
   }
 
   static bool WaitForFailureAndDiskSignal(const MysqlArchive& archive) {
-    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (std::chrono::steady_clock::now() < deadline) {
-      if (archive.failed() && archive.disk_full()) return true;
-      std::this_thread::sleep_for(1ms);
+      if (archive.failed() && archive.disk_full()) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     return false;
   }
@@ -69,7 +76,7 @@ TEST_F(ArchiveFilesTest,
     ASSERT_TRUE(
         journal_.SaveFile(name, std::span(bytes).first(writer.size())).ok());
   }
-  std::uint64_t id = 0;
+  uint64_t id = 0;
   ASSERT_TRUE(NextArchiveRun(directory_.c_str(), 1, id).ok());
   EXPECT_EQ(id, 9);
   ASSERT_TRUE(NextArchiveRun(directory_.c_str(), 9, id).ok());
@@ -86,7 +93,9 @@ TEST_F(ArchiveFilesTest, RejectsInvalidPredecessorWithoutChangingOutput) {
   ArchiveName(name, "run", 5);
   std::array<std::byte, 64> bytes{};
   StateWriter writer(bytes);
-  for (auto number : {1U, 5U, 6U, 0U, 0U}) writer.U64(number);
+  for (auto number : {1U, 5U, 6U, 0U, 0U}) {
+    writer.U64(number);
+  }
   ASSERT_TRUE(
       journal_.SaveFile(name, std::span(bytes).first(writer.size())).ok());
   ArchiveRun manifest{88, 0, 0, false};
@@ -105,7 +114,8 @@ TEST_F(ArchiveFilesTest, PermanentInputFailureStillPublishesLowDiskAndCancels) {
   EXPECT_EQ(archive.archived_lsn(), 0);
   const auto started = std::chrono::steady_clock::now();
   archive.Stop(false);
-  EXPECT_LT(std::chrono::steady_clock::now() - started, 1s);
+  EXPECT_LT(std::chrono::steady_clock::now() - started,
+            std::chrono::seconds(1));
 }
 
 TEST_F(ArchiveFilesTest, RetryWaitMonitorsDiskAndFinishHonorsItsDeadline) {
@@ -115,7 +125,9 @@ TEST_F(ArchiveFilesTest, RetryWaitMonitorsDiskAndFinishHonorsItsDeadline) {
   ArchiveName(name, "run", 1);
   std::array<std::byte, 64> bytes{};
   StateWriter writer(bytes);
-  for (const auto number : {1U, 1U, 0U, 0U, 0U}) writer.U64(number);
+  for (const auto number : {1U, 1U, 0U, 0U, 0U}) {
+    writer.U64(number);
+  }
   ASSERT_TRUE(
       journal_.SaveFile(name, std::span(bytes).first(writer.size())).ok());
   MysqlArchive archive;
@@ -128,8 +140,8 @@ TEST_F(ArchiveFilesTest, RetryWaitMonitorsDiskAndFinishHonorsItsDeadline) {
   const auto started = std::chrono::steady_clock::now();
   archive.Stop(true);
   const auto elapsed = std::chrono::steady_clock::now() - started;
-  EXPECT_GE(elapsed, 20ms);
-  EXPECT_LT(elapsed, 1s);
+  EXPECT_GE(elapsed, std::chrono::milliseconds(20));
+  EXPECT_LT(elapsed, std::chrono::seconds(1));
 }
 
 TEST_F(ArchiveFilesTest, DisabledWorkerAllowsAppliedAndRepeatedStop) {

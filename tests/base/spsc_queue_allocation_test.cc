@@ -1,3 +1,5 @@
+#include <stddef.h>
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -12,19 +14,21 @@
 namespace {
 
 struct CppHeapActivity {
-  std::size_t allocation_calls = 0;
-  std::size_t deallocation_calls = 0;
+  size_t allocation_calls = 0;
+  size_t deallocation_calls = 0;
 };
 
-thread_local bool g_track_cpp_heap = false;
-thread_local CppHeapActivity g_cpp_heap_activity;
+constinit thread_local bool g_track_cpp_heap = false;
+constinit thread_local CppHeapActivity g_cpp_heap_activity;
 
 // This executable counts replacement C++ allocation/deallocation functions.
 // Direct calls to malloc, realloc, free, or OS mapping APIs are not counted.
-void* AllocateCppHeap(std::size_t size, std::size_t alignment,
+void* AllocateCppHeap(size_t size, size_t alignment,
                       bool abort_on_failure) noexcept {
-  if (g_track_cpp_heap) ++g_cpp_heap_activity.allocation_calls;
-  size = std::max<std::size_t>(size, 1);
+  if (g_track_cpp_heap) {
+    ++g_cpp_heap_activity.allocation_calls;
+  }
+  size = std::max<size_t>(size, 1);
   void* result = nullptr;
   if (alignment == 0) {
     result = std::malloc(size);
@@ -32,12 +36,16 @@ void* AllocateCppHeap(std::size_t size, std::size_t alignment,
                             size) != 0) {
     result = nullptr;
   }
-  if (result == nullptr && abort_on_failure) std::abort();
+  if (result == nullptr && abort_on_failure) {
+    std::abort();
+  }
   return result;
 }
 
 void DeallocateCppHeap(void* memory) noexcept {
-  if (g_track_cpp_heap) ++g_cpp_heap_activity.deallocation_calls;
+  if (g_track_cpp_heap) {
+    ++g_cpp_heap_activity.deallocation_calls;
+  }
   std::free(memory);
 }
 
@@ -52,47 +60,45 @@ CppHeapActivity ObserveCppHeap(Action&& action) noexcept {
 
 }  // namespace
 
-void* operator new(std::size_t size) { return AllocateCppHeap(size, 0, true); }
+void* operator new(size_t size) { return AllocateCppHeap(size, 0, true); }
 
-void* operator new[](std::size_t size) {
-  return AllocateCppHeap(size, 0, true);
-}
+void* operator new[](size_t size) { return AllocateCppHeap(size, 0, true); }
 
-void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
+void* operator new(size_t size, const std::nothrow_t&) noexcept {
   return AllocateCppHeap(size, 0, false);
 }
 
-void* operator new[](std::size_t size, const std::nothrow_t&) noexcept {
+void* operator new[](size_t size, const std::nothrow_t&) noexcept {
   return AllocateCppHeap(size, 0, false);
 }
 
-void* operator new(std::size_t size, std::align_val_t alignment) {
-  return AllocateCppHeap(size, static_cast<std::size_t>(alignment), true);
+void* operator new(size_t size, std::align_val_t alignment) {
+  return AllocateCppHeap(size, static_cast<size_t>(alignment), true);
 }
 
-void* operator new[](std::size_t size, std::align_val_t alignment) {
-  return AllocateCppHeap(size, static_cast<std::size_t>(alignment), true);
+void* operator new[](size_t size, std::align_val_t alignment) {
+  return AllocateCppHeap(size, static_cast<size_t>(alignment), true);
 }
 
-void* operator new(std::size_t size, std::align_val_t alignment,
+void* operator new(size_t size, std::align_val_t alignment,
                    const std::nothrow_t&) noexcept {
-  return AllocateCppHeap(size, static_cast<std::size_t>(alignment), false);
+  return AllocateCppHeap(size, static_cast<size_t>(alignment), false);
 }
 
-void* operator new[](std::size_t size, std::align_val_t alignment,
+void* operator new[](size_t size, std::align_val_t alignment,
                      const std::nothrow_t&) noexcept {
-  return AllocateCppHeap(size, static_cast<std::size_t>(alignment), false);
+  return AllocateCppHeap(size, static_cast<size_t>(alignment), false);
 }
 
 void operator delete(void* memory) noexcept { DeallocateCppHeap(memory); }
 
 void operator delete[](void* memory) noexcept { DeallocateCppHeap(memory); }
 
-void operator delete(void* memory, std::size_t) noexcept {
+void operator delete(void* memory, size_t) noexcept {
   DeallocateCppHeap(memory);
 }
 
-void operator delete[](void* memory, std::size_t) noexcept {
+void operator delete[](void* memory, size_t) noexcept {
   DeallocateCppHeap(memory);
 }
 
@@ -112,11 +118,11 @@ void operator delete[](void* memory, std::align_val_t) noexcept {
   DeallocateCppHeap(memory);
 }
 
-void operator delete(void* memory, std::size_t, std::align_val_t) noexcept {
+void operator delete(void* memory, size_t, std::align_val_t) noexcept {
   DeallocateCppHeap(memory);
 }
 
-void operator delete[](void* memory, std::size_t, std::align_val_t) noexcept {
+void operator delete[](void* memory, size_t, std::align_val_t) noexcept {
   DeallocateCppHeap(memory);
 }
 
@@ -172,25 +178,27 @@ TEST(SpscQueueCppHeapCounterTest, CountsReplacementOperatorCalls) {
     pointers[9] = ::operator new[](16, std::align_val_t{128});
     pointers[10] = ::operator new[](16);
     pointers[11] = ::operator new(16, std::align_val_t{128});
-    for (std::size_t i = 0; i < pointers.size(); ++i) {
+    for (size_t i = 0; i < pointers.size(); ++i) {
       allocated[i] = pointers[i] != nullptr;
     }
     ::operator delete(pointers[0]);
-    ::operator delete[](pointers[1], std::size_t{16});
+    ::operator delete[](pointers[1], size_t{16});
     ::operator delete(pointers[2], std::nothrow);
     ::operator delete[](pointers[3], std::nothrow);
     ::operator delete(pointers[4], std::align_val_t{128});
     ::operator delete[](pointers[5], std::align_val_t{128});
     ::operator delete(pointers[6], std::align_val_t{128}, std::nothrow);
     ::operator delete[](pointers[7], std::align_val_t{128}, std::nothrow);
-    ::operator delete(pointers[8], std::size_t{16});
-    ::operator delete[](pointers[9], std::size_t{16}, std::align_val_t{128});
+    ::operator delete(pointers[8], size_t{16});
+    ::operator delete[](pointers[9], size_t{16}, std::align_val_t{128});
     ::operator delete[](pointers[10]);
-    ::operator delete(pointers[11], std::size_t{16}, std::align_val_t{128});
+    ::operator delete(pointers[11], size_t{16}, std::align_val_t{128});
   });
   EXPECT_EQ(activity.allocation_calls, 12U);
   EXPECT_EQ(activity.deallocation_calls, 12U);
-  for (bool succeeded : allocated) EXPECT_TRUE(succeeded);
+  for (bool succeeded : allocated) {
+    EXPECT_TRUE(succeeded);
+  }
 }
 
 TEST(SpscQueueCppHeapCounterTest, ColdInitializationHasNoCppHeapActivity) {
@@ -210,7 +218,7 @@ TEST(SpscQueueCppHeapCounterTest, ColdInitializationHasNoCppHeapActivity) {
     statuses[8] = producer.Attach({}, Role::kProducer);
     statuses[9] = producer.TryReserve(0).status;
   });
-  for (std::size_t i = 0; i < 6; ++i) {
+  for (size_t i = 0; i < 6; ++i) {
     EXPECT_EQ(statuses[i], SpscStatus::kSuccess) << "operation=" << i;
   }
   EXPECT_EQ(statuses[6], SpscStatus::kInvalidArgument);
@@ -222,13 +230,13 @@ TEST(SpscQueueCppHeapCounterTest, ColdInitializationHasNoCppHeapActivity) {
 }
 
 const char* ExerciseCopies(SpscQueue& producer, SpscQueue& consumer,
-                           std::size_t& padding_only_returns) noexcept {
+                           size_t& padding_only_returns) noexcept {
   std::array<std::byte, 60> input;
   std::array<std::byte, 60> output;
-  for (std::size_t i = 0; i < input.size(); ++i) {
+  for (size_t i = 0; i < input.size(); ++i) {
     input[i] = static_cast<std::byte>(i ^ 0x7a);
   }
-  for (std::size_t iteration = 0; iteration < 1024; ++iteration) {
+  for (size_t iteration = 0; iteration < 1024; ++iteration) {
     const auto size = (iteration * 17) % 61;
     const auto payload = std::span(input).first(size);
     if (producer.CheckWrite(size) != SpscStatus::kSuccess) {
@@ -242,7 +250,9 @@ const char* ExerciseCopies(SpscQueue& producer, SpscQueue& consumer,
       }
       status = producer.TryWrite(payload);
     }
-    if (status != SpscStatus::kSuccess) return "copy write";
+    if (status != SpscStatus::kSuccess) {
+      return "copy write";
+    }
     output.fill(std::byte{0x55});
     if (size != 0) {
       auto small = consumer.TryRead(std::span(output).first(size - 1));
@@ -268,7 +278,7 @@ const char* ExerciseCopies(SpscQueue& producer, SpscQueue& consumer,
 
 TEST_F(SpscQueueCppHeapTest, CopyAndWrapHaveNoCppHeapActivity) {
   const char* failure = nullptr;
-  std::size_t padding_only_returns = 0;
+  size_t padding_only_returns = 0;
   const auto activity = ObserveCppHeap([&]() noexcept {
     failure = ExerciseCopies(producer_, consumer_, padding_only_returns);
   });
@@ -336,7 +346,9 @@ const char* ExerciseBorrows(SpscQueue& producer, SpscQueue& consumer,
   }
   {
     auto canceled = producer.TryReserve(16);
-    if (canceled.status != SpscStatus::kSuccess) return "cancel reserve";
+    if (canceled.status != SpscStatus::kSuccess) {
+      return "cancel reserve";
+    }
     canceled.reservation.payload()[0] = std::byte{0x64};
   }
   if (consumer.TryAcquire().status != SpscStatus::kEmpty ||
@@ -350,7 +362,9 @@ const char* ExerciseBorrows(SpscQueue& producer, SpscQueue& consumer,
     }
     full = producer.TryReserve(60);
   }
-  if (full.status != SpscStatus::kSuccess) return "full-frame reserve";
+  if (full.status != SpscStatus::kSuccess) {
+    return "full-frame reserve";
+  }
   std::fill(full.reservation.payload().begin(),
             full.reservation.payload().end(), std::byte{0x35});
   if (full.reservation.Commit(60) != SpscStatus::kSuccess ||

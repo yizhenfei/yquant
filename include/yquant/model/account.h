@@ -1,7 +1,7 @@
 #ifndef YQUANT_MODEL_ACCOUNT_H_
 #define YQUANT_MODEL_ACCOUNT_H_
 
-#include <cstdint>
+#include <stdint.h>
 
 #include "yquant/model/identifiers.h"
 
@@ -10,9 +10,9 @@ namespace yquant::model {
 // CNY cash in micro-yuan (1 yuan = 1,000,000 units). Reservations are included
 // in balance; available == balance - reserved. All values are nonnegative.
 struct CashSnapshot {
-  std::int64_t balance = 0;
-  std::int64_t reserved = 0;
-  std::int64_t available = 0;
+  int64_t balance = 0;
+  int64_t reserved = 0;
+  int64_t available = 0;
   friend bool operator==(const CashSnapshot&,
                          const CashSnapshot&) noexcept = default;
 };
@@ -22,9 +22,9 @@ struct CashSnapshot {
 // but are unavailable for selling during this run.
 struct PositionSnapshot {
   InstrumentId instrument_id;
-  std::int64_t total_qty = 0;
-  std::int64_t available_qty = 0;
-  std::int64_t reserved_qty = 0;
+  int64_t total_qty = 0;
+  int64_t available_qty = 0;
+  int64_t reserved_qty = 0;
   friend bool operator==(const PositionSnapshot&,
                          const PositionSnapshot&) noexcept = default;
 };

@@ -1,11 +1,12 @@
 #include <pthread.h>
 #include <sched.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
-#include <cstdint>
 #include <span>
 
 #include "gtest/gtest.h"
@@ -17,25 +18,25 @@ namespace {
 using Role = SpscQueue::Role;
 using Clock = std::chrono::steady_clock;
 constexpr auto kWorkerTimeout = std::chrono::seconds(15);
-constexpr std::uint64_t kThreadFrameCount = 50000;
+constexpr uint64_t kThreadFrameCount = 50000;
 
-std::size_t MessageSize(std::uint64_t sequence) { return sequence % 129; }
+size_t MessageSize(uint64_t sequence) { return sequence % 129; }
 
-std::byte MessageByte(std::uint64_t sequence, std::size_t offset) {
+std::byte MessageByte(uint64_t sequence, size_t offset) {
   return static_cast<std::byte>((sequence * 131 + offset * 17) & 0xff);
 }
 
-void FillMessage(std::span<std::byte> payload, std::uint64_t sequence) {
-  for (std::size_t index = 0; index < payload.size(); ++index) {
+void FillMessage(std::span<std::byte> payload, uint64_t sequence) {
+  for (size_t index = 0; index < payload.size(); ++index) {
     payload[index] = MessageByte(sequence, index);
   }
 }
 
-bool CheckMessage(std::span<const std::byte> payload, std::uint64_t sequence) {
+bool CheckMessage(std::span<const std::byte> payload, uint64_t sequence) {
   if (payload.size() != MessageSize(sequence)) {
     return false;
   }
-  for (std::size_t index = 0; index < payload.size(); ++index) {
+  for (size_t index = 0; index < payload.size(); ++index) {
     if (payload[index] != MessageByte(sequence, index)) {
       return false;
     }
@@ -47,7 +48,7 @@ bool CheckMessage(std::span<const std::byte> payload, std::uint64_t sequence) {
 // Every retry loop checks both a local deadline and the shared stop request.
 struct Worker {
   std::span<std::byte> memory;
-  std::uint64_t frame_count;
+  uint64_t frame_count;
   bool producer;
   bool zero_copy;
   std::atomic<bool>* stop;
@@ -62,7 +63,7 @@ int RunWorker(const Worker& worker) {
   }
   const auto deadline = Clock::now() + kWorkerTimeout;
   std::array<std::byte, 128> buffer{};
-  for (std::uint64_t sequence = 0; sequence < worker.frame_count;) {
+  for (uint64_t sequence = 0; sequence < worker.frame_count;) {
     if (worker.stop->load(std::memory_order_relaxed) ||
         Clock::now() >= deadline) {
       return 2;
