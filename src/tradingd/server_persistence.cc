@@ -582,7 +582,7 @@ base::Status Server::Storage::RecoverMock() noexcept {
     if (code != base::ErrorCode::kOk) return {code, {}};
   }
   for (std::size_t i = 0; i < mock.recovery_event_count(); ++i) {
-    trading::TradingEvent event;
+    model::TradingEvent event;
     auto status = mock.ReadRecoveryEvent(i, event);
     if (!status.ok()) return status;
     model::OrderSnapshot order;
@@ -612,7 +612,7 @@ base::Status Server::Storage::RecoverMock() noexcept {
     if (!found && !model::IsTerminalOrderState(order.state)) {
       // A journaled send intent without a mock Send record has no external
       // simulation side effect. Do not send it for the first time on restart.
-      trading::TradingEvent rejected;
+      model::TradingEvent rejected;
       rejected.client_order_id = order.client_order_id;
       rejected.report_sequence = order.report_sequence + 1;
       rejected.kind = model::OrderUpdateKind::kRejected;
@@ -671,7 +671,7 @@ base::Status Server::Storage::RecoverMock() noexcept {
     recovery_now = clock_.Now();
     status = mock.RebaseDeadlines(*deadline, recovery_now);
     if (!status.ok()) return status;
-    trading::TradingEvent event;
+    model::TradingEvent event;
     const auto polled = mock.Poll(recovery_now, event);
     if (polled.state != trading::TradingPollState::kEvent)
       return CorruptState();

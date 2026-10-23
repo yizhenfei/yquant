@@ -212,7 +212,7 @@ const char* ExerciseOrders(trading::TradingEngine& trading,
       if (!trading.TryGetOrder(id, before)) {
         return "pending order was not queryable";
       }
-      trading::TradingEvent event;
+      model::TradingEvent event;
       event.report_sequence = 999;
       clock.now = *deadline - 1;
       const auto idle = adapter.Poll(clock.Now(), event);
@@ -446,7 +446,7 @@ const char* ExerciseFuturesOrder(TradingEngine& trading,
     const auto deadline = exchange.next_deadline();
     if (!deadline) return "futures exchange lost a pending event";
     clock.now = std::max(clock.now, *deadline);
-    TradingEvent event;
+    model::TradingEvent event;
     const auto polled = exchange.Poll(clock.Now(), event);
     if (!polled.status.ok() || polled.state != TradingPollState::kEvent)
       return "futures exchange failed to publish a due event";

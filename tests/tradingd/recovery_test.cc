@@ -228,7 +228,7 @@ TEST(BrokerRecoveryTest, RecoversFilledTerminalOrderAfterEntireWalDisappears) {
   EXPECT_EQ(ledger.order_count(), 1U);
   EXPECT_TRUE(ledger.is_drained());
   // An overlapping old callback must retain the imported account baseline.
-  trading::TradingEvent duplicate;
+  model::TradingEvent duplicate;
   duplicate.client_order_id = kLeasedCoreId;
   duplicate.broker_order_id = order.broker_order_id;
   duplicate.kind = model::OrderUpdateKind::kFill;

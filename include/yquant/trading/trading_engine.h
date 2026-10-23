@@ -3,6 +3,7 @@
 
 #include "yquant/base/monotonic_clock.h"
 #include "yquant/md/instrument_scope.h"
+#include "yquant/model/trading_event.h"
 #include "yquant/trading/trading_adapter.h"
 #include "yquant/trading/trading_dispatch.h"
 #include "yquant/trading/trading_limits.h"
@@ -88,7 +89,7 @@ class TradingEngine final {
 
   // Commits a supplied normalized report, preserving state and out on failure.
   // Serial access and the runtime's monotonic clock domain are required.
-  [[nodiscard]] base::ErrorCode ApplyEvent(const TradingEvent& event,
+  [[nodiscard]] base::ErrorCode ApplyEvent(const model::TradingEvent& event,
                                            TradingDispatch& out) noexcept;
   // Commits one queued CanceledBeforeSend event. Empty input returns
   // kInvalidState without changing out or account/order facts.

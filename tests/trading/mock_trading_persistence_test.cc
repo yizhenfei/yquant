@@ -69,7 +69,7 @@ TEST(MockTradingPersistenceTest, SnapshotRestoresPartialFillAndPendingCancel) {
   ASSERT_TRUE(
       source.SendOrderWithIdentity({7}, Request(), "session-A/order-9", 0)
           .ok());
-  TradingEvent event;
+  model::TradingEvent event;
   ASSERT_EQ(source.Poll(kInterval, event).state, TradingPollState::kEvent);
   const auto broker = event.broker_order_id;
   ASSERT_TRUE(source.SendCancel({7}, broker, {11}, kInterval).ok());
@@ -125,7 +125,7 @@ TEST(MockTradingPersistenceTest, ReplayPreservesExactEventsAndSuppressesSink) {
   source.SetMutationObserver(Observer::Observe, &source_observer);
   ASSERT_TRUE(
       source.SendOrderWithIdentity({1}, Request(1), "unique-request", 0).ok());
-  TradingEvent event;
+  model::TradingEvent event;
   ASSERT_EQ(source.Poll(kInterval, event).state, TradingPollState::kEvent);
   const auto broker = event.broker_order_id;
   ASSERT_EQ(source.Poll(2 * kInterval, event).state, TradingPollState::kEvent);
@@ -193,7 +193,7 @@ TEST(MockTradingPersistenceTest, RejectedJournalLeavesEveryOperationUnchanged) {
   ASSERT_TRUE(adapter.SendOrder({1}, Request(), 0).ok());
   const auto before_report = Snapshot(adapter, kInterval);
   observer.fail = true;
-  TradingEvent event;
+  model::TradingEvent event;
   event.client_order_id = {99};
   EXPECT_EQ(adapter.Poll(kInterval, event).state, TradingPollState::kError);
   EXPECT_EQ(event.client_order_id.value, 99U);
@@ -325,7 +325,7 @@ TEST(MockTradingPersistenceTest, InvalidReplayReportPreservesPendingPlan) {
   Observer observer;
   source.SetMutationObserver(Observer::Observe, &observer);
   ASSERT_TRUE(source.SendOrder({1}, Request(), 0).ok());
-  TradingEvent event;
+  model::TradingEvent event;
   ASSERT_EQ(source.Poll(kInterval, event).state, TradingPollState::kEvent);
   MockTradingAdapter replay;
   ASSERT_TRUE(Start(replay));
@@ -406,7 +406,7 @@ TEST(MockTradingPersistenceTest, ReportCodecRejectsFuturesExecutionEffect) {
   Observer observer;
   source.SetMutationObserver(Observer::Observe, &observer);
   ASSERT_TRUE(source.SendOrder({1}, Request(), 0).ok());
-  TradingEvent event;
+  model::TradingEvent event;
   ASSERT_EQ(source.Poll(kInterval, event).state, TradingPollState::kEvent);
   ASSERT_EQ(source.Poll(2 * kInterval, event).state, TradingPollState::kEvent);
   ASSERT_EQ(event.kind, model::OrderUpdateKind::kFill);

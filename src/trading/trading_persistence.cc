@@ -173,7 +173,7 @@ void ReadFill(Reader& r, model::Fill& value) noexcept {
   value.receive_time_ns = r.Uint();
   value.has_event_time = r.Boolean();
 }
-void WriteEvent(Writer& w, const TradingEvent& value) noexcept {
+void WriteEvent(Writer& w, const model::TradingEvent& value) noexcept {
   w.Uint(value.client_order_id.value);
   WriteId(w, value.broker_order_id);
   w.Uint(value.report_sequence);
@@ -192,7 +192,7 @@ void WriteEvent(Writer& w, const TradingEvent& value) noexcept {
   w.Uint(value.reason.size, 1);
   w.Bytes(value.reason.view());
 }
-void ReadEvent(Reader& r, TradingEvent& value) noexcept {
+void ReadEvent(Reader& r, model::TradingEvent& value) noexcept {
   value.client_order_id.value = r.Uint();
   ReadId(r, value.broker_order_id);
   value.report_sequence = r.Uint();

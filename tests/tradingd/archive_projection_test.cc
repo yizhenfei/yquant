@@ -154,7 +154,7 @@ class ArchiveProjectionTest : public ::testing::Test {
     ASSERT_TRUE(mock.Prepare(config.trading).ok());
     ASSERT_TRUE(mock.Start(clock.Now()).ok());
     ASSERT_TRUE(source.ProcessRequests(mock, clock.Now()).ok());
-    trading::TradingEvent accepted;
+    model::TradingEvent accepted;
     clock.now += config.trading.report_interval_ns;
     ASSERT_EQ(mock.Poll(clock.Now(), accepted).state,
               trading::TradingPollState::kEvent);
@@ -330,7 +330,7 @@ TEST_F(ArchiveProjectionTest, CancelReportsTranslateCoreToLocalIdentity) {
   ASSERT_TRUE(source.ProcessRequests(mock, clock.Now()).ok());
   model::OrderSnapshot snapshot;
   ASSERT_TRUE(source.TryGetOrder({1}, snapshot));
-  trading::TradingEvent canceled;
+  model::TradingEvent canceled;
   canceled.client_order_id = {1};
   canceled.broker_order_id = snapshot.broker_order_id;
   canceled.report_sequence = 3;

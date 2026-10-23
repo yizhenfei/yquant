@@ -139,7 +139,7 @@ class TradingEngineHarness {
       return target->SendCancel(id, broker, cancel, now);
     }
     trading::TradingPollResult Poll(
-        std::uint64_t now, trading::TradingEvent& out) noexcept override {
+        std::uint64_t now, model::TradingEvent& out) noexcept override {
       return target ? target->Poll(now, out) : trading::TradingPollResult{};
     }
     std::optional<std::uint64_t> next_deadline() const noexcept override {

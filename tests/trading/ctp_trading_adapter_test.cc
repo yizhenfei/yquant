@@ -162,7 +162,7 @@ TradingConfig Config(std::uint16_t port) {
   return config;
 }
 
-TradingPollResult Wait(CtpTradingAdapter& adapter, TradingEvent& event) {
+TradingPollResult Wait(CtpTradingAdapter& adapter, model::TradingEvent& event) {
   for (std::size_t attempt = 0; attempt < 1000; ++attempt) {
     const auto now = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -194,7 +194,7 @@ TEST(CtpTradingAdapterTest, BrokerAccountReportsAndCancelUseActualWire) {
                                     1, model::PositionEffect::kOpen};
   ASSERT_TRUE(adapter.SendOrder({10}, request, 0).ok());
   EXPECT_FALSE(adapter.is_drained());
-  TradingEvent event;
+  model::TradingEvent event;
   ASSERT_EQ(Wait(adapter, event).state, TradingPollState::kEvent)
       << adapter.error_detail();
   EXPECT_EQ(event.kind, model::OrderUpdateKind::kAccepted);
@@ -241,7 +241,7 @@ TEST(CtpTradingAdapterTest, MismatchedBrokerOrderFailsWithoutChangingOutput) {
                               model::PositionEffect::kOpen},
                              0)
                   .ok());
-  TradingEvent output;
+  model::TradingEvent output;
   output.report_sequence = 999;
   EXPECT_EQ(Wait(adapter, output).state, TradingPollState::kError);
   EXPECT_EQ(output.report_sequence, 999);

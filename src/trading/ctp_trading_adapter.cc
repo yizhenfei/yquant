@@ -239,7 +239,7 @@ base::Status CtpTradingAdapter::SendCancel(
 }
 
 TradingPollResult CtpTradingAdapter::Poll(std::uint64_t now,
-                                          TradingEvent& out) noexcept {
+                                          model::TradingEvent& out) noexcept {
   if (!storage_ || !storage_->started)
     return {TradingPollState::kError,
             Fail(base::ErrorCode::kInvalidState, "CTP bridge is not started")};
@@ -336,7 +336,7 @@ TradingPollResult CtpTradingAdapter::Poll(std::uint64_t now,
       return {
           TradingPollState::kError,
           Fail(base::ErrorCode::kCorrupt, "CTP report order identity differs")};
-    TradingEvent event;
+    model::TradingEvent event;
     event.client_order_id = update.order.client_order_id;
     event.broker_order_id = update.order.broker_order_id;
     event.report_sequence = update.order.report_sequence;

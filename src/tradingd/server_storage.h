@@ -119,7 +119,7 @@ struct Server::Storage final : trading::TradingMutationSink {
       return storage.selected_adapter->SendCancel(id, broker, cancel, now);
     }
     trading::TradingPollResult Poll(
-        std::uint64_t now, trading::TradingEvent& out) noexcept override {
+        std::uint64_t now, model::TradingEvent& out) noexcept override {
       return storage.selected_adapter->Poll(now, out);
     }
     std::optional<std::uint64_t> next_deadline() const noexcept override {

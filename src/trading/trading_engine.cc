@@ -827,7 +827,7 @@ ErrorCode TradingEngine::ApplyLocalUpdate(TradingDispatch& out) noexcept {
   return ErrorCode::kOk;
 }
 
-ErrorCode TradingEngine::ApplyEvent(const TradingEvent& event,
+ErrorCode TradingEngine::ApplyEvent(const model::TradingEvent& event,
                                     TradingDispatch& out) noexcept {
   error_stage_ = "trading_event";
   const auto transaction_now = replaying_ ? replay_now_ : clock_.Now();
@@ -1306,7 +1306,7 @@ base::Status TradingEngine::Poll(std::uint64_t now, TradingDispatch& out,
     if (applied != base::ErrorCode::kOk) return {applied, {}};
   } else {
     prefer_local_ = true;
-    TradingEvent input;
+    model::TradingEvent input;
     const auto polled = adapter_.Poll(now, input);
     if (!polled.status.ok() || polled.state == TradingPollState::kError) {
       return Fail(polled.status.ok()

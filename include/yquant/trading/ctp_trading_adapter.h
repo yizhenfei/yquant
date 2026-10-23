@@ -4,6 +4,7 @@
 #include <memory>
 
 #include "yquant/md/instrument_scope.h"
+#include "yquant/model/trading_event.h"
 #include "yquant/trading/trading_adapter.h"
 
 namespace yquant::trading {
@@ -39,8 +40,8 @@ class CtpTradingAdapter final : public TradingAdapter {
   // Poll sends Stop only after all local orders settle, then exposes final
   // account messages before acknowledging the bridge's Drained response.
   void BeginStopping() noexcept override;
-  [[nodiscard]] TradingPollResult Poll(std::uint64_t now,
-                                       TradingEvent& out) noexcept override;
+  [[nodiscard]] TradingPollResult Poll(
+      std::uint64_t now, model::TradingEvent& out) noexcept override;
   std::optional<std::uint64_t> next_deadline() const noexcept override;
   bool is_drained() const noexcept override;
   // Releases transport storage. Normal drain confirmation is driven by

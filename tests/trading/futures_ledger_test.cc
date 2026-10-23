@@ -401,7 +401,8 @@ class FuturesSendAdapter final : public TradingAdapter {
                           std::uint64_t) noexcept override {
     return {};
   }
-  TradingPollResult Poll(std::uint64_t, TradingEvent&) noexcept override {
+  TradingPollResult Poll(std::uint64_t,
+                         model::TradingEvent&) noexcept override {
     return {};
   }
   std::optional<std::uint64_t> next_deadline() const noexcept override {
@@ -433,7 +434,7 @@ TEST_F(FuturesLedgerTest,
   FuturesSendAdapter adapter;
   ASSERT_TRUE(trading.ProcessRequests(adapter, 1000).ok());
   EXPECT_EQ(adapter.sent_effect, PositionEffect::kOpen);
-  TradingEvent event;
+  model::TradingEvent event;
   event.client_order_id = order_id;
   ASSERT_EQ(event.broker_order_id.Assign("futures-order"), ErrorCode::kOk);
   event.kind = model::OrderUpdateKind::kFill;
@@ -561,7 +562,7 @@ TEST_F(FuturesLedgerTest,
   trading.EndCallback();
   FuturesSendAdapter adapter;
   ASSERT_TRUE(trading.ProcessRequests(adapter, 1000).ok());
-  TradingEvent event;
+  model::TradingEvent event;
   event.client_order_id = order_id;
   ASSERT_EQ(event.broker_order_id.Assign("stock-order"), ErrorCode::kOk);
   event.kind = model::OrderUpdateKind::kFill;
@@ -620,7 +621,7 @@ TEST_F(FuturesLedgerTest, RuntimeDispatchMarksFuturesAccountBeforeQueries) {
 class BrokerSnapshotAdapter final : public TradingAdapter {
  public:
   BrokerAccountSnapshot account;
-  TradingEvent fact;
+  model::TradingEvent fact;
   TradingPollState pending = TradingPollState::kIdle;
   int stopping_calls = 0;
   void BeginStopping() noexcept override { ++stopping_calls; }
@@ -643,7 +644,8 @@ class BrokerSnapshotAdapter final : public TradingAdapter {
                           std::uint64_t) noexcept override {
     return {};
   }
-  TradingPollResult Poll(std::uint64_t, TradingEvent& out) noexcept override {
+  TradingPollResult Poll(std::uint64_t,
+                         model::TradingEvent& out) noexcept override {
     const auto state = pending;
     pending = TradingPollState::kIdle;
     if (state == TradingPollState::kEvent) out = fact;

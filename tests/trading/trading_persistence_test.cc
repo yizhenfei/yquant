@@ -37,7 +37,8 @@ class Adapter final : public TradingAdapter {
     ++sends;
     return {};
   }
-  TradingPollResult Poll(std::uint64_t, TradingEvent&) noexcept override {
+  TradingPollResult Poll(std::uint64_t,
+                         model::TradingEvent&) noexcept override {
     return {};
   }
   std::optional<std::uint64_t> next_deadline() const noexcept override {
@@ -90,9 +91,9 @@ class TradingPersistenceTest : public ::testing::Test {
     ledger.EndCallback();
     return id;
   }
-  TradingEvent Report(model::ClientOrderId id, std::uint64_t seq,
-                      model::OrderUpdateKind kind) const {
-    TradingEvent report;
+  model::TradingEvent Report(model::ClientOrderId id, std::uint64_t seq,
+                             model::OrderUpdateKind kind) const {
+    model::TradingEvent report;
     report.client_order_id = id;
     EXPECT_EQ(report.broker_order_id.Assign("broker-1"), ErrorCode::kOk);
     report.report_sequence = seq;
@@ -100,7 +101,8 @@ class TradingPersistenceTest : public ::testing::Test {
     report.receive_time_ns = clock.now;
     return report;
   }
-  TradingEvent Fill(model::ClientOrderId id, std::uint64_t seq = 2) const {
+  model::TradingEvent Fill(model::ClientOrderId id,
+                           std::uint64_t seq = 2) const {
     auto report = Report(id, seq, model::OrderUpdateKind::kFill);
     report.cumulative_filled_qty = 30;
     report.fill.client_order_id = id;

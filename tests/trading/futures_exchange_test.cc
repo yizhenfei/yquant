@@ -50,8 +50,9 @@ model::OrderRequest ExchangeOrder(std::int64_t limit = 3500,
   return {FutureId(), OrderSide::kBuy, limit, quantity, PositionEffect::kOpen};
 }
 
-TradingEvent PollEvent(SimulatedFuturesExchange& exchange, std::uint64_t now) {
-  TradingEvent event;
+model::TradingEvent PollEvent(SimulatedFuturesExchange& exchange,
+                              std::uint64_t now) {
+  model::TradingEvent event;
   const auto result = exchange.Poll(now, event);
   EXPECT_EQ(result.state, TradingPollState::kEvent) << exchange.error_detail();
   EXPECT_TRUE(result.status.ok());
@@ -66,7 +67,7 @@ TEST(FuturesExchangeTest,
   ASSERT_TRUE(exchange.OnQuote(ExchangeQuote(), 0).ok());
   ASSERT_TRUE(exchange.SendOrder({1}, ExchangeOrder(3502, 2), 0).ok());
   ASSERT_TRUE(exchange.SendOrder({2}, ExchangeOrder(3503, 2), 0).ok());
-  TradingEvent untouched;
+  model::TradingEvent untouched;
   untouched.report_sequence = 999;
   EXPECT_EQ(exchange.Poll(kInterval - 1, untouched).state,
             TradingPollState::kIdle);
@@ -108,7 +109,7 @@ TEST(FuturesExchangeTest,
   ASSERT_TRUE(exchange.Start(0).ok());
   ASSERT_TRUE(exchange.SendOrder({1}, ExchangeOrder(), 0).ok());
   EXPECT_EQ(PollEvent(exchange, kInterval).kind, OrderUpdateKind::kAccepted);
-  TradingEvent event;
+  model::TradingEvent event;
   event.report_sequence = 999;
   EXPECT_EQ(exchange.Poll(100 * kInterval, event).state,
             TradingPollState::kIdle);
@@ -159,7 +160,7 @@ TEST_P(FuturesCancelRaceTest,
   EXPECT_EQ(canceled.report_sequence, 3U);
   ASSERT_TRUE(
       exchange.OnQuote(ExchangeQuote(2, 3498, 3499), 3 * kInterval).ok());
-  TradingEvent unchanged;
+  model::TradingEvent unchanged;
   EXPECT_EQ(exchange.Poll(3 * kInterval, unchanged).state,
             TradingPollState::kIdle);
   EXPECT_TRUE(exchange.is_drained());
@@ -203,7 +204,7 @@ TEST(FuturesExchangeTest,
   EXPECT_EQ(account.cash_balance, 17);
   ASSERT_TRUE(exchange.Stop().ok());
   EXPECT_FALSE(exchange.is_drained());
-  TradingEvent output;
+  model::TradingEvent output;
   output.report_sequence = 999;
   EXPECT_EQ(exchange.Poll(kInterval, output).state, TradingPollState::kError);
   EXPECT_EQ(output.report_sequence, 999U);
@@ -233,7 +234,7 @@ TEST(FuturesExchangeTest, FillHistoryCapacityFailureDoesNotConsumeTheLastLot) {
           .OnQuote(ExchangeQuote(kMaxTradingFills + 1, 3499, 3500, 1, 1), now)
           .code,
       ErrorCode::kResourceExhausted);
-  TradingEvent output;
+  model::TradingEvent output;
   EXPECT_EQ(exchange.Poll(now, output).state, TradingPollState::kIdle);
   ASSERT_TRUE(
       exchange.SendCancel({1}, accepted.broker_order_id, {1}, now).ok());

@@ -338,7 +338,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
     ASSERT_TRUE(mock.Prepare(config.trading).ok());
     ASSERT_TRUE(mock.Start(clock.Now()).ok());
     ASSERT_TRUE(source.ProcessRequests(mock, clock.Now()).ok());
-    trading::TradingEvent accepted;
+    model::TradingEvent accepted;
     accepted.client_order_id = id;
     ASSERT_EQ(accepted.broker_order_id.Assign("broker-1"), ErrorCode::kOk);
     accepted.report_sequence = 1;

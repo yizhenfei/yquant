@@ -238,7 +238,7 @@ base::ErrorCode OnFill(
 
 ### 规范化事件
 
-柜台适配器向宿主提供单一的 `TradingEvent`。每条事件包含本地委托 ID、柜台委托 ID、逐委托 `report_sequence`、事件类型、累计成交量、本地接收时间，以及该类型需要的成交或撤单结果字段。
+柜台适配器向宿主提供单一的 `model::TradingEvent`。每条事件包含本地委托 ID、柜台委托 ID、逐委托 `report_sequence`、事件类型、累计成交量、本地接收时间，以及该类型需要的成交或撤单结果字段。
 
 | 事件 | 必要内容与处理 |
 | --- | --- |
@@ -295,7 +295,7 @@ ReadBrokerAccountSnapshot(BrokerAccountSnapshot& out) -> Status
 OnQuote(quote, now) -> Status
 SendOrder(client_order_id, request, now) -> Status
 SendCancel(client_order_id, broker_order_id, cancel_request_id, now) -> Status
-Poll(now, TradingEvent& out) -> Event / Account / Idle / Error
+Poll(now, model::TradingEvent& out) -> Event / Account / Idle / Error
 next_deadline() -> optional<单调时间期限>
 is_drained() -> bool
 BeginStopping()
@@ -440,12 +440,12 @@ OnFill(context, fill):
 | `include/yquant/model/identifiers.h` | 本地委托、柜台委托、成交与撤单请求标识 |
 | `include/yquant/model/account.h` | 资金和持仓快照 |
 | `include/yquant/model/order.h` | 委托请求、快照与状态 |
-| `include/yquant/model/trading_event.h` | 策略可见的委托更新与成交记录 |
+| `include/yquant/model/trading_event.h` | 规范化交易事件、委托更新与成交记录 |
 | `include/yquant/strategy/trading.h` | 策略交易接口 |
 | `include/yquant/strategy/strategy_context.h` | 交易服务访问器 |
 | `include/yquant/strategy/strategy.h` | 委托和成交回调 |
 | `include/yquant/trading/trading_account.h` | 柜台初始账户快照 |
-| `include/yquant/trading/trading_adapter.h` | 柜台接入与规范化事件协议 |
+| `include/yquant/trading/trading_adapter.h` | 柜台接入与事件轮询接口 |
 | `include/yquant/trading/trading_service.h`、`trading_dispatch.h` | 统一交易服务接口与已提交事件 |
 | `include/yquant/trading/trading_engine.h`、`src/trading/trading_engine.cc` | 网关交易会话、账本、预占、请求与回报处理及停止排空 |
 | `tests/mock_trading_service.h` | 记录请求并按脚本提交回报的单元测试服务 |

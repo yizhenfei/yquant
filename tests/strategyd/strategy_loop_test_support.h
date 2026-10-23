@@ -335,7 +335,7 @@ class Broker final : public trading::TradingService {
       event = true;
       return {};
     }
-    trading::TradingEvent report;
+    model::TradingEvent report;
     const auto result = Poll(now, report);
     if (!result.status.ok()) return result.status;
     if (result.state == trading::TradingPollState::kIdle) {
@@ -466,7 +466,7 @@ class Broker final : public trading::TradingService {
     return Error();
   }
   trading::TradingPollResult Poll(std::uint64_t now,
-                                  trading::TradingEvent& out) noexcept {
+                                  model::TradingEvent& out) noexcept {
     const auto selected = NextPlan();
     if (!selected || plans_[*selected].at > now) return {};
     const auto plan = plans_[*selected];

@@ -374,8 +374,8 @@ base::Status SimulatedFuturesExchange::OnQuote(const model::QuoteTick& quote,
   return {};
 }
 
-TradingPollResult SimulatedFuturesExchange::Poll(std::uint64_t now,
-                                                 TradingEvent& out) noexcept {
+TradingPollResult SimulatedFuturesExchange::Poll(
+    std::uint64_t now, model::TradingEvent& out) noexcept {
   if (state_ != State::kActive)
     return {TradingPollState::kError,
             Error(base::ErrorCode::kInvalidState, "exchange is not active")};
@@ -387,7 +387,7 @@ TradingPollResult SimulatedFuturesExchange::Poll(std::uint64_t now,
       (next.kind == Storage::Kind::kFill && pending.fill_ordinal == UINT64_MAX))
     return PollError(base::ErrorCode::kResourceExhausted,
                      "exchange report identity exhausted");
-  TradingEvent event;
+  model::TradingEvent event;
   event.client_order_id = pending.id;
   event.broker_order_id = pending.broker;
   event.report_sequence = pending.sequence + 1;

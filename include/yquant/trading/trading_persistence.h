@@ -5,7 +5,8 @@
 #include <cstdint>
 #include <span>
 
-#include "yquant/trading/trading_adapter.h"
+#include "yquant/base/status.h"
+#include "yquant/model/trading_event.h"
 
 namespace yquant::trading {
 
@@ -30,7 +31,7 @@ struct TradingMutation {
   model::ClientOrderId order_id;
   model::CancelRequestId cancel_id;
   model::OrderRequest request;
-  TradingEvent event;
+  model::TradingEvent event;
 };
 
 // Called serially after validation and before any business-state change or

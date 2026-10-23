@@ -8,6 +8,7 @@
 #include <span>
 #include <string_view>
 
+#include "yquant/model/trading_event.h"
 #include "yquant/trading/trading_adapter.h"
 
 namespace yquant::trading {
@@ -33,7 +34,7 @@ struct MockTradingMutation {
   model::BrokerOrderId request_key;
   model::BrokerOrderId broker_order_id;
   model::CancelRequestId cancel_request_id;
-  TradingEvent event;
+  model::TradingEvent event;
 };
 
 // The callback borrows mutation only for this call, must not reenter the
@@ -73,8 +74,8 @@ class MockTradingAdapter final : public TradingAdapter {
       model::ClientOrderId id, const model::BrokerOrderId& broker_order_id,
       model::CancelRequestId cancel_request_id,
       std::uint64_t now) noexcept override;
-  [[nodiscard]] TradingPollResult Poll(std::uint64_t now,
-                                       TradingEvent& out) noexcept override;
+  [[nodiscard]] TradingPollResult Poll(
+      std::uint64_t now, model::TradingEvent& out) noexcept override;
   std::optional<std::uint64_t> next_deadline() const noexcept override;
   bool is_drained() const noexcept override;
   [[nodiscard]] base::Status Stop() noexcept override;
@@ -127,7 +128,7 @@ class MockTradingAdapter final : public TradingAdapter {
   [[nodiscard]] base::Status ReadRecoveryFill(std::size_t index,
                                               model::Fill& out) const noexcept;
   [[nodiscard]] base::Status ReadRecoveryEvent(
-      std::size_t index, TradingEvent& out) const noexcept;
+      std::size_t index, model::TradingEvent& out) const noexcept;
 
  private:
   struct Storage;
@@ -140,8 +141,8 @@ class MockTradingAdapter final : public TradingAdapter {
                               const char* detail) noexcept;
   // Poll implementation optionally checks an exact replay event before commit;
   // replay bypasses the observer and uses its recorded UTC fill timestamp.
-  TradingPollResult PollImpl(std::uint64_t now, TradingEvent& out,
-                             const TradingEvent* replay) noexcept;
+  TradingPollResult PollImpl(std::uint64_t now, model::TradingEvent& out,
+                             const model::TradingEvent* replay) noexcept;
   base::Status Observe(const MockTradingMutation& mutation) noexcept;
 
   std::unique_ptr<Storage> storage_;

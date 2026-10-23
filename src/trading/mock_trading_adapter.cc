@@ -203,7 +203,7 @@ model::Fill GetFill(Reader& reader) noexcept {
   return fill;
 }
 
-void PutEvent(Writer& writer, const TradingEvent& event) noexcept {
+void PutEvent(Writer& writer, const model::TradingEvent& event) noexcept {
   writer.U64(event.client_order_id.value);
   writer.IdBytes(event.broker_order_id);
   writer.U64(event.report_sequence);
@@ -218,8 +218,8 @@ void PutEvent(Writer& writer, const TradingEvent& event) noexcept {
   PutFill(writer, event.fill);
 }
 
-TradingEvent GetEvent(Reader& reader) noexcept {
-  TradingEvent event;
+model::TradingEvent GetEvent(Reader& reader) noexcept {
+  model::TradingEvent event;
   event.client_order_id.value = reader.U64();
   reader.IdBytes(event.broker_order_id);
   event.report_sequence = reader.U64();
@@ -248,7 +248,8 @@ bool SameFill(const model::Fill& left, const model::Fill& right) noexcept {
          left.position_effect == right.position_effect;
 }
 
-bool SameEvent(const TradingEvent& left, const TradingEvent& right) noexcept {
+bool SameEvent(const model::TradingEvent& left,
+               const model::TradingEvent& right) noexcept {
   return left.client_order_id == right.client_order_id &&
          left.broker_order_id == right.broker_order_id &&
          left.report_sequence == right.report_sequence &&
@@ -259,7 +260,7 @@ bool SameEvent(const TradingEvent& left, const TradingEvent& right) noexcept {
          left.reason == right.reason && SameFill(left.fill, right.fill);
 }
 
-bool ValidEvent(const TradingEvent& event) noexcept {
+bool ValidEvent(const model::TradingEvent& event) noexcept {
   if (event.client_order_id.value == 0 || event.report_sequence == 0 ||
       event.kind > model::OrderUpdateKind::kCancelRejected ||
       event.cumulative_filled_qty < 0 || event.reason.size > 128 ||
@@ -432,7 +433,7 @@ struct MockTradingAdapter::Storage {
   std::array<std::size_t, kLookupCapacity> lookup = {};
   std::array<std::size_t, kLookupCapacity> identity_lookup = {};
   std::array<Plan, kPlanCapacity> plans;
-  std::array<TradingEvent, kMaxMockTradingReports> events;
+  std::array<model::TradingEvent, kMaxMockTradingReports> events;
   // Fill indices avoid retaining a second copy of each execution.
   std::array<std::size_t, kMaxMockTradingReports> fill_events;
   std::size_t order_count = 0;
@@ -746,12 +747,13 @@ base::Status MockTradingAdapter::SendCancel(
 }
 
 TradingPollResult MockTradingAdapter::Poll(std::uint64_t now,
-                                           TradingEvent& out) noexcept {
+                                           model::TradingEvent& out) noexcept {
   return PollImpl(now, out, nullptr);
 }
 
 TradingPollResult MockTradingAdapter::PollImpl(
-    std::uint64_t now, TradingEvent& out, const TradingEvent* replay) noexcept {
+    std::uint64_t now, model::TradingEvent& out,
+    const model::TradingEvent* replay) noexcept {
   if (state_ != State::kActive)
     return {TradingPollState::kError,
             Error(base::ErrorCode::kInvalidState, "counter is not active")};
@@ -766,7 +768,7 @@ TradingPollResult MockTradingAdapter::PollImpl(
     return PollError(base::ErrorCode::kResourceExhausted,
                      "order report sequence exhausted");
 
-  TradingEvent event;
+  model::TradingEvent event;
   event.client_order_id = order.id;
   event.broker_order_id = order.broker_id;
   event.report_sequence = order.report_sequence + 1;
@@ -912,7 +914,7 @@ base::Status MockTradingAdapter::ReplayMutation(
     status = SendCancel(mutation.client_order_id, mutation.broker_order_id,
                         mutation.cancel_request_id, mutation.now);
   } else {
-    TradingEvent event;
+    model::TradingEvent event;
     const auto result = PollImpl(mutation.now, event, &mutation.event);
     status = result.state == TradingPollState::kEvent
                  ? base::Status{}
@@ -1300,7 +1302,7 @@ base::Status MockTradingAdapter::ReadRecoveryFill(
 }
 
 base::Status MockTradingAdapter::ReadRecoveryEvent(
-    std::size_t index, TradingEvent& out) const noexcept {
+    std::size_t index, model::TradingEvent& out) const noexcept {
   if (!storage_ || index >= storage_->event_count)
     return {base::ErrorCode::kInvalidArgument, {}};
   out = storage_->events[index];

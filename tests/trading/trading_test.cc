@@ -52,8 +52,8 @@ class RecordingTradingAdapter final : public trading::TradingAdapter {
     last_cancel_id = cancel;
     return {fail_send ? ErrorCode::kIoError : ErrorCode::kOk, {}};
   }
-  trading::TradingPollResult Poll(
-      std::uint64_t, trading::TradingEvent& out) noexcept override {
+  trading::TradingPollResult Poll(std::uint64_t,
+                                  model::TradingEvent& out) noexcept override {
     if (pending_event) {
       out = *pending_event;
       pending_event.reset();
@@ -77,7 +77,7 @@ class RecordingTradingAdapter final : public trading::TradingAdapter {
   std::size_t cancel_sends = 0;
   bool fail_send = false;
   trading::TradingAccountSnapshot account;
-  std::optional<trading::TradingEvent> pending_event;
+  std::optional<model::TradingEvent> pending_event;
 };
 
 class TradingTest : public ::testing::Test {
@@ -158,10 +158,10 @@ class TradingTest : public ::testing::Test {
     trading.SetAcceptingRequests(false);
     return id;
   }
-  trading::TradingEvent Event(model::ClientOrderId id, std::uint64_t sequence,
-                              OrderUpdateKind kind,
-                              std::int64_t cumulative = 0) const {
-    trading::TradingEvent event;
+  model::TradingEvent Event(model::ClientOrderId id, std::uint64_t sequence,
+                            OrderUpdateKind kind,
+                            std::int64_t cumulative = 0) const {
+    model::TradingEvent event;
     event.client_order_id = id;
     EXPECT_EQ(event.broker_order_id.Assign("broker-order-" +
                                            std::to_string(id.value)),
@@ -172,11 +172,10 @@ class TradingTest : public ::testing::Test {
     event.receive_time_ns = clock.now;
     return event;
   }
-  trading::TradingEvent Execution(model::ClientOrderId id,
-                                  std::uint64_t sequence,
-                                  std::string_view execution_id,
-                                  std::int64_t quantity,
-                                  std::int64_t cumulative) const {
+  model::TradingEvent Execution(model::ClientOrderId id, std::uint64_t sequence,
+                                std::string_view execution_id,
+                                std::int64_t quantity,
+                                std::int64_t cumulative) const {
     auto event = Event(id, sequence, OrderUpdateKind::kFill, cumulative);
     event.fill.client_order_id = id;
     event.fill.broker_order_id = event.broker_order_id;

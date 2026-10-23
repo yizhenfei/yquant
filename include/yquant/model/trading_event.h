@@ -1,8 +1,8 @@
 #ifndef YQUANT_MODEL_TRADING_EVENT_H_
 #define YQUANT_MODEL_TRADING_EVENT_H_
 
-// Defines order-change reports, execution increments and owned diagnostics
-// delivered by trading services. Current order views are in order.h.
+// Defines normalized trading events, order-change reports, execution
+// increments and owned diagnostics. Current order views are in order.h.
 
 #include <cstdint>
 #include <cstring>
@@ -88,6 +88,21 @@ struct Fill {
   std::uint64_t receive_time_ns = 0;
   bool has_event_time = false;
   PositionEffect position_effect = PositionEffect::kNone;
+};
+
+// Owns a normalized broker report for trading consumers. Sequence starts at
+// one for each order; non-fill events leave fill empty. No field borrows SDK
+// data.
+struct TradingEvent {
+  ClientOrderId client_order_id;
+  BrokerOrderId broker_order_id;
+  std::uint64_t report_sequence = 0;
+  OrderUpdateKind kind = OrderUpdateKind::kAccepted;
+  std::int64_t cumulative_filled_qty = 0;
+  std::uint64_t receive_time_ns = 0;
+  Fill fill;
+  CancelRequestId cancel_request_id;
+  OrderReason reason;
 };
 
 }  // namespace yquant::model
