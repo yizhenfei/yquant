@@ -34,7 +34,7 @@ void StrategyRunner::ResetError() noexcept {
 }
 
 bool StrategyRunner::TryRecordFailure(base::Status status,
-                                     const char* stage) noexcept {
+                                      const char* stage) noexcept {
   assert(!status.ok());
   if (!result_.ok()) {
     return false;
@@ -167,8 +167,7 @@ base::Status StrategyRunner::LoadAndStart(
     return result_;
   }
   started_ = true;
-  const auto status =
-      source_.Start(market_data_.subscriptions(), clock_.Now());
+  const auto status = source_.Start(market_data_.subscriptions(), clock_.Now());
   if (!status.ok()) {
     SetErrorIfNotOK(status, "market_data_start", source_.error_detail());
     Finalize();
@@ -244,13 +243,14 @@ void StrategyRunner::EndCallback() noexcept {
 }
 
 void StrategyRunner::SetOrderError(base::Status status, const char* stage,
-                                   const char* detail, model::ClientOrderId id,
+                                   const char* detail,
+                                   model::StrategyOrderId id,
                                    std::uint64_t sequence) noexcept {
   if (!TryRecordFailure(status, stage)) {
     return;
   }
   std::snprintf(error_detail_, sizeof(error_detail_),
-                "client_order_id=%llu sequence=%llu: %s",
+                "strategy_order_id=%llu sequence=%llu: %s",
                 static_cast<unsigned long long>(id.value),
                 static_cast<unsigned long long>(sequence), detail);
 }
@@ -371,7 +371,7 @@ bool StrategyRunner::DispatchTrading(
     if (code != base::ErrorCode::kOk) {
       SetOrderError({code, {}}, "order_update",
                     "strategy OnOrderUpdate returned an error",
-                    dispatch.update.order.client_order_id,
+                    dispatch.update.order.strategy_order_id,
                     dispatch.update.order.report_sequence);
       StopAfterError(true);
       return false;
@@ -383,7 +383,7 @@ bool StrategyRunner::DispatchTrading(
     EndCallback();
     if (code != base::ErrorCode::kOk) {
       SetOrderError({code, {}}, "fill", "strategy OnFill returned an error",
-                    dispatch.fill.client_order_id,
+                    dispatch.fill.strategy_order_id,
                     dispatch.update.order.report_sequence);
       StopAfterError(true);
       return false;
@@ -604,7 +604,7 @@ void StrategyRunner::ReportUnconfirmed() const noexcept {
                  "instrument_id=%llu side=%u price=%lld quantity=%lld "
                  "filled=%lld leaves=%lld cancel_pending=%u "
                  "cancel_request=%llu effect=%u\n",
-                 static_cast<unsigned long long>(order.client_order_id.value),
+                 static_cast<unsigned long long>(order.strategy_order_id.value),
                  static_cast<unsigned>(order.state),
                  static_cast<unsigned long long>(order.instrument_id.value),
                  static_cast<unsigned>(order.side),

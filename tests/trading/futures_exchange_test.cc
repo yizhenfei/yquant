@@ -127,7 +127,7 @@ TEST(FuturesExchangeTest,
   EXPECT_EQ(exchange.Poll(103 * kInterval, event).state,
             TradingPollState::kIdle);
   ASSERT_TRUE(
-      exchange.SendCancel({2}, accepted.broker_order_id, {1}, 103 * kInterval)
+      exchange.SendCancel({2}, accepted.adapter_order_id, {1}, 103 * kInterval)
           .ok());
   EXPECT_EQ(PollEvent(exchange, 104 * kInterval).kind,
             OrderUpdateKind::kCanceled);
@@ -145,7 +145,7 @@ TEST_P(FuturesCancelRaceTest,
       exchange.SendOrder({1}, ExchangeOrder(3500, full ? 1 : 3), 0).ok());
   const auto accepted = PollEvent(exchange, kInterval);
   ASSERT_TRUE(
-      exchange.SendCancel({1}, accepted.broker_order_id, {7}, kInterval).ok());
+      exchange.SendCancel({1}, accepted.adapter_order_id, {7}, kInterval).ok());
   ASSERT_TRUE(
       exchange.OnQuote(ExchangeQuote(1, 3499, 3500, 1, 1), 1500000).ok());
   const auto fill = PollEvent(exchange, 1500000);
@@ -177,7 +177,7 @@ TEST(FuturesExchangeTest, CancelEffectiveBoundaryPreventsAnotherQuoteFill) {
   ASSERT_TRUE(exchange.SendOrder({1}, ExchangeOrder(), 0).ok());
   const auto accepted = PollEvent(exchange, kInterval);
   ASSERT_TRUE(
-      exchange.SendCancel({1}, accepted.broker_order_id, {1}, kInterval).ok());
+      exchange.SendCancel({1}, accepted.adapter_order_id, {1}, kInterval).ok());
   ASSERT_TRUE(
       exchange.OnQuote(ExchangeQuote(1, 3499, 3500), 2 * kInterval).ok());
   const auto canceled = PollEvent(exchange, 2 * kInterval);
@@ -237,7 +237,7 @@ TEST(FuturesExchangeTest, FillHistoryCapacityFailureDoesNotConsumeTheLastLot) {
   model::TradingEvent output;
   EXPECT_EQ(exchange.Poll(now, output).state, TradingPollState::kIdle);
   ASSERT_TRUE(
-      exchange.SendCancel({1}, accepted.broker_order_id, {1}, now).ok());
+      exchange.SendCancel({1}, accepted.adapter_order_id, {1}, now).ok());
   const auto canceled = PollEvent(exchange, now + kInterval);
   EXPECT_EQ(canceled.kind, OrderUpdateKind::kCanceled);
   EXPECT_EQ(canceled.cumulative_filled_qty,

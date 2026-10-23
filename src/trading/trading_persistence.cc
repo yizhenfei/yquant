@@ -121,7 +121,7 @@ void ReadRequest(Reader& r, model::OrderRequest& value) noexcept {
 }
 void WriteOrder(Writer& w, const model::OrderSnapshot& value) noexcept {
   w.Uint(value.client_order_id.value);
-  WriteId(w, value.broker_order_id);
+  WriteId(w, value.adapter_order_id);
   w.Uint(value.instrument_id.value);
   w.Uint(static_cast<std::uint8_t>(value.side), 1);
   w.Signed(value.limit_price);
@@ -136,7 +136,7 @@ void WriteOrder(Writer& w, const model::OrderSnapshot& value) noexcept {
 }
 void ReadOrder(Reader& r, model::OrderSnapshot& value) noexcept {
   value.client_order_id.value = r.Uint();
-  ReadId(r, value.broker_order_id);
+  ReadId(r, value.adapter_order_id);
   value.instrument_id.value = r.Uint();
   value.side = static_cast<model::OrderSide>(r.Uint(1));
   value.limit_price = r.Signed();
@@ -151,7 +151,7 @@ void ReadOrder(Reader& r, model::OrderSnapshot& value) noexcept {
 }
 void WriteFill(Writer& w, const model::Fill& value) noexcept {
   w.Uint(value.client_order_id.value);
-  WriteId(w, value.broker_order_id);
+  WriteId(w, value.adapter_order_id);
   WriteId(w, value.execution_id);
   w.Uint(value.instrument_id.value);
   w.Uint(static_cast<std::uint8_t>(value.side), 1);
@@ -163,7 +163,7 @@ void WriteFill(Writer& w, const model::Fill& value) noexcept {
 }
 void ReadFill(Reader& r, model::Fill& value) noexcept {
   value.client_order_id.value = r.Uint();
-  ReadId(r, value.broker_order_id);
+  ReadId(r, value.adapter_order_id);
   ReadId(r, value.execution_id);
   value.instrument_id.value = r.Uint();
   value.side = static_cast<model::OrderSide>(r.Uint(1));
@@ -175,7 +175,7 @@ void ReadFill(Reader& r, model::Fill& value) noexcept {
 }
 void WriteEvent(Writer& w, const model::TradingEvent& value) noexcept {
   w.Uint(value.client_order_id.value);
-  WriteId(w, value.broker_order_id);
+  WriteId(w, value.adapter_order_id);
   w.Uint(value.report_sequence);
   w.Uint(static_cast<std::uint8_t>(value.kind), 1);
   w.Signed(value.cumulative_filled_qty);
@@ -194,7 +194,7 @@ void WriteEvent(Writer& w, const model::TradingEvent& value) noexcept {
 }
 void ReadEvent(Reader& r, model::TradingEvent& value) noexcept {
   value.client_order_id.value = r.Uint();
-  ReadId(r, value.broker_order_id);
+  ReadId(r, value.adapter_order_id);
   value.report_sequence = r.Uint();
   value.kind = static_cast<model::OrderUpdateKind>(r.Uint(1));
   value.cumulative_filled_qty = r.Signed();
@@ -256,7 +256,8 @@ bool Validate(Storage& s, const md::InstrumentScope& market) noexcept {
     const auto& record = s.orders[i];
     const auto& o = record.snapshot;
     model::InstrumentDefinition instrument;
-    if (o.client_order_id.value <= previous_id ||
+    if (o.strategy_order_id.value != 0 ||
+        o.client_order_id.value <= previous_id ||
         o.client_order_id.value >= s.next_order_id ||
         !market.TryGetInstrument(o.instrument_id, instrument) ||
         instrument.type != model::InstrumentType::kEquity ||
@@ -307,7 +308,7 @@ bool Validate(Storage& s, const md::InstrumentScope& market) noexcept {
         (record.local_cancel_pending &&
          (record.new_attempted || o.state != model::OrderState::kPendingNew)) ||
         (!record.new_attempted && o.report_sequence != 0) ||
-        (o.report_sequence != 0 && o.broker_order_id.empty() &&
+        (o.report_sequence != 0 && o.adapter_order_id.empty() &&
          o.state != model::OrderState::kRejected) ||
         (o.state == model::OrderState::kWorking && o.report_sequence == 0))
       return false;
@@ -325,11 +326,11 @@ bool Validate(Storage& s, const md::InstrumentScope& market) noexcept {
     quantities[record.position_index] += record.reserved_qty;
     active += !terminal;
     pending_cancel += o.cancel_pending;
-    if (!o.broker_order_id.empty()) {
-      auto slot = TradingBrokerHash(o.broker_order_id);
+    if (!o.adapter_order_id.empty()) {
+      auto slot = TradingBrokerHash(o.adapter_order_id);
       while (s.broker_lookup[slot] != 0) {
-        if (s.orders[s.broker_lookup[slot] - 1].snapshot.broker_order_id ==
-            o.broker_order_id)
+        if (s.orders[s.broker_lookup[slot] - 1].snapshot.adapter_order_id ==
+            o.adapter_order_id)
           return false;
         slot = (slot + 1) & (kBrokerLookupCapacity - 1);
       }
@@ -350,13 +351,14 @@ bool Validate(Storage& s, const md::InstrumentScope& market) noexcept {
     if (index == s.order_count) return false;
     const auto& o = s.orders[index].snapshot;
     model::InstrumentDefinition instrument;
-    if (!market.TryGetInstrument(f.instrument_id, instrument) ||
+    if (f.strategy_order_id.value != 0 ||
+        !market.TryGetInstrument(f.instrument_id, instrument) ||
         instrument.price_tick <= 0 || instrument.quantity_step <= 0 ||
         f.position_effect != model::PositionEffect::kNone ||
         f.price % instrument.price_tick != 0 ||
         f.quantity % instrument.quantity_step != 0 ||
-        f.broker_order_id.empty() || f.execution_id.empty() ||
-        f.broker_order_id != o.broker_order_id ||
+        f.adapter_order_id.empty() || f.execution_id.empty() ||
+        f.adapter_order_id != o.adapter_order_id ||
         f.instrument_id != o.instrument_id || f.side != o.side ||
         f.price <= 0 || f.quantity <= 0 ||
         (!f.has_event_time && f.event_time_ns != 0) ||
@@ -424,12 +426,13 @@ base::Status EncodeTradingMutation(const TradingMutation& value,
                                    std::size_t& size) noexcept {
   // Version 1 represents cash equities, whose position effect is implicit.
   // Reject unsupported active fields before writing instead of dropping them.
-  if (value.revision == 0 || value.order_id.value == 0 ||
+  if (value.revision == 0 || value.client_order_id.value == 0 ||
       (value.kind == TradingMutationKind::kNewOrder &&
        (value.request.position_effect != model::PositionEffect::kNone ||
         IsFuturesInstrument(value.request.instrument_id))) ||
       (value.kind == TradingMutationKind::kReport &&
-       (value.event.fill.position_effect != model::PositionEffect::kNone ||
+       (value.event.fill.strategy_order_id.value != 0 ||
+        value.event.fill.position_effect != model::PositionEffect::kNone ||
         IsFuturesInstrument(value.event.fill.instrument_id))))
     return {ErrorCode::kInvalidArgument, {}};
   Writer w(bytes);
@@ -437,7 +440,7 @@ base::Status EncodeTradingMutation(const TradingMutation& value,
   w.Uint(static_cast<std::uint8_t>(value.kind), 1);
   w.Uint(value.revision);
   w.Uint(value.now);
-  w.Uint(value.order_id.value);
+  w.Uint(value.client_order_id.value);
   w.Uint(value.cancel_id.value);
   switch (value.kind) {
     case TradingMutationKind::kNewOrder:
@@ -468,7 +471,7 @@ base::Status DecodeTradingMutation(std::span<const std::byte> bytes,
   value.kind = static_cast<TradingMutationKind>(r.Uint(1));
   value.revision = r.Uint();
   value.now = r.Uint();
-  value.order_id.value = r.Uint();
+  value.client_order_id.value = r.Uint();
   value.cancel_id.value = r.Uint();
   switch (value.kind) {
     case TradingMutationKind::kNewOrder:
@@ -486,7 +489,7 @@ base::Status DecodeTradingMutation(std::span<const std::byte> bytes,
     default:
       return {ErrorCode::kCorrupt, {}};
   }
-  if (!r.done() || value.revision == 0 || value.order_id.value == 0 ||
+  if (!r.done() || value.revision == 0 || value.client_order_id.value == 0 ||
       (value.kind == TradingMutationKind::kNewOrder &&
        IsFuturesInstrument(value.request.instrument_id)) ||
       (value.kind == TradingMutationKind::kReport &&
@@ -681,7 +684,8 @@ base::Status TradingEngine::RestoreReconciled(
   s.order_count = terminal_orders.size();
   for (std::size_t i = 0; i < s.order_count; ++i) {
     const auto& order = terminal_orders[i];
-    if (order.position_effect != model::PositionEffect::kNone ||
+    if (order.strategy_order_id.value != 0 ||
+        order.position_effect != model::PositionEffect::kNone ||
         !model::IsTerminalOrderState(order.state) || order.cancel_pending ||
         order.client_order_id.value == 0 ||
         order.client_order_id.value == UINT64_MAX)

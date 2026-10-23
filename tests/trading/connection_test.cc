@@ -212,7 +212,7 @@ TEST_F(RawPeerEndpoints, FragmentedHeaderAndBodyAreRetainedAcrossPolls) {
   message.type = trading::MessageType::kNewOrder;
   message.sequence = 1;
   message.generation = 51;
-  message.order_id = {5};
+  message.client_order_id = {5};
   message.request = {{0x1000927c0ULL}, model::OrderSide::kBuy, 1000, 300};
   std::array<std::byte, trading::kMaxFrameSize> bytes{};
   std::size_t size = 0;

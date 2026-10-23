@@ -28,7 +28,7 @@ struct TradingMutation {
   TradingMutationKind kind = TradingMutationKind::kNewOrder;
   std::uint64_t revision = 0;
   std::uint64_t now = 0;
-  model::ClientOrderId order_id;
+  model::ClientOrderId client_order_id;
   model::CancelRequestId cancel_id;
   model::OrderRequest request;
   model::TradingEvent event;

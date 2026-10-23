@@ -14,7 +14,6 @@
 namespace {
 
 using yquant::base::ErrorCode;
-using yquant::model::ClientOrderId;
 using yquant::model::Fill;
 using yquant::model::InstrumentDefinition;
 using yquant::model::OrderRequest;
@@ -24,6 +23,7 @@ using yquant::model::OrderState;
 using yquant::model::OrderUpdate;
 using yquant::model::OrderUpdateKind;
 using yquant::model::QuoteTick;
+using yquant::model::StrategyOrderId;
 using yquant::strategy::Strategy;
 using yquant::strategy::StrategyConfig;
 using yquant::strategy::StrategyContext;
@@ -121,7 +121,7 @@ class TimerFixture final : public Strategy {
                           const OrderUpdate& update) noexcept override {
     OrderSnapshot snapshot;
     if (awaiting_fill_ ||
-        !context.trading().TryGetOrder(update.order.client_order_id,
+        !context.trading().TryGetOrder(update.order.strategy_order_id,
                                        snapshot) ||
         snapshot != update.order)
       return ErrorCode::kCorrupt;
@@ -164,7 +164,7 @@ class TimerFixture final : public Strategy {
  private:
   StrategyConfig config_;
   InstrumentDefinition instrument_;
-  ClientOrderId order_id_;
+  StrategyOrderId order_id_;
   std::uint64_t fires_ = 0;
   bool awaiting_fill_ = false;
 };

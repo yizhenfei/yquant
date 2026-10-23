@@ -41,13 +41,18 @@
 
 | 类型 | 约定 |
 | --- | --- |
-| `ClientOrderId` | 宿主分配的非零 `uint64_t`，本次运行内单调递增且不复用；策略提交、撤单和查询均使用它 |
-| `BrokerOrderId` | 柜台分配的不透明标识，最多 64 字节，自持数据和长度；尚未取得时为空 |
-| `ExecutionId` | 柜台成交标识，最多 64 字节，自持数据和长度；在同一委托内唯一 |
+| `StrategyOrderId` | strategyd 交易服务分配的非零 `uint64_t`，策略会话内从 1 递增且不复用；策略提交、撤单和查询均使用它 |
+| `ClientOrderId` | tradingd 的 `TradingEngine` 分配的非零 `uint64_t`，账本内单调递增且不复用；持久化网关耐久预留编号段，允许跳号 |
+| `AdapterOrderId` | 适配器提供的稳定订单标识，最多 64 字节；可来自柜台原始编号或组合编码，尚未取得时为空 |
+| `ExecutionId` | 适配器提供的单笔成交标识，最多 64 字节；同一订单内唯一，重发与恢复保持相同值 |
 | `CancelRequestId` | 宿主分配的非零 `uint64_t`，区分同一委托的多次撤单尝试 |
 | `OrderSide` | `Buy` 或 `Sell` |
 
 柜台标识不能用本地委托 ID 代替，超长标识拒绝而不截断。当前内存模式下，柜台委托和成交标识的解释范围是当前交易接入会话；重启模拟柜台建立新会话，不继承上一进程的订单。共享网关通过代次与客户端身份区分跨进程的本地订单号，具体规则见[网关协议](tradingd.md#身份归属与协议)。持久化版本的稳定业务命名域与去重范围见[持久身份设计](tradingd-persistence.md#持久身份与状态)，不能用新的连接代次重置业务身份。
+
+`StrategyOrderId` 与 `ClientOrderId` 是不同强类型，不隐式转换。跨策略会话使用 `(ledger_id, strategy_session_id, strategy_order_id)`，跨账本使用 `(ledger_id, client_order_id)`。两个数值字段在线路中均显式编码为 64 位小端整数；零为无效值，耗尽时报错，不回绕。网关保存策略订单到核心订单的映射，回报填入策略标识并保留核心标识。
+
+`ExecutionId` 在 CTP bridge 中为 `(TradingDay, ExchangeID, OrderSysID, TradeID, Direction)` 的 NUL 分隔 UTF-8 编码经 SHA-256 得到的 64 字节十六进制文本；模拟柜台为 `mock-fill-<client_order_id>-<成交序号>`，期货模拟撮合为 `FE-<client_order_id>-<成交序号>`。同一成交的重复回报沿用原值。
 
 价格使用 `int64_t`，按标的的 `price_decimals` 解释；数量使用正的 `int64_t`，股票单位为股，期货单位为手，与行情模型一致。交易请求中的标的必须存在于宿主字典中，允许未订阅该标的行情的策略提交委托。
 
@@ -59,7 +64,9 @@
 
 | 字段 | 含义 |
 | --- | --- |
-| `client_order_id`、`broker_order_id` | 本地与柜台的关联标识 |
+| `strategy_order_id` | 策略会话内的订单标识；核心账本视图为零，路由回报时由网关填入 |
+| `client_order_id` | 网关账本标识；本地排队或网关建账前拒绝时为零，取得后保持不变 |
+| `adapter_order_id` | 适配器提供的订单标识 |
 | `instrument_id`、`side`、`limit_price`、`position_effect` | 原始委托的标的、方向、价格和开平意图 |
 | `original_qty` | 原始委托数量，不因成交或撤单改变 |
 | `cumulative_filled_qty` | 已入账的累计成交数量 |
@@ -174,12 +181,12 @@ bool accepting_orders() const noexcept;
 
 base::ErrorCode SubmitOrder(
     const model::OrderRequest& request,
-    model::ClientOrderId& out) noexcept;
+    model::StrategyOrderId& out) noexcept;
 
-base::ErrorCode CancelOrder(model::ClientOrderId id) noexcept;
+base::ErrorCode CancelOrder(model::StrategyOrderId id) noexcept;
 
 bool TryGetOrder(
-    model::ClientOrderId id, model::OrderSnapshot& out) const noexcept;
+    model::StrategyOrderId id, model::OrderSnapshot& out) const noexcept;
 ```
 
 上下文通过交易服务访问器返回同一宿主对象：
@@ -294,7 +301,7 @@ ReadAccountSnapshot(TradingAccountSnapshot& out) -> Status
 ReadBrokerAccountSnapshot(BrokerAccountSnapshot& out) -> Status
 OnQuote(quote, now) -> Status
 SendOrder(client_order_id, request, now) -> Status
-SendCancel(client_order_id, broker_order_id, cancel_request_id, now) -> Status
+SendCancel(client_order_id, adapter_order_id, cancel_request_id, now) -> Status
 Poll(now, model::TradingEvent& out) -> Event / Account / Idle / Error
 next_deadline() -> optional<单调时间期限>
 is_drained() -> bool

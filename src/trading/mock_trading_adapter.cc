@@ -177,7 +177,7 @@ bool ValidRequest(const model::OrderRequest& request) noexcept {
 
 void PutFill(Writer& writer, const model::Fill& fill) noexcept {
   writer.U64(fill.client_order_id.value);
-  writer.IdBytes(fill.broker_order_id);
+  writer.IdBytes(fill.adapter_order_id);
   writer.IdBytes(fill.execution_id);
   writer.U64(fill.instrument_id.value);
   writer.U8(static_cast<std::uint8_t>(fill.side));
@@ -191,7 +191,7 @@ void PutFill(Writer& writer, const model::Fill& fill) noexcept {
 model::Fill GetFill(Reader& reader) noexcept {
   model::Fill fill;
   fill.client_order_id.value = reader.U64();
-  reader.IdBytes(fill.broker_order_id);
+  reader.IdBytes(fill.adapter_order_id);
   reader.IdBytes(fill.execution_id);
   fill.instrument_id.value = reader.U64();
   fill.side = static_cast<model::OrderSide>(reader.U8());
@@ -205,7 +205,7 @@ model::Fill GetFill(Reader& reader) noexcept {
 
 void PutEvent(Writer& writer, const model::TradingEvent& event) noexcept {
   writer.U64(event.client_order_id.value);
-  writer.IdBytes(event.broker_order_id);
+  writer.IdBytes(event.adapter_order_id);
   writer.U64(event.report_sequence);
   writer.U8(static_cast<std::uint8_t>(event.kind));
   writer.I64(event.cumulative_filled_qty);
@@ -221,7 +221,7 @@ void PutEvent(Writer& writer, const model::TradingEvent& event) noexcept {
 model::TradingEvent GetEvent(Reader& reader) noexcept {
   model::TradingEvent event;
   event.client_order_id.value = reader.U64();
-  reader.IdBytes(event.broker_order_id);
+  reader.IdBytes(event.adapter_order_id);
   event.report_sequence = reader.U64();
   event.kind = static_cast<model::OrderUpdateKind>(reader.U8());
   event.cumulative_filled_qty = reader.I64();
@@ -238,7 +238,8 @@ model::TradingEvent GetEvent(Reader& reader) noexcept {
 
 bool SameFill(const model::Fill& left, const model::Fill& right) noexcept {
   return left.client_order_id == right.client_order_id &&
-         left.broker_order_id == right.broker_order_id &&
+         left.strategy_order_id == right.strategy_order_id &&
+         left.adapter_order_id == right.adapter_order_id &&
          left.execution_id == right.execution_id &&
          left.instrument_id == right.instrument_id && left.side == right.side &&
          left.price == right.price && left.quantity == right.quantity &&
@@ -251,7 +252,7 @@ bool SameFill(const model::Fill& left, const model::Fill& right) noexcept {
 bool SameEvent(const model::TradingEvent& left,
                const model::TradingEvent& right) noexcept {
   return left.client_order_id == right.client_order_id &&
-         left.broker_order_id == right.broker_order_id &&
+         left.adapter_order_id == right.adapter_order_id &&
          left.report_sequence == right.report_sequence &&
          left.kind == right.kind &&
          left.cumulative_filled_qty == right.cumulative_filled_qty &&
@@ -262,6 +263,7 @@ bool SameEvent(const model::TradingEvent& left,
 
 bool ValidEvent(const model::TradingEvent& event) noexcept {
   if (event.client_order_id.value == 0 || event.report_sequence == 0 ||
+      event.fill.strategy_order_id.value != 0 ||
       event.kind > model::OrderUpdateKind::kCancelRejected ||
       event.cumulative_filled_qty < 0 || event.reason.size > 128 ||
       event.fill.position_effect != model::PositionEffect::kNone)
@@ -269,8 +271,8 @@ bool ValidEvent(const model::TradingEvent& event) noexcept {
   if (event.kind == model::OrderUpdateKind::kFill) {
     const auto& fill = event.fill;
     return fill.client_order_id == event.client_order_id &&
-           fill.broker_order_id == event.broker_order_id &&
-           !fill.broker_order_id.empty() && !fill.execution_id.empty() &&
+           fill.adapter_order_id == event.adapter_order_id &&
+           !fill.adapter_order_id.empty() && !fill.execution_id.empty() &&
            fill.instrument_id.value != 0 &&
            !model::IsFuturesVenue(
                static_cast<model::Venue>(fill.instrument_id.value >> 32)) &&
@@ -286,8 +288,8 @@ bool ValidEvent(const model::TradingEvent& event) noexcept {
 // Writes a bounded, deterministic session-local ID, retaining no input views.
 // A zero ordinal identifies an order; positive ordinals identify its fills.
 template <typename Id>
-base::ErrorCode MakeExternalId(const char* prefix, std::uint64_t order_id,
-                               std::uint32_t ordinal, Id& out) noexcept {
+base::ErrorCode MakeAdapterId(const char* prefix, std::uint64_t order_id,
+                              std::uint32_t ordinal, Id& out) noexcept {
   char text[65];
   const int size =
       ordinal == 0
@@ -331,7 +333,7 @@ base::Status EncodeMockTradingMutation(const MockTradingMutation& mutation,
         !ValidRequest(mutation.request))) ||
       (mutation.kind == MockTradingMutationKind::kSendCancel &&
        (mutation.client_order_id.value == 0 ||
-        mutation.broker_order_id.empty() ||
+        mutation.adapter_order_id.empty() ||
         mutation.cancel_request_id.value == 0)) ||
       (mutation.kind == MockTradingMutationKind::kReport &&
        (!ValidEvent(mutation.event) ||
@@ -351,7 +353,7 @@ base::Status EncodeMockTradingMutation(const MockTradingMutation& mutation,
     writer.IdBytes(mutation.request_key);
   } else if (mutation.kind == MockTradingMutationKind::kSendCancel) {
     writer.U64(mutation.client_order_id.value);
-    writer.IdBytes(mutation.broker_order_id);
+    writer.IdBytes(mutation.adapter_order_id);
     writer.U64(mutation.cancel_request_id.value);
   } else {
     PutEvent(writer, mutation.event);
@@ -379,7 +381,7 @@ base::Status DecodeMockTradingMutation(std::span<const std::byte> input,
     reader.IdBytes(mutation.request_key);
   } else if (mutation.kind == MockTradingMutationKind::kSendCancel) {
     mutation.client_order_id.value = reader.U64();
-    reader.IdBytes(mutation.broker_order_id);
+    reader.IdBytes(mutation.adapter_order_id);
     mutation.cancel_request_id.value = reader.U64();
   } else if (mutation.kind == MockTradingMutationKind::kReport) {
     mutation.event = GetEvent(reader);
@@ -406,8 +408,8 @@ struct MockTradingAdapter::Storage {
 
   struct OrderSlot {
     model::ClientOrderId id;
-    model::BrokerOrderId broker_id;
-    model::BrokerOrderId request_key;
+    model::AdapterOrderId broker_id;
+    model::AdapterOrderId request_key;
     model::OrderRequest request;
     model::OrderState state = model::OrderState::kPendingNew;
     std::int64_t cumulative_qty = 0;
@@ -457,7 +459,8 @@ struct MockTradingAdapter::Storage {
     return kNoIndex;
   }
 
-  // External keys use a separate bounded index; empty keys are never indexed.
+  // Adapter request keys use a separate bounded index; empty keys are never
+  // indexed.
   std::size_t FindIdentityBucket(std::string_view key) const noexcept {
     std::uint64_t hash = 14695981039346656037ULL;
     for (const auto byte : key) {
@@ -659,7 +662,7 @@ base::Status MockTradingAdapter::SendOrderWithIdentity(
                  "order acknowledgement deadline overflows");
   Storage::OrderSlot order;
   const auto id_status =
-      MakeExternalId("mock-order-", id.value, 0, order.broker_id);
+      MakeAdapterId("mock-order-", id.value, 0, order.broker_id);
   if (id_status != base::ErrorCode::kOk)
     return Error(id_status, "cannot encode mock broker order ID");
   order.id = id;
@@ -668,12 +671,12 @@ base::Status MockTradingAdapter::SendOrderWithIdentity(
   if (!request_key.empty()) {
     if (order.request_key.Assign(request_key) != base::ErrorCode::kOk)
       return Error(base::ErrorCode::kInvalidArgument,
-                   "external request key exceeds mock identity capacity");
+                   "adapter request key exceeds mock identity capacity");
     identity_bucket = storage.FindIdentityBucket(request_key);
     if (identity_bucket == kNoIndex ||
         storage.identity_lookup[identity_bucket] != 0)
       return Error(base::ErrorCode::kInvalidArgument,
-                   "external request key was already sent");
+                   "adapter request key was already sent");
   }
   order.step = storage.config.mode == MockTradingMode::kReject
                    ? Storage::Step::kReject
@@ -700,11 +703,11 @@ base::Status MockTradingAdapter::SendOrderWithIdentity(
 }
 
 base::Status MockTradingAdapter::SendCancel(
-    model::ClientOrderId id, const model::BrokerOrderId& broker_order_id,
+    model::ClientOrderId id, const model::AdapterOrderId& adapter_order_id,
     model::CancelRequestId cancel_request_id, std::uint64_t now) noexcept {
   if (state_ != State::kActive)
     return Error(base::ErrorCode::kInvalidState, "counter is not active");
-  if (id.value == 0 || cancel_request_id.value == 0 || broker_order_id.empty())
+  if (id.value == 0 || cancel_request_id.value == 0 || adapter_order_id.empty())
     return Error(base::ErrorCode::kInvalidArgument,
                  "invalid cancel request identity");
   auto& storage = *storage_;
@@ -714,7 +717,7 @@ base::Status MockTradingAdapter::SendCancel(
                  "cancel refers to an unknown order");
   const auto index = storage.lookup[bucket] - 1;
   auto& order = storage.orders[index];
-  if (order.broker_id != broker_order_id ||
+  if (order.broker_id != adapter_order_id ||
       cancel_request_id.value <= order.last_cancel_id.value) {
     return Error(base::ErrorCode::kInvalidArgument,
                  "cancel broker or attempt identity does not match");
@@ -734,7 +737,7 @@ base::Status MockTradingAdapter::SendCancel(
   mutation.kind = MockTradingMutationKind::kSendCancel;
   mutation.now = now;
   mutation.client_order_id = id;
-  mutation.broker_order_id = broker_order_id;
+  mutation.adapter_order_id = adapter_order_id;
   mutation.cancel_request_id = cancel_request_id;
   const auto observed = Observe(mutation);
   if (!observed.ok()) return observed;
@@ -770,7 +773,7 @@ TradingPollResult MockTradingAdapter::PollImpl(
 
   model::TradingEvent event;
   event.client_order_id = order.id;
-  event.broker_order_id = order.broker_id;
+  event.adapter_order_id = order.broker_id;
   event.report_sequence = order.report_sequence + 1;
   event.receive_time_ns = now;
   event.cumulative_filled_qty = order.cumulative_qty;
@@ -793,7 +796,7 @@ TradingPollResult MockTradingAdapter::PollImpl(
     }
   } else if (order.step == Storage::Step::kReject) {
     event.kind = model::OrderUpdateKind::kRejected;
-    event.broker_order_id = {};
+    event.adapter_order_id = {};
     event.reason.Set(1, "mock counter rejected the order");
     becomes_terminal = true;
   } else if (order.step == Storage::Step::kFirstFill ||
@@ -807,14 +810,14 @@ TradingPollResult MockTradingAdapter::PollImpl(
       return PollError(base::ErrorCode::kCorrupt, "invalid mock fill quantity");
     auto& fill = event.fill;
     fill.client_order_id = order.id;
-    fill.broker_order_id = order.broker_id;
+    fill.adapter_order_id = order.broker_id;
     fill.instrument_id = order.request.instrument_id;
     fill.side = order.request.side;
     fill.price = order.request.limit_price;
     fill.quantity = quantity;
     fill.receive_time_ns = now;
-    auto code = MakeExternalId("mock-fill-", order.id.value,
-                               order.fill_count + 1, fill.execution_id);
+    auto code = MakeAdapterId("mock-fill-", order.id.value,
+                              order.fill_count + 1, fill.execution_id);
     if (code != base::ErrorCode::kOk)
       return PollError(code, "cannot encode mock execution ID");
     if (replay) {
@@ -911,7 +914,7 @@ base::Status MockTradingAdapter::ReplayMutation(
     status = SendOrderWithIdentity(mutation.client_order_id, mutation.request,
                                    mutation.request_key.view(), mutation.now);
   } else if (mutation.kind == MockTradingMutationKind::kSendCancel) {
-    status = SendCancel(mutation.client_order_id, mutation.broker_order_id,
+    status = SendCancel(mutation.client_order_id, mutation.adapter_order_id,
                         mutation.cancel_request_id, mutation.now);
   } else {
     model::TradingEvent event;
@@ -1067,13 +1070,13 @@ base::Status MockTradingAdapter::RestoreState(
     order.cancel_id.value = reader.U64();
     order.last_cancel_id.value = reader.U64();
     order.step = static_cast<Storage::Step>(reader.U8());
-    model::BrokerOrderId expected_broker;
+    model::AdapterOrderId expected_broker;
     if (!reader.ok() || order.id.value == 0 || !ValidRequest(order.request) ||
         order.state > model::OrderState::kRejected ||
         order.step > Storage::Step::kNone || order.cumulative_qty < 0 ||
         order.cumulative_qty > order.request.quantity || order.fill_count > 2 ||
         order.cancel_id.value > order.last_cancel_id.value ||
-        MakeExternalId("mock-order-", order.id.value, 0, expected_broker) !=
+        MakeAdapterId("mock-order-", order.id.value, 0, expected_broker) !=
             base::ErrorCode::kOk ||
         expected_broker != order.broker_id)
       return Error(base::ErrorCode::kCorrupt, "invalid mock order snapshot");
@@ -1087,7 +1090,7 @@ base::Status MockTradingAdapter::RestoreState(
       if (identity_bucket == kNoIndex ||
           candidate->identity_lookup[identity_bucket] != 0)
         return Error(base::ErrorCode::kCorrupt,
-                     "duplicate mock external request key");
+                     "duplicate mock adapter request key");
       candidate->identity_lookup[identity_bucket] = index + 1;
     }
     if (!model::IsTerminalOrderState(order.state)) ++candidate->active_orders;
@@ -1136,8 +1139,8 @@ base::Status MockTradingAdapter::RestoreState(
     const auto& order = candidate->orders[order_index];
     if (event.report_sequence != sequences[order_index] + 1 ||
         (event.kind == model::OrderUpdateKind::kRejected
-             ? !event.broker_order_id.empty()
-             : event.broker_order_id != order.broker_id))
+             ? !event.adapter_order_id.empty()
+             : event.adapter_order_id != order.broker_id))
       return Error(base::ErrorCode::kCorrupt,
                    "mock report sequence or broker identity is inconsistent");
     auto& state = states[order_index];
@@ -1157,8 +1160,8 @@ base::Status MockTradingAdapter::RestoreState(
           fill.side != order.request.side ||
           fill.price != order.request.limit_price ||
           fill.quantity > order.request.quantity - cumulative[order_index] ||
-          MakeExternalId("mock-fill-", order.id.value, fills[order_index] + 1,
-                         expected_execution) != base::ErrorCode::kOk ||
+          MakeAdapterId("mock-fill-", order.id.value, fills[order_index] + 1,
+                        expected_execution) != base::ErrorCode::kOk ||
           fill.execution_id != expected_execution)
         return Error(base::ErrorCode::kCorrupt, "invalid mock fill history");
       cumulative[order_index] += fill.quantity;
@@ -1258,13 +1261,13 @@ std::size_t MockTradingAdapter::recovery_event_count() const noexcept {
 
 base::Status MockTradingAdapter::ReadRecoveryOrder(
     std::size_t index, model::OrderSnapshot& out,
-    model::BrokerOrderId* request_key) const noexcept {
+    model::AdapterOrderId* request_key) const noexcept {
   if (!storage_ || index >= storage_->order_count)
     return {base::ErrorCode::kInvalidArgument, {}};
   const auto& order = storage_->orders[index];
   model::OrderSnapshot snapshot;
   snapshot.client_order_id = order.id;
-  snapshot.broker_order_id = order.broker_id;
+  snapshot.adapter_order_id = order.broker_id;
   snapshot.instrument_id = order.request.instrument_id;
   snapshot.side = order.request.side;
   snapshot.position_effect = order.request.position_effect;

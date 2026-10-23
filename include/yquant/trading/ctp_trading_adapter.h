@@ -34,7 +34,7 @@ class CtpTradingAdapter final : public TradingAdapter {
                                        const model::OrderRequest& request,
                                        std::uint64_t now) noexcept override;
   [[nodiscard]] base::Status SendCancel(
-      model::ClientOrderId id, const model::BrokerOrderId& broker_order_id,
+      model::ClientOrderId id, const model::AdapterOrderId& adapter_order_id,
       model::CancelRequestId cancel_request_id,
       std::uint64_t now) noexcept override;
   // Poll sends Stop only after all local orders settle, then exposes final

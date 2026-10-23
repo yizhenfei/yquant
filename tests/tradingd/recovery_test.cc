@@ -25,12 +25,12 @@ constexpr std::array<trading::InstrumentSpec, 1> kInstruments = {
 constexpr std::array<DurableStrategyIdentity, 1> kIdentities = {{{42, 7}}};
 constexpr BrokerRecoveryRequirements kRequirements{"mock/account-A/CNY", 10};
 
-model::BrokerOrderId RequestKey(
+model::AdapterOrderId RequestKey(
     std::uint64_t identity = 42, std::uint64_t sequence = 9,
-    ExternalRequestKind kind = ExternalRequestKind::kNewOrder) {
-  char encoded[kExternalRequestKeyBytes + 1];
-  EXPECT_TRUE(EncodeExternalRequestKey(identity, kind, sequence, encoded).ok());
-  model::BrokerOrderId result;
+    AdapterRequestKind kind = AdapterRequestKind::kNewOrder) {
+  char encoded[kAdapterRequestKeyBytes + 1];
+  EXPECT_TRUE(EncodeAdapterRequestKey(identity, kind, sequence, encoded).ok());
+  model::AdapterOrderId result;
   EXPECT_EQ(result.Assign(encoded), base::ErrorCode::kOk);
   return result;
 }
@@ -42,7 +42,7 @@ class IndependentFakeBroker {
   IndependentFakeBroker() {
     BrokerRecoveryOrder order;
     order.request_key = RequestKey();
-    EXPECT_EQ(order.broker_order_id.Assign("exchange-order-1"),
+    EXPECT_EQ(order.adapter_order_id.Assign("exchange-order-1"),
               base::ErrorCode::kOk);
     order.request = {kInstrument, model::OrderSide::kBuy, 1000, 10};
     order.state = model::OrderState::kFilled;
@@ -52,7 +52,7 @@ class IndependentFakeBroker {
     for (std::size_t index = 0; index < 2; ++index) {
       BrokerRecoveryFill fill;
       fill.request_key = order.request_key;
-      fill.broker_order_id = order.broker_order_id;
+      fill.adapter_order_id = order.adapter_order_id;
       EXPECT_EQ(fill.execution_id.Assign(index == 0 ? "fill-1" : "fill-2"),
                 base::ErrorCode::kOk);
       fill.instrument_id = kInstrument;
@@ -97,33 +97,33 @@ TEST(BrokerRecoveryTest, RequestKeyRoundTripsWithoutTruncationOrAliasing) {
     for (const auto sequence :
          std::array<std::uint64_t, 3>{1, 9, UINT64_MAX}) {
       for (const auto kind :
-           {ExternalRequestKind::kNewOrder, ExternalRequestKind::kCancel}) {
-        char encoded[kExternalRequestKeyBytes + 1];
+           {AdapterRequestKind::kNewOrder, AdapterRequestKind::kCancel}) {
+        char encoded[kAdapterRequestKeyBytes + 1];
         ASSERT_TRUE(
-            EncodeExternalRequestKey(identity, kind, sequence, encoded).ok());
+            EncodeAdapterRequestKey(identity, kind, sequence, encoded).ok());
         EXPECT_EQ(std::strlen(encoded), 28U);
-        ExternalRequestKey decoded;
-        ASSERT_TRUE(DecodeExternalRequestKey(encoded, decoded).ok());
+        AdapterRequestKey decoded;
+        ASSERT_TRUE(DecodeAdapterRequestKey(encoded, decoded).ok());
         EXPECT_EQ(decoded.namespace_id, identity);
         EXPECT_EQ(decoded.kind, kind);
         EXPECT_EQ(decoded.sequence, sequence);
       }
     }
   }
-  char encoded[kExternalRequestKeyBytes + 1] = "unchanged";
+  char encoded[kAdapterRequestKeyBytes + 1] = "unchanged";
   EXPECT_FALSE(
-      EncodeExternalRequestKey(0, ExternalRequestKind::kNewOrder, 1, encoded)
+      EncodeAdapterRequestKey(0, AdapterRequestKind::kNewOrder, 1, encoded)
           .ok());
   EXPECT_STREQ(encoded, "unchanged");
   ASSERT_TRUE(
-      EncodeExternalRequestKey(42, ExternalRequestKind::kNewOrder, 9, encoded)
+      EncodeAdapterRequestKey(42, AdapterRequestKind::kNewOrder, 9, encoded)
           .ok());
   encoded[27] = encoded[27] == 'A' ? 'B' : 'R';
-  ExternalRequestKey decoded{123, ExternalRequestKind::kCancel, 456};
-  EXPECT_FALSE(DecodeExternalRequestKey(encoded, decoded).ok());
+  AdapterRequestKey decoded{123, AdapterRequestKind::kCancel, 456};
+  EXPECT_FALSE(DecodeAdapterRequestKey(encoded, decoded).ok());
   EXPECT_EQ(decoded.namespace_id, 123U);
   EXPECT_EQ(decoded.sequence, 456U);
-  EXPECT_FALSE(DecodeExternalRequestKey("invalid", decoded).ok());
+  EXPECT_FALSE(DecodeAdapterRequestKey("invalid", decoded).ok());
 }
 
 TEST(BrokerRecoveryTest, RecoversFilledTerminalOrderAfterEntireWalDisappears) {
@@ -178,7 +178,7 @@ TEST(BrokerRecoveryTest, RecoversFilledTerminalOrderAfterEntireWalDisappears) {
   model::OrderSnapshot order;
   const auto& fact = output->orders[0].fact;
   order.client_order_id = kLeasedCoreId;
-  order.broker_order_id = fact.broker_order_id;
+  order.adapter_order_id = fact.adapter_order_id;
   order.instrument_id = fact.request.instrument_id;
   order.side = fact.request.side;
   order.limit_price = fact.request.limit_price;
@@ -191,7 +191,7 @@ TEST(BrokerRecoveryTest, RecoversFilledTerminalOrderAfterEntireWalDisappears) {
     const auto& execution = output->fills[index].fact;
     auto& fill = fills[index];
     fill.client_order_id = kLeasedCoreId;
-    fill.broker_order_id = execution.broker_order_id;
+    fill.adapter_order_id = execution.adapter_order_id;
     fill.execution_id = execution.execution_id;
     fill.instrument_id = execution.instrument_id;
     fill.side = execution.side;
@@ -230,7 +230,7 @@ TEST(BrokerRecoveryTest, RecoversFilledTerminalOrderAfterEntireWalDisappears) {
   // An overlapping old callback must retain the imported account baseline.
   model::TradingEvent duplicate;
   duplicate.client_order_id = kLeasedCoreId;
-  duplicate.broker_order_id = order.broker_order_id;
+  duplicate.adapter_order_id = order.adapter_order_id;
   duplicate.kind = model::OrderUpdateKind::kFill;
   duplicate.report_sequence = order.report_sequence;
   duplicate.cumulative_filled_qty = 10;
@@ -323,7 +323,7 @@ TEST(BrokerRecoveryTest, UnknownNamespaceAndConflictingFactsBlockRecovery) {
   broker.fills[2].quantity = 3;
   check(BrokerRecoveryError::kConflictingFill);
   broker.fills.pop_back();
-  broker.fills[0].broker_order_id = {};
+  broker.fills[0].adapter_order_id = {};
   check(BrokerRecoveryError::kInvalidFact);
 }
 

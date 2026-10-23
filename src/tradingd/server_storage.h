@@ -83,7 +83,8 @@ struct Server::Storage final : trading::TradingMutationSink {
   std::uint64_t simulation_client_id = 0;
   std::array<model::QuoteTick, md::kMaxMarketDataInstruments>
       simulation_quotes = {};
-  // Attaches the stable external key without changing the common adapter ABI.
+  // Attaches the stable adapter request key without changing the common adapter
+  // ABI.
   struct Adapter final : trading::TradingAdapter {
     explicit Adapter(Storage& storage) noexcept : storage(storage) {}
     base::Status Prepare(const trading::TradingConfig& c) noexcept override {
@@ -113,7 +114,7 @@ struct Server::Storage final : trading::TradingMutationSink {
                            const model::OrderRequest& request,
                            std::uint64_t now) noexcept override;
     base::Status SendCancel(model::ClientOrderId id,
-                            const model::BrokerOrderId& broker,
+                            const model::AdapterOrderId& broker,
                             model::CancelRequestId cancel,
                             std::uint64_t now) noexcept override {
       return storage.selected_adapter->SendCancel(id, broker, cancel, now);

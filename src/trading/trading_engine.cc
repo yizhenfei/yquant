@@ -41,8 +41,9 @@ bool ValidSide(model::OrderSide side) noexcept {
 
 // Non-fill reports may not smuggle a second, unprocessed execution payload.
 bool EmptyFill(const model::Fill& fill) noexcept {
-  return fill.client_order_id.value == 0 && fill.broker_order_id.empty() &&
-         fill.execution_id.empty() && fill.instrument_id.value == 0 &&
+  return fill.client_order_id.value == 0 && fill.strategy_order_id.value == 0 &&
+         fill.adapter_order_id.empty() && fill.execution_id.empty() &&
+         fill.instrument_id.value == 0 &&
          fill.side == model::OrderSide::kUnknown && fill.price == 0 &&
          fill.quantity == 0 && fill.event_time_ns == 0 &&
          fill.receive_time_ns == 0 && !fill.has_event_time &&
@@ -487,7 +488,7 @@ ErrorCode TradingEngine::SubmitOrder(const model::OrderRequest& request,
   TradingMutation fact;
   fact.now = replaying_ ? replay_now_ : clock_.Now();
   fact.kind = TradingMutationKind::kNewOrder;
-  fact.order_id = order.client_order_id;
+  fact.client_order_id = order.client_order_id;
   fact.request = request;
   const auto journal = BeforeCommit(fact);
   if (journal != ErrorCode::kOk) return journal;
@@ -532,7 +533,7 @@ ErrorCode TradingEngine::QueueCancel(std::size_t index) noexcept {
   TradingMutation fact;
   fact.now = replaying_ ? replay_now_ : clock_.Now();
   fact.kind = TradingMutationKind::kCancel;
-  fact.order_id = s.orders[index].snapshot.client_order_id;
+  fact.client_order_id = s.orders[index].snapshot.client_order_id;
   fact.cancel_id = id;
   const auto journal = BeforeCommit(fact);
   if (journal != ErrorCode::kOk) return journal;
@@ -657,7 +658,7 @@ base::Status TradingEngine::ProcessRequests(std::uint64_t now,
       TradingMutation fact;
       fact.now = replaying_ ? replay_now_ : clock_.Now();
       fact.kind = TradingMutationKind::kScheduleLocalCancel;
-      fact.order_id = record.snapshot.client_order_id;
+      fact.client_order_id = record.snapshot.client_order_id;
       const auto journal = BeforeCommit(fact);
       if (journal != ErrorCode::kOk) return {journal, {}};
       // Reserving the local event and removing the send are one commit. The
@@ -676,7 +677,7 @@ base::Status TradingEngine::ProcessRequests(std::uint64_t now,
     fact.kind = request.kind == Storage::RequestKind::kNew
                     ? TradingMutationKind::kSendNew
                     : TradingMutationKind::kSendCancel;
-    fact.order_id = record.snapshot.client_order_id;
+    fact.client_order_id = record.snapshot.client_order_id;
     fact.cancel_id = request.cancel_id;
     const auto journal = BeforeCommit(fact);
     if (journal != ErrorCode::kOk) return {journal, {}};
@@ -694,7 +695,7 @@ base::Status TradingEngine::ProcessRequests(std::uint64_t now,
     } else {
       record.cancel_attempted = true;
       result = adapter_.SendCancel(record.snapshot.client_order_id,
-                                   record.snapshot.broker_order_id,
+                                   record.snapshot.adapter_order_id,
                                    request.cancel_id, now);
     }
     if (!result.ok()) {
@@ -809,7 +810,7 @@ ErrorCode TradingEngine::ApplyLocalUpdate(TradingDispatch& out) noexcept {
     TradingMutation fact;
     fact.now = replaying_ ? replay_now_ : clock_.Now();
     fact.kind = TradingMutationKind::kLocalCancel;
-    fact.order_id = record.snapshot.client_order_id;
+    fact.client_order_id = record.snapshot.client_order_id;
     const auto journal = BeforeCommit(fact);
     if (journal != ErrorCode::kOk) return journal;
     s.cash = cash;
@@ -850,14 +851,15 @@ ErrorCode TradingEngine::ApplyEvent(const model::TradingEvent& event,
       (!external_cancel && is_cancel != (event.cancel_request_id.value != 0)) ||
       (!is_fill && !EmptyFill(event.fill)) ||
       ((is_fill || event.kind == OrderUpdateKind::kAccepted) &&
-       event.broker_order_id.empty())) {
+       event.adapter_order_id.empty())) {
     return Fail(ErrorCode::kCorrupt, "invalid report fields or timestamp");
   }
   if (is_fill) {
     const auto& fill = event.fill;
     model::InstrumentDefinition instrument;
     if (fill.client_order_id != old.client_order_id ||
-        fill.broker_order_id != event.broker_order_id ||
+        fill.strategy_order_id.value != 0 ||
+        fill.adapter_order_id != event.adapter_order_id ||
         fill.execution_id.empty() || fill.instrument_id != old.instrument_id ||
         fill.side != old.side || fill.position_effect != old.position_effect ||
         fill.price <= 0 || fill.quantity <= 0 ||
@@ -879,29 +881,29 @@ ErrorCode TradingEngine::ApplyEvent(const model::TradingEvent& event,
   if (!record.new_attempted || record.local_cancel_pending ||
       (old.state == OrderState::kCanceled && old.report_sequence == 0) ||
       event.report_sequence != old.report_sequence + 1 ||
-      (!old.broker_order_id.empty() && !event.broker_order_id.empty() &&
-       old.broker_order_id != event.broker_order_id)) {
+      (!old.adapter_order_id.empty() && !event.adapter_order_id.empty() &&
+       old.adapter_order_id != event.adapter_order_id)) {
     return Fail(ErrorCode::kCorrupt,
                 "report sequence or broker identity mismatch");
   }
   auto next = old;
   const bool bind_broker =
-      old.broker_order_id.empty() && !event.broker_order_id.empty();
+      old.adapter_order_id.empty() && !event.adapter_order_id.empty();
   std::size_t broker_slot = 0;
   if (bind_broker) {
-    broker_slot = TradingBrokerHash(event.broker_order_id);
+    broker_slot = TradingBrokerHash(event.adapter_order_id);
     while (s.broker_lookup[broker_slot] != 0) {
       const auto bound_index = s.broker_lookup[broker_slot] - 1;
-      if (s.orders[bound_index].snapshot.broker_order_id ==
-          event.broker_order_id) {
+      if (s.orders[bound_index].snapshot.adapter_order_id ==
+          event.adapter_order_id) {
         return Fail(ErrorCode::kCorrupt,
                     "broker order ID is already bound to another client order");
       }
       broker_slot = (broker_slot + 1) & (kBrokerLookupCapacity - 1);
     }
   }
-  if (!event.broker_order_id.empty())
-    next.broker_order_id = event.broker_order_id;
+  if (!event.adapter_order_id.empty())
+    next.adapter_order_id = event.adapter_order_id;
   next.report_sequence = event.report_sequence;
   next.receive_time_ns = event.receive_time_ns;
   TradingDispatch dispatch;
@@ -1067,7 +1069,7 @@ ErrorCode TradingEngine::ApplyEvent(const model::TradingEvent& event,
   TradingMutation fact;
   fact.now = transaction_now;
   fact.kind = TradingMutationKind::kReport;
-  fact.order_id = event.client_order_id;
+  fact.client_order_id = event.client_order_id;
   fact.event = event;
   const auto journal = BeforeCommit(fact);
   if (journal != ErrorCode::kOk) return journal;
@@ -1122,7 +1124,7 @@ base::Status TradingEngine::ReplayMutation(const TradingMutation& fact,
     return {Fail(ErrorCode::kCorrupt, "invalid replay state or revision"), {}};
   }
   auto& s = *storage_;
-  const auto index = FindIndex(fact.order_id);
+  const auto index = FindIndex(fact.client_order_id);
   if (fact.kind != TradingMutationKind::kNewOrder && !index)
     return {Fail(ErrorCode::kCorrupt, "unknown replay order"), {}};
   replaying_ = true;
@@ -1131,7 +1133,7 @@ base::Status TradingEngine::ReplayMutation(const TradingMutation& fact,
   TradingDispatch dispatch;
   switch (fact.kind) {
     case TradingMutationKind::kNewOrder: {
-      if (fact.order_id.value != s.next_order_id) {
+      if (fact.client_order_id.value != s.next_order_id) {
         result = Fail(ErrorCode::kCorrupt, "replay order identity mismatch");
         break;
       }
@@ -1195,7 +1197,7 @@ base::Status TradingEngine::ReplayMutation(const TradingMutation& fact,
         result = ApplyLocalUpdate(dispatch);
       break;
     case TradingMutationKind::kReport:
-      if (fact.event.client_order_id != fact.order_id)
+      if (fact.event.client_order_id != fact.client_order_id)
         result = Fail(ErrorCode::kCorrupt, "replay report identity mismatch");
       else
         result = ApplyEvent(fact.event, dispatch);
@@ -1339,7 +1341,7 @@ base::Status TradingEngine::Poll(std::uint64_t now, TradingDispatch& out,
     if (applied != base::ErrorCode::kOk) {
       char broker[kTradingIdHexSize];
       char execution[kTradingIdHexSize];
-      CopyIdHex(input.broker_order_id.view(), broker);
+      CopyIdHex(input.adapter_order_id.view(), broker);
       CopyIdHex(input.fill.execution_id.view(), execution);
       error_stage_ = "trading_event";
       char detail[kErrorDetailSize];

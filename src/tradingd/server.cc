@@ -267,7 +267,7 @@ base::Status Server::Handle(std::size_t index, const trading::Message& message,
   }
   if (message.type == trading::MessageType::kNewOrder) {
     if (client.stopping || s.stopping || s.degraded ||
-        message.order_id.value != client.order_count + 1 ||
+        message.strategy_order_id.value != client.order_count + 1 ||
         client.order_count == client.orders.size() ||
         !HasInstrument(client, message.request.instrument_id)) {
       Disconnect(index);
@@ -303,7 +303,7 @@ base::Status Server::Handle(std::size_t index, const trading::Message& message,
       reply.update.reason.Set(static_cast<std::int32_t>(code),
                               s.trading.error_detail());
       auto& order = reply.update.order;
-      order.client_order_id = message.order_id;
+      order.strategy_order_id = message.strategy_order_id;
       order.instrument_id = message.request.instrument_id;
       order.side = message.request.side;
       order.limit_price = message.request.limit_price;
@@ -319,15 +319,15 @@ base::Status Server::Handle(std::size_t index, const trading::Message& message,
     }
     return {};
   }
-  if (message.order_id.value == 0 ||
-      message.order_id.value > client.order_count ||
+  if (message.strategy_order_id.value == 0 ||
+      message.strategy_order_id.value > client.order_count ||
       message.cancel_id.value == 0 ||
       message.cancel_id.value <= client.last_cancel_id) {
     Disconnect(index);
     return {};
   }
   client.last_cancel_id = message.cancel_id.value;
-  auto& local = client.orders[message.order_id.value - 1];
+  auto& local = client.orders[message.strategy_order_id.value - 1];
   model::OrderSnapshot snapshot = local.rejected;
   const bool has_core = local.core_id.value != 0;
   if (has_core) (void)s.trading.TryGetOrder(local.core_id, snapshot);
@@ -337,11 +337,11 @@ base::Status Server::Handle(std::size_t index, const trading::Message& message,
   }
   base::ErrorCode code = base::ErrorCode::kInvalidState;
   if (has_core && !client.stopping && !s.stopping &&
-      (message.broker_order_id.empty() ||
-       message.broker_order_id == snapshot.broker_order_id)) {
+      (message.adapter_order_id.empty() ||
+       message.adapter_order_id == snapshot.adapter_order_id)) {
     s.trading.SetAcceptingRequests(true);
     s.context_client = index;
-    s.context_local = message.order_id.value - 1;
+    s.context_local = message.strategy_order_id.value - 1;
     s.context_cancel = message.cancel_id;
     code = s.trading.CancelOrder(local.core_id);
     s.context_client = trading::kMaxClients;
@@ -359,7 +359,7 @@ base::Status Server::Handle(std::size_t index, const trading::Message& message,
     reply.generation = s.generation;
     reply.account = s.account;
     reply.update.order = snapshot;
-    reply.update.order.client_order_id = message.order_id;
+    reply.update.order.strategy_order_id = message.strategy_order_id;
     reply.update.order.report_sequence = ++local.report_sequence;
     reply.update.order.cancel_pending = false;
     reply.update.order.cancel_request_id = message.cancel_id;
@@ -371,7 +371,7 @@ base::Status Server::Handle(std::size_t index, const trading::Message& message,
     local.local_cancel = message.cancel_id;
     if (!has_core) local.rejected = reply.update.order;
     const auto recorded =
-        s.PersistRejection(index, message.order_id.value - 1, reply);
+        s.PersistRejection(index, message.strategy_order_id.value - 1, reply);
     if (!recorded.ok()) return recorded;
     if (!client.connection.Queue(reply).ok()) Disconnect(index);
   }
@@ -411,9 +411,10 @@ base::Status Server::Dispatch(std::uint64_t now) noexcept {
     message.update = dispatch.update;
     message.fill = dispatch.fill;
     message.account = s.account;
-    message.update.order.client_order_id.value = owner.local + 1;
+    message.update.order.strategy_order_id.value = owner.local + 1;
     message.update.order.report_sequence = ++local.report_sequence;
-    if (dispatch.has_fill) message.fill.client_order_id.value = owner.local + 1;
+    if (dispatch.has_fill)
+      message.fill.strategy_order_id.value = owner.local + 1;
     const auto wire_cancel =
         message.update.order.cancel_request_id == local.core_cancel
             ? local.local_cancel

@@ -25,13 +25,13 @@ trading::Message Example(trading::MessageType type) {
   std::memcpy(message.token, "secret", 7);
   message.instrument_count = 1;
   message.instruments[0] = {Instrument(), 4};
-  message.order_id = {17};
+  message.client_order_id = {17};
   message.request = {Instrument(), model::OrderSide::kBuy, 120, 100};
   message.cancel_id = {9};
-  EXPECT_EQ(message.broker_order_id.Assign({"B\0O", 3}), base::ErrorCode::kOk);
+  EXPECT_EQ(message.adapter_order_id.Assign({"B\0O", 3}), base::ErrorCode::kOk);
   auto& order = message.update.order;
-  order.client_order_id = message.order_id;
-  order.broker_order_id = message.broker_order_id;
+  order.client_order_id = message.client_order_id;
+  order.adapter_order_id = message.adapter_order_id;
   order.instrument_id = Instrument();
   order.side = model::OrderSide::kBuy;
   order.limit_price = 120;
@@ -47,8 +47,8 @@ trading::Message Example(trading::MessageType type) {
   message.update.cancel_request_id = message.cancel_id;
   message.update.reason.Set(-4, "diagnostic");
   message.has_fill = true;
-  message.fill.client_order_id = message.order_id;
-  message.fill.broker_order_id = message.broker_order_id;
+  message.fill.client_order_id = message.client_order_id;
+  message.fill.adapter_order_id = message.adapter_order_id;
   EXPECT_EQ(message.fill.execution_id.Assign("execution"),
             base::ErrorCode::kOk);
   message.fill.instrument_id = Instrument();
@@ -130,7 +130,7 @@ TEST(TradingProtocol, HeaderHasStableLittleEndianLayout) {
   ASSERT_TRUE(trading::EncodeMessage(message, bytes, size).ok());
   ASSERT_EQ(size, 32);
   EXPECT_EQ(std::memcmp(bytes.data(), "YQTR", 4), 0);
-  EXPECT_EQ(bytes[4], std::byte{3});
+  EXPECT_EQ(bytes[4], std::byte{4});
   EXPECT_EQ(bytes[5], std::byte{0});
   EXPECT_EQ(bytes[8], std::byte{32});
   for (std::size_t index = 0; index < 8; ++index) {
@@ -218,7 +218,7 @@ TEST(TradingProtocol, RejectsInvalidHelloAndInstrumentDictionary) {
 
 TEST(TradingProtocol, RejectsInvalidOrdersAndUnscaledNotionalOverflow) {
   auto message = Example(trading::MessageType::kNewOrder);
-  message.order_id.value = 0;
+  message.client_order_id.value = 0;
   ExpectEncodingRejected(message);
   message = Example(trading::MessageType::kNewOrder);
   message.request.side = static_cast<model::OrderSide>(3);
@@ -397,9 +397,9 @@ TEST(TradingProtocol, MaximumReasonAndOpaqueBytesRoundTrip) {
   auto message = Example(trading::MessageType::kOrderUpdate);
   std::string opaque(64, '\0');
   opaque[63] = 'x';
-  ASSERT_EQ(message.update.order.broker_order_id.Assign(opaque),
+  ASSERT_EQ(message.update.order.adapter_order_id.Assign(opaque),
             base::ErrorCode::kOk);
-  message.fill.broker_order_id = message.update.order.broker_order_id;
+  message.fill.adapter_order_id = message.update.order.adapter_order_id;
   ASSERT_EQ(message.fill.execution_id.Assign(opaque), base::ErrorCode::kOk);
   message.update.reason.Set(4, std::string(200, 'r'));
   std::array<std::byte, trading::kMaxFrameSize> bytes;
@@ -408,7 +408,7 @@ TEST(TradingProtocol, MaximumReasonAndOpaqueBytesRoundTrip) {
   trading::Message output;
   ASSERT_TRUE(
       trading::DecodeMessage(std::span(bytes).first(size), output).ok());
-  EXPECT_EQ(output.update.order.broker_order_id.view(), opaque);
+  EXPECT_EQ(output.update.order.adapter_order_id.view(), opaque);
   EXPECT_EQ(output.fill.execution_id.view(), opaque);
   EXPECT_EQ(output.update.reason.size, 128);
   EXPECT_TRUE(output.update.reason.truncated);
@@ -527,7 +527,7 @@ TEST(TradingProtocol, CompleteFuturesDictionaryFitsWithinOneFrame) {
             message.account.futures_positions[63]);
 }
 
-TEST(TradingProtocol, BrokerAccountAndUnallocatedFreezesUseVersionThree) {
+TEST(TradingProtocol, BrokerAccountAndUnallocatedFreezesRoundTrip) {
   auto message = Example(MessageType::kAccount);
   message.account = {};
   message.account.type = model::AccountType::kFutures;
@@ -544,7 +544,7 @@ TEST(TradingProtocol, BrokerAccountAndUnallocatedFreezesUseVersionThree) {
   std::array<std::byte, trading::kMaxFrameSize> bytes{};
   std::size_t size = 0;
   ASSERT_TRUE(EncodeMessage(message, bytes, size).ok());
-  EXPECT_EQ(bytes[4], std::byte{3});
+  EXPECT_EQ(bytes[4], std::byte{4});
   Message decoded;
   ASSERT_TRUE(DecodeMessage(std::span(bytes).first(size), decoded).ok());
   EXPECT_TRUE(decoded.account.broker_managed);
@@ -619,6 +619,45 @@ TEST(TradingProtocol, VersionTwoFuturesDefaultsUnallocatedFreezesToZero) {
   ASSERT_TRUE(DecodeMessage(std::span(bytes).first(size), decoded).ok());
   EXPECT_FALSE(decoded.account.broker_managed);
   EXPECT_EQ(decoded.account.futures_positions[0], position);
+}
+
+TEST(TradingProtocol,
+     StrategyRequestIdentityIsDistinctFromAdapterClientIdentity) {
+  for (const auto type : {MessageType::kNewOrder, MessageType::kCancelOrder}) {
+    auto message = Example(type);
+    message.client_order_id = {};
+    message.strategy_order_id = {7};
+    std::array<std::byte, kMaxFrameSize> bytes;
+    std::size_t size = 0;
+    ASSERT_TRUE(EncodeMessage(message, bytes, size).ok());
+    Message decoded;
+    ASSERT_TRUE(DecodeMessage(std::span(bytes).first(size), decoded).ok());
+    EXPECT_EQ(decoded.strategy_order_id.value, 7U);
+    EXPECT_EQ(decoded.client_order_id.value, 0U);
+    message.client_order_id = {19};
+    ExpectEncodingRejected(message);
+    message.client_order_id = {};
+    message.strategy_order_id = {};
+    ExpectEncodingRejected(message);
+  }
+}
+
+TEST(TradingProtocol,
+     ReportsPreserveBothOrderIdentitiesAndValidateFillRouting) {
+  auto message = Example(MessageType::kOrderUpdate);
+  message.update.order.strategy_order_id = {3};
+  message.fill.strategy_order_id = {3};
+  std::array<std::byte, kMaxFrameSize> bytes;
+  std::size_t size = 0;
+  ASSERT_TRUE(EncodeMessage(message, bytes, size).ok());
+  Message decoded;
+  ASSERT_TRUE(DecodeMessage(std::span(bytes).first(size), decoded).ok());
+  EXPECT_EQ(decoded.update.order.strategy_order_id.value, 3U);
+  EXPECT_EQ(decoded.update.order.client_order_id.value, 17U);
+  EXPECT_EQ(decoded.fill.strategy_order_id.value, 3U);
+  EXPECT_EQ(decoded.fill.client_order_id.value, 17U);
+  message.fill.strategy_order_id = {4};
+  ExpectEncodingRejected(message);
 }
 
 }  // namespace

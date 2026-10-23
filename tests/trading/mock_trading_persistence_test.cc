@@ -71,7 +71,7 @@ TEST(MockTradingPersistenceTest, SnapshotRestoresPartialFillAndPendingCancel) {
           .ok());
   model::TradingEvent event;
   ASSERT_EQ(source.Poll(kInterval, event).state, TradingPollState::kEvent);
-  const auto broker = event.broker_order_id;
+  const auto broker = event.adapter_order_id;
   ASSERT_TRUE(source.SendCancel({7}, broker, {11}, kInterval).ok());
   ASSERT_EQ(source.Poll(2 * kInterval, event).state, TradingPollState::kEvent);
   ASSERT_EQ(event.kind, model::OrderUpdateKind::kFill);
@@ -91,7 +91,7 @@ TEST(MockTradingPersistenceTest, SnapshotRestoresPartialFillAndPendingCancel) {
   EXPECT_EQ(recovered.recovery_event_count(), 2U);
   EXPECT_EQ(recovered.recovery_fill_count(), 1U);
   model::OrderSnapshot order;
-  model::BrokerOrderId key;
+  model::AdapterOrderId key;
   ASSERT_TRUE(recovered.ReadRecoveryOrder(0, order, &key).ok());
   EXPECT_EQ(key.view(), "session-A/order-9");
   EXPECT_EQ(order.cumulative_filled_qty, 4);
@@ -127,7 +127,7 @@ TEST(MockTradingPersistenceTest, ReplayPreservesExactEventsAndSuppressesSink) {
       source.SendOrderWithIdentity({1}, Request(1), "unique-request", 0).ok());
   model::TradingEvent event;
   ASSERT_EQ(source.Poll(kInterval, event).state, TradingPollState::kEvent);
-  const auto broker = event.broker_order_id;
+  const auto broker = event.adapter_order_id;
   ASSERT_EQ(source.Poll(2 * kInterval, event).state, TradingPollState::kEvent);
   const auto utc = event.fill.event_time_ns;
   ASSERT_TRUE(source.SendCancel({1}, broker, {3}, 2 * kInterval).ok());
@@ -203,11 +203,11 @@ TEST(MockTradingPersistenceTest, RejectedJournalLeavesEveryOperationUnchanged) {
   const auto accepted = Snapshot(adapter, kInterval);
   observer.fail = true;
   EXPECT_FALSE(
-      adapter.SendCancel({1}, event.broker_order_id, {8}, kInterval).ok());
+      adapter.SendCancel({1}, event.adapter_order_id, {8}, kInterval).ok());
   EXPECT_EQ(Snapshot(adapter, kInterval), accepted);
   observer.fail = false;
   EXPECT_TRUE(
-      adapter.SendCancel({1}, event.broker_order_id, {8}, kInterval).ok());
+      adapter.SendCancel({1}, event.adapter_order_id, {8}, kInterval).ok());
 }
 
 TEST(MockTradingPersistenceTest, RejectsDamagedAndInvalidSnapshotAtomically) {

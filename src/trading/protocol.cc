@@ -12,7 +12,7 @@ namespace {
 
 // The byte spelling is YQTR. All integer fields use little-endian order.
 constexpr std::uint32_t kMagic = 0x52545159;
-constexpr std::uint16_t kVersion = 3;
+constexpr std::uint16_t kVersion = kOrderIdentityWireVersion;
 constexpr std::size_t kMaxReasonBytes = sizeof(model::OrderReason{}.text) - 1;
 constexpr std::uint8_t kMaxPriceDecimals = 6;
 
@@ -51,7 +51,8 @@ bool ValidAmount(std::int64_t price, std::int64_t quantity) noexcept {
 
 bool ValidOrder(const model::OrderSnapshot& order) noexcept {
   if (!ValidEffect(order.instrument_id, order.position_effect) ||
-      order.client_order_id.value == 0 ||
+      (order.client_order_id.value == 0 &&
+       order.strategy_order_id.value == 0) ||
       !ValidInstrument(order.instrument_id) || !ValidSide(order.side) ||
       !ValidAmount(order.limit_price, order.original_qty) ||
       order.cumulative_filled_qty < 0 ||
@@ -72,8 +73,9 @@ bool ValidFill(const model::Fill& fill,
                const model::OrderSnapshot& order) noexcept {
   return fill.position_effect == order.position_effect &&
          fill.client_order_id == order.client_order_id &&
-         fill.broker_order_id == order.broker_order_id &&
-         !fill.broker_order_id.empty() && !fill.execution_id.empty() &&
+         fill.strategy_order_id == order.strategy_order_id &&
+         fill.adapter_order_id == order.adapter_order_id &&
+         !fill.adapter_order_id.empty() && !fill.execution_id.empty() &&
          fill.instrument_id == order.instrument_id && fill.side == order.side &&
          ValidAmount(fill.price, fill.quantity) &&
          fill.quantity <= order.cumulative_filled_qty &&
@@ -412,7 +414,7 @@ void ReadInstruments(Reader& reader, Message& message) noexcept {
 
 void WriteOrder(Writer& writer, const model::OrderSnapshot& order) noexcept {
   writer.Uint(order.client_order_id.value, 8);
-  WriteId(writer, order.broker_order_id);
+  WriteId(writer, order.adapter_order_id);
   writer.Uint(order.instrument_id.value, 8);
   writer.Uint(static_cast<std::uint8_t>(order.side), 1);
   writer.Signed(order.limit_price);
@@ -425,11 +427,12 @@ void WriteOrder(Writer& writer, const model::OrderSnapshot& order) noexcept {
   writer.Uint(order.report_sequence, 8);
   writer.Uint(order.receive_time_ns, 8);
   writer.Uint(static_cast<std::uint8_t>(order.position_effect), 1);
+  writer.Uint(order.strategy_order_id.value, 8);
 }
 
 void ReadOrder(Reader& reader, model::OrderSnapshot& order) noexcept {
   order.client_order_id.value = reader.Uint(8);
-  ReadId(reader, order.broker_order_id);
+  ReadId(reader, order.adapter_order_id);
   order.instrument_id.value = reader.Uint(8);
   order.side = static_cast<model::OrderSide>(reader.Uint(1));
   order.limit_price = reader.Signed();
@@ -443,12 +446,14 @@ void ReadOrder(Reader& reader, model::OrderSnapshot& order) noexcept {
   order.receive_time_ns = reader.Uint(8);
   if (reader.version() >= 2)
     order.position_effect = static_cast<model::PositionEffect>(reader.Uint(1));
+  if (reader.version() >= kOrderIdentityWireVersion)
+    order.strategy_order_id.value = reader.Uint(8);
   if (!ValidOrder(order)) reader.Reject();
 }
 
 void WriteFill(Writer& writer, const model::Fill& fill) noexcept {
   writer.Uint(fill.client_order_id.value, 8);
-  WriteId(writer, fill.broker_order_id);
+  WriteId(writer, fill.adapter_order_id);
   WriteId(writer, fill.execution_id);
   writer.Uint(fill.instrument_id.value, 8);
   writer.Uint(static_cast<std::uint8_t>(fill.side), 1);
@@ -458,11 +463,12 @@ void WriteFill(Writer& writer, const model::Fill& fill) noexcept {
   writer.Uint(fill.receive_time_ns, 8);
   writer.Uint(fill.has_event_time, 1);
   writer.Uint(static_cast<std::uint8_t>(fill.position_effect), 1);
+  writer.Uint(fill.strategy_order_id.value, 8);
 }
 
 void ReadFill(Reader& reader, model::Fill& fill) noexcept {
   fill.client_order_id.value = reader.Uint(8);
-  ReadId(reader, fill.broker_order_id);
+  ReadId(reader, fill.adapter_order_id);
   ReadId(reader, fill.execution_id);
   fill.instrument_id.value = reader.Uint(8);
   fill.side = static_cast<model::OrderSide>(reader.Uint(1));
@@ -473,6 +479,8 @@ void ReadFill(Reader& reader, model::Fill& fill) noexcept {
   fill.has_event_time = reader.Boolean();
   if (reader.version() >= 2)
     fill.position_effect = static_cast<model::PositionEffect>(reader.Uint(1));
+  if (reader.version() >= kOrderIdentityWireVersion)
+    fill.strategy_order_id.value = reader.Uint(8);
 }
 
 bool ValidUpdate(const Message& message) noexcept {
@@ -506,27 +514,32 @@ bool WritePayload(Writer& writer, const Message& message) noexcept {
       WriteAccount(writer, message.account);
       break;
     case MessageType::kNewOrder:
-      if (message.order_id.value == 0 ||
+      if (((message.client_order_id.value == 0) ==
+           (message.strategy_order_id.value == 0)) ||
           !ValidEffect(message.request.instrument_id,
                        message.request.position_effect) ||
           !ValidInstrument(message.request.instrument_id) ||
           !ValidSide(message.request.side) ||
           !ValidAmount(message.request.limit_price, message.request.quantity))
         return false;
-      writer.Uint(message.order_id.value, 8);
+      writer.Uint(message.client_order_id.value, 8);
       writer.Uint(message.request.instrument_id.value, 8);
       writer.Uint(static_cast<std::uint8_t>(message.request.side), 1);
       writer.Signed(message.request.limit_price);
       writer.Signed(message.request.quantity);
       writer.Uint(static_cast<std::uint8_t>(message.request.position_effect),
                   1);
+      writer.Uint(message.strategy_order_id.value, 8);
       break;
     case MessageType::kCancelOrder:
-      if (message.order_id.value == 0 || message.cancel_id.value == 0)
+      if (((message.client_order_id.value == 0) ==
+           (message.strategy_order_id.value == 0)) ||
+          message.cancel_id.value == 0)
         return false;
-      writer.Uint(message.order_id.value, 8);
+      writer.Uint(message.client_order_id.value, 8);
       writer.Uint(message.cancel_id.value, 8);
-      WriteId(writer, message.broker_order_id);
+      WriteId(writer, message.adapter_order_id);
+      writer.Uint(message.strategy_order_id.value, 8);
       break;
     case MessageType::kOrderUpdate:
       if (!ValidUpdate(message) || !ValidAccount(message.account)) return false;
@@ -590,7 +603,7 @@ void ReadPayload(Reader& reader, Message& message) noexcept {
       ReadAccount(reader, message.account);
       break;
     case MessageType::kNewOrder:
-      message.order_id.value = reader.Uint(8);
+      message.client_order_id.value = reader.Uint(8);
       message.request.instrument_id.value = reader.Uint(8);
       message.request.side = static_cast<model::OrderSide>(reader.Uint(1));
       message.request.limit_price = reader.Signed();
@@ -598,7 +611,10 @@ void ReadPayload(Reader& reader, Message& message) noexcept {
       if (reader.version() >= 2)
         message.request.position_effect =
             static_cast<model::PositionEffect>(reader.Uint(1));
-      if (message.order_id.value == 0 ||
+      if (reader.version() >= kOrderIdentityWireVersion)
+        message.strategy_order_id.value = reader.Uint(8);
+      if (((message.client_order_id.value == 0) ==
+           (message.strategy_order_id.value == 0)) ||
           !ValidEffect(message.request.instrument_id,
                        message.request.position_effect) ||
           !ValidInstrument(message.request.instrument_id) ||
@@ -607,10 +623,14 @@ void ReadPayload(Reader& reader, Message& message) noexcept {
         reader.Reject();
       break;
     case MessageType::kCancelOrder:
-      message.order_id.value = reader.Uint(8);
+      message.client_order_id.value = reader.Uint(8);
       message.cancel_id.value = reader.Uint(8);
-      ReadId(reader, message.broker_order_id);
-      if (message.order_id.value == 0 || message.cancel_id.value == 0)
+      ReadId(reader, message.adapter_order_id);
+      if (reader.version() >= kOrderIdentityWireVersion)
+        message.strategy_order_id.value = reader.Uint(8);
+      if (((message.client_order_id.value == 0) ==
+           (message.strategy_order_id.value == 0)) ||
+          message.cancel_id.value == 0)
         reader.Reject();
       break;
     case MessageType::kOrderUpdate:
@@ -682,7 +702,8 @@ std::size_t FrameSize(std::span<const std::byte> header) noexcept {
   Reader reader(header);
   if (reader.Uint(4) != kMagic) return 0;
   const auto version = reader.Uint(2);
-  if (version != 1 && version != 2 && version != kVersion) return 0;
+  if (version != 1 && version != 2 && version != 3 && version != kVersion)
+    return 0;
   const auto type = static_cast<MessageType>(reader.Uint(2));
   if (!ValidType(type) || (version == 1 && type > MessageType::kError))
     return 0;

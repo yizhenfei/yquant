@@ -51,9 +51,12 @@ struct OrderRequest {
 // Units match OrderRequest. Partial fills remain kWorking; local request
 // acceptance does not imply broker acceptance.
 struct OrderSnapshot {
+  // Zero before the gateway creates a ledger order.
   ClientOrderId client_order_id;
-  // Empty until a broker identifier has been obtained.
-  BrokerOrderId broker_order_id;
+  // Zero in core ledger views; populated when routed to a strategy session.
+  StrategyOrderId strategy_order_id;
+  // Empty until an adapter order identity has been obtained.
+  AdapterOrderId adapter_order_id;
   InstrumentId instrument_id;
   OrderSide side = OrderSide::kUnknown;
   std::int64_t limit_price = 0;

@@ -46,7 +46,7 @@ struct SimulatedFuturesExchange::Storage {
   enum class Kind { kAccepted, kFill, kCancel };
   struct Order {
     model::ClientOrderId id;
-    model::BrokerOrderId broker;
+    model::AdapterOrderId broker;
     model::OrderRequest request;
     std::int64_t matched = 0;
     std::int64_t published = 0;
@@ -296,7 +296,7 @@ base::Status SimulatedFuturesExchange::SendOrder(
 }
 
 base::Status SimulatedFuturesExchange::SendCancel(
-    model::ClientOrderId id, const model::BrokerOrderId& broker,
+    model::ClientOrderId id, const model::AdapterOrderId& broker,
     model::CancelRequestId cancel, std::uint64_t now) noexcept {
   if (state_ != State::kActive)
     return Error(base::ErrorCode::kInvalidState, "exchange is not active");
@@ -389,7 +389,7 @@ TradingPollResult SimulatedFuturesExchange::Poll(
                      "exchange report identity exhausted");
   model::TradingEvent event;
   event.client_order_id = pending.id;
-  event.broker_order_id = pending.broker;
+  event.adapter_order_id = pending.broker;
   event.report_sequence = pending.sequence + 1;
   event.receive_time_ns = now;
   event.cumulative_filled_qty = pending.published;
@@ -400,7 +400,7 @@ TradingPollResult SimulatedFuturesExchange::Poll(
                        "cannot format execution identity");
     event.kind = model::OrderUpdateKind::kFill;
     event.fill.client_order_id = pending.id;
-    event.fill.broker_order_id = pending.broker;
+    event.fill.adapter_order_id = pending.broker;
     event.fill.instrument_id = pending.request.instrument_id;
     event.fill.side = pending.request.side;
     event.fill.position_effect = pending.request.position_effect;

@@ -213,7 +213,7 @@ const char* Exercise(Server& server, trading::Connection& client,
   trading::Message order;
   order.type = trading::MessageType::kNewOrder;
   order.generation = observation.generation;
-  order.order_id = {1};
+  order.strategy_order_id = {1};
   order.request = {instrument, model::OrderSide::kBuy, 1000, 10};
   if (!client.Queue(order).ok()) return "order queue failed";
   if (const auto* failure = PumpUntil(server, client, clock, observation, [&] {
@@ -228,7 +228,7 @@ const char* Exercise(Server& server, trading::Connection& client,
   trading::Message cancel;
   cancel.type = trading::MessageType::kCancelOrder;
   cancel.generation = observation.generation;
-  cancel.order_id = {1};
+  cancel.strategy_order_id = {1};
   cancel.cancel_id = {1};
   if (!client.Queue(cancel).ok()) return "cancel queue failed";
   for (std::size_t count = 0; count < trading::kConnectionQueueFrames;

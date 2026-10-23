@@ -31,16 +31,16 @@ class Trading {
   // kResourceExhausted for exhausted local order/request storage and IDs.
   [[nodiscard]] virtual base::ErrorCode SubmitOrder(
       const model::OrderRequest& request,
-      model::ClientOrderId& out) noexcept = 0;
+      model::StrategyOrderId& out) noexcept = 0;
   // Locally queues one cancel attempt on Working without an existing attempt.
   // The order can still fill. Failure preserves all state and queued requests.
   // Uses the same phase/session/capacity errors as SubmitOrder; an unknown ID
   // returns kInvalidArgument, other order states return kInvalidState.
   [[nodiscard]] virtual base::ErrorCode CancelOrder(
-      model::ClientOrderId id) noexcept = 0;
+      model::StrategyOrderId id) noexcept = 0;
   // Includes terminal orders until teardown. Unknown IDs preserve out.
   [[nodiscard]] virtual bool TryGetOrder(
-      model::ClientOrderId id, model::OrderSnapshot& out) const noexcept = 0;
+      model::StrategyOrderId id, model::OrderSnapshot& out) const noexcept = 0;
   // Copies the latest gateway cash view, including confirmed buy reservations.
   // This is shared account state and may lag local requests or
   // other clients; callbacks observe the account view paired with their event.

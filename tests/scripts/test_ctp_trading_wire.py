@@ -46,7 +46,7 @@ def position(identity=FUTURE):
 
 def order(**changes):
     result = {
-        "client_order_id": 17, "broker_order_id": b"B\0O",
+        "client_order_id": 17, "strategy_order_id": 0, "adapter_order_id": b"B\0O",
         "instrument_id": FUTURE, "side": 1, "limit_price": 3600,
         "original_qty": 10, "cumulative_filled_qty": 2, "leaves_qty": 8,
         "state": 1, "cancel_pending": True, "cancel_request_id": 9,
@@ -58,7 +58,7 @@ def order(**changes):
 
 def fill(**changes):
     result = {
-        "client_order_id": 17, "broker_order_id": b"B\0O", "execution_id": b"E\0",
+        "client_order_id": 17, "strategy_order_id": 0, "adapter_order_id": b"B\0O", "execution_id": b"E\0",
         "instrument_id": FUTURE, "side": 1, "price": 3599, "quantity": 2,
         "event_time_ns": 999, "receive_time_ns": 1234,
         "has_event_time": True, "position_effect": 4,
@@ -76,7 +76,7 @@ def update(**changes):
     return result
 
 
-def framed(kind, payload, version=3):
+def framed(kind, payload, version=4):
     # Independent framing helper for malformed and legacy payloads.
     return struct.pack("<IHHIIQQ", 0x52545159, version, kind,
                        32 + len(payload), 0, 27, 1) + payload
@@ -85,7 +85,7 @@ def framed(kind, payload, version=3):
 class GoldenLayoutTest(unittest.TestCase):
     def test_cpp_header_little_endian_and_fixed_size(self):
         expected = bytes.fromhex(
-            "59515452 0300 0900 20000000 00000000 "
+            "59515452 0400 0900 20000000 00000000 "
             "0102030405060708 1112131415161718")
         value = {"type": wire.HEARTBEAT, "generation": 0x0807060504030201,
                  "sequence": 0x1817161514131211}
@@ -95,11 +95,11 @@ class GoldenLayoutTest(unittest.TestCase):
 
     def test_cpp_new_order_layout_includes_generic_close(self):
         expected = bytes.fromhex(
-            "59515452 0300 0300 42000000 00000000 "
+            "59515452 0400 0300 4a000000 00000000 "
             "1b00000000000000 0100000000000000 "
             "1100000000000000 f54a008005000000 01 "
-            "100e000000000000 0200000000000000 04")
-        value = message(wire.NEW_ORDER, order_id=17, request={
+            "100e000000000000 0200000000000000 04 0000000000000000")
+        value = message(wire.NEW_ORDER, client_order_id=17, strategy_order_id=0, request={
             "instrument_id": FUTURE, "side": 1, "limit_price": 3600,
             "quantity": 2, "position_effect": 4})
         self.assertEqual(wire.encode_message(value), expected)
@@ -107,7 +107,7 @@ class GoldenLayoutTest(unittest.TestCase):
 
     def test_cpp_account_v3_places_broker_identity_after_type(self):
         expected = bytes.fromhex(
-            "59515452 0300 0600 6c000000 00000000 "
+            "59515452 0400 0600 6c000000 00000000 "
             "1b00000000000000 0100000000000000 "
             "0700000000000000 01 01 "
             "e803000000000000 e303000000000000 cf03000000000000 "
@@ -123,10 +123,10 @@ class GoldenLayoutTest(unittest.TestCase):
         expected_order = (
             struct.pack("<Q", 17) + b"\x03B\0O"
             + struct.pack("<QB4qBB3QB", FUTURE, 1, 3600, 10, 2, 8,
-                          1, 1, 9, 4, 1234, 4))
+                          1, 1, 9, 4, 1234, 4) + struct.pack("<Q", 0))
         expected_fill = (
             struct.pack("<Q", 17) + b"\x03B\0O\x02E\0"
-            + struct.pack("<QB2q2QBB", FUTURE, 1, 3599, 2, 999, 1234, 1, 4))
+            + struct.pack("<QB2q2QBB", FUTURE, 1, 3599, 2, 999, 1234, 1, 4) + struct.pack("<Q", 0))
         expected_account = (struct.pack("<QBB8qH", 7, 1, 1,
                                         1000, 995, 975, 10, 10, -5, -5, 2, 1)
                             + struct.pack("<Q16q", FUTURE,
@@ -173,11 +173,11 @@ class MessageValuesTest(unittest.TestCase):
         cases = [
             message(wire.HELLO, client_id=3, token=b"secret", instruments=dictionary),
             message(wire.WELCOME, instruments=dictionary, account=account()),
-            message(wire.NEW_ORDER, order_id=17, request={
+            message(wire.NEW_ORDER, client_order_id=17, request={
                 "instrument_id": FUTURE, "side": 2, "limit_price": 3600,
                 "quantity": 10, "position_effect": 1}),
-            message(wire.CANCEL_ORDER, order_id=17, cancel_id=9,
-                    broker_order_id=b"B\0O"),
+            message(wire.CANCEL_ORDER, client_order_id=17, cancel_id=9,
+                    adapter_order_id=b"B\0O"),
             update(), message(wire.ACCOUNT, account=account()),
             message(wire.STOP), message(wire.DRAINED), message(wire.HEARTBEAT),
             message(wire.ERROR, error_code=1,
@@ -191,7 +191,7 @@ class MessageValuesTest(unittest.TestCase):
         borrowed = bytearray(wire.encode_message(cases[3]))
         decoded = wire.decode_message(borrowed)
         borrowed[-1] = 0xff
-        self.assertEqual(decoded["broker_order_id"], b"B\0O")
+        self.assertEqual(decoded["adapter_order_id"], b"B\0O")
 
     def test_optional_fill_and_defaults(self):
         value = update(kind=0, fill=None)
@@ -202,13 +202,13 @@ class MessageValuesTest(unittest.TestCase):
         with self.assertRaises(wire.WireError):
             wire.encode_message(value)
         decoded = wire.decode_message(wire.encode_message(message(
-            wire.CANCEL_ORDER, order_id=1, cancel_id=2)))
-        self.assertEqual(decoded["broker_order_id"], b"")
+            wire.CANCEL_ORDER, client_order_id=1, cancel_id=2)))
+        self.assertEqual(decoded["adapter_order_id"], b"")
 
     def test_utf8_and_maximum_opaque_and_reason_bytes(self):
         value = update()
-        value["order"]["broker_order_id"] = b"\0" * 63 + b"x"
-        value["fill"]["broker_order_id"] = b"\0" * 63 + b"x"
+        value["order"]["adapter_order_id"] = b"\0" * 63 + b"x"
+        value["fill"]["adapter_order_id"] = b"\0" * 63 + b"x"
         value["fill"]["execution_id"] = b"\xff" * 64
         value["reason"] = {"code": -(1 << 31), "text": b"r" * 128,
                            "truncated": True}
@@ -253,7 +253,7 @@ class InvalidInputTest(unittest.TestCase):
 
     def test_header_range_reserved_sequence_and_simulation_rejection(self):
         good = wire.encode_message(message(wire.HEARTBEAT))
-        for offset, form, invalid in ((0, "I", 0), (4, "H", 0), (4, "H", 4),
+        for offset, form, invalid in ((0, "I", 0), (4, "H", 0), (4, "H", 5),
                                       (6, "H", 0), (6, "H", 11),
                                       (8, "I", 31), (8, "I", 16385),
                                       (12, "I", 1), (24, "Q", 0)):
@@ -319,17 +319,17 @@ class InvalidInputTest(unittest.TestCase):
                              ("instrument_id", (5 << 32) | 0x80000001),
                              ("instrument_id", (5 << 32) | 0x80004000 | 3613)):
             bad = dict(request, **{key: invalid})
-            self.assert_rejected(message(wire.NEW_ORDER, order_id=17, request=bad))
+            self.assert_rejected(message(wire.NEW_ORDER, client_order_id=17, request=bad))
         request["limit_price"], request["quantity"] = (1 << 63) - 1, 2
-        self.assert_rejected(message(wire.NEW_ORDER, order_id=17, request=request))
-        self.assert_rejected(message(wire.CANCEL_ORDER, order_id=1, cancel_id=0))
-        self.assert_rejected(message(wire.CANCEL_ORDER, order_id=1, cancel_id=2,
-                                     broker_order_id=b"x" * 65))
+        self.assert_rejected(message(wire.NEW_ORDER, client_order_id=17, request=request))
+        self.assert_rejected(message(wire.CANCEL_ORDER, client_order_id=1, cancel_id=0))
+        self.assert_rejected(message(wire.CANCEL_ORDER, client_order_id=1, cancel_id=2,
+                                     adapter_order_id=b"x" * 65))
         for venue in (4, 8):
             request = {"instrument_id": (FUTURE & 0xffffffff) | venue << 32,
                        "side": 1, "limit_price": 3600, "quantity": 2,
                        "position_effect": 4}
-            self.assert_rejected(message(wire.NEW_ORDER, order_id=17, request=request))
+            self.assert_rejected(message(wire.NEW_ORDER, client_order_id=17, request=request))
 
     def test_hello_dictionary_token_bounds_and_identity_validation(self):
         base = message(wire.HELLO, client_id=3, token=b"secret",
@@ -398,7 +398,7 @@ class InvalidInputTest(unittest.TestCase):
         for changed in (fill(quantity=3), fill(execution_id=b""),
                         fill(client_order_id=18), fill(instrument_id=EQUITY),
                         fill(side=2), fill(position_effect=3),
-                        fill(broker_order_id=b"other"),
+                        fill(adapter_order_id=b"other"),
                         fill(has_event_time=False), fill(has_event_time=1)):
             self.assert_rejected(update(fill=changed))
         for changed in ({"notify_order": 1}, {"kind": 6}, {"kind": 0},

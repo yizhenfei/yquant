@@ -12,7 +12,7 @@
 
 namespace yquant::tradingd {
 
-inline constexpr std::size_t kExternalRequestKeyBytes = 28;
+inline constexpr std::size_t kAdapterRequestKeyBytes = 28;
 inline constexpr std::size_t kMaxRecoveredBrokerOrders =
     trading::kMaxTradingOrders;
 inline constexpr std::size_t kMaxRecoveredBrokerFills =
@@ -24,27 +24,26 @@ inline constexpr std::size_t kMaxRecoveryOrderFacts =
 inline constexpr std::size_t kMaxRecoveryFillFacts =
     2 * kMaxRecoveredBrokerFills;
 
-enum class ExternalRequestKind : std::uint8_t { kNewOrder = 1, kCancel = 2 };
+enum class AdapterRequestKind : std::uint8_t { kNewOrder = 1, kCancel = 2 };
 
 // Durable namespace identifies one registered strategy session or gateway run;
 // sequence is local to that namespace and kind. Neither field may be zero.
-struct ExternalRequestKey {
+struct AdapterRequestKey {
   std::uint64_t namespace_id = 0;
-  ExternalRequestKind kind = ExternalRequestKind::kNewOrder;
+  AdapterRequestKind kind = AdapterRequestKind::kNewOrder;
   std::uint64_t sequence = 0;
-  friend bool operator==(const ExternalRequestKey&,
-                         const ExternalRequestKey&) noexcept = default;
+  friend bool operator==(const AdapterRequestKey&,
+                         const AdapterRequestKey&) noexcept = default;
 };
 
 // Canonical unpadded Base32 of namespace/kind/sequence in network byte order.
 // Encoding writes a terminator; decoding accepts exactly 28 uppercase bytes.
 // Failure preserves output. No hash/truncation or process-local ID is involved.
-[[nodiscard]] base::Status EncodeExternalRequestKey(
-    std::uint64_t namespace_id, ExternalRequestKind kind,
-    std::uint64_t sequence,
-    char (&output)[kExternalRequestKeyBytes + 1]) noexcept;
-[[nodiscard]] base::Status DecodeExternalRequestKey(
-    std::string_view input, ExternalRequestKey& output) noexcept;
+[[nodiscard]] base::Status EncodeAdapterRequestKey(
+    std::uint64_t namespace_id, AdapterRequestKind kind, std::uint64_t sequence,
+    char (&output)[kAdapterRequestKeyBytes + 1]) noexcept;
+[[nodiscard]] base::Status DecodeAdapterRequestKey(
+    std::string_view input, AdapterRequestKey& output) noexcept;
 
 // Cold-synced registration scoped to the account being recovered. Namespaces
 // are distinct; client IDs may recur in separate historical sessions.
@@ -56,8 +55,8 @@ struct DurableStrategyIdentity {
 // Complete latest state at the view's cut, including fully terminal orders.
 // fact_sequence is the broker's stable last-change sequence, not a page number.
 struct BrokerRecoveryOrder {
-  model::BrokerOrderId request_key;
-  model::BrokerOrderId broker_order_id;
+  model::AdapterOrderId request_key;
+  model::AdapterOrderId adapter_order_id;
   model::OrderRequest request;
   model::OrderState state = model::OrderState::kPendingNew;
   std::int64_t cumulative_filled_qty = 0;
@@ -68,8 +67,8 @@ struct BrokerRecoveryOrder {
 // clocks. Its identity is (request_key, execution_id). Repeated query pages
 // must retain the same originating fact_sequence and exact execution fields.
 struct BrokerRecoveryFill {
-  model::BrokerOrderId request_key;
-  model::BrokerOrderId broker_order_id;
+  model::AdapterOrderId request_key;
+  model::AdapterOrderId adapter_order_id;
   model::ExecutionId execution_id;
   model::InstrumentId instrument_id;
   model::OrderSide side = model::OrderSide::kUnknown;
@@ -109,7 +108,7 @@ struct BrokerRecoveryRequirements {
 };
 
 struct RecoveredBrokerOrder {
-  ExternalRequestKey identity;
+  AdapterRequestKey identity;
   std::uint64_t client_id = 0;
   BrokerRecoveryOrder fact;
 };

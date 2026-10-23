@@ -63,7 +63,7 @@ class BridgePeer {
           response.account.revision = 2;
           response.account.futures.available = 777;
           auto& order = response.update.order;
-          order.client_order_id = input.order_id;
+          order.client_order_id = input.client_order_id;
           order.instrument_id = input.request.instrument_id;
           order.side = input.request.side;
           order.limit_price = input.request.limit_price;
@@ -72,14 +72,14 @@ class BridgePeer {
           order.position_effect = input.request.position_effect;
           order.state = model::OrderState::kWorking;
           order.report_sequence = 1;
-          (void)order.broker_order_id.Assign("20261022/1/1/123");
+          (void)order.adapter_order_id.Assign("20261022/1/1/123");
           if (mismatched_report) ++order.limit_price;
           response.update.kind = model::OrderUpdateKind::kAccepted;
         } else if (input.type == MessageType::kCancelOrder) {
           response.type = MessageType::kOrderUpdate;
           response.account.revision = 3;
           auto& order = response.update.order;
-          order.client_order_id = input.order_id;
+          order.client_order_id = input.client_order_id;
           order.instrument_id = instrument_;
           order.side = model::OrderSide::kBuy;
           order.limit_price = 106785;
@@ -87,7 +87,7 @@ class BridgePeer {
           order.position_effect = model::PositionEffect::kOpen;
           order.state = model::OrderState::kCanceled;
           order.report_sequence = 2;
-          (void)order.broker_order_id.Assign("20261022/1/1/123");
+          (void)order.adapter_order_id.Assign("20261022/1/1/123");
           response.update.kind = model::OrderUpdateKind::kCanceled;
           response.update.cancel_request_id = input.cancel_id;
         } else if (input.type == MessageType::kStop) {
@@ -201,7 +201,7 @@ TEST(CtpTradingAdapterTest, BrokerAccountReportsAndCancelUseActualWire) {
   EXPECT_EQ(event.client_order_id.value, 10);
   ASSERT_TRUE(adapter.ReadBrokerAccountSnapshot(account).ok());
   EXPECT_EQ(account.account.available, 777);
-  ASSERT_TRUE(adapter.SendCancel({10}, event.broker_order_id, {7}, 0).ok());
+  ASSERT_TRUE(adapter.SendCancel({10}, event.adapter_order_id, {7}, 0).ok());
   ASSERT_EQ(Wait(adapter, event).state, TradingPollState::kEvent);
   EXPECT_EQ(event.kind, model::OrderUpdateKind::kCanceled);
   EXPECT_EQ(event.cancel_request_id.value, 7);

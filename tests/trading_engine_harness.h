@@ -133,7 +133,7 @@ class TradingEngineHarness {
       return target->SendOrder(id, request, now);
     }
     base::Status SendCancel(model::ClientOrderId id,
-                            const model::BrokerOrderId& broker,
+                            const model::AdapterOrderId& broker,
                             model::CancelRequestId cancel,
                             std::uint64_t now) noexcept override {
       return target->SendCancel(id, broker, cancel, now);

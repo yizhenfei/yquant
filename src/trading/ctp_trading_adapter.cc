@@ -204,7 +204,7 @@ base::Status CtpTradingAdapter::SendOrder(model::ClientOrderId id,
   Message message;
   message.type = MessageType::kNewOrder;
   message.generation = s.generation;
-  message.order_id = id;
+  message.client_order_id = id;
   message.request = request;
   const auto status = s.connection.Queue(message);
   if (!status.ok()) return Fail(status.code, s.connection.error_detail());
@@ -216,7 +216,7 @@ base::Status CtpTradingAdapter::SendOrder(model::ClientOrderId id,
 }
 
 base::Status CtpTradingAdapter::SendCancel(
-    model::ClientOrderId id, const model::BrokerOrderId& broker_order_id,
+    model::ClientOrderId id, const model::AdapterOrderId& adapter_order_id,
     model::CancelRequestId cancel_request_id, std::uint64_t now) noexcept {
   if (!storage_ || !storage_->started || !storage_->failure.ok())
     return {base::ErrorCode::kInvalidState, {}};
@@ -228,9 +228,9 @@ base::Status CtpTradingAdapter::SendCancel(
   Message message;
   message.type = MessageType::kCancelOrder;
   message.generation = s.generation;
-  message.order_id = id;
+  message.client_order_id = id;
   message.cancel_id = cancel_request_id;
-  message.broker_order_id = broker_order_id;
+  message.adapter_order_id = adapter_order_id;
   const auto status = s.connection.Queue(message);
   if (!status.ok()) return Fail(status.code, s.connection.error_detail());
   order->cancel_pending = true;
@@ -327,7 +327,7 @@ TradingPollResult CtpTradingAdapter::Poll(std::uint64_t now,
     }
     const auto& update = message.update;
     auto* order = s.Find(update.order.client_order_id);
-    if (order == nullptr ||
+    if (order == nullptr || update.order.strategy_order_id.value != 0 ||
         update.order.instrument_id != order->request.instrument_id ||
         update.order.side != order->request.side ||
         update.order.limit_price != order->request.limit_price ||
@@ -338,7 +338,7 @@ TradingPollResult CtpTradingAdapter::Poll(std::uint64_t now,
           Fail(base::ErrorCode::kCorrupt, "CTP report order identity differs")};
     model::TradingEvent event;
     event.client_order_id = update.order.client_order_id;
-    event.broker_order_id = update.order.broker_order_id;
+    event.adapter_order_id = update.order.adapter_order_id;
     event.report_sequence = update.order.report_sequence;
     event.kind = update.kind;
     event.cumulative_filled_qty = update.order.cumulative_filled_qty;

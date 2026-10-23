@@ -65,7 +65,7 @@ class TradingAdapter {
   // Must also settle requests registered before an order finished filling;
   // such orders produce an associated rejection rather than being forgotten.
   [[nodiscard]] virtual base::Status SendCancel(
-      model::ClientOrderId id, const model::BrokerOrderId& broker_order_id,
+      model::ClientOrderId id, const model::AdapterOrderId& adapter_order_id,
       model::CancelRequestId cancel_request_id, std::uint64_t now) noexcept = 0;
   // Nonblocking, allocation-free and bounded work; emits at most one event.
   // Idle/error preserve out. now shares the host's monotonic clock domain.

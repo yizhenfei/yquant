@@ -18,7 +18,6 @@ namespace {
 
 using yquant::base::ErrorCode;
 using yquant::model::CashSnapshot;
-using yquant::model::ClientOrderId;
 using yquant::model::Fill;
 using yquant::model::InstrumentDefinition;
 using yquant::model::OrderRequest;
@@ -30,6 +29,7 @@ using yquant::model::OrderUpdateKind;
 using yquant::model::PositionSnapshot;
 using yquant::model::QuoteFlag;
 using yquant::model::QuoteTick;
+using yquant::model::StrategyOrderId;
 using yquant::strategy::ConfigError;
 using yquant::strategy::Strategy;
 using yquant::strategy::StrategyConfig;
@@ -171,7 +171,7 @@ class OrderLifecycleStrategy final : public Strategy {
   ErrorCode OnOrderUpdate(StrategyContext& context,
                           const OrderUpdate& update) noexcept override {
     OrderSnapshot queried;
-    if (update.order.client_order_id != order_id_ ||
+    if (update.order.strategy_order_id != order_id_ ||
         !context.trading().TryGetOrder(order_id_, queried) ||
         queried != update.order || awaiting_fill_ ||
         CheckAccount(context, queried) != ErrorCode::kOk) {
@@ -200,13 +200,13 @@ class OrderLifecycleStrategy final : public Strategy {
   ErrorCode OnFill(StrategyContext& context,
                    const Fill& fill) noexcept override {
     OrderSnapshot queried;
-    if (!awaiting_fill_ || fill.client_order_id != order_id_ ||
+    if (!awaiting_fill_ || fill.strategy_order_id != order_id_ ||
         fill.quantity <= 0 ||
         fill.quantity > config_.quantity() - filled_qty_ ||
         !context.trading().TryGetOrder(order_id_, queried) ||
         queried.cumulative_filled_qty != filled_qty_ + fill.quantity ||
         fill.instrument_id != instrument_.id || fill.side != OrderSide::kBuy ||
-        fill.broker_order_id != queried.broker_order_id ||
+        fill.adapter_order_id != queried.adapter_order_id ||
         CheckAccount(context, queried) != ErrorCode::kOk) {
       return ErrorCode::kCorrupt;
     }
@@ -283,7 +283,7 @@ class OrderLifecycleStrategy final : public Strategy {
 
   OrderLifecycleConfig config_;
   InstrumentDefinition instrument_;
-  ClientOrderId order_id_;
+  StrategyOrderId order_id_;
   std::int64_t filled_qty_ = 0;
   std::uint64_t fills_ = 0;
   bool awaiting_fill_ = false;

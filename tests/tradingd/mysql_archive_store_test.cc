@@ -340,7 +340,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
     ASSERT_TRUE(source.ProcessRequests(mock, clock.Now()).ok());
     model::TradingEvent accepted;
     accepted.client_order_id = id;
-    ASSERT_EQ(accepted.broker_order_id.Assign("broker-1"), ErrorCode::kOk);
+    ASSERT_EQ(accepted.adapter_order_id.Assign("broker-1"), ErrorCode::kOk);
     accepted.report_sequence = 1;
     accepted.receive_time_ns = clock.Now();
     trading::TradingDispatch dispatch;
@@ -350,7 +350,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
     fill.kind = model::OrderUpdateKind::kFill;
     fill.cumulative_filled_qty = 4;
     fill.fill.client_order_id = id;
-    fill.fill.broker_order_id = accepted.broker_order_id;
+    fill.fill.adapter_order_id = accepted.adapter_order_id;
     ASSERT_EQ(fill.fill.execution_id.Assign("execution-1"), ErrorCode::kOk);
     fill.fill.instrument_id = config.market_data.instruments[0].instrument.id;
     fill.fill.side = model::OrderSide::kBuy;

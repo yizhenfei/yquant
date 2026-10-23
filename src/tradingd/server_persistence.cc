@@ -102,7 +102,7 @@ base::Status ReadMessage(StateReader& reader,
   if (!reader.ok() || size > trading::kMaxFrameSize) return CorruptState();
   const auto bytes = reader.Bytes(size);
   if (!reader.ok()) return CorruptState();
-  return trading::DecodeMessage(bytes, message);
+  return DecodeStoredStrategyReport(bytes, message);
 }
 }  // namespace
 
@@ -147,9 +147,9 @@ base::Status Server::Storage::Adapter::SendOrder(
   const auto index = storage.OwnerIndex(id);
   if (index == storage.owners.size()) return CorruptState();
   const auto owner = storage.owners[index];
-  char key[kExternalRequestKeyBytes + 1];
-  const auto status = EncodeExternalRequestKey(
-      storage.clients[owner.client].session_id, ExternalRequestKind::kNewOrder,
+  char key[kAdapterRequestKeyBytes + 1];
+  const auto status = EncodeAdapterRequestKey(
+      storage.clients[owner.client].session_id, AdapterRequestKind::kNewOrder,
       owner.local + 1, key);
   if (!status.ok()) return status;
   return storage.mock.SendOrderWithIdentity(id, request, key, now);
@@ -183,7 +183,7 @@ base::Status Server::Storage::BeforeCommit(
   auto cancel = context_cancel;
   if (mutation.kind != Kind::kNewOrder &&
       context_client == trading::kMaxClients) {
-    const auto index = OwnerIndex(mutation.order_id);
+    const auto index = OwnerIndex(mutation.client_order_id);
     if (index == owners.size()) return CorruptState();
     client_index = owners[index].client;
     local_index = owners[index].local;
@@ -263,7 +263,7 @@ base::Status Server::Storage::ReplayRecord(
     auto status = ReadMessage(reader, message);
     if (!status.ok() || !reader.done() ||
         message.type != trading::MessageType::kOrderUpdate ||
-        message.update.order.client_order_id.value != local_index + 1)
+        message.update.order.strategy_order_id.value != local_index + 1)
       return CorruptState();
     if (local.core_id.value == 0) local.rejected = message.update.order;
     local.report_sequence = message.update.order.report_sequence;
@@ -285,10 +285,10 @@ base::Status Server::Storage::ReplayRecord(
   using Kind = trading::TradingMutationKind;
   if (mutation.kind == Kind::kNewOrder) {
     const auto index = s.trading.order_count() - 1;
-    s.BindOwner(index,
-                {mutation.order_id, static_cast<std::size_t>(client_index),
-                 static_cast<std::size_t>(local_index)});
-    local.core_id = mutation.order_id;
+    s.BindOwner(index, {mutation.client_order_id,
+                        static_cast<std::size_t>(client_index),
+                        static_cast<std::size_t>(local_index)});
+    local.core_id = mutation.client_order_id;
   } else if (mutation.kind == Kind::kCancel) {
     local.core_cancel = mutation.cancel_id;
     local.local_cancel = {local_cancel};
@@ -540,7 +540,7 @@ base::Status Server::Storage::LoadCheckpoint(std::uint64_t& stream,
         status = ReadMessage(reader, message);
         if (!status.ok() ||
             message.type != trading::MessageType::kOrderUpdate ||
-            message.update.order.client_order_id.value != i + 1)
+            message.update.order.strategy_order_id.value != i + 1)
           return CorruptState();
         local.rejected = message.update.order;
       }
@@ -641,7 +641,7 @@ base::Status Server::Storage::RecoverMock() noexcept {
             // The simulated broker proves that the recorded cancel attempt
             // did not reach it. Settle that exact pending intent locally.
             status =
-                mock.SendCancel(order.client_order_id, broker.broker_order_id,
+                mock.SendCancel(order.client_order_id, broker.adapter_order_id,
                                 order.cancel_request_id, recovery_now);
             if (!status.ok()) return status;
           }

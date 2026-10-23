@@ -91,8 +91,8 @@ class TradingServiceImplTest : public ::testing::Test {
     ASSERT_TRUE(initialized.ok()) << remote.error_detail();
   }
 
-  model::ClientOrderId Submit(std::int64_t quantity = 10) {
-    model::ClientOrderId id;
+  model::StrategyOrderId Submit(std::int64_t quantity = 10) {
+    model::StrategyOrderId id;
     remote.SetAcceptingRequests(true);
     EXPECT_EQ(remote.SubmitOrder(
                   {instrument, model::OrderSide::kBuy, 1001, quantity}, id),
@@ -155,7 +155,7 @@ class TradingServiceImplTest : public ::testing::Test {
     }
   }
 
-  trading::Message Accepted(model::ClientOrderId id) {
+  trading::Message Accepted(model::StrategyOrderId id) {
     trading::Message result;
     result.type = trading::MessageType::kOrderUpdate;
     result.account = account;
@@ -163,7 +163,7 @@ class TradingServiceImplTest : public ::testing::Test {
     result.account.cash = {1000000000, 100100000, 899900000};
     result.update.kind = model::OrderUpdateKind::kAccepted;
     EXPECT_TRUE(remote.TryGetOrder(id, result.update.order));
-    EXPECT_EQ(result.update.order.broker_order_id.Assign("broker-1"),
+    EXPECT_EQ(result.update.order.adapter_order_id.Assign("broker-1"),
               ErrorCode::kOk);
     result.update.order.report_sequence = 1;
     result.update.order.state = model::OrderState::kWorking;
@@ -171,7 +171,7 @@ class TradingServiceImplTest : public ::testing::Test {
     return result;
   }
 
-  trading::Message Accept(model::ClientOrderId id) {
+  trading::Message Accept(model::StrategyOrderId id) {
     auto message = Accepted(id);
     Send(message);
     trading::TradingDispatch dispatch;
@@ -255,7 +255,7 @@ TEST_F(BrokerTradingServiceImplTest,
 TEST_F(BrokerTradingServiceImplTest,
        ExternalCancellationBeforeAcceptanceSettlesOrder) {
   remote.SetAcceptingRequests(true);
-  model::ClientOrderId id;
+  model::StrategyOrderId id;
   ASSERT_EQ(remote.SubmitOrder({futures_instrument, model::OrderSide::kBuy, 100,
                                 1, model::PositionEffect::kOpen},
                                id),
@@ -293,7 +293,7 @@ TEST_F(TradingServiceImplTest, LocalQueueDoesNotReserveAuthoritativeAccount) {
   Transmit();
   const auto message = Receive();
   EXPECT_EQ(message.type, trading::MessageType::kNewOrder);
-  EXPECT_EQ(message.order_id, id);
+  EXPECT_EQ(message.strategy_order_id, id);
   EXPECT_EQ(message.request.quantity, 1000);
   EXPECT_EQ(message.generation, 77U);
 }
@@ -314,8 +314,8 @@ TEST_F(TradingServiceImplTest, CommitsOrderFillAndAccountBeforeDispatch) {
   fill.update.order.cumulative_filled_qty = 10;
   fill.update.order.leaves_qty = 0;
   fill.has_fill = true;
-  fill.fill.client_order_id = id;
-  fill.fill.broker_order_id = fill.update.order.broker_order_id;
+  fill.fill.strategy_order_id = id;
+  fill.fill.adapter_order_id = fill.update.order.adapter_order_id;
   ASSERT_EQ(fill.fill.execution_id.Assign("exec-1"), ErrorCode::kOk);
   fill.fill.instrument_id = instrument;
   fill.fill.side = model::OrderSide::kBuy;
@@ -354,7 +354,7 @@ TEST_F(TradingServiceImplTest, StopsUnsentOrdersLocallyAndWaitsForGatewayAck) {
   ASSERT_TRUE(event);
   EXPECT_TRUE(dispatch.notify_order);
   EXPECT_EQ(dispatch.update.kind, model::OrderUpdateKind::kCanceledBeforeSend);
-  EXPECT_EQ(dispatch.update.order.client_order_id, id);
+  EXPECT_EQ(dispatch.update.order.strategy_order_id, id);
   EXPECT_FALSE(remote.is_drained());
   trading::Message drained;
   drained.type = trading::MessageType::kDrained;
@@ -452,11 +452,11 @@ TEST_F(TradingServiceImplTest,
   remote.SetAcceptingRequests(true);
   EXPECT_EQ(remote.ProcessRequests(clock.now).code, ErrorCode::kInvalidState);
   trading::TradingDispatch dispatch;
-  dispatch.update.order.client_order_id = {99};
+  dispatch.update.order.strategy_order_id = {99};
   bool event = true;
   EXPECT_EQ(remote.Poll(clock.now, dispatch, event).code,
             ErrorCode::kInvalidState);
-  EXPECT_EQ(dispatch.update.order.client_order_id.value, 99U);
+  EXPECT_EQ(dispatch.update.order.strategy_order_id.value, 99U);
   EXPECT_TRUE(event);
   remote.SetAcceptingRequests(false);
   remote.BeginStopping();
@@ -531,11 +531,11 @@ TEST_P(InvalidTradingServiceImplUpdateTest,
   model::CashSnapshot cash_before;
   ASSERT_TRUE(remote.TryGetCash(cash_before));
   trading::TradingDispatch dispatch;
-  dispatch.update.order.client_order_id = {999};
+  dispatch.update.order.strategy_order_id = {999};
   bool event = true;
   auto status = PollMessage(dispatch, event);
   EXPECT_FALSE(status.ok());
-  EXPECT_EQ(dispatch.update.order.client_order_id.value, 999U);
+  EXPECT_EQ(dispatch.update.order.strategy_order_id.value, 999U);
   EXPECT_TRUE(event);
   model::OrderSnapshot after;
   ASSERT_TRUE(remote.TryGetOrder(id, after));
@@ -550,7 +550,7 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(
         InvalidRemoteUpdate{"WrongOrder",
                             [](trading::Message& value) {
-                              value.update.order.client_order_id = {2};
+                              value.update.order.strategy_order_id = {2};
                             }},
         InvalidRemoteUpdate{
             "ChangedPrice",
@@ -601,7 +601,7 @@ TEST_F(TradingServiceImplTest, FuturesQueriesPreserveOutputsWithMixedCatalog) {
 
 TEST_F(TradingServiceImplTest,
        TimerRequestsRejectFuturesEffectsWithoutConsumingId) {
-  model::ClientOrderId id{77};
+  model::StrategyOrderId id{77};
   remote.SetAcceptingRequests(true);
   EXPECT_TRUE(remote.accepting_orders());
   model::OrderRequest request{instrument, model::OrderSide::kBuy, 1001, 10,

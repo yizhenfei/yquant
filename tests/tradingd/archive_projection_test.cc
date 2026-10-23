@@ -165,7 +165,7 @@ class ArchiveProjectionTest : public ::testing::Test {
     fill.kind = model::OrderUpdateKind::kFill;
     fill.cumulative_filled_qty = 4;
     fill.fill.client_order_id = id;
-    fill.fill.broker_order_id = accepted.broker_order_id;
+    fill.fill.adapter_order_id = accepted.adapter_order_id;
     ASSERT_EQ(fill.fill.execution_id.Assign("execution-1"), ErrorCode::kOk);
     fill.fill.instrument_id = config.market_data.instruments[0].instrument.id;
     fill.fill.side = model::OrderSide::kBuy;
@@ -238,7 +238,7 @@ TEST_F(ArchiveProjectionTest, ReplaysAccountingOnceAndRetainsSourceIdentity) {
   EXPECT_EQ(projection.FillSourceLsn(0), lsn);
   ASSERT_TRUE(projection.has_update());
   EXPECT_TRUE(projection.last_update().has_fill);
-  EXPECT_EQ(projection.last_update().fill.client_order_id.value, 1);
+  EXPECT_EQ(projection.last_update().fill.strategy_order_id.value, 1);
 
   trading::MockTradingMutation mutation;
   mutation.client_order_id = {1};
@@ -332,7 +332,7 @@ TEST_F(ArchiveProjectionTest, CancelReportsTranslateCoreToLocalIdentity) {
   ASSERT_TRUE(source.TryGetOrder({1}, snapshot));
   model::TradingEvent canceled;
   canceled.client_order_id = {1};
-  canceled.broker_order_id = snapshot.broker_order_id;
+  canceled.adapter_order_id = snapshot.adapter_order_id;
   canceled.report_sequence = 3;
   canceled.kind = model::OrderUpdateKind::kCanceled;
   canceled.cumulative_filled_qty = 4;
@@ -380,7 +380,7 @@ TEST_F(ArchiveProjectionTest, LocalRejectionsRetainClientSequenceAndReason) {
   message.type = trading::MessageType::kOrderUpdate;
   message.sequence = 1;
   message.update.kind = model::OrderUpdateKind::kRejected;
-  message.update.order.client_order_id = {1};
+  message.update.order.strategy_order_id = {1};
   message.update.order.instrument_id =
       config.market_data.instruments[0].instrument.id;
   message.update.order.side = model::OrderSide::kBuy;
@@ -402,6 +402,65 @@ TEST_F(ArchiveProjectionTest, LocalRejectionsRetainClientSequenceAndReason) {
   EXPECT_EQ(projection.orders()[0].report_sequence, 2);
   EXPECT_EQ(projection.orders()[0].local_cancel_id.value, 7);
   EXPECT_EQ(projection.trading().order_count(), 0);
+}
+
+TEST(StoredStrategyReportTest, VersionThreeRejectionKeepsStrategyNamespace) {
+  // Independent legacy v3 frame: rejected strategy order 7, no core order.
+  std::array<std::byte, trading::kMaxFrameSize> bytes{};
+  std::size_t offset = 0;
+  const auto put = [&](std::uint64_t value, std::size_t width) {
+    for (std::size_t i = 0; i < width; ++i) {
+      bytes[offset++] = std::byte(value & 255);
+      value >>= 8;
+    }
+  };
+  put(0x52545159, 4);
+  put(3, 2);
+  put(5, 2);  // OrderUpdate.
+  put(0, 4);  // Patched frame length below.
+  put(0, 4);
+  put(1, 8);
+  put(1, 8);
+  put(1, 1);  // Notify order.
+  put(0, 1);  // No fill.
+  put(7, 8);
+  put(0, 1);  // Empty adapter identity.
+  put((std::uint64_t{1} << 32) | 600000, 8);
+  put(1, 1);  // Buy.
+  put(100, 8);
+  put(10, 8);
+  put(0, 8);  // Cumulative quantity.
+  put(0, 8);  // Leaves quantity.
+  put(4, 1);  // Rejected.
+  put(0, 1);  // No pending cancel.
+  put(0, 8);
+  put(1, 8);  // Report sequence.
+  put(0, 8);
+  put(0, 1);  // No position effect.
+  put(1, 1);  // Rejection update kind.
+  put(0, 8);
+  put(0, 4);  // Empty diagnostic.
+  put(0, 1);
+  put(0, 1);
+  put(1, 8);  // Account revision.
+  put(0, 1);  // Cash account.
+  put(0, 1);  // Not broker-managed.
+  put(1000, 8);
+  put(0, 8);
+  put(1000, 8);
+  put(0, 2);  // No positions.
+  for (std::size_t i = 0; i < 4; ++i)
+    bytes[8 + i] = std::byte((offset >> (8 * i)) & 255);
+  trading::Message message;
+  ASSERT_TRUE(
+      DecodeStoredStrategyReport(std::span(bytes).first(offset), message).ok());
+  EXPECT_EQ(message.update.order.strategy_order_id.value, 7U);
+  EXPECT_EQ(message.update.order.client_order_id.value, 0U);
+  const auto previous = message.update.order;
+  EXPECT_FALSE(
+      DecodeStoredStrategyReport(std::span(bytes).first(offset - 1), message)
+          .ok());
+  EXPECT_EQ(message.update.order, previous);
 }
 
 }  // namespace

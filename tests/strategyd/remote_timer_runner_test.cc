@@ -89,7 +89,7 @@ class TimerPeer {
     report.account.cash = {kInitialCash, reserved, kInitialCash - reserved};
     report.update.kind = model::OrderUpdateKind::kAccepted;
     auto& order = report.update.order;
-    order.client_order_id = request.order_id;
+    order.strategy_order_id = request.strategy_order_id;
     order.instrument_id = request.request.instrument_id;
     order.side = request.request.side;
     order.limit_price = request.request.limit_price;
@@ -97,13 +97,13 @@ class TimerPeer {
     order.leaves_qty = request.request.quantity;
     order.state = model::OrderState::kWorking;
     order.report_sequence = 1;
-    if (order.broker_order_id.Assign("timer-order") != base::ErrorCode::kOk ||
+    if (order.adapter_order_id.Assign("timer-order") != base::ErrorCode::kOk ||
         !Send(report))
       return;
     Message cancel;
     if (!ReceiveBusiness(cancel) || cancel.type != MessageType::kCancelOrder ||
-        cancel.order_id != order.client_order_id ||
-        cancel.broker_order_id != order.broker_order_id)
+        cancel.strategy_order_id != order.strategy_order_id ||
+        cancel.adapter_order_id != order.adapter_order_id)
       return;
     ++cancels;
     report.account.revision = 3;

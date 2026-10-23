@@ -71,10 +71,12 @@ struct OrderUpdate {
 };
 
 // One unique execution; cumulative quantities in OrderUpdate only verify this
-// increment. Broker IDs belong to the configured adapter session.
+// increment. Adapter IDs belong to the configured adapter namespace.
 struct Fill {
   ClientOrderId client_order_id;
-  BrokerOrderId broker_order_id;
+  // Strategy routing identity; zero in core ledger records.
+  StrategyOrderId strategy_order_id;
+  AdapterOrderId adapter_order_id;
   ExecutionId execution_id;
   InstrumentId instrument_id;
   OrderSide side = OrderSide::kUnknown;
@@ -95,7 +97,7 @@ struct Fill {
 // data.
 struct TradingEvent {
   ClientOrderId client_order_id;
-  BrokerOrderId broker_order_id;
+  AdapterOrderId adapter_order_id;
   std::uint64_t report_sequence = 0;
   OrderUpdateKind kind = OrderUpdateKind::kAccepted;
   std::int64_t cumulative_filled_qty = 0;

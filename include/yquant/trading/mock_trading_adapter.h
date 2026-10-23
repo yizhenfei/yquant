@@ -24,15 +24,15 @@ enum class MockTradingMutationKind : std::uint8_t {
 };
 
 // Complete accepted operation, recorded immediately before the mock commits.
-// Only kSendOrder uses request/request_key; kSendCancel uses broker_order_id
+// Only kSendOrder uses request/request_key; kSendCancel uses adapter_order_id
 // and cancel_request_id; kReport owns the exact generated event, including UTC.
 struct MockTradingMutation {
   MockTradingMutationKind kind = MockTradingMutationKind::kSendOrder;
   std::uint64_t now = 0;
   model::ClientOrderId client_order_id;
   model::OrderRequest request;
-  model::BrokerOrderId request_key;
-  model::BrokerOrderId broker_order_id;
+  model::AdapterOrderId request_key;
+  model::AdapterOrderId adapter_order_id;
   model::CancelRequestId cancel_request_id;
   model::TradingEvent event;
 };
@@ -71,7 +71,7 @@ class MockTradingAdapter final : public TradingAdapter {
                                        const model::OrderRequest& request,
                                        std::uint64_t now) noexcept override;
   [[nodiscard]] base::Status SendCancel(
-      model::ClientOrderId id, const model::BrokerOrderId& broker_order_id,
+      model::ClientOrderId id, const model::AdapterOrderId& adapter_order_id,
       model::CancelRequestId cancel_request_id,
       std::uint64_t now) noexcept override;
   [[nodiscard]] TradingPollResult Poll(
@@ -85,11 +85,11 @@ class MockTradingAdapter final : public TradingAdapter {
   // owns both and serializes changes with every other adapter operation.
   void SetMutationObserver(MockTradingMutationObserver observer,
                            void* context) noexcept;
-  // Optional recoverable external key, copied into the order before acceptance.
-  // An empty key retains the normal session-local mock identity. Nonempty keys
-  // must be unique and contain at most 64 bytes. Nonempty keys or an installed
-  // observer require a cash account and equity requests with kNone position
-  // effect. Failure leaves state unchanged.
+  // Optional recoverable adapter request key, copied into the order before
+  // acceptance. An empty key retains the normal session-local mock identity.
+  // Nonempty keys must be unique and contain at most 64 bytes. Nonempty keys or
+  // an installed observer require a cash account and equity requests with kNone
+  // position effect. Failure leaves state unchanged.
   [[nodiscard]] base::Status SendOrderWithIdentity(
       model::ClientOrderId id, const model::OrderRequest& request,
       std::string_view request_key, std::uint64_t now) noexcept;
@@ -124,7 +124,7 @@ class MockTradingAdapter final : public TradingAdapter {
   std::size_t recovery_event_count() const noexcept;
   [[nodiscard]] base::Status ReadRecoveryOrder(
       std::size_t index, model::OrderSnapshot& out,
-      model::BrokerOrderId* request_key = nullptr) const noexcept;
+      model::AdapterOrderId* request_key = nullptr) const noexcept;
   [[nodiscard]] base::Status ReadRecoveryFill(std::size_t index,
                                               model::Fill& out) const noexcept;
   [[nodiscard]] base::Status ReadRecoveryEvent(

@@ -23,7 +23,6 @@ namespace {
 using yquant::base::ConfigError;
 using yquant::base::ErrorCode;
 using yquant::model::CashSnapshot;
-using yquant::model::ClientOrderId;
 using yquant::model::Fill;
 using yquant::model::InstrumentDefinition;
 using yquant::model::OrderRequest;
@@ -34,6 +33,7 @@ using yquant::model::OrderUpdate;
 using yquant::model::OrderUpdateKind;
 using yquant::model::PositionSnapshot;
 using yquant::model::QuoteTick;
+using yquant::model::StrategyOrderId;
 using yquant::strategy::Strategy;
 using yquant::strategy::StrategyConfig;
 using yquant::strategy::StrategyContext;
@@ -120,7 +120,7 @@ class TradingFixture final : public Strategy {
         CheckAccount(context) != ErrorCode::kOk)
       return ErrorCode::kCorrupt;
     const auto request = Request(1001);
-    ClientOrderId untouched{999};
+    StrategyOrderId untouched{999};
     if (context.trading().SubmitOrder(request, untouched) !=
             ErrorCode::kInvalidState ||
         untouched.value != 999 ||
@@ -144,7 +144,7 @@ class TradingFixture final : public Strategy {
     if constexpr (YQUANT_TEST_TRADING_MODE == 8) {
       if (local_failure_checked_) return ErrorCode::kOk;
       local_failure_checked_ = true;
-      ClientOrderId untouched{999};
+      StrategyOrderId untouched{999};
       OrderSnapshot unknown;
       unknown.report_sequence = 999;
       const auto original = unknown;
@@ -166,7 +166,7 @@ class TradingFixture final : public Strategy {
       ++order_count_;
       OrderSnapshot snapshot;
       if (!context.trading().TryGetOrder(ids_[index], snapshot) ||
-          snapshot.client_order_id != ids_[index] ||
+          snapshot.strategy_order_id != ids_[index] ||
           snapshot.state != OrderState::kPendingNew ||
           snapshot.original_qty != config_.quantity() ||
           snapshot.cumulative_filled_qty != 0 ||
@@ -185,7 +185,7 @@ class TradingFixture final : public Strategy {
     OrderSnapshot snapshot;
     if (CheckAccount(context) != ErrorCode::kOk || inside_submit_ ||
         awaiting_fill_ ||
-        !context.trading().TryGetOrder(update.order.client_order_id,
+        !context.trading().TryGetOrder(update.order.strategy_order_id,
                                        snapshot) ||
         snapshot != update.order)
       return ErrorCode::kCorrupt;
@@ -221,10 +221,11 @@ class TradingFixture final : public Strategy {
                                         snapshot.state == OrderState::kWorking;
       if (cancel_now && context.trading().accepting_orders()) {
         const auto canceled =
-            context.trading().CancelOrder(snapshot.client_order_id);
+            context.trading().CancelOrder(snapshot.strategy_order_id);
         if (canceled != ErrorCode::kOk) return canceled;
         OrderSnapshot pending;
-        if (!context.trading().TryGetOrder(snapshot.client_order_id, pending) ||
+        if (!context.trading().TryGetOrder(snapshot.strategy_order_id,
+                                           pending) ||
             !pending.cancel_pending ||
             pending.leaves_qty != snapshot.leaves_qty ||
             pending.cumulative_filled_qty != snapshot.cumulative_filled_qty) {
@@ -241,7 +242,7 @@ class TradingFixture final : public Strategy {
     OrderSnapshot snapshot;
     if (CheckAccount(context) != ErrorCode::kOk || inside_submit_ ||
         !awaiting_fill_ || fill.quantity <= 0 ||
-        !context.trading().TryGetOrder(fill.client_order_id, snapshot) ||
+        !context.trading().TryGetOrder(fill.strategy_order_id, snapshot) ||
         snapshot.cumulative_filled_qty != filled_qty_ + fill.quantity ||
         (fill.side == OrderSide::kBuy ? fill.price > snapshot.limit_price
                                       : fill.price < snapshot.limit_price) ||
@@ -270,7 +271,7 @@ class TradingFixture final : public Strategy {
       OrderSnapshot snapshot;
       if (!context.trading().TryGetOrder(ids_[index], snapshot))
         return ErrorCode::kCorrupt;
-      ClientOrderId unchanged{999};
+      StrategyOrderId unchanged{999};
       if (context.trading().SubmitOrder(Request(1001), unchanged) !=
               ErrorCode::kInvalidState ||
           unchanged.value != 999 ||
@@ -327,7 +328,7 @@ class TradingFixture final : public Strategy {
   InstrumentDefinition instrument_;
   CashSnapshot initial_cash_;
   PositionSnapshot initial_position_;
-  std::array<ClientOrderId, 200> ids_ = {};
+  std::array<StrategyOrderId, 200> ids_ = {};
   std::size_t order_count_ = 0;
   std::int64_t filled_qty_ = 0;
   bool local_failure_checked_ = false;

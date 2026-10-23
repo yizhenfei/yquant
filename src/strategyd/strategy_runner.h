@@ -202,7 +202,8 @@ class StrategyRunner final {
   // Records the first failure with tick's source, instrument, and sequence.
   // Requires a non-OK status. Skips later failures without formatting. Borrows
   // tick and non-null C-string detail only for this call; detail must not
-  // overlap error_detail_. stage follows SetErrorIfNotOK's lifetime requirement.
+  // overlap error_detail_. stage follows SetErrorIfNotOK's lifetime
+  // requirement.
   void SetQuoteError(base::Status status, const char* stage, const char* detail,
                      const model::QuoteTick& tick) noexcept;
   // Records the first failure with the client order ID and report sequence.
@@ -211,7 +212,8 @@ class StrategyRunner final {
   // error_detail_.
   // stage follows SetErrorIfNotOK's lifetime requirement.
   void SetOrderError(base::Status status, const char* stage, const char* detail,
-                     model::ClientOrderId id, std::uint64_t sequence) noexcept;
+                     model::StrategyOrderId id,
+                     std::uint64_t sequence) noexcept;
   // Writes outstanding order/cancel diagnostics and available account/position
   // snapshots to stderr. Requires the trading view to remain available.
   void ReportUnconfirmed() const noexcept;

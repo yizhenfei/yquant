@@ -26,7 +26,6 @@ namespace {
 
 using yquant::base::ErrorCode;
 using yquant::model::CashSnapshot;
-using yquant::model::ClientOrderId;
 using yquant::model::Fill;
 using yquant::model::InstrumentDefinition;
 using yquant::model::InstrumentId;
@@ -40,6 +39,7 @@ using yquant::model::OrderUpdateKind;
 using yquant::model::PositionSnapshot;
 using yquant::model::QuoteFlag;
 using yquant::model::QuoteTick;
+using yquant::model::StrategyOrderId;
 using yquant::strategy::ConfigError;
 using yquant::strategy::Strategy;
 using yquant::strategy::StrategyConfig;
@@ -272,12 +272,12 @@ class BboMarketMakingStrategy final : public Strategy {
     OrderSnapshot queried;
     if (order.instrument_id != instrument_.id ||
         (order.side != OrderSide::kBuy && order.side != OrderSide::kSell) ||
-        !context.trading().TryGetOrder(order.client_order_id, queried) ||
+        !context.trading().TryGetOrder(order.strategy_order_id, queried) ||
         queried != order) {
       return ErrorCode::kCorrupt;
     }
     auto& side = sides_[SideIndex(order.side)];
-    const bool matched = side.id == order.client_order_id;
+    const bool matched = side.id == order.strategy_order_id;
     if (matched && IsTerminalOrderState(order.state)) {
       side.id = {};
     }
@@ -298,9 +298,9 @@ class BboMarketMakingStrategy final : public Strategy {
     OrderSnapshot order;
     if (fill.instrument_id != instrument_.id || fill.quantity <= 0 ||
         (fill.side != OrderSide::kBuy && fill.side != OrderSide::kSell) ||
-        !context.trading().TryGetOrder(fill.client_order_id, order) ||
+        !context.trading().TryGetOrder(fill.strategy_order_id, order) ||
         order.instrument_id != fill.instrument_id || order.side != fill.side ||
-        order.broker_order_id != fill.broker_order_id) {
+        order.adapter_order_id != fill.adapter_order_id) {
       return ErrorCode::kCorrupt;
     }
     const auto quantity = static_cast<std::uint64_t>(fill.quantity);
@@ -352,7 +352,7 @@ class BboMarketMakingStrategy final : public Strategy {
  private:
   // Retry applies to submissions and cancels, independently for each side.
   struct SideState {
-    ClientOrderId id;
+    StrategyOrderId id;
     std::uint64_t retry_not_before_ns = 0;
   };
 
@@ -404,9 +404,9 @@ class BboMarketMakingStrategy final : public Strategy {
     OrderSnapshot order;
     const auto expected_side = index == 0 ? OrderSide::kBuy : OrderSide::kSell;
     if (!context.trading().TryGetOrder(id, order) ||
-        order.client_order_id != id || order.instrument_id != instrument_.id ||
-        order.side != expected_side || order.limit_price <= 0 ||
-        order.original_qty != config_.quote_qty() ||
+        order.strategy_order_id != id ||
+        order.instrument_id != instrument_.id || order.side != expected_side ||
+        order.limit_price <= 0 || order.original_qty != config_.quote_qty() ||
         order.cumulative_filled_qty < 0 ||
         order.cumulative_filled_qty > order.original_qty ||
         order.leaves_qty < 0 ||

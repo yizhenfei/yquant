@@ -43,7 +43,7 @@ class RecordingTradingAdapter final : public trading::TradingAdapter {
     return {fail_send ? ErrorCode::kIoError : ErrorCode::kOk, {}};
   }
   base::Status SendCancel(model::ClientOrderId id,
-                          const model::BrokerOrderId& broker,
+                          const model::AdapterOrderId& broker,
                           model::CancelRequestId cancel,
                           std::uint64_t) noexcept override {
     ++cancel_sends;
@@ -71,7 +71,7 @@ class RecordingTradingAdapter final : public trading::TradingAdapter {
   }
   model::ClientOrderId last_order_id;
   model::CancelRequestId last_cancel_id;
-  model::BrokerOrderId last_broker;
+  model::AdapterOrderId last_broker;
   model::OrderRequest last_order;
   std::size_t order_sends = 0;
   std::size_t cancel_sends = 0;
@@ -163,8 +163,8 @@ class TradingTest : public ::testing::Test {
                             std::int64_t cumulative = 0) const {
     model::TradingEvent event;
     event.client_order_id = id;
-    EXPECT_EQ(event.broker_order_id.Assign("broker-order-" +
-                                           std::to_string(id.value)),
+    EXPECT_EQ(event.adapter_order_id.Assign("broker-order-" +
+                                            std::to_string(id.value)),
               ErrorCode::kOk);
     event.report_sequence = sequence;
     event.kind = kind;
@@ -178,7 +178,7 @@ class TradingTest : public ::testing::Test {
                                 std::int64_t cumulative) const {
     auto event = Event(id, sequence, OrderUpdateKind::kFill, cumulative);
     event.fill.client_order_id = id;
-    event.fill.broker_order_id = event.broker_order_id;
+    event.fill.adapter_order_id = event.adapter_order_id;
     EXPECT_EQ(event.fill.execution_id.Assign(execution_id), ErrorCode::kOk);
     event.fill.instrument_id = instrument_id;
     event.fill.side = Snapshot(id).side;
@@ -305,7 +305,7 @@ TEST_F(TradingTest, StopRetainsAccountFactsAndResetRequiresNewInitialization) {
 }
 
 TEST(TradingModelTest, OpaqueIdentityIsOwnedAndSupportsFullCapacity) {
-  model::BrokerOrderId broker;
+  model::AdapterOrderId broker;
   std::string original(64, 'x');
   EXPECT_EQ(broker.Assign(original), ErrorCode::kOk);
   original.assign(64, 'y');
@@ -342,7 +342,7 @@ TEST_F(TradingTest,
   EXPECT_EQ(adapter.order_sends, 0U);
   EXPECT_EQ(Snapshot(id).state, OrderState::kPendingNew);
   EXPECT_EQ(Snapshot(id).leaves_qty, 200);
-  EXPECT_TRUE(Snapshot(id).broker_order_id.empty());
+  EXPECT_TRUE(Snapshot(id).adapter_order_id.empty());
   EXPECT_EQ(Snapshot(id).report_sequence, 0U);
   EXPECT_FALSE(trading.is_drained());
   Send();
@@ -521,7 +521,7 @@ TEST_F(TradingTest, BrokerIdentityCannotBindTwoClientOrders) {
   const auto before = Snapshot(second);
   trading::TradingDispatch dispatch;
   auto duplicate = Event(second, 1, OrderUpdateKind::kAccepted);
-  duplicate.broker_order_id = Snapshot(first).broker_order_id;
+  duplicate.adapter_order_id = Snapshot(first).adapter_order_id;
   EXPECT_EQ(trading.ApplyEvent(duplicate, dispatch), ErrorCode::kCorrupt);
   EXPECT_EQ(Snapshot(second), before);
   EXPECT_EQ(Snapshot(first).state, OrderState::kWorking);

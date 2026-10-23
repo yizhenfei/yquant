@@ -211,10 +211,10 @@ testing::MockTradingService::Event Report(model::OrderUpdateKind kind,
   dispatch.notify_order = true;
   dispatch.update.kind = kind;
   auto& order = dispatch.update.order;
-  order.client_order_id = {1};
+  order.strategy_order_id = {1};
   EXPECT_EQ(model::MakeInstrumentId("SSE", "600000", order.instrument_id),
             ErrorCode::kOk);
-  EXPECT_EQ(order.broker_order_id.Assign("mock-broker"), ErrorCode::kOk);
+  EXPECT_EQ(order.adapter_order_id.Assign("mock-broker"), ErrorCode::kOk);
   order.side = model::OrderSide::kBuy;
   order.limit_price = 1001;
   order.original_qty = 200;
@@ -227,8 +227,8 @@ testing::MockTradingService::Event Report(model::OrderUpdateKind kind,
   if (kind == model::OrderUpdateKind::kFill) {
     dispatch.has_fill = true;
     auto& fill = dispatch.fill;
-    fill.client_order_id = order.client_order_id;
-    fill.broker_order_id = order.broker_order_id;
+    fill.strategy_order_id = order.strategy_order_id;
+    fill.adapter_order_id = order.adapter_order_id;
     fill.instrument_id = order.instrument_id;
     fill.side = order.side;
     fill.price = 1001;
@@ -321,11 +321,11 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(
         CallbackFailure{"OrderUpdate", YQUANT_TEST_TRADING_UPDATE_FAIL_PATH,
                         "order_update",
-                        "client_order_id=1 sequence=1: strategy "
+                        "strategy_order_id=1 sequence=1: strategy "
                         "OnOrderUpdate returned an error",
                         "CPSQNAfTD"},
         CallbackFailure{"Fill", YQUANT_TEST_TRADING_FILL_FAIL_PATH, "fill",
-                        "client_order_id=1 sequence=2: strategy "
+                        "strategy_order_id=1 sequence=2: strategy "
                         "OnFill returned an error",
                         "CPSQNAVFHfTD"}),
     [](const auto& info) { return info.param.name; });

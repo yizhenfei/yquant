@@ -396,7 +396,7 @@ class FuturesSendAdapter final : public TradingAdapter {
     sent_effect = request.position_effect;
     return {};
   }
-  base::Status SendCancel(model::ClientOrderId, const model::BrokerOrderId&,
+  base::Status SendCancel(model::ClientOrderId, const model::AdapterOrderId&,
                           model::CancelRequestId,
                           std::uint64_t) noexcept override {
     return {};
@@ -436,13 +436,13 @@ TEST_F(FuturesLedgerTest,
   EXPECT_EQ(adapter.sent_effect, PositionEffect::kOpen);
   model::TradingEvent event;
   event.client_order_id = order_id;
-  ASSERT_EQ(event.broker_order_id.Assign("futures-order"), ErrorCode::kOk);
+  ASSERT_EQ(event.adapter_order_id.Assign("futures-order"), ErrorCode::kOk);
   event.kind = model::OrderUpdateKind::kFill;
   event.report_sequence = 1;
   event.cumulative_filled_qty = 1;
   event.receive_time_ns = 1000;
   event.fill.client_order_id = order_id;
-  event.fill.broker_order_id = event.broker_order_id;
+  event.fill.adapter_order_id = event.adapter_order_id;
   ASSERT_EQ(event.fill.execution_id.Assign("fill-1"), ErrorCode::kOk);
   event.fill.instrument_id = id;
   event.fill.side = OrderSide::kBuy;
@@ -564,13 +564,13 @@ TEST_F(FuturesLedgerTest,
   ASSERT_TRUE(trading.ProcessRequests(adapter, 1000).ok());
   model::TradingEvent event;
   event.client_order_id = order_id;
-  ASSERT_EQ(event.broker_order_id.Assign("stock-order"), ErrorCode::kOk);
+  ASSERT_EQ(event.adapter_order_id.Assign("stock-order"), ErrorCode::kOk);
   event.kind = model::OrderUpdateKind::kFill;
   event.report_sequence = 1;
   event.cumulative_filled_qty = 1;
   event.receive_time_ns = 1000;
   event.fill.client_order_id = order_id;
-  event.fill.broker_order_id = event.broker_order_id;
+  event.fill.adapter_order_id = event.adapter_order_id;
   ASSERT_EQ(event.fill.execution_id.Assign("stock-fill"), ErrorCode::kOk);
   event.fill.instrument_id = stock_id;
   event.fill.side = OrderSide::kBuy;
@@ -639,7 +639,7 @@ class BrokerSnapshotAdapter final : public TradingAdapter {
                          std::uint64_t) noexcept override {
     return {};
   }
-  base::Status SendCancel(model::ClientOrderId, const model::BrokerOrderId&,
+  base::Status SendCancel(model::ClientOrderId, const model::AdapterOrderId&,
                           model::CancelRequestId,
                           std::uint64_t) noexcept override {
     return {};
@@ -737,7 +737,7 @@ TEST_F(FuturesLedgerTest, BrokerExternalCancelNeedsNoSyntheticLocalCancel) {
   engine.SetAcceptingRequests(false);
   ASSERT_TRUE(engine.ProcessRequests(1000).ok());
   adapter.fact.client_order_id = order;
-  ASSERT_EQ(adapter.fact.broker_order_id.Assign("ctp-order"), ErrorCode::kOk);
+  ASSERT_EQ(adapter.fact.adapter_order_id.Assign("ctp-order"), ErrorCode::kOk);
   adapter.fact.report_sequence = 1;
   adapter.fact.kind = model::OrderUpdateKind::kCanceled;
   adapter.fact.receive_time_ns = 1000;
@@ -787,7 +787,7 @@ TEST_F(FuturesLedgerTest, BrokerEventValidatesAccountBeforeCommittingOrder) {
   adapter.fact.client_order_id = order;
   adapter.fact.report_sequence = 1;
   adapter.fact.receive_time_ns = 1000;
-  ASSERT_EQ(adapter.fact.broker_order_id.Assign("ctp-accepted"),
+  ASSERT_EQ(adapter.fact.adapter_order_id.Assign("ctp-accepted"),
             ErrorCode::kOk);
   adapter.account.revision = 2;
   adapter.account.position_count = 1;

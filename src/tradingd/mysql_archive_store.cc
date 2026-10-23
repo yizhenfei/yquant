@@ -758,7 +758,7 @@ base::Status MysqlArchiveStore::WriteProjection(
                        Value(order.local_cancel_id.value),
                        Value(order.report_sequence),
                        Value(core_namespace),
-                       Value(value.broker_order_id.view()),
+                       Value(value.adapter_order_id.view()),
                        Value(value.receive_time_ns),
                        run,
                        Value(order.source_lsn)}))
@@ -779,7 +779,7 @@ base::Status MysqlArchiveStore::WriteProjection(
              Value(std::uint64_t(value.state)),
              Value(std::uint64_t(value.cancel_pending)),
              Value(order.local_cancel_id.value), Value(order.report_sequence),
-             Value(core_namespace), Value(value.broker_order_id.view()),
+             Value(core_namespace), Value(value.adapter_order_id.view()),
              Value(value.receive_time_ns), run, Value(order.source_lsn), ledger,
              session, local}))
       return DatabaseFailure();
@@ -811,7 +811,7 @@ base::Status MysqlArchiveStore::WriteProjection(
              Value(order->local_order_id), Value(fill.client_order_id.value),
              Value(fill.instrument_id.value), Value(std::uint64_t(fill.side)),
              Value(std::uint64_t(fill.position_effect)), Value(fill.price),
-             Value(fill.quantity), Value(fill.broker_order_id.view()), time,
+             Value(fill.quantity), Value(fill.adapter_order_id.view()), time,
              Value(fill.receive_time_ns), run, Value(source),
              Value(std::uint64_t(baseline))})) {
       // A baseline may rediscover an already archived fill with a different
@@ -828,7 +828,7 @@ base::Status MysqlArchiveStore::WriteProjection(
                Value(fill.client_order_id.value),
                Value(fill.instrument_id.value), Value(std::uint64_t(fill.side)),
                Value(std::uint64_t(fill.position_effect)), Value(fill.price),
-               Value(fill.quantity), Value(fill.broker_order_id.view()), time,
+               Value(fill.quantity), Value(fill.adapter_order_id.view()), time,
                Value(fill.receive_time_ns), ledger, name, execution}))
         return DatabaseFailure();
     }

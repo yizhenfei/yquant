@@ -25,7 +25,7 @@ inline std::size_t TradingOrderHash(model::ClientOrderId order) noexcept {
 
 // Open-addressed lookup hashes must match for live commits and cold rebuilds.
 inline std::size_t TradingBrokerHash(
-    const model::BrokerOrderId& broker) noexcept {
+    const model::AdapterOrderId& broker) noexcept {
   std::uint64_t hash = 14695981039346656037ULL;
   for (const unsigned char byte : broker.view())
     hash = (hash ^ byte) * 1099511628211ULL;

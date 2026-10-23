@@ -60,14 +60,14 @@ class TradingServiceImpl final : public trading::TradingService {
   // does not imply gateway acceptance.
   [[nodiscard]] base::ErrorCode SubmitOrder(
       const model::OrderRequest& request,
-      model::ClientOrderId& out) noexcept override;
+      model::StrategyOrderId& out) noexcept override;
   // Queues a cancellation for a working order without another pending cancel.
   // Success marks the snapshot cancel-pending; rejection preserves the order
   // and queue while updating diagnostics. Requires an open request window.
   [[nodiscard]] base::ErrorCode CancelOrder(
-      model::ClientOrderId id) noexcept override;
+      model::StrategyOrderId id) noexcept override;
   [[nodiscard]] bool TryGetOrder(
-      model::ClientOrderId id,
+      model::StrategyOrderId id,
       model::OrderSnapshot& out) const noexcept override;
   [[nodiscard]] bool TryGetCash(
       model::CashSnapshot& out) const noexcept override;

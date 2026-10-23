@@ -192,7 +192,7 @@ class MysqlServerTest : public ::testing::Test {
     trading::Message message;
     message.type = trading::MessageType::kNewOrder;
     message.generation = generation;
-    message.order_id = {local_id};
+    message.strategy_order_id = {local_id};
     message.request = {config.market_data.instruments[0].instrument.id,
                        model::OrderSide::kBuy, 1000, quantity};
     ASSERT_TRUE(peer.Queue(message).ok());
@@ -214,7 +214,7 @@ class MysqlServerTest : public ::testing::Test {
 
   bool HasUpdate(std::uint64_t order, model::OrderState state) const {
     for (const auto& message : updates)
-      if (message.update.order.client_order_id.value == order &&
+      if (message.update.order.strategy_order_id.value == order &&
           message.update.order.state == state)
         return true;
     return false;

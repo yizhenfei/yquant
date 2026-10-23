@@ -120,9 +120,20 @@ struct InstrumentId {
                                    InstrumentId) noexcept = default;
 };
 
-// Identifies an order within its host or gateway-client namespace. Assigned
-// monotonically and never reused during a run; zero is invalid. Interpret it
-// with its owning namespace, not as a globally unique broker identifier.
+// Identifies a strategy submission within one registered strategy session.
+// Assigned monotonically by the strategy host; zero is invalid. Interpret it
+// with the durable strategy session identity, not as a gateway ledger ID.
+struct StrategyOrderId {
+  std::uint64_t value = 0;
+  friend constexpr bool operator==(StrategyOrderId,
+                                   StrategyOrderId) noexcept = default;
+};
+
+// Identifies an order in the tradingd ledger, assigned by TradingEngine. Zero
+// is invalid; values increase without reuse within a ledger. Persistent
+// gateways reserve ranges before use so restart may skip IDs. Pair with the
+// ledger ID when referring to orders across accounts or independent ledger
+// histories.
 struct ClientOrderId {
   std::uint64_t value = 0;
   friend constexpr bool operator==(ClientOrderId,
@@ -136,10 +147,10 @@ struct CancelRequestId {
                                    CancelRequestId) noexcept = default;
 };
 
-// Owns up to 64 bytes of opaque trading identity; default construction is empty.
-// Tag separates broker-order and execution IDs at compile time. Embedded NUL
-// bytes are preserved; compare views rather than treating them as C strings.
-// The adapter or persistence namespace determines identity scope.
+// Owns up to 64 bytes of opaque trading identity; default construction is
+// empty. Tag separates adapter-order and execution IDs at compile time.
+// Embedded NUL bytes are preserved; compare views rather than treating them as
+// C strings. The adapter or persistence namespace determines identity scope.
 template <typename Tag>
 class OpaqueTradingId {
  public:
@@ -165,11 +176,14 @@ class OpaqueTradingId {
   std::uint8_t size_ = 0;
 };
 
-struct BrokerOrderIdTag;
+struct AdapterOrderIdTag;
 struct ExecutionIdTag;
-// Broker-assigned order identity; empty until obtained from the broker.
-using BrokerOrderId = OpaqueTradingId<BrokerOrderIdTag>;
-// Broker execution identity, unique within its order and adapter namespace.
+// Stable adapter-provided order identity; empty until supplied by the adapter.
+// May encode a native broker ID or a composite identity; consumers do not parse
+// it. Repeated reports and recovery must preserve the same identity.
+using AdapterOrderId = OpaqueTradingId<AdapterOrderIdTag>;
+// Adapter-provided identity of one execution, unique within its order and
+// adapter namespace. Repeated reports and recovery preserve the same value.
 using ExecutionId = OpaqueTradingId<ExecutionIdTag>;
 
 // Returns whether an ID has a supported venue and valid symbol encoding,

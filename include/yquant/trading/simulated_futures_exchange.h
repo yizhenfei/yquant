@@ -38,7 +38,7 @@ class SimulatedFuturesExchange final : public TradingAdapter {
   // already-filled orders with a rejection. Failure queues nothing and keeps
   // the previous cancel state; request inputs are borrowed for this call only.
   [[nodiscard]] base::Status SendCancel(
-      model::ClientOrderId id, const model::BrokerOrderId& broker_order_id,
+      model::ClientOrderId id, const model::AdapterOrderId& adapter_order_id,
       model::CancelRequestId cancel_request_id,
       std::uint64_t now) noexcept override;
 
