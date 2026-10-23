@@ -1,5 +1,6 @@
 #include "strategyd/strategy_runner.h"
 
+#include <cassert>
 #include <cstdio>
 #include <limits>
 
@@ -32,24 +33,34 @@ void StrategyRunner::ResetError() noexcept {
   error_detail_[0] = '\0';
 }
 
-void StrategyRunner::SetErrorIfNotOK(base::Status status, const char* stage,
-                                     const char* detail) noexcept {
-  if (status.ok() || !result_.ok()) {
-    return;
+bool StrategyRunner::TryRecordFailure(base::Status status,
+                                     const char* stage) noexcept {
+  assert(!status.ok());
+  if (!result_.ok()) {
+    return false;
   }
   result_ = status;
   error_stage_ = stage;
+  return true;
+}
+
+void StrategyRunner::SetErrorIfNotOK(base::Status status, const char* stage,
+                                     const char* detail) noexcept {
+  if (status.ok()) {
+    return;
+  }
+  if (!TryRecordFailure(status, stage)) {
+    return;
+  }
   std::snprintf(error_detail_, sizeof(error_detail_), "%s", detail);
 }
 
 void StrategyRunner::SetQuoteError(base::Status status, const char* stage,
                                    const char* detail,
                                    const model::QuoteTick& tick) noexcept {
-  if (status.ok() || !result_.ok()) {
+  if (!TryRecordFailure(status, stage)) {
     return;
   }
-  result_ = status;
-  error_stage_ = stage;
   std::snprintf(error_detail_, sizeof(error_detail_),
                 "source_id=%u instrument_id=%llu sequence=%llu: %s",
                 tick.source_id.value,
@@ -235,11 +246,9 @@ void StrategyRunner::EndCallback() noexcept {
 void StrategyRunner::SetOrderError(base::Status status, const char* stage,
                                    const char* detail, model::ClientOrderId id,
                                    std::uint64_t sequence) noexcept {
-  if (status.ok() || !result_.ok()) {
+  if (!TryRecordFailure(status, stage)) {
     return;
   }
-  result_ = status;
-  error_stage_ = stage;
   std::snprintf(error_detail_, sizeof(error_detail_),
                 "client_order_id=%llu sequence=%llu: %s",
                 static_cast<unsigned long long>(id.value),
@@ -318,27 +327,26 @@ void StrategyRunner::CheckStop() noexcept {
   }
 }
 
-bool StrategyRunner::DispatchQuote(const model::QuoteTick& tick) noexcept {
+StrategyRunner::QuoteDispatchResult StrategyRunner::DispatchQuote(
+    const model::QuoteTick& tick) noexcept {
   bool accepted = false;
   const auto applied = market_data_.ApplyQuote(tick, accepted);
   if (applied != base::ErrorCode::kOk) {
     SetQuoteError({applied, {}}, "quote",
                   "invalid quote from market-data source", tick);
-    StopAfterError(true);
-    return false;
+    return {.success = false, .can_drain = true};
   }
   if (!accepted) {
     if (ignored_quote_count_ != std::numeric_limits<std::uint64_t>::max()) {
       ++ignored_quote_count_;
     }
-    return true;
+    return {.success = true, .can_drain = true};
   }
   const auto observed = trading_service_.OnQuote(tick);
   if (!observed.ok()) {
     SetQuoteError(observed, "trading_quote", trading_service_.error_detail(),
                   tick);
-    StopAfterError(false);
-    return false;
+    return {.success = false, .can_drain = false};
   }
   BeginCallback(strategy::CallbackPhase::kTick);
   const auto result = instance_->OnTick(context_, tick);
@@ -346,10 +354,9 @@ bool StrategyRunner::DispatchQuote(const model::QuoteTick& tick) noexcept {
   if (result != base::ErrorCode::kOk) {
     SetQuoteError({result, {}}, "tick", "strategy OnTick returned an error",
                   tick);
-    StopAfterError(true);
-    return false;
+    return {.success = false, .can_drain = true};
   }
-  return true;
+  return {.success = true, .can_drain = true};
 }
 
 bool StrategyRunner::DispatchTrading(
@@ -418,8 +425,12 @@ StrategyRunner::QuotePollResult StrategyRunner::PollQuote() noexcept {
     StopAfterError(true);
     return QuotePollResult::kError;
   }
-  return DispatchQuote(tick) ? QuotePollResult::kEvent
-                             : QuotePollResult::kError;
+  const auto result = DispatchQuote(tick);
+  if (!result.success) {
+    StopAfterError(result.can_drain);
+    return QuotePollResult::kError;
+  }
+  return QuotePollResult::kEvent;
 }
 
 bool StrategyRunner::DispatchTimer() noexcept {
