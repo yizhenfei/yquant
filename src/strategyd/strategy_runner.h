@@ -120,11 +120,18 @@ class StrategyRunner final {
   }
 
  private:
+  // Reports quote dispatch success and whether trading can drain on failure.
+  struct QuoteDispatchResult {
+    bool success;
+    // Used only on failure; false means the trading service cannot drain.
+    bool can_drain;
+  };
   // Updates market and trading views before OnTick while kRunning. Borrows tick
-  // only for this call. Valid old/duplicate quotes return true without a
-  // callback; validation, trading, or callback failure begins stopping and
-  // returns false.
-  bool DispatchQuote(const model::QuoteTick& tick) noexcept;
+  // only for this call. Valid old/duplicate quotes succeed without a callback.
+  // Records validation, trading, or callback failures and returns the drain
+  // policy; the caller must begin stopping on failure.
+  [[nodiscard]] QuoteDispatchResult DispatchQuote(
+      const model::QuoteTick& tick) noexcept;
   // Delivers a committed event's order update before its fill, when present,
   // without polling another source between callbacks. Borrows dispatch only
   // for this call. Returns true if callbacks succeed or are disabled; callback
@@ -183,20 +190,25 @@ class StrategyRunner final {
   // Clears the operation result and diagnostics without changing lifecycle
   // state, resources, or counters.
   void ResetError() noexcept;
+  // Records a non-OK status only if no failure exists since ResetError.
+  // Returns whether it was recorded; the caller then writes error_detail_.
+  // Requires a non-null stage and borrows it until diagnostics are reset.
+  bool TryRecordFailure(base::Status status, const char* stage) noexcept;
   // Ignores OK statuses and preserves any failure recorded since ResetError.
   // Requires non-null C strings. For the first failure, borrows stage until
   // diagnostics are reset and copies detail, truncating if necessary.
   void SetErrorIfNotOK(base::Status status, const char* stage,
                        const char* detail) noexcept;
   // Records the first failure with tick's source, instrument, and sequence.
-  // Ignores OK statuses and later failures without formatting. Borrows tick
-  // and non-null C-string detail only for this call; detail must not overlap
-  // error_detail_. stage follows SetErrorIfNotOK's lifetime requirement.
+  // Requires a non-OK status. Skips later failures without formatting. Borrows
+  // tick and non-null C-string detail only for this call; detail must not
+  // overlap error_detail_. stage follows SetErrorIfNotOK's lifetime requirement.
   void SetQuoteError(base::Status status, const char* stage, const char* detail,
                      const model::QuoteTick& tick) noexcept;
   // Records the first failure with the client order ID and report sequence.
-  // Ignores OK statuses and later failures without formatting. Borrows non-null
-  // C-string detail only for this call; it must not overlap error_detail_.
+  // Requires a non-OK status. Skips later failures without formatting. Borrows
+  // non-null C-string detail only for this call; it must not overlap
+  // error_detail_.
   // stage follows SetErrorIfNotOK's lifetime requirement.
   void SetOrderError(base::Status status, const char* stage, const char* detail,
                      model::ClientOrderId id, std::uint64_t sequence) noexcept;

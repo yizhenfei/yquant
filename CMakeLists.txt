@@ -93,7 +93,7 @@ target_link_libraries(yquant_strategyd_objects PUBLIC
   yquant::strategy_api yquant::base yquant::md yquant::trading
   PRIVATE simdjson::simdjson Threads::Threads ${CMAKE_DL_LIBS})
 target_compile_options(yquant_strategyd_objects PRIVATE
-  -Wall -Wextra -Wpedantic)
+  -Wall -Wextra -Wpedantic -Werror=switch)
 
 add_executable(yquant_strategyd src/strategyd/main.cc)
 target_include_directories(yquant_strategyd PRIVATE "${PROJECT_SOURCE_DIR}/src")
