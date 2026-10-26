@@ -217,7 +217,7 @@ inline uint64_t FileSize(const FilePath& path) {
   EXPECT_TRUE(status.ok()) << status.system_error.message();
   return result;
 }
-// Matches the directory-entry usage in corruption and persistence tests.
+// Matches the directory-entry usage in file tests.
 struct FileEntry {
   FilePath name;
   const FilePath& path() const { return name; }

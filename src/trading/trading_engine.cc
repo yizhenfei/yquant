@@ -4,7 +4,6 @@
 #include <stdint.h>
 
 #include <array>
-#include <cstdio>
 #include <limits>
 #include <new>
 #include <optional>
@@ -213,10 +212,6 @@ base::Status TradingEngine::ConfigureAccount(
 void TradingEngine::Reset() noexcept {
   (void)Stop();
   storage_.reset();
-  sink_ = nullptr;
-  replaying_ = false;
-  invoking_sink_ = false;
-  replay_now_ = 0;
   accept_requests_ = false;
   stopping_ = false;
   prefer_local_ = true;
@@ -323,22 +318,6 @@ ErrorCode TradingEngine::ValidateBrokerAccount(
   return ErrorCode::kOk;
 }
 
-uint64_t TradingEngine::mutation_revision() const noexcept {
-  return storage_ != nullptr ? storage_->mutation_revision : 0;
-}
-
-uint64_t TradingEngine::next_order_id() const noexcept {
-  return storage_ != nullptr ? storage_->next_order_id : 1;
-}
-
-uint64_t TradingEngine::next_cancel_id() const noexcept {
-  if (storage_ == nullptr) {
-    return 1;
-  }
-  return storage_->last_cancel_id != UINT64_MAX ? storage_->last_cancel_id + 1
-                                                : UINT64_MAX;
-}
-
 bool TradingEngine::TryGetOrderAt(size_t index,
                                   model::OrderSnapshot& out) const noexcept {
   if (storage_ == nullptr || index >= storage_->order_count) {
@@ -359,74 +338,6 @@ bool TradingEngine::TryGetFillAt(size_t index,
   }
   out = storage_->fills[index];
   return true;
-}
-
-base::Status TradingEngine::SetNextOrderIdAtLeast(uint64_t id) noexcept {
-  if (storage_ == nullptr || accept_requests_ || id == 0) {
-    return {Fail(ErrorCode::kInvalidState, "invalid cold order-ID reservation"),
-            {}};
-  }
-  if (id > storage_->next_order_id) {
-    storage_->next_order_id = id;
-  }
-  return {};
-}
-
-base::Status TradingEngine::SetNextCancelIdAtLeast(uint64_t id) noexcept {
-  if (storage_ == nullptr || accept_requests_ || id == 0) {
-    return {
-        Fail(ErrorCode::kInvalidState, "invalid cold cancel-ID reservation"),
-        {}};
-  }
-  if (id - 1 > storage_->last_cancel_id) {
-    storage_->last_cancel_id = id - 1;
-  }
-  return {};
-}
-
-base::Status TradingEngine::SetMutationSink(
-    TradingMutationSink* sink) noexcept {
-  if (accept_requests_ || replaying_ || invoking_sink_) {
-    return {Fail(ErrorCode::kInvalidState,
-                 "cannot replace the journal during ledger callbacks"),
-            {}};
-  }
-  if (sink != nullptr) {
-    if (storage_ == nullptr) {
-      return {Fail(ErrorCode::kInvalidState,
-                   "journal requires a configured cash ledger"),
-              {}};
-    }
-    if (storage_->type != model::AccountType::kCash) {
-      return {Fail(ErrorCode::kUnsupported,
-                   "futures ledger persistence is unsupported"),
-              {}};
-    }
-  }
-  sink_ = sink;
-  return {};
-}
-
-ErrorCode TradingEngine::BeforeCommit(TradingMutation& fact) noexcept {
-  // Futures execution has no journal sink; its resource transaction is already
-  // atomic and must not encounter a fallible cash persistence step afterward.
-  if (storage_->type != model::AccountType::kCash) {
-    return ErrorCode::kOk;
-  }
-  if (storage_->mutation_revision == UINT64_MAX) {
-    return Fail(ErrorCode::kResourceExhausted, "ledger revision exhausted");
-  }
-  fact.format_version = storage_->format_version;
-  fact.revision = storage_->mutation_revision + 1;
-  if (sink_ != nullptr && !replaying_) {
-    invoking_sink_ = true;
-    const auto status = sink_->BeforeCommit(fact);
-    invoking_sink_ = false;
-    if (!status.ok()) {
-      return Fail(status.code, "ledger journal rejected mutation");
-    }
-  }
-  return ErrorCode::kOk;
 }
 
 ErrorCode TradingEngine::Fail(ErrorCode code, const char* detail) noexcept {
@@ -590,9 +501,6 @@ void TradingEngine::CommitSubmission(const model::OrderRequest& request,
   ++s.order_count;
   ++s.active_count;
   ++s.next_order_id;
-  if (s.type == model::AccountType::kCash) {
-    ++s.mutation_revision;
-  }
 }
 
 ErrorCode TradingEngine::SubmitOrder(const model::OrderRequest& request,
@@ -612,7 +520,7 @@ ErrorCode TradingEngine::SubmitOrder(const model::OrderRequest& request,
   OrderEvent input;
   input.kind = OrderEventKind::kCreated;
   input.client_order_id = {storage_->next_order_id};
-  input.now = replaying_ ? replay_now_ : clock_.Now();
+  input.now = clock_.Now();
   input.request = request;
   input.rules = {instrument.price_tick, instrument.quantity_step,
                  storage_->broker_managed};
@@ -631,15 +539,6 @@ ErrorCode TradingEngine::SubmitOrder(const model::OrderRequest& request,
     return code;
   }
   const auto& order = transaction.order;
-  TradingMutation fact;
-  fact.now = replaying_ ? replay_now_ : clock_.Now();
-  fact.kind = TradingMutationKind::kNewOrder;
-  fact.client_order_id = order.client_order_id;
-  fact.request = request;
-  code = BeforeCommit(fact);
-  if (code != ErrorCode::kOk) {
-    return code;
-  }
   CommitSubmission(request, transaction);
   out = order.client_order_id;
   return ErrorCode::kOk;
@@ -655,7 +554,7 @@ ErrorCode TradingEngine::QueueCancel(size_t index) noexcept {
   input.kind = OrderEventKind::kCancelRequested;
   input.client_order_id = candidate.snapshot().client_order_id;
   input.cancel_request_id = {s.last_cancel_id + 1};
-  input.now = replaying_ ? replay_now_ : clock_.Now();
+  input.now = clock_.Now();
   const auto applied = candidate.Apply(input);
   if (!applied.ok()) {
     return Fail(applied.code, applied.diagnostic.text);
@@ -665,23 +564,11 @@ ErrorCode TradingEngine::QueueCancel(size_t index) noexcept {
   if (!execution.ok()) {
     return Fail(execution.code, execution.detail);
   }
-  TradingMutation fact;
-  fact.now = input.now;
-  fact.kind = TradingMutationKind::kCancel;
-  fact.client_order_id = input.client_order_id;
-  fact.cancel_id = input.cancel_request_id;
-  const auto journal = BeforeCommit(fact);
-  if (journal != ErrorCode::kOk) {
-    return journal;
-  }
   s.orders[index].core = candidate;
   s.orders[index].retry_not_before_ns = 0;
   s.executor.Commit(execution);
   s.last_cancel_id = input.cancel_request_id.value;
   ++s.pending_cancel_count;
-  if (s.type == model::AccountType::kCash) {
-    ++s.mutation_revision;
-  }
   return ErrorCode::kOk;
 }
 
@@ -798,29 +685,14 @@ base::Status TradingEngine::ProcessRequests(uint64_t now,
     const bool local = request->kind == OrderRequestKind::kNew && stopping_;
     const auto transition =
         local ? s.executor.PrepareCancelBeforeSend(request->order_index, now)
-              : s.executor.PrepareBeginSend(now, s.format_version == 1);
+              : s.executor.PrepareBeginSend(now);
     if (!transition.ok()) {
       if (local && transition.code == ErrorCode::kResourceExhausted) {
         break;
       }
       return {Fail(transition.code, transition.detail), {}};
     }
-    TradingMutation fact;
-    fact.now = now;
-    fact.kind = local ? TradingMutationKind::kScheduleLocalCancel
-                : request->kind == OrderRequestKind::kNew
-                    ? TradingMutationKind::kSendNew
-                    : TradingMutationKind::kSendCancel;
-    fact.client_order_id = request->client_order_id;
-    fact.cancel_id = request->cancel_request_id;
-    const auto journal = BeforeCommit(fact);
-    if (journal != ErrorCode::kOk) {
-      return {journal, {}};
-    }
     s.executor.Commit(transition);
-    if (s.type == model::AccountType::kCash) {
-      ++s.mutation_revision;
-    }
     if (local) {
       continue;
     }
@@ -844,7 +716,7 @@ base::Status TradingEngine::ProcessRequests(uint64_t now,
       char detail[kErrorDetailSize];
       ::yquant::base::FormatTo(detail, sizeof(detail), "{}",
                                adapter_.error_detail());
-      (void)RecordRequestUncertain(*request, result.code, now);
+      (void)MarkRequestUncertain(*request);
       (void)Fail(result.code, detail);
       return result;
     }
@@ -852,28 +724,14 @@ base::Status TradingEngine::ProcessRequests(uint64_t now,
   return {};
 }
 
-ErrorCode TradingEngine::RecordRequestUncertain(
-    const OrderExecutionRequest& request, ErrorCode code,
-    uint64_t now) noexcept {
+ErrorCode TradingEngine::MarkRequestUncertain(
+    const OrderExecutionRequest& request) noexcept {
   auto& s = *storage_;
   const auto transition = s.executor.PrepareUncertain(request);
   if (!transition.ok()) {
     return Fail(transition.code, transition.detail);
   }
-  TradingMutation fact;
-  fact.kind = TradingMutationKind::kRequestUncertain;
-  fact.now = now;
-  fact.client_order_id = request.client_order_id;
-  fact.cancel_id = request.cancel_request_id;
-  fact.failure_code = code;
-  const auto recorded = BeforeCommit(fact);
-  if (recorded != ErrorCode::kOk) {
-    return recorded;
-  }
   s.executor.Commit(transition);
-  if (s.type == model::AccountType::kCash) {
-    ++s.mutation_revision;
-  }
   return ErrorCode::kOk;
 }
 
@@ -982,7 +840,7 @@ ErrorCode TradingEngine::ApplyLocalUpdate(TradingDispatch& out) noexcept {
   OrderEvent input;
   input.client_order_id = local->request.client_order_id;
   input.cancel_request_id = local->request.cancel_request_id;
-  input.now = replaying_ ? replay_now_ : clock_.Now();
+  input.now = clock_.Now();
   switch (local->kind) {
     case OrderLocalResultKind::kCanceledBeforeSend:
       input.kind = OrderEventKind::kCanceledBeforeSend;
@@ -1011,17 +869,6 @@ ErrorCode TradingEngine::ApplyLocalUpdate(TradingDispatch& out) noexcept {
   const auto account = PrepareReportAccount(index, transaction);
   if (account != ErrorCode::kOk) {
     return account;
-  }
-  TradingMutation fact;
-  fact.now = input.now;
-  fact.kind = input.kind == OrderEventKind::kCanceledBeforeSend
-                  ? TradingMutationKind::kLocalCancel
-                  : TradingMutationKind::kCancelNotSent;
-  fact.client_order_id = input.client_order_id;
-  fact.cancel_id = input.cancel_request_id;
-  const auto recorded = BeforeCommit(fact);
-  if (recorded != ErrorCode::kOk) {
-    return recorded;
   }
   CommitReport(index, transaction);
   out = transaction.dispatch;
@@ -1053,8 +900,8 @@ ErrorCode TradingEngine::PrepareOrderTransition(
     transaction.release_remaining |=
         applied.actions[i] == OrderActionKind::kReleaseRemainingReservation;
   }
-  transaction.execution = s.executor.PrepareReport(
-      index, event, transaction.next, s.format_version >= 2);
+  transaction.execution =
+      s.executor.PrepareReport(index, event, transaction.next);
   if (!transaction.execution.ok()) {
     return Fail(transaction.execution.code, transaction.execution.detail);
   }
@@ -1236,9 +1083,6 @@ void TradingEngine::CommitReport(size_t index,
   record.retry_not_before_ns = retry;
   ScheduleReportRescan(index);
   dispatch.update.order = next;
-  if (s.type == model::AccountType::kCash) {
-    ++s.mutation_revision;
-  }
 }
 
 void TradingEngine::ScheduleReportRescan(size_t index) noexcept {
@@ -1259,7 +1103,7 @@ void TradingEngine::ScheduleReportRescan(size_t index) noexcept {
 ErrorCode TradingEngine::ApplyEvent(const model::TradingEvent& event,
                                     TradingDispatch& out) noexcept {
   error_stage_ = "trading_event";
-  const auto transaction_now = replaying_ ? replay_now_ : clock_.Now();
+  const auto transaction_now = clock_.Now();
   const auto index = FindIndex(event.client_order_id);
   if (!index) {
     return Fail(ErrorCode::kCorrupt, "report for an unknown order");
@@ -1278,158 +1122,11 @@ ErrorCode TradingEngine::ApplyEvent(const model::TradingEvent& event,
   if (result != ErrorCode::kOk) {
     return result;
   }
-  TradingMutation fact;
-  fact.now = transaction_now;
-  fact.kind = TradingMutationKind::kReport;
-  fact.client_order_id = event.client_order_id;
-  fact.event = event;
-  result = BeforeCommit(fact);
-  if (result != ErrorCode::kOk) {
-    return result;
-  }
   CommitReport(*index, transaction);
   out = transaction.dispatch;
   return ErrorCode::kOk;
 }
 
-base::Status TradingEngine::ReplayMutation(const TradingMutation& fact,
-                                           TradingDispatch* out) noexcept {
-  if (storage_ != nullptr && storage_->type != model::AccountType::kCash) {
-    return {Fail(ErrorCode::kUnsupported,
-                 "futures ledger persistence is unsupported"),
-            {}};
-  }
-  if (storage_ == nullptr || accept_requests_ || replaying_ ||
-      storage_->mutation_revision == UINT64_MAX ||
-      fact.revision != storage_->mutation_revision + 1) {
-    return {Fail(ErrorCode::kCorrupt, "invalid replay state or revision"), {}};
-  }
-  auto& s = *storage_;
-  const auto index = FindIndex(fact.client_order_id);
-  if (fact.kind != TradingMutationKind::kNewOrder && !index) {
-    return {Fail(ErrorCode::kCorrupt, "unknown replay order"), {}};
-  }
-  if (!IsValidTradingMutation(fact)) {
-    return {Fail(ErrorCode::kCorrupt, "unknown replay mutation"), {}};
-  }
-  if (fact.format_version != 1 && fact.format_version != 2) {
-    return {Fail(ErrorCode::kCorrupt, "unsupported replay rules version"), {}};
-  }
-  const auto previous_version = s.format_version;
-  if (s.mutation_revision == 0 && s.order_count == 0) {
-    s.format_version = fact.format_version;
-  }
-  if (s.format_version != fact.format_version) {
-    s.format_version = previous_version;
-    return {Fail(ErrorCode::kCorrupt, "mixed replay rules versions"), {}};
-  }
-  replaying_ = true;
-  replay_now_ = fact.now;
-  ErrorCode result = ErrorCode::kOk;
-  TradingDispatch dispatch;
-  switch (fact.kind) {
-    case TradingMutationKind::kNewOrder: {
-      if (fact.client_order_id.value != s.next_order_id) {
-        result = Fail(ErrorCode::kCorrupt, "replay order identity mismatch");
-        break;
-      }
-      const auto saved_stopping = stopping_;
-      accept_requests_ = true;
-      stopping_ = false;
-      model::ClientOrderId id;
-      result = SubmitOrder(fact.request, id);
-      accept_requests_ = false;
-      stopping_ = saved_stopping;
-      break;
-    }
-    case TradingMutationKind::kCancel:
-      if (fact.cancel_id.value == 0 || s.last_cancel_id == UINT64_MAX ||
-          fact.cancel_id.value != s.last_cancel_id + 1 ||
-          s.orders[*index].core.snapshot().state != OrderState::kWorking ||
-          s.orders[*index].core.snapshot().cancel_pending) {
-        result = Fail(ErrorCode::kCorrupt, "invalid replay cancel");
-      } else {
-        result = QueueCancel(*index);
-      }
-      break;
-    case TradingMutationKind::kSendNew:
-    case TradingMutationKind::kSendCancel:
-    case TradingMutationKind::kScheduleLocalCancel: {
-      const auto request = s.executor.front();
-      if (!request || request->order_index != *index ||
-          request->cancel_request_id != fact.cancel_id ||
-          (request->kind == OrderRequestKind::kNew) !=
-              (fact.kind != TradingMutationKind::kSendCancel)) {
-        result = Fail(ErrorCode::kCorrupt, "replay request mismatch");
-        break;
-      }
-      const auto next =
-          fact.kind == TradingMutationKind::kScheduleLocalCancel
-              ? s.executor.PrepareCancelBeforeSend(*index, fact.now)
-              : s.executor.PrepareBeginSend(fact.now, s.format_version == 1);
-      if (!next.ok()) {
-        result = Fail(next.code, next.detail);
-        break;
-      }
-      s.executor.Commit(next);
-      ++s.mutation_revision;
-      break;
-    }
-    case TradingMutationKind::kLocalCancel:
-    case TradingMutationKind::kCancelNotSent: {
-      const auto local = s.executor.local_front();
-      if (!local || local->request.order_index != *index ||
-          local->request.cancel_request_id != fact.cancel_id ||
-          (local->kind == OrderLocalResultKind::kCanceledBeforeSend) !=
-              (fact.kind == TradingMutationKind::kLocalCancel)) {
-        result = Fail(ErrorCode::kCorrupt, "replay local result mismatch");
-      } else {
-        result = ApplyLocalUpdate(dispatch);
-      }
-      break;
-    }
-    case TradingMutationKind::kRequestUncertain: {
-      const OrderExecutionRequest request{
-          fact.cancel_id.value == 0 ? OrderRequestKind::kNew
-                                    : OrderRequestKind::kCancel,
-          *index, fact.client_order_id, fact.cancel_id};
-      result = RecordRequestUncertain(request, fact.failure_code, fact.now);
-      break;
-    }
-    case TradingMutationKind::kReport:
-      if (fact.event.client_order_id != fact.client_order_id) {
-        result = Fail(ErrorCode::kCorrupt, "replay report identity mismatch");
-      } else {
-        result = ApplyEvent(fact.event, dispatch);
-      }
-      break;
-  }
-  replaying_ = false;
-  replay_now_ = 0;
-  if (result != ErrorCode::kOk) {
-    s.format_version = previous_version;
-  }
-  if (result == ErrorCode::kOk && s.mutation_revision != fact.revision) {
-    return {Fail(ErrorCode::kCorrupt, "replay fact did not commit"), {}};
-  }
-  if (result == ErrorCode::kOk && out != nullptr) {
-    *out = dispatch;
-  }
-  return {result, {}};
-}
-
-void TradingEngine::AbandonRecoveredRequests() noexcept {
-  if (storage_ == nullptr || accept_requests_) {
-    return;
-  }
-  auto& s = *storage_;
-  s.executor.AbandonRecoveredRequests();
-  s.format_version = 2;
-  s.scan_cursor = 0;
-  s.scan_pending = false;
-  s.rescan_required = false;
-  s.next_retry.reset();
-}
 base::Status TradingEngine::FailStage(base::Status status, const char* stage,
                                       const char* detail) noexcept {
   error_stage_ = stage;
@@ -1518,8 +1215,7 @@ base::Status TradingEngine::Poll(uint64_t now, TradingDispatch& out,
   }
   const auto expired = storage_->executor.due(now);
   if (expired) {
-    const auto marked =
-        RecordRequestUncertain(*expired, ErrorCode::kIoError, now);
+    const auto marked = MarkRequestUncertain(*expired);
     if (marked != ErrorCode::kOk) {
       return {marked, {}};
     }
@@ -1544,13 +1240,13 @@ base::Status TradingEngine::Poll(uint64_t now, TradingDispatch& out,
         if (execution.new_request.state == OrderRequestState::kInFlight) {
           const OrderExecutionRequest request{
               OrderRequestKind::kNew, i, execution.client_order_id, {}};
-          (void)RecordRequestUncertain(request, ErrorCode::kIoError, now);
+          (void)MarkRequestUncertain(request);
         }
         if (execution.cancel_request.state == OrderRequestState::kInFlight) {
           const OrderExecutionRequest request{OrderRequestKind::kCancel, i,
                                               execution.client_order_id,
                                               execution.cancel_request_id};
-          (void)RecordRequestUncertain(request, ErrorCode::kIoError, now);
+          (void)MarkRequestUncertain(request);
         }
       }
       return FailStage(polled.status.ok()

@@ -80,11 +80,9 @@ struct [[nodiscard]] OrderApplyResult {
   bool ok() const noexcept { return code == base::ErrorCode::kOk; }
 };
 
-struct OrderRestoreResult;
-
 // Maintains one order's business state. Apply is failure atomic and does not
 // allocate. Copies form independent candidate states; the host coordinates
-// their publication with account, index and WAL changes. Serialize access to
+// their publication with account and index changes. Serialize access to
 // an instance; the core has no internal lock.
 class OrderCore final {
  public:
@@ -94,14 +92,8 @@ class OrderCore final {
   // successful event must be Created. Invalid inputs leave this core unchanged.
   [[nodiscard]] OrderApplyResult Apply(const OrderEvent& event) noexcept;
 
-  // Validates and installs a snapshot without producing actions. The host also
-  // checks execution history, request progress and account/index consistency.
-  [[nodiscard]] static OrderRestoreResult Restore(
-      const model::OrderSnapshot& snapshot,
-      const OrderCoreRules& rules) noexcept;
-
   bool initialized() const noexcept { return initialized_; }
-  // Returns the current snapshot; valid only after creation or restore.
+  // Returns the current snapshot; valid only after creation.
   const model::OrderSnapshot& snapshot() const noexcept { return snapshot_; }
   const OrderCoreRules& rules() const noexcept { return rules_; }
 
@@ -118,14 +110,6 @@ class OrderCore final {
   model::OrderSnapshot snapshot_;
   OrderCoreRules rules_;
   bool initialized_ = false;
-};
-
-// Reports validation of a restored core. On error, core is uninitialized.
-struct [[nodiscard]] OrderRestoreResult {
-  base::ErrorCode code = base::ErrorCode::kOk;
-  OrderCore core;
-  model::OrderReason diagnostic;
-  bool ok() const noexcept { return code == base::ErrorCode::kOk; }
 };
 
 }  // namespace yquant::trading

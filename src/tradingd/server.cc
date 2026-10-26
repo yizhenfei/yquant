@@ -4,20 +4,15 @@
 #include <stdint.h>
 #include <sys/random.h>
 
-#include <array>
-#include <atomic>
 #include <cstdio>
 #include <cstring>
-#include <limits>
 
-#include "tradingd/journal.h"
 #include "yquant/base/format.h"
 #include "yquant/md/instrument_scope.h"
 #include "yquant/trading/connection.h"
 #include "yquant/trading/mock_trading_adapter.h"
 #include "yquant/trading/trading_adapter.h"
 #include "yquant/trading/trading_engine.h"
-#include "yquant/trading/trading_persistence.h"
 
 namespace yquant::tradingd {
 namespace {
@@ -37,7 +32,38 @@ bool SameToken(const char* left, const char* right) noexcept {
   return mismatch == 0;
 }
 
+// Fixed half-full table keeps core IDs independent of ledger slot indices.
+size_t OwnerBucket(uint64_t id, size_t capacity) noexcept {
+  id = (id ^ (id >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  id = (id ^ (id >> 27)) * 0x94d049bb133111ebULL;
+  return (id ^ (id >> 31)) & (capacity - 1);
+}
+
 }  // namespace
+
+size_t Server::OwnerIndex(model::ClientOrderId id) const noexcept {
+  auto bucket = OwnerBucket(id.value, owner_lookup_.size());
+  for (size_t i = 0; i < owner_lookup_.size(); ++i) {
+    const auto value = owner_lookup_[bucket];
+    if (value == 0) {
+      return owners_.size();
+    }
+    if (owners_[value - 1].core_id == id) {
+      return value - 1;
+    }
+    bucket = (bucket + 1) & (kOwnerLookupCapacity - 1);
+  }
+  return owners_.size();
+}
+
+void Server::BindOwner(size_t slot, const OrderOwner& owner) noexcept {
+  owners_[slot] = owner;
+  auto bucket = OwnerBucket(owner.core_id.value, owner_lookup_.size());
+  while (owner_lookup_[bucket] != 0 && owner_lookup_[bucket] != slot + 1) {
+    bucket = (bucket + 1) & (kOwnerLookupCapacity - 1);
+  }
+  owner_lookup_[bucket] = static_cast<uint16_t>(slot + 1);
+}
 
 bool Server::HasInstrument(const Client& client,
                            model::InstrumentId id) noexcept {
@@ -80,6 +106,11 @@ base::Status Server::Adapter::ReadBrokerAccountSnapshot(
     trading::BrokerAccountSnapshot& out) noexcept {
   return server_->selected_adapter_->ReadBrokerAccountSnapshot(out);
 }
+base::Status Server::Adapter::SendOrder(model::ClientOrderId id,
+                                        const model::OrderRequest& request,
+                                        uint64_t now) noexcept {
+  return server_->selected_adapter_->SendOrder(id, request, now);
+}
 base::Status Server::Adapter::SendCancel(
     model::ClientOrderId id, const model::AdapterOrderId& adapter_order_id,
     model::CancelRequestId cancel, uint64_t now) noexcept {
@@ -104,8 +135,7 @@ const char* Server::Adapter::error_detail() const noexcept {
 }
 
 Server::Server(const base::MonotonicClock* clock) noexcept
-    : clock_(*clock),
-      ctp_(&instruments_),
+    : ctp_(&instruments_),
       adapter_(this),
       trading_(clock, &instruments_, &adapter_) {}
 bool Server::ClientDrained(const Client& client) const noexcept {
@@ -155,20 +185,14 @@ base::Status Server::Init(const ServerConfig& config) noexcept {
     stage_detail = trading_.error_detail();
   }
   if (status.ok()) {
-    status = StartPersistence();
-    stage_detail = persistence_detail_[0] != '\0' ? persistence_detail_
-                                                  : journal_.error_detail();
-  }
-  if (status.ok()) {
     status = listener_.Open(config.listen);
     stage_detail = "listener startup failed";
   }
   if (!status.ok()) {
     char detail[256];
     ::yquant::base::FormatTo(
-        detail, sizeof(detail),
-        "cannot initialize account/state/listener: {}{}{}", stage_detail,
-        status.system_error ? ": " : "",
+        detail, sizeof(detail), "cannot initialize account/listener: {}{}{}",
+        stage_detail, status.system_error ? ": " : "",
         status.system_error ? status.system_error.message().c_str() : "");
     Close();
     return Fail(status.code, detail);
@@ -260,11 +284,6 @@ base::Status Server::HandleHello(size_t index,
   client.authenticated = true;
   client.instruments = message.instruments;
   client.instrument_count = message.instrument_count;
-  const auto registered = RegisterClient(index);
-  if (!registered.ok()) {
-    Disconnect(index);
-    return {};
-  }
   trading::Message welcome;
   welcome.type = trading::MessageType::kWelcome;
   welcome.generation = generation_;
@@ -329,7 +348,7 @@ base::Status Server::HandleNewOrder(size_t index,
                                     const trading::Message& message,
                                     uint64_t now) noexcept {
   auto& client = clients_[index];
-  if (client.stopping || stopping_ || degraded_ ||
+  if (client.stopping || stopping_ ||
       message.strategy_order_id.value != client.order_count + 1 ||
       client.order_count == client.orders.size() ||
       !HasInstrument(client, message.request.instrument_id)) {
@@ -338,19 +357,9 @@ base::Status Server::HandleNewOrder(size_t index,
   }
   const auto local_index = client.order_count++;
   auto& local = client.orders[local_index];
-  context_client_ = index;
-  context_local_ = local_index;
-  context_cancel_ = {};
   trading_.SetAcceptingRequests(true);
   const auto code = trading_.SubmitOrder(message.request, local.core_id);
   trading_.SetAcceptingRequests(false);
-  context_client_ = trading::kMaxClients;
-  if (code != base::ErrorCode::kOk && degraded_) {
-    --client.order_count;
-    local = {};
-    Disconnect(index);
-    return {};
-  }
   if (code == base::ErrorCode::kOk) {
     BindOwner(trading_.order_count() - 1, {local.core_id, index, local_index});
     ++account_.revision;
@@ -375,10 +384,6 @@ base::Status Server::HandleNewOrder(size_t index,
     order.report_sequence = ++local.report_sequence;
     order.receive_time_ns = now;
     local.rejected = order;
-    const auto recorded = PersistRejection(index, local_index, reply);
-    if (!recorded.ok()) {
-      return recorded;
-    }
     if (!client.connection.Queue(reply).ok()) {
       Disconnect(index);
     }
@@ -412,11 +417,7 @@ base::Status Server::HandleCancelOrder(
       (message.adapter_order_id.empty() ||
        message.adapter_order_id == snapshot.adapter_order_id)) {
     trading_.SetAcceptingRequests(true);
-    context_client_ = index;
-    context_local_ = message.strategy_order_id.value - 1;
-    context_cancel_ = message.cancel_id;
     code = trading_.CancelOrder(local.core_id);
-    context_client_ = trading::kMaxClients;
     trading_.SetAcceptingRequests(false);
   }
   if (code == base::ErrorCode::kOk) {
@@ -443,11 +444,6 @@ base::Status Server::HandleCancelOrder(
     local.local_cancel = message.cancel_id;
     if (!has_core) {
       local.rejected = reply.update.order;
-    }
-    const auto recorded =
-        PersistRejection(index, message.strategy_order_id.value - 1, reply);
-    if (!recorded.ok()) {
-      return recorded;
     }
     if (!client.connection.Queue(reply).ok()) {
       Disconnect(index);
@@ -596,11 +592,7 @@ void Server::ScheduleClientCancels(uint64_t now) noexcept {
       continue;
     }
     trading_.SetAcceptingRequests(true);
-    context_client_ = owner.client;
-    context_local_ = owner.local;
-    context_cancel_ = {};
     const auto code = trading_.CancelOrder(id);
-    context_client_ = trading::kMaxClients;
     trading_.SetAcceptingRequests(false);
     if (code == base::ErrorCode::kOk) {
       (void)trading_.TryGetOrder(id, order);
@@ -712,18 +704,6 @@ base::Status Server::Service(uint64_t now) noexcept {
   if (!initialized_) {
     return Fail(base::ErrorCode::kInvalidState, "server is not initialized");
   }
-  PollCheckpoint(now);
-  if (mysql_archive_.disk_full()) {
-    archive_disk_pressure_ = true;
-  }
-  if (archive_disk_pressure_) {
-    BeginStopping(now);
-    trading_.BeginStopping();
-  }
-  if (degraded_) {
-    BeginStopping(now);
-    trading_.BeginStopping();
-  }
   auto status = AcceptClients(now);
   if (!status.ok()) {
     return status;
@@ -734,25 +714,17 @@ base::Status Server::Service(uint64_t now) noexcept {
       return status;
     }
   }
-  if (degraded_) {
-    BeginStopping(now);
-    trading_.BeginStopping();
-  }
   ScheduleClientCancels(now);
   if (stopping_) {
     const auto scheduled =
         trading_.ScheduleStopping(now, kCancelScanPerService);
-    if (!scheduled.ok() && !degraded_) {
+    if (!scheduled.ok()) {
       return Fail(scheduled.code, trading_.error_detail());
     }
   }
   status = trading_.ProcessRequests(now);
-  if (!status.ok() && !degraded_) {
+  if (!status.ok()) {
     return Fail(status.code, trading_.error_detail());
-  }
-  if (degraded_) {
-    BeginStopping(now);
-    trading_.BeginStopping();
   }
   status = Dispatch(now);
   if (!status.ok()) {
@@ -764,16 +736,6 @@ base::Status Server::Service(uint64_t now) noexcept {
   }
   NotifyDrained();
   FlushClients(now);
-  if (config_.mysql_archive.enabled && !degraded_) {
-    mysql_archive_.PublishApplied(journal_.published_lsn());
-  }
-  if (archive_disk_pressure_ && is_drained()) {
-    return Fail(base::ErrorCode::kResourceExhausted,
-                "archive disk reserve exhausted");
-  }
-  if (degraded_ && is_drained()) {
-    return Fail(persistence_failure_.code, persistence_detail_);
-  }
   if (stopping_ && !is_drained() && now >= stop_time_ &&
       now - stop_time_ >= config_.shutdown_timeout_ns) {
     return Fail(base::ErrorCode::kInvalidState,
@@ -858,54 +820,12 @@ void Server::ReportUnconfirmed() const noexcept {
   }
 }
 
-base::Status Server::Finish() noexcept {
-  if (!initialized_) {
-    return Fail(base::ErrorCode::kInvalidState, "server is not initialized");
-  }
-  if (!is_drained()) {
-    return Fail(base::ErrorCode::kInvalidState, "orders are not drained");
-  }
-  if (!config_.persistence.enabled()) {
-    return {};
-  }
-  WaitCheckpoint();
-  if (degraded_ || checkpoint_failed_.load(std::memory_order_acquire)) {
-    return Fail(
-        base::ErrorCode::kIoError,
-        "persistent state has an unrecorded range or checkpoint failure");
-  }
-  auto status = journal_.Flush();
-  if (status.ok()) {
-    status = CaptureCheckpoint(clock_.Now());
-  }
-  if (status.ok()) {
-    status = PublishCheckpoint();
-  }
-  if (!status.ok()) {
-    return Fail(status.code, "final state synchronization failed");
-  }
-  if (config_.mysql_archive.enabled) {
-    mysql_archive_.PublishApplied(journal_.published_lsn());
-    status = SaveArchiveEnd(run_id_, journal_.published_lsn());
-    if (!status.ok()) {
-      return Fail(status.code, "archive end synchronization failed");
-    }
-    mysql_archive_.Stop(true);
-  }
-  return {};
-}
-
 void Server::Close() noexcept {
   trading_.SetAcceptingRequests(false);
-  (void)trading_.SetMutationSink(nullptr);
-  mock_.SetMutationObserver(nullptr, nullptr);
-  mysql_archive_.Stop(false);
-  StopCheckpoint();
   trading_.Reset();
   mock_.Reset();
   futures_.Reset();
   (void)ctp_.Stop();
-  (void)journal_.Close();
   listener_.Close();
   for (auto& client : clients_) {
     client.Reset();
@@ -914,10 +834,9 @@ void Server::Close() noexcept {
   ResetRuntimeState();
 }
 
-void Server::Client::Reset() noexcept {
+void Client::Reset() noexcept {
   connection.Close();
   id = 0;
-  session_id = 0;
   authenticated = false;
   stopping = false;
   requested_stop = false;
@@ -946,7 +865,6 @@ void Server::ResetRuntimeState() noexcept {
   stop_time_ = 0;
   cancel_cursor_ = 0;
   account_dirty_ = false;
-  ResetPersistenceState();
 }
 
 }  // namespace yquant::tradingd

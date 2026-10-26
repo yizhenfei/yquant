@@ -125,7 +125,7 @@ struct InstrumentId {
 
 // Identifies a strategy submission within one registered strategy session.
 // Assigned monotonically by the strategy host; zero is invalid. Interpret it
-// with the durable strategy session identity, not as a gateway ledger ID.
+// within the strategy session.
 struct StrategyOrderId {
   uint64_t value = 0;
   friend constexpr bool operator==(StrategyOrderId,
@@ -133,10 +133,7 @@ struct StrategyOrderId {
 };
 
 // Identifies an order in the tradingd ledger, assigned by TradingEngine. Zero
-// is invalid; values increase without reuse within a ledger. Persistent
-// gateways reserve ranges before use so restart may skip IDs. Pair with the
-// ledger ID when referring to orders across accounts or independent ledger
-// histories.
+// is invalid; values increase without reuse within one server generation.
 struct ClientOrderId {
   uint64_t value = 0;
   friend constexpr bool operator==(ClientOrderId,
@@ -153,7 +150,7 @@ struct CancelRequestId {
 // Owns up to 64 bytes of opaque trading identity; default construction is
 // empty. Tag separates adapter-order and execution IDs at compile time.
 // Embedded NUL bytes are preserved; compare views rather than treating them as
-// C strings. The adapter or persistence namespace determines identity scope.
+// C strings. The adapter determines identity scope.
 template <typename Tag>
 class OpaqueTradingId {
  public:

@@ -15,8 +15,7 @@ namespace {
 
 void Usage(FILE* output) noexcept {
   std::fputs(
-      "Usage: yquant-tradingd --config JSON [--check-config] "
-      "[--initialize-state]\n"
+      "Usage: yquant-tradingd --config JSON [--check-config]\n"
       "       yquant-tradingd --help\n",
       output);
 }
@@ -36,15 +35,12 @@ int main(int argc, char* argv[]) {
   }
   const char* path = nullptr;
   bool check = false;
-  bool initialize = false;
   bool valid = true;
   for (int i = 1; i < argc && valid; ++i) {
     const std::string_view arg(argv[i]);
     if (arg == "--config" && path == nullptr && i + 1 < argc) {
       path = argv[++i];
       valid = path[0] != '\0' && path[0] != '-';
-    } else if (arg == "--initialize-state" && !initialize) {
-      initialize = true;
     } else if (arg == "--check-config" && !check) {
       check = true;
     } else {
@@ -82,9 +78,7 @@ int main(int argc, char* argv[]) {
             "cannot allocate server");
     return 1;
   }
-  auto config = loader.config();
-  config.persistence.initialize = initialize;
-  status = server->Init(config);
+  status = server->Init(loader.config());
   if (!status.ok()) {
     Failure("initialize", status, server->error_detail());
     return 1;
@@ -116,11 +110,6 @@ int main(int argc, char* argv[]) {
       break;
     }
     std::this_thread::yield();
-  }
-  status = server->Finish();
-  if (!status.ok()) {
-    Failure("finalize", status, server->error_detail());
-    return 1;
   }
   std::fputs("yquant-tradingd: Stopped\n", stdout);
   return 0;

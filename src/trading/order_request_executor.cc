@@ -4,7 +4,6 @@
 
 #include <array>
 #include <optional>
-#include <span>
 
 #include "yquant/base/status.h"
 #include "yquant/model/order.h"
@@ -45,8 +44,7 @@ OrderExecutionRequest RequestFor(size_t index,
   return request;
 }
 
-// Returns the progress matching a request kind. The enum is validated by
-// callers before values from a checkpoint reach this helper.
+// Returns the progress matching a request kind.
 OrderRequestProgress& Progress(RequestExecution& execution,
                                OrderRequestKind kind) noexcept {
   switch (kind) {
@@ -59,7 +57,7 @@ OrderRequestProgress& Progress(RequestExecution& execution,
   return execution.new_request;
 }
 
-// Uses the same request-kind dispatch for read-only scheduling and codecs.
+// Uses the same request-kind dispatch for read-only scheduling.
 const OrderRequestProgress& Progress(const RequestExecution& execution,
                                      OrderRequestKind kind) noexcept {
   switch (kind) {
@@ -84,34 +82,6 @@ bool HasRequest(const RequestExecution& execution,
   return false;
 }
 
-// Completes a request without losing whether an external effect was possible.
-void Complete(OrderRequestProgress& progress) noexcept {
-  progress.state = OrderRequestState::kCompleted;
-  progress.response_deadline_ns = 0;
-}
-
-// Verifies one checkpoint progress record, including disabled-deadline
-// sentinels.
-bool ValidProgress(const OrderRequestProgress& progress,
-                   uint64_t timeout) noexcept {
-  switch (progress.state) {
-    case OrderRequestState::kQueued:
-      return !progress.attempted && progress.attempted_at_ns == 0 &&
-             progress.response_deadline_ns == 0;
-    case OrderRequestState::kInFlight:
-      return progress.attempted &&
-             progress.attempted_at_ns <= UINT64_MAX - timeout &&
-             progress.response_deadline_ns ==
-                 progress.attempted_at_ns + timeout;
-    case OrderRequestState::kCompleted:
-      return progress.response_deadline_ns == 0 &&
-             (progress.attempted || progress.attempted_at_ns == 0);
-    case OrderRequestState::kUncertain:
-      return progress.attempted && progress.response_deadline_ns == 0;
-  }
-  return false;
-}
-
 // Checks that an identity names a present retained request.
 bool Matches(const OrderExecutionRequest& request,
              const RequestExecution& execution) noexcept {
@@ -128,165 +98,12 @@ bool Matches(const OrderExecutionRequest& request,
   return false;
 }
 
-// Verifies local progress invariants independent of queue membership.
-bool ValidExecution(const RequestExecution& execution,
-                    uint64_t timeout) noexcept {
-  if (execution.client_order_id.value == 0 ||
-      !ValidProgress(execution.new_request, timeout) ||
-      !ValidProgress(execution.cancel_request, timeout)) {
-    return false;
-  }
-  if (execution.new_local_result_pending &&
-      (execution.new_request.state != OrderRequestState::kCompleted ||
-       execution.new_request.attempted)) {
-    return false;
-  }
-  if (execution.cancel_request_id.value == 0) {
-    return execution.cancel_request == OrderRequestProgress{} &&
-           !execution.cancel_local_result_pending;
-  }
-  return execution.new_request.state == OrderRequestState::kCompleted &&
-         execution.new_request.attempted &&
-         (!execution.cancel_local_result_pending ||
-          (execution.cancel_request.state == OrderRequestState::kCompleted &&
-           !execution.cancel_request.attempted));
+// Completes a request without losing whether an external effect was possible.
+void Complete(OrderRequestProgress& progress) noexcept {
+  progress.state = OrderRequestState::kCompleted;
+  progress.response_deadline_ns = 0;
 }
 
-// Cross-checks request lifecycle against a candidate core checkpoint.
-bool MatchesOrder(const RequestExecution& execution,
-                  const model::OrderSnapshot& order) noexcept {
-  if (execution.client_order_id != order.client_order_id ||
-      execution.cancel_request_id != order.cancel_request_id) {
-    return false;
-  }
-  const bool cancel_pending =
-      execution.cancel_request_id.value != 0 &&
-      (execution.cancel_request.state != OrderRequestState::kCompleted ||
-       execution.cancel_local_result_pending);
-  if (order.cancel_pending != cancel_pending) {
-    return false;
-  }
-  if (execution.cancel_request_id.value != 0 &&
-      execution.cancel_request.state == OrderRequestState::kCompleted &&
-      !execution.cancel_request.attempted &&
-      !model::IsTerminalOrderState(order.state)) {
-    return false;
-  }
-  switch (execution.new_request.state) {
-    case OrderRequestState::kQueued:
-    case OrderRequestState::kInFlight:
-    case OrderRequestState::kUncertain:
-      return order.state == model::OrderState::kPendingNew &&
-             order.report_sequence == 0;
-    case OrderRequestState::kCompleted:
-      if (execution.new_request.attempted) {
-        return order.state != model::OrderState::kPendingNew;
-      }
-      return order.report_sequence == 0 &&
-             order.state == (execution.new_local_result_pending
-                                 ? model::OrderState::kPendingNew
-                                 : model::OrderState::kCanceled);
-  }
-  return false;
-}
-
-// Validates dense records and exactly-once membership in both bounded queues.
-bool ValidState(const OrderRequestExecutor::State& state,
-                std::span<const model::OrderSnapshot> orders) noexcept {
-  if (state.order_count > kMaxTradingOrders ||
-      state.request_count > kMaxTradingRequests ||
-      state.request_head >= kMaxTradingRequests ||
-      state.local_count > kMaxLocalOrderUpdates ||
-      state.local_head >= kMaxLocalOrderUpdates ||
-      state.response_timeout_ns == 0 ||
-      (!orders.empty() && orders.size() != state.order_count)) {
-    return false;
-  }
-  std::array<bool, kMaxTradingOrders> queued_new = {};
-  std::array<bool, kMaxTradingOrders> queued_cancel = {};
-  std::array<bool, kMaxTradingOrders> local_new = {};
-  std::array<bool, kMaxTradingOrders> local_cancel = {};
-  for (size_t i = 0; i < state.order_count; ++i) {
-    const auto& execution = state.executions[i];
-    if (!ValidExecution(execution, state.response_timeout_ns) ||
-        (i != 0 && execution.client_order_id.value <=
-                       state.executions[i - 1].client_order_id.value) ||
-        (!orders.empty() && !MatchesOrder(execution, orders[i]))) {
-      return false;
-    }
-  }
-  for (size_t offset = 0; offset < state.request_count; ++offset) {
-    const auto& request =
-        state.requests[(state.request_head + offset) % kMaxTradingRequests];
-    if (request.order_index >= state.order_count ||
-        !Matches(request, state.executions[request.order_index])) {
-      return false;
-    }
-    const auto& execution = state.executions[request.order_index];
-    switch (request.kind) {
-      case OrderRequestKind::kNew:
-        if (queued_new[request.order_index] ||
-            execution.new_request.state != OrderRequestState::kQueued) {
-          return false;
-        }
-        queued_new[request.order_index] = true;
-        break;
-      case OrderRequestKind::kCancel:
-        if (queued_cancel[request.order_index] ||
-            execution.cancel_request.state != OrderRequestState::kQueued) {
-          return false;
-        }
-        queued_cancel[request.order_index] = true;
-        break;
-    }
-  }
-  for (size_t offset = 0; offset < state.local_count; ++offset) {
-    const auto& result =
-        state
-            .local_results[(state.local_head + offset) % kMaxLocalOrderUpdates];
-    const auto& request = result.request;
-    if (request.order_index >= state.order_count ||
-        !Matches(request, state.executions[request.order_index])) {
-      return false;
-    }
-    const auto& execution = state.executions[request.order_index];
-    switch (result.kind) {
-      case OrderLocalResultKind::kCanceledBeforeSend:
-        if (request.kind != OrderRequestKind::kNew ||
-            local_new[request.order_index] ||
-            !execution.new_local_result_pending) {
-          return false;
-        }
-        local_new[request.order_index] = true;
-        break;
-      case OrderLocalResultKind::kCancelNotSent:
-        if (request.kind != OrderRequestKind::kCancel ||
-            local_cancel[request.order_index] ||
-            !execution.cancel_local_result_pending) {
-          return false;
-        }
-        local_cancel[request.order_index] = true;
-        break;
-    }
-    if (static_cast<uint8_t>(result.kind) >
-        static_cast<uint8_t>(OrderLocalResultKind::kCancelNotSent)) {
-      return false;
-    }
-  }
-  for (size_t i = 0; i < state.order_count; ++i) {
-    const auto& execution = state.executions[i];
-    if (queued_new[i] !=
-            (execution.new_request.state == OrderRequestState::kQueued) ||
-        queued_cancel[i] !=
-            (execution.cancel_request_id.value != 0 &&
-             execution.cancel_request.state == OrderRequestState::kQueued) ||
-        local_new[i] != execution.new_local_result_pending ||
-        local_cancel[i] != execution.cancel_local_result_pending) {
-      return false;
-    }
-  }
-  return true;
-}
 }  // namespace
 
 ErrorCode OrderRequestExecutor::Configure(
@@ -370,7 +187,7 @@ OrderRequestExecutionTransition OrderRequestExecutor::PrepareQueueCancel(
 }
 
 OrderRequestExecutionTransition OrderRequestExecutor::PrepareBeginSend(
-    uint64_t now, bool legacy) const noexcept {
+    uint64_t now) const noexcept {
   const auto request = front();
   if (!request) {
     return Rejected(ErrorCode::kInvalidState, "no request is queued");
@@ -381,22 +198,20 @@ OrderRequestExecutionTransition OrderRequestExecutor::PrepareBeginSend(
       progress.state != OrderRequestState::kQueued || progress.attempted) {
     return Rejected(ErrorCode::kCorrupt, "queued request tracking disagrees");
   }
-  if (!legacy && now > UINT64_MAX - state_.response_timeout_ns) {
+  if (now > UINT64_MAX - state_.response_timeout_ns) {
     return Rejected(ErrorCode::kInvalidArgument, "response deadline overflows");
   }
-  progress.state =
-      legacy ? OrderRequestState::kUncertain : OrderRequestState::kInFlight;
+  progress.state = OrderRequestState::kInFlight;
   progress.attempted = true;
   progress.attempted_at_ns = now;
-  progress.response_deadline_ns = legacy ? 0 : now + state_.response_timeout_ns;
+  progress.response_deadline_ns = now + state_.response_timeout_ns;
   result.remove_request = request;
   return result;
 }
 
 OrderRequestExecutionTransition OrderRequestExecutor::PrepareReport(
     size_t index, const model::TradingEvent& event,
-    const model::OrderSnapshot& next_order,
-    bool cancel_queued_on_fill) const noexcept {
+    const model::OrderSnapshot& next_order) const noexcept {
   auto result = Prepare(index);
   if (!result.ok()) {
     return result;
@@ -444,7 +259,7 @@ OrderRequestExecutionTransition OrderRequestExecutor::PrepareReport(
   }
   Complete(execution.new_request);
   if (event.kind == model::OrderUpdateKind::kFill &&
-      next_order.state == model::OrderState::kFilled && cancel_queued_on_fill &&
+      next_order.state == model::OrderState::kFilled &&
       execution.cancel_request_id.value != 0 &&
       execution.cancel_request.state == OrderRequestState::kQueued) {
     if (state_.local_count == kMaxLocalOrderUpdates) {
@@ -667,42 +482,6 @@ bool OrderRequestExecutor::is_drained() const noexcept {
     }
   }
   return true;
-}
-
-ErrorCode OrderRequestExecutor::RestoreState(
-    const State& state, std::span<const model::OrderSnapshot> orders) noexcept {
-  if (!ValidState(state, orders)) {
-    return ErrorCode::kCorrupt;
-  }
-  state_ = state;
-  ++generation_;
-  return ErrorCode::kOk;
-}
-
-void OrderRequestExecutor::AbandonRecoveredRequests() noexcept {
-  for (size_t i = 0; i < state_.order_count; ++i) {
-    auto& execution = state_.executions[i];
-    for (const auto kind : kRequestKinds) {
-      if (!HasRequest(execution, kind)) {
-        continue;
-      }
-      auto& progress = Progress(execution, kind);
-      switch (progress.state) {
-        case OrderRequestState::kQueued:
-        case OrderRequestState::kInFlight:
-          progress.state = OrderRequestState::kUncertain;
-          progress.attempted = true;
-          progress.response_deadline_ns = 0;
-          break;
-        case OrderRequestState::kCompleted:
-        case OrderRequestState::kUncertain:
-          break;
-      }
-    }
-  }
-  state_.request_head = 0;
-  state_.request_count = 0;
-  ++generation_;
 }
 
 }  // namespace yquant::trading

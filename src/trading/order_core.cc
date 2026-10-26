@@ -257,50 +257,6 @@ OrderApplyResult TransitionReport(const model::OrderSnapshot& order,
   return Failure(ErrorCode::kCorrupt, "unknown broker event");
 }
 
-// Checks lifecycle invariants without consulting execution or request storage.
-bool ValidSnapshotState(const model::OrderSnapshot& order) noexcept {
-  switch (order.state) {
-    case OrderState::kPendingNew:
-      return order.cumulative_filled_qty == 0 && order.report_sequence == 0 &&
-             order.adapter_order_id.empty() && !order.cancel_pending;
-    case OrderState::kWorking:
-      return order.report_sequence != 0 && !order.adapter_order_id.empty() &&
-             order.cumulative_filled_qty < order.original_qty;
-    case OrderState::kFilled:
-      return order.report_sequence != 0 && !order.adapter_order_id.empty() &&
-             order.cumulative_filled_qty == order.original_qty;
-    case OrderState::kCanceled:
-      return !order.cancel_pending &&
-             order.cumulative_filled_qty < order.original_qty &&
-             (order.report_sequence != 0 || (order.cumulative_filled_qty == 0 &&
-                                             order.adapter_order_id.empty()));
-    case OrderState::kRejected:
-      return order.cumulative_filled_qty == 0 && !order.cancel_pending;
-  }
-  return false;
-}
-
-// Validates stable attributes and derived quantities before lifecycle checks.
-bool ValidSnapshot(const model::OrderSnapshot& order,
-                   const OrderCoreRules& rules) noexcept {
-  const model::OrderRequest request{order.instrument_id, order.side,
-                                    order.limit_price, order.original_qty,
-                                    order.position_effect};
-  if (!ValidRequest(request, rules) || order.client_order_id.value == 0 ||
-      order.strategy_order_id.value != 0 || order.cumulative_filled_qty < 0 ||
-      order.cumulative_filled_qty > order.original_qty ||
-      order.cumulative_filled_qty % rules.quantity_step != 0 ||
-      (order.cancel_pending && order.cancel_request_id.value == 0) ||
-      (order.report_sequence == 0 && order.receive_time_ns != 0) ||
-      (order.report_sequence != 0 && order.adapter_order_id.empty() &&
-       order.state != OrderState::kRejected)) {
-    return false;
-  }
-  const auto leaves = model::IsTerminalOrderState(order.state)
-                          ? 0
-                          : order.original_qty - order.cumulative_filled_qty;
-  return order.leaves_qty == leaves && ValidSnapshotState(order);
-}
 }  // namespace
 
 OrderApplyResult OrderCore::Apply(const OrderEvent& event) noexcept {
@@ -442,20 +398,6 @@ OrderApplyResult OrderCore::ApplyReport(const OrderEvent& event) noexcept {
   next.report_sequence = report.report_sequence;
   next.receive_time_ns = report.receive_time_ns;
   snapshot_ = next;
-  return result;
-}
-
-OrderRestoreResult OrderCore::Restore(const model::OrderSnapshot& snapshot,
-                                      const OrderCoreRules& rules) noexcept {
-  OrderRestoreResult result;
-  if (!ValidSnapshot(snapshot, rules)) {
-    result.code = ErrorCode::kCorrupt;
-    result.diagnostic.Set(0, "invalid restored order or unit rules");
-    return result;
-  }
-  result.core.snapshot_ = snapshot;
-  result.core.rules_ = rules;
-  result.core.initialized_ = true;
   return result;
 }
 

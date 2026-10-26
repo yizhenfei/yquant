@@ -111,8 +111,8 @@ struct Message {
 
 // Wire version 5 adds CancelNotSent local order updates. Version 4 separates
 // strategy and gateway order identities; readers retain v1-v4 support for
-// stored frames. Legacy identity scope is resolved by
-// the connection owner. Version 3 adds broker-managed futures identity.
+// older peers. Legacy identity scope is resolved by the connection owner.
+// Version 3 adds broker-managed futures identity.
 // Simulation quote frames reuse the market-data quote codec; live gateways
 // reject them. Explicit little-endian, versioned framing. Encoding/decoding are
 // bounded, allocation-free, reject noncanonical data and preserve outputs on

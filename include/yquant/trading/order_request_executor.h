@@ -2,14 +2,13 @@
 #define YQUANT_TRADING_ORDER_REQUEST_EXECUTOR_H_
 
 // Tracks transport progress independently of order business state. The host
-// stages one request transition, journals it, then commits without sending.
+// stages one request transition, then commits without sending.
 
 #include <stddef.h>
 #include <stdint.h>
 
 #include <array>
 #include <optional>
-#include <span>
 
 #include "yquant/base/status.h"
 #include "yquant/model/trading_event.h"
@@ -32,8 +31,7 @@ enum class OrderLocalResultKind : uint8_t {
   kCancelNotSent,
 };
 
-// Retains attempt information after completion. Recovery may conservatively
-// set attempted when delivery cannot be ruled out, without an exact send time.
+// Retains send-attempt information after a request completes.
 struct OrderRequestProgress {
   OrderRequestState state = OrderRequestState::kCompleted;
   bool attempted = false;
@@ -79,7 +77,7 @@ struct OrderExecutionLocalResult {
 
 // Describes a candidate change to one order and at most one entry per queue.
 // Only successful candidates may be committed. It expires on the next executor
-// mutation; the host serializes prepare, journal and commit without reentry.
+// mutation; the host serializes preparation and commit without reentry.
 struct OrderRequestExecutionTransition {
   base::ErrorCode code = base::ErrorCode::kOk;
   const char* detail = "";
@@ -101,8 +99,8 @@ struct OrderRequestExecutionTransition {
 // nothing; Commit applies a current successful candidate without failure.
 class OrderRequestExecutor final {
  public:
-  // Explicit cold state for field-wise checkpoint codecs. Queue entries are
-  // logical ring contents beginning at each head; unused entries are ignored.
+  // Queue entries are logical ring contents beginning at each head; unused
+  // entries are ignored.
   struct State {
     std::array<RequestExecution, kMaxTradingOrders> executions = {};
     size_t order_count = 0;
@@ -128,17 +126,13 @@ class OrderRequestExecutor final {
       size_t index, model::ClientOrderId id,
       model::CancelRequestId cancel_id) const noexcept;
   // Stages the FIFO head as attempted. The host sends only after committing.
-  // Legacy replay retains attempted requests without introducing a new
-  // deadline.
   [[nodiscard]] OrderRequestExecutionTransition PrepareBeginSend(
-      uint64_t now, bool legacy = false) const noexcept;
+      uint64_t now) const noexcept;
   // Validates request association after the core has accepted a new report.
-  // next_order is the candidate business snapshot. Legacy replay can retain
-  // queued cancels after a full fill by setting cancel_queued_on_fill false.
+  // next_order is the candidate business snapshot.
   [[nodiscard]] OrderRequestExecutionTransition PrepareReport(
       size_t index, const model::TradingEvent& event,
-      const model::OrderSnapshot& next_order,
-      bool cancel_queued_on_fill = true) const noexcept;
+      const model::OrderSnapshot& next_order) const noexcept;
   // Stages a queued new request's local shutdown completion, preserving the
   // order core until the resulting business event is consumed.
   [[nodiscard]] OrderRequestExecutionTransition PrepareCancelBeforeSend(
@@ -150,7 +144,7 @@ class OrderRequestExecutor final {
   [[nodiscard]] OrderRequestExecutionTransition PrepareUncertain(
       const OrderExecutionRequest& request) const noexcept;
   // Applies a current successful candidate. The host retains its request value
-  // if it needs to send or journal it after this call.
+  // if it needs to send it after this call.
   void Commit(const OrderRequestExecutionTransition& transition) noexcept;
 
   // Returns the next request or local result, or no value for an empty queue.
@@ -166,17 +160,6 @@ class OrderRequestExecutor final {
   size_t request_count() const noexcept { return state_.request_count; }
   size_t local_count() const noexcept { return state_.local_count; }
   const State& state() const noexcept { return state_; }
-
-  // Restores a complete cold candidate after validating all records, queue
-  // membership and optional matching core snapshots. Failure preserves this
-  // executor. Empty orders omits cross-module validation, not local checks.
-  [[nodiscard]] base::ErrorCode RestoreState(
-      const State& state,
-      std::span<const model::OrderSnapshot> orders = {}) noexcept;
-  // Conservatively takes over Queued and InFlight requests as Uncertain and
-  // clears old send arrangements. Recorded local results remain consumable.
-  // Produces no external operation; the host persists the recovery baseline.
-  void AbandonRecoveredRequests() noexcept;
 
  private:
   // Creates a one-order candidate carrying the current mutation generation.

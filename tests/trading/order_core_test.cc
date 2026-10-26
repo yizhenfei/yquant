@@ -430,66 +430,6 @@ TEST_F(OrderCoreTest, NonFillPayloadAndLocalKindsAreRejectedAtBrokerBoundary) {
                         ErrorCode::kCorrupt);
 }
 
-TEST_F(OrderCoreTest, RestorePreservesPendingAttemptAndProducesNoCommands) {
-  Accept();
-  ASSERT_TRUE(core.Apply(Local(OrderEventKind::kCancelRequested, 41)).ok());
-  ASSERT_TRUE(core.Apply(Fill(2, 20, 20)).ok());
-  const auto restored = OrderCore::Restore(core.snapshot(), core.rules());
-  ASSERT_TRUE(restored.ok());
-  EXPECT_TRUE(restored.core.initialized());
-  EXPECT_EQ(restored.core.snapshot(), core.snapshot());
-  auto copy = restored.core;
-  ASSERT_TRUE(copy.Apply(Local(OrderEventKind::kCancelNotSent, 41)).ok());
-  EXPECT_FALSE(copy.snapshot().cancel_pending);
-  EXPECT_TRUE(restored.core.snapshot().cancel_pending);
-}
-
-TEST_F(OrderCoreTest, RestoreRejectsInconsistentSnapshotsAndMalformedRules) {
-  Accept();
-  const auto valid = core.snapshot();
-  std::array<model::OrderSnapshot, 8> invalid;
-  invalid.fill(valid);
-  invalid[0].state = static_cast<OrderState>(255);
-  invalid[1].strategy_order_id = {3};
-  invalid[2].leaves_qty = 19;
-  invalid[3].cumulative_filled_qty = 1;
-  invalid[4].cancel_pending = true;
-  invalid[5].report_sequence = 0;
-  invalid[6].adapter_order_id = {};
-  invalid[7].state = OrderState::kFilled;
-  for (const auto& snapshot : invalid) {
-    const auto result = OrderCore::Restore(snapshot, core.rules());
-    EXPECT_EQ(result.code, ErrorCode::kCorrupt);
-    EXPECT_FALSE(result.core.initialized());
-    EXPECT_GT(result.diagnostic.size, 0);
-  }
-  auto rules = core.rules();
-  rules.quantity_step = 0;
-  EXPECT_EQ(OrderCore::Restore(valid, rules).code, ErrorCode::kCorrupt);
-}
-
-TEST_F(OrderCoreTest, RestoredAndContinuousCoresProduceTheSameSuffix) {
-  ASSERT_TRUE(core.Apply(Fill(1, 8, 8)).ok());
-  auto restored = OrderCore::Restore(core.snapshot(), core.rules());
-  ASSERT_TRUE(restored.ok());
-  const std::array events = {Report(2, OrderUpdateKind::kAccepted, 8),
-                             Local(OrderEventKind::kCancelRequested, 41),
-                             Fill(3, 12, 20),
-                             Local(OrderEventKind::kCancelNotSent, 41)};
-  for (const auto& event : events) {
-    const auto live = core.Apply(event);
-    const auto replay = restored.core.Apply(event);
-    ASSERT_TRUE(live.ok());
-    ASSERT_TRUE(replay.ok());
-    EXPECT_EQ(core.snapshot(), restored.core.snapshot());
-    EXPECT_EQ(live.outcome, replay.outcome);
-    EXPECT_EQ(live.action_count, replay.action_count);
-    EXPECT_EQ(live.actions, replay.actions);
-    EXPECT_EQ(live.update.order, replay.update.order);
-    EXPECT_EQ(live.update.kind, replay.update.kind);
-  }
-}
-
 TEST(OrderCore, MaximumQuantityDoesNotOverflowIncrementValidation) {
   auto creation = Creation();
   creation.rules.quantity_step = 1;

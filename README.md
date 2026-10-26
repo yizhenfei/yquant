@@ -199,10 +199,6 @@ CTest 的 `Project.HeaderSelfContainment` 使用编译数据库逐个检查项�
 
 另一个策略使用 `client_2.json`。跨机时修改服务端监听地址和客户端目标地址，各客户端保持不同身份。`tradingd` 统一管理账户资源，向所属策略回送委托与成交，并推送共享账户快照；本地模拟柜台由网关预占资源，CTP 模式使用柜台查询的冻结口径。协议、停止与故障边界见[共享交易网关](docs/design/tradingd.md)。
 
-需要跨重启保留交易状态时使用 `tradingd/persistent.json`。首次运行加 `--initialize-state`，后续启动省略该标志；默认每 10 ms 或累计 1 MiB 在后台同步，逐笔请求不等待真实落盘。配置与恢复边界见[交易网关持久化与恢复](docs/design/tradingd-persistence.md)。
-
-启用 MySQL 历史归档时，构建增加 `-DYQUANT_WITH_MYSQL=ON`，安装 [SQL 迁移](sql/trading_archive_v1.sql)，再使用 `tradingd/mysql.json`。数据库连接与入库均在后台执行，部署步骤和查询表见 [MySQL 存储](docs/design/tradingd-mysql.md#构建与部署)。
-
 网关与策略宿主从同一[共享标的字典](docs/design/market-data.md#共享标的字典)解析各自运行清单，客户端运行范围须为网关子集。示例策略只配置场所、代码、方向和数量，行情来源由策略宿主绑定。
 
 运行有底仓双边报价策略：
@@ -302,8 +298,6 @@ cmake --build --preset debug --target download_test_data
 - [交易模块设计](docs/design/trading.md)：功能需求、订单与成交、账户管理及交易接入设计。
 - [订单核心与请求执行](docs/design/order-core.md)：订单业务状态机、新单与撤单的 in-flight 跟踪及事务边界。
 - [共享交易网关](docs/design/tradingd.md)：多机策略共享账户、订单归属、TCP 协议和断线收尾。
-- [交易网关持久化与恢复](docs/design/tradingd-persistence.md)：mmap 日志、后台同步、快照和柜台对账设计。
-- [交易历史 MySQL 存储](docs/design/tradingd-mysql.md)：后台入库、表结构、幂等事务与查询一致性设计。
 - [有底仓的一档双边报价策略](docs/design/bbo-market-making.md)：库存约束、撤补、过期撤单与失败退避。
 
 ## 参考系统与资料

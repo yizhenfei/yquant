@@ -5,7 +5,6 @@
 #include <stdint.h>
 
 #include <optional>
-#include <span>
 #include <utility>
 
 #include "yquant/strategy/callback_phase.h"
@@ -29,7 +28,6 @@ class TradingEngineHarness {
                          ? trading::TradingAdapterKind::kSimulatedFutures
                          : trading::TradingAdapterKind::kMock;
     auto status = engine_.Init(config, {});
-    initialized_ = status.ok();
     if (!status.ok()) {
       engine_.Reset();
     }
@@ -49,26 +47,6 @@ class TradingEngineHarness {
     adapter_.target = &adapter;
     return engine_.ProcessRequests(now, limit);
   }
-  base::Status RestoreCheckpoint(std::span<const std::byte> bytes) noexcept {
-    if (!initialized_) {
-      auto status = Configure({});
-      if (!status.ok()) {
-        return status;
-      }
-    }
-    return engine_.RestoreCheckpoint(bytes);
-  }
-  base::Status RestoreReconciled(const trading::TradingAccountSnapshot& account,
-                                 std::span<const model::OrderSnapshot> orders,
-                                 std::span<const model::Fill> fills) noexcept {
-    if (!initialized_) {
-      auto status = Configure({});
-      if (!status.ok()) {
-        return status;
-      }
-    }
-    return engine_.RestoreReconciled(account, orders, fills);
-  }
 #define YQUANT_TEST_ENGINE_FORWARD(name)              \
   template <typename... Args>                         \
   decltype(auto) name(Args&&... args) noexcept {      \
@@ -86,14 +64,6 @@ class TradingEngineHarness {
   YQUANT_TEST_ENGINE_FORWARD(ApplyLocalUpdate)
   YQUANT_TEST_ENGINE_FORWARD(ApplyQuote)
   YQUANT_TEST_ENGINE_FORWARD(ScheduleStopping)
-  YQUANT_TEST_ENGINE_FORWARD(SetMutationSink)
-  base::Status SetNextOrderIdAtLeast(uint64_t id) noexcept {
-    return running_ ? base::Status{base::ErrorCode::kInvalidState, {}}
-                    : engine_.SetNextOrderIdAtLeast(id);
-  }
-  YQUANT_TEST_ENGINE_FORWARD(SetNextCancelIdAtLeast)
-  YQUANT_TEST_ENGINE_FORWARD(ReplayMutation)
-  YQUANT_TEST_ENGINE_FORWARD(AbandonRecoveredRequests)
   YQUANT_TEST_ENGINE_FORWARD(Reset)
 #undef YQUANT_TEST_ENGINE_FORWARD
 #define YQUANT_TEST_ENGINE_QUERY(name)                 \
@@ -111,12 +81,8 @@ class TradingEngineHarness {
   YQUANT_TEST_ENGINE_QUERY(TryGetPosition)
   YQUANT_TEST_ENGINE_QUERY(TryGetFuturesAccount)
   YQUANT_TEST_ENGINE_QUERY(TryGetFuturesPosition)
-  YQUANT_TEST_ENGINE_QUERY(ExportCheckpoint)
   YQUANT_TEST_ENGINE_QUERY(order_count)
   YQUANT_TEST_ENGINE_QUERY(fill_count)
-  YQUANT_TEST_ENGINE_QUERY(mutation_revision)
-  YQUANT_TEST_ENGINE_QUERY(next_order_id)
-  YQUANT_TEST_ENGINE_QUERY(next_cancel_id)
   YQUANT_TEST_ENGINE_QUERY(next_deadline)
   YQUANT_TEST_ENGINE_QUERY(has_local_updates)
   YQUANT_TEST_ENGINE_QUERY(is_drained)
@@ -165,7 +131,6 @@ class TradingEngineHarness {
   } adapter_;
   trading::TradingEngine engine_;
   bool running_ = false;
-  bool initialized_ = false;
 };
 
 }  // namespace yquant::testing

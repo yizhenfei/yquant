@@ -1,7 +1,7 @@
 #ifndef YQUANT_BASE_FILE_H_
 #define YQUANT_BASE_FILE_H_
 
-// Cold-path POSIX file operations shared by startup and persistence code.
+// Cold-path POSIX file operations.
 // Paths must be nonempty and contain no NUL. These functions may allocate and
 // perform I/O; callers must serialize changes to the process working directory.
 

@@ -499,7 +499,7 @@ TEST(TradingProtocol, VersionOneRejectsPositionEffectsWithoutDroppingFields) {
   }
 }
 
-TEST(TradingProtocol, DecodesLegacyCashAccountFramesForJournalRecovery) {
+TEST(TradingProtocol, DecodesLegacyCashAccountFrames) {
   std::array<std::byte, 66> frame{};
   size_t offset = 0;
   const auto put = [&](uint64_t value, size_t width) {

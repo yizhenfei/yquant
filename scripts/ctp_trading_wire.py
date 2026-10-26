@@ -518,8 +518,8 @@ def encode_message(message):
 def frame_size(header):
     """Return full size for an exact valid header, otherwise zero.
 
-    The header does not establish payload validity. Versions 1..4 are accepted
-    for journal compatibility; simulation-quote message type 11 is rejected.
+    The header does not establish payload validity. Versions 1..4 remain
+    accepted; simulation-quote message type 11 is rejected.
     """
     if not isinstance(header, (bytes, bytearray, memoryview)) or len(header) != HEADER_SIZE:
         return 0

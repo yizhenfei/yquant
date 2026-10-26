@@ -4,8 +4,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "tradingd/journal.h"
-#include "tradingd/mysql_archive_store.h"
 #include "yquant/base/config_error.h"
 #include "yquant/md/market_data_config.h"
 #include "yquant/trading/protocol.h"
@@ -23,36 +21,13 @@ inline constexpr uint64_t kMinimumTimeoutNs =
 inline constexpr uint64_t kMaximumTimeoutNs =
     kMaximumTimeoutMs * kNanosecondsPerMillisecond;
 
-inline constexpr size_t kMaxAccountKeyBytes = 128;
-inline constexpr size_t kMinWalSegmentBytes = 4 * 1024 * 1024;
-inline constexpr size_t kMaxPersistencePathBytes = 4096;
-inline constexpr uint64_t kMinSnapshotIntervalMs = 1000;
-inline constexpr uint64_t kMaxSnapshotIntervalMs = 3600000;
-
-// An empty directory retains the in-memory mode. Initialization is an explicit
-// CLI/typed cold-path operation, never inferred from missing state files.
-struct PersistenceConfig {
-  char directory[kMaxPersistencePathBytes + 1] = {};
-  char account_key[kMaxAccountKeyBytes + 1] = {};
-  size_t wal_segment_bytes = kJournalDefaultSegmentBytes;
-  size_t reserve_segments = kJournalMinReserveSegments;
-  uint32_t sync_interval_ms = kJournalDefaultSyncIntervalMs;
-  size_t sync_after_bytes = kJournalDefaultSyncAfterBytes;
-  uint64_t snapshot_interval_ms = 60000;
-  bool initialize = false;
-  bool enabled() const noexcept { return directory[0] != '\0'; }
-};
-
-// Fixed owned startup values. All clients share this single account and its
-// instrument dictionary. No broker adapter other than mock is configured yet.
+// Startup configuration for the account shared by all connected clients.
 struct ServerConfig {
   trading::Endpoint listen;
   md::MarketDataConfig market_data;
   trading::TradingConfig trading;
   char token[trading::kMaxTokenBytes + 1] = {};
   size_t max_clients = trading::kMaxClients;
-  PersistenceConfig persistence;
-  MysqlArchiveOptions mysql_archive;
   uint64_t heartbeat_timeout_ns = 5000000000;
   uint64_t shutdown_timeout_ns = 5000000000;
 };

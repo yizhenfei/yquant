@@ -180,21 +180,6 @@ TEST_F(OrderRequestExecutorTest,
             ErrorCode::kInvalidState);
 }
 
-TEST_F(OrderRequestExecutorTest, LegacyReplayKeepsQueuedCancelAfterFullFill) {
-  QueueNew(0);
-  Send();
-  Accept(0);
-  Cancel(0);
-  const auto prepared =
-      executor.PrepareReport(0, Report(0, model::OrderUpdateKind::kFill),
-                             Snapshot(0, model::OrderState::kFilled), false);
-  ASSERT_TRUE(prepared.ok());
-  executor.Commit(prepared);
-  EXPECT_EQ(executor.request_count(), 1U);
-  EXPECT_EQ(executor.local_count(), 0U);
-  EXPECT_EQ(Send().kind, OrderRequestKind::kCancel);
-}
-
 TEST_F(OrderRequestExecutorTest, FullFillKeepsAttemptedCancelUntilItsResult) {
   QueueNew(0);
   Send();
@@ -375,91 +360,6 @@ TEST_F(OrderRequestExecutorTest, FullLocalQueueRejectsTheWholeFillTransition) {
   EXPECT_EQ(prepared.code, ErrorCode::kResourceExhausted);
   EXPECT_EQ(executor.state(), before);
   EXPECT_EQ(executor.front()->cancel_request_id.value, 17U);
-}
-
-TEST_F(OrderRequestExecutorTest,
-       RestoreValidatesQueuesAndPreservesStateOnFailure) {
-  QueueNew(0);
-  Send();
-  Accept(0);
-  Cancel(0, 5);
-  QueueNew(1);
-  const auto local = executor.PrepareCancelBeforeSend(1, 200);
-  ASSERT_TRUE(local.ok());
-  executor.Commit(local);
-  OrderRequestExecutor restored;
-  ASSERT_EQ(restored.RestoreState(executor.state()), ErrorCode::kOk);
-  EXPECT_EQ(restored.state(), executor.state());
-  auto broken = restored.state();
-  broken.request_count = 0;
-  EXPECT_EQ(restored.RestoreState(broken), ErrorCode::kCorrupt);
-  EXPECT_EQ(restored.state(), executor.state());
-  broken = restored.state();
-  broken.local_results[broken.local_head].request.cancel_request_id = {99};
-  EXPECT_EQ(restored.RestoreState(broken), ErrorCode::kCorrupt);
-  EXPECT_EQ(restored.state(), executor.state());
-  broken = restored.state();
-  broken.executions[0].cancel_request.state =
-      static_cast<OrderRequestState>(99);
-  EXPECT_EQ(restored.RestoreState(broken), ErrorCode::kCorrupt);
-  EXPECT_EQ(restored.state(), executor.state());
-}
-
-TEST_F(OrderRequestExecutorTest,
-       RestoreCrossChecksCorePendingCancelAndLocalResult) {
-  QueueNew(0);
-  Send();
-  Accept(0);
-  Cancel(0, 5);
-  std::array<model::OrderSnapshot, 1> orders{Snapshot(0)};
-  orders[0].cancel_pending = true;
-  orders[0].cancel_request_id = {5};
-  OrderRequestExecutor restored;
-  ASSERT_EQ(restored.RestoreState(executor.state(), orders), ErrorCode::kOk);
-  orders[0].cancel_pending = false;
-  EXPECT_EQ(restored.RestoreState(executor.state(), orders),
-            ErrorCode::kCorrupt);
-  orders[0].cancel_pending = true;
-  const auto filled =
-      executor.PrepareReport(0, Report(0, model::OrderUpdateKind::kFill),
-                             Snapshot(0, model::OrderState::kFilled));
-  ASSERT_TRUE(filled.ok());
-  executor.Commit(filled);
-  orders[0].state = model::OrderState::kFilled;
-  ASSERT_EQ(restored.RestoreState(executor.state(), orders), ErrorCode::kOk);
-  EXPECT_TRUE(restored.state().executions[0].cancel_local_result_pending);
-}
-
-TEST_F(OrderRequestExecutorTest,
-       RecoveryClearsSendsAndKeepsRecordedLocalResults) {
-  QueueNew(0);
-  Send();
-  QueueNew(1);
-  QueueNew(2);
-  const auto local = executor.PrepareCancelBeforeSend(2, 400);
-  ASSERT_TRUE(local.ok());
-  executor.Commit(local);
-  const auto saved_local = executor.local_front();
-  executor.AbandonRecoveredRequests();
-  EXPECT_FALSE(executor.front());
-  EXPECT_FALSE(executor.next_deadline());
-  EXPECT_EQ(executor.state().executions[0].new_request.state,
-            OrderRequestState::kUncertain);
-  EXPECT_EQ(executor.state().executions[1].new_request.state,
-            OrderRequestState::kUncertain);
-  EXPECT_EQ(executor.local_front(), saved_local);
-  EXPECT_FALSE(executor.is_drained());
-  EXPECT_EQ(executor.PrepareCancelBeforeSend(1, 500).code,
-            ErrorCode::kInvalidState);
-  const auto received =
-      executor.PrepareReport(1, Report(1, model::OrderUpdateKind::kRejected),
-                             Snapshot(1, model::OrderState::kRejected));
-  ASSERT_TRUE(received.ok());
-  executor.Commit(received);
-  EXPECT_EQ(executor.state().executions[1].new_request.state,
-            OrderRequestState::kCompleted);
-  OrderRequestExecutor restored;
-  EXPECT_EQ(restored.RestoreState(executor.state()), ErrorCode::kOk);
 }
 
 TEST_F(OrderRequestExecutorTest, RejectedInputsAndDeadlineOverflowAreAtomic) {

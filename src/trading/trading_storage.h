@@ -1,8 +1,8 @@
 #ifndef YQUANT_TRADING_TRADING_STORAGE_H_
 #define YQUANT_TRADING_TRADING_STORAGE_H_
 
-// Defines private engine storage, staged transactions and lookup helpers shared
-// with the cold checkpoint codec. Public order models belong in model/.
+// Defines private engine storage, staged transactions and lookup helpers.
+// Public order models belong in model/.
 
 #include <stddef.h>
 #include <stdint.h>
@@ -16,71 +16,12 @@
 #include "yquant/trading/trading_engine.h"
 
 namespace yquant::trading {
-// Private fixed storage shared by the ledger and its cold checkpoint codec.
+// Capacities for the fixed identity lookup tables.
 inline constexpr size_t kFillLookupCapacity = 2 * kMaxTradingFills;
 inline constexpr size_t kBrokerLookupCapacity = 2 * kMaxTradingOrders;
 inline constexpr size_t kOrderLookupCapacity = 2 * kMaxTradingOrders;
 
-// Rejects unknown mutation bytes before replay or codec dispatch. Every new
-// mutation kind requires an explicit decision in this shared validation.
-inline bool IsValidTradingMutationKind(TradingMutationKind kind) noexcept {
-  switch (kind) {
-    case TradingMutationKind::kNewOrder:
-    case TradingMutationKind::kCancel:
-    case TradingMutationKind::kSendNew:
-    case TradingMutationKind::kSendCancel:
-    case TradingMutationKind::kScheduleLocalCancel:
-    case TradingMutationKind::kLocalCancel:
-    case TradingMutationKind::kReport:
-    case TradingMutationKind::kCancelNotSent:
-    case TradingMutationKind::kRequestUncertain:
-      return true;
-  }
-  return false;
-}
-
-// Rejects non-failures and unknown diagnostic bytes in execution facts.
-inline bool IsValidTradingExecutionFailure(base::ErrorCode code) noexcept {
-  switch (code) {
-    case base::ErrorCode::kInvalidArgument:
-    case base::ErrorCode::kInvalidState:
-    case base::ErrorCode::kResourceExhausted:
-    case base::ErrorCode::kUnsupported:
-    case base::ErrorCode::kIoError:
-    case base::ErrorCode::kCorrupt:
-    case base::ErrorCode::kInternalError:
-      return true;
-    case base::ErrorCode::kOk:
-      return false;
-  }
-  return false;
-}
-
-// Applies the same version and payload rules to decoded and direct replay.
-inline bool IsValidTradingMutation(const TradingMutation& value) noexcept {
-  if ((value.format_version != 1 && value.format_version != 2) ||
-      !IsValidTradingMutationKind(value.kind)) {
-    return false;
-  }
-  switch (value.kind) {
-    case TradingMutationKind::kRequestUncertain:
-      return value.format_version >= 2 &&
-             IsValidTradingExecutionFailure(value.failure_code);
-    case TradingMutationKind::kCancelNotSent:
-      return value.format_version >= 2;
-    case TradingMutationKind::kNewOrder:
-    case TradingMutationKind::kCancel:
-    case TradingMutationKind::kSendNew:
-    case TradingMutationKind::kSendCancel:
-    case TradingMutationKind::kScheduleLocalCancel:
-    case TradingMutationKind::kLocalCancel:
-    case TradingMutationKind::kReport:
-      return true;
-  }
-  return false;
-}
-
-// Integral identity hashing keeps sparse cold-leased IDs independent of slots.
+// Integral identity hashing maps order IDs to fixed lookup buckets.
 inline size_t TradingOrderHash(model::ClientOrderId order) noexcept {
   auto value = order.value;
   value ^= value >> 30;
@@ -91,7 +32,7 @@ inline size_t TradingOrderHash(model::ClientOrderId order) noexcept {
   return value & (kOrderLookupCapacity - 1);
 }
 
-// Open-addressed lookup hashes must match for live commits and cold rebuilds.
+// Hashes broker and execution identities for open-addressed lookup tables.
 inline size_t TradingBrokerHash(const model::AdapterOrderId& broker) noexcept {
   uint64_t hash = 14695981039346656037ULL;
   for (const unsigned char byte : broker.view()) {
@@ -108,7 +49,7 @@ inline size_t TradingFillHash(model::ClientOrderId order,
   return hash & (kFillLookupCapacity - 1);
 }
 
-// Holds an unpublished request and its resource claim until journal append.
+// Stages an unpublished request and its resource claim.
 struct TradingEngine::Submission {
   OrderCore core;
   OrderRequestExecutionTransition execution;
@@ -123,8 +64,8 @@ struct TradingEngine::Submission {
   bool futures = false;
 };
 
-// Stages one report's order and cash effects until validation and WAL append
-// succeed. Owned on the stack; it neither borrows events nor allocates storage.
+// Stages one report's order and cash effects until validation succeeds.
+// Stored on the stack without retaining event references or allocating memory.
 struct TradingEngine::ReportTransaction {
   OrderCore core;
   OrderRequestExecutionTransition execution;
@@ -160,15 +101,12 @@ struct TradingEngine::Storage {
   std::array<uint16_t, kFillLookupCapacity> fill_lookup = {};
   std::array<uint16_t, kBrokerLookupCapacity> broker_lookup = {};
   OrderRequestExecutor executor;
-  // Historical rule version is retained until the cold recovery boundary.
-  uint16_t format_version = 2;
   size_t order_count = 0;
   size_t fill_count = 0;
   size_t active_count = 0;
   size_t pending_cancel_count = 0;
   uint64_t last_cancel_id = 0;
   uint64_t next_order_id = 1;
-  uint64_t mutation_revision = 0;
   size_t scan_cursor = 0;
   bool scan_pending = false;
   bool rescan_required = false;

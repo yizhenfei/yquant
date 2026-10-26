@@ -413,18 +413,10 @@ TEST(MockTradingAdapterTest, AccountBootstrapOwnsConfigAndCopiesOutput) {
   EXPECT_EQ(snapshot, after_stop);
 }
 
-TEST(MockTradingAdapterTest, ResetDiscardsSessionAndObserverBeforeReuse) {
+TEST(MockTradingAdapterTest, ResetDiscardsSessionBeforeReuse) {
   MockTradingAdapter adapter;
   ASSERT_TRUE(Start(adapter, MockTradingMode::kWorking));
-  size_t observed = 0;
-  adapter.SetMutationObserver(
-      [](void* context, const MockTradingMutation&) noexcept -> base::Status {
-        ++*static_cast<size_t*>(context);
-        return {};
-      },
-      &observed);
   ASSERT_TRUE(adapter.SendOrder({1}, Request(), 0).ok());
-  EXPECT_EQ(observed, 1U);
   EXPECT_FALSE(adapter.is_drained());
 
   adapter.Reset();
@@ -432,7 +424,6 @@ TEST(MockTradingAdapterTest, ResetDiscardsSessionAndObserverBeforeReuse) {
   EXPECT_TRUE(adapter.is_drained());
   EXPECT_FALSE(adapter.next_deadline());
   EXPECT_EQ(adapter.error_detail()[0], '\0');
-  EXPECT_EQ(adapter.recovery_order_count(), 0U);
   TradingConfig config;
   config.report_interval_ns = 0;
   ASSERT_FALSE(adapter.Prepare(config).ok());
@@ -448,7 +439,6 @@ TEST(MockTradingAdapterTest, ResetDiscardsSessionAndObserverBeforeReuse) {
   EXPECT_EQ(event.kind, model::OrderUpdateKind::kRejected);
   EXPECT_EQ(event.client_order_id.value, 1U);
   EXPECT_EQ(event.report_sequence, 1U);
-  EXPECT_EQ(observed, 1U);
   EXPECT_TRUE(adapter.is_drained());
 }
 

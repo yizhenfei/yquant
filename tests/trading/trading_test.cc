@@ -4,17 +4,14 @@
 #include <cstring>
 #include <limits>
 #include <optional>
-#include <span>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "gtest/gtest.h"
 #include "yquant/md/instrument_scope.h"
 #include "yquant/model/identifiers.h"
 #include "yquant/trading/trading_adapter.h"
 #include "yquant/trading/trading_engine.h"
-#include "yquant/trading/trading_persistence.h"
 
 namespace yquant::trading {
 namespace {
@@ -773,7 +770,7 @@ TEST_F(TradingTest, ExpiredRequestPreemptsUnrelatedReadyReport) {
   EXPECT_EQ(adapter.cancel_sends, 0);
 }
 
-TEST_F(TradingTest, PollConnectionFailurePersistsUncertaintyWithoutResending) {
+TEST_F(TradingTest, PollConnectionFailureRetainsUncertaintyWithoutResending) {
   const auto pending_new = Submit();
   Send();
   const auto pending_cancel = Submit();
@@ -793,46 +790,27 @@ TEST_F(TradingTest, PollConnectionFailurePersistsUncertaintyWithoutResending) {
   EXPECT_EQ(Cash(), cash);
   EXPECT_FALSE(trading.next_deadline());
 
-  std::vector<std::byte> bytes(kMaxTradingCheckpointBytes);
-  size_t size = 0;
-  ASSERT_TRUE(trading.ExportCheckpoint(bytes, size).ok());
-  RecordingTradingAdapter recovered_adapter;
-  TradingEngine recovered{&clock, &market_data, &recovered_adapter};
-  TradingConfig config;
-  config.initial_account.cash_balance = std::numeric_limits<int64_t>::max();
-  ASSERT_TRUE(recovered.Init(config, market_config).ok());
-  ASSERT_TRUE(recovered.RestoreCheckpoint(std::span(bytes).first(size)).ok());
-  EXPECT_FALSE(recovered.next_deadline());
-  EXPECT_FALSE(recovered.is_drained());
-  ASSERT_TRUE(recovered.ProcessRequests(clock.now).ok());
-  EXPECT_EQ(recovered_adapter.order_sends, 0);
-  EXPECT_EQ(recovered_adapter.cancel_sends, 0);
-  model::OrderSnapshot restored;
-  ASSERT_TRUE(recovered.TryGetOrder(pending_new, restored));
-  EXPECT_EQ(restored, before_new);
-  ASSERT_TRUE(recovered.TryGetOrder(pending_cancel, restored));
-  EXPECT_EQ(restored, before_cancel);
-  model::CashSnapshot restored_cash;
-  ASSERT_TRUE(recovered.TryGetCash(restored_cash));
-  EXPECT_EQ(restored_cash, cash);
+  EXPECT_FALSE(trading.is_drained());
+  Send();
+  EXPECT_EQ(adapter.order_sends, 2);
+  EXPECT_EQ(adapter.cancel_sends, 1);
+  adapter.fail_poll = false;
 
-  recovered_adapter.pending_event =
-      Event(pending_new, 1, OrderUpdateKind::kAccepted);
-  ASSERT_TRUE(recovered.Poll(clock.now, dispatch, event).ok());
+  adapter.pending_event = Event(pending_new, 1, OrderUpdateKind::kAccepted);
+  ASSERT_TRUE(trading.Poll(clock.now, dispatch, event).ok());
   EXPECT_TRUE(event);
   EXPECT_EQ(dispatch.update.order.state, OrderState::kWorking);
   auto rejected = Event(pending_cancel, 2, OrderUpdateKind::kCancelRejected);
   rejected.cancel_request_id = before_cancel.cancel_request_id;
-  recovered_adapter.pending_event = rejected;
-  ASSERT_TRUE(recovered.Poll(clock.now, dispatch, event).ok());
+  adapter.pending_event = rejected;
+  ASSERT_TRUE(trading.Poll(clock.now, dispatch, event).ok());
   EXPECT_TRUE(event);
   EXPECT_FALSE(dispatch.update.order.cancel_pending);
   EXPECT_EQ(dispatch.update.order.state, OrderState::kWorking);
-  ASSERT_TRUE(recovered.TryGetCash(restored_cash));
-  EXPECT_EQ(restored_cash, cash);
-  ASSERT_TRUE(recovered.ProcessRequests(clock.now).ok());
-  EXPECT_EQ(recovered_adapter.order_sends, 0);
-  EXPECT_EQ(recovered_adapter.cancel_sends, 0);
+  EXPECT_EQ(Cash(), cash);
+  Send();
+  EXPECT_EQ(adapter.order_sends, 2);
+  EXPECT_EQ(adapter.cancel_sends, 1);
 }
 
 TEST_F(TradingTest,

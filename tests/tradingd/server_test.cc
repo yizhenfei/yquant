@@ -489,41 +489,6 @@ TEST(TradingdConfigTest,
   EXPECT_FALSE(ValidateConfig(config, error).ok());
 }
 
-TEST(TradingdConfigTest, MysqlArchiveRequiresDurableSourceAndBoundedOptions) {
-  auto config = Config();
-  auto& archive = config.mysql_archive;
-  archive.enabled = true;
-  ::yquant::base::FormatTo(archive.database, sizeof(archive.database),
-                           "yquant");
-  ::yquant::base::FormatTo(archive.user, sizeof(archive.user), "archive");
-  ::yquant::base::FormatTo(archive.password_env, sizeof(archive.password_env),
-                           "MYSQL_PASSWORD");
-  base::ConfigError error;
-  EXPECT_FALSE(ValidateConfig(config, error).ok());
-  ::yquant::base::FormatTo(config.persistence.directory,
-                           sizeof(config.persistence.directory),
-                           "/tmp/yquant-config-only");
-  ::yquant::base::FormatTo(config.persistence.account_key,
-                           sizeof(config.persistence.account_key),
-                           "simulation/test");
-#ifdef YQUANT_WITH_MYSQL
-  EXPECT_TRUE(ValidateConfig(config, error).ok()) << error.message;
-  archive.batch_bytes = 1;
-  EXPECT_FALSE(ValidateConfig(config, error).ok());
-  archive.batch_bytes = 1048576;
-  ::yquant::base::FormatTo(archive.host, sizeof(archive.host),
-                           "database.example.test");
-  EXPECT_FALSE(ValidateConfig(config, error).ok());
-  EXPECT_STREQ(error.field_path, "mysql_archive.tls_ca");
-  ::yquant::base::FormatTo(archive.tls_ca, sizeof(archive.tls_ca),
-                           "/tmp/ca.pem");
-  EXPECT_TRUE(ValidateConfig(config, error).ok()) << error.message;
-#else
-  EXPECT_FALSE(ValidateConfig(config, error).ok());
-  EXPECT_STREQ(error.field_path, "mysql_archive");
-#endif
-}
-
 TEST(TradingdConfigTest, UnknownBootstrapInstrumentIsRejected) {
   auto config = Config();
   config.trading.initial_account.position_count = 1;
@@ -580,35 +545,6 @@ class ConfigFiles {
   char directory_[64] = "/tmp/yquant-tradingd-config-XXXXXX";
   bool valid_ = false;
 };
-
-TEST_F(ServerTest, StartupFailureDiagnosticMatchesCurrentAttempt) {
-  ConfigFiles files;
-  ASSERT_TRUE(files.valid());
-  ASSERT_TRUE(files.Write("state", "ordinary file"));
-  ::yquant::base::FormatTo(config.persistence.directory,
-                           sizeof(config.persistence.directory), "{}",
-                           files.Path("state"));
-  ::yquant::base::FormatTo(config.persistence.account_key,
-                           sizeof(config.persistence.account_key),
-                           "simulation/failed-start/CNY");
-  config.persistence.initialize = true;
-  ASSERT_FALSE(server.Init(config).ok());
-  ASSERT_NE(std::strstr(server.error_detail(), "cannot lock state directory"),
-            nullptr);
-
-  trading::Listener blocker;
-  trading::Endpoint endpoint;
-  endpoint.port = 0;
-  ASSERT_TRUE(blocker.Open(endpoint).ok());
-  config.persistence = {};
-  config.listen.port = blocker.port();
-  ASSERT_FALSE(server.Init(config).ok());
-  EXPECT_NE(std::strstr(server.error_detail(), "listener startup failed"),
-            nullptr);
-  EXPECT_EQ(std::strstr(server.error_detail(), "journal"), nullptr);
-  EXPECT_EQ(std::strstr(server.error_detail(), "cannot lock state directory"),
-            nullptr);
-}
 
 TEST(TradingdConfigTest, LoadsStrictConfigurationAndRelativeReferences) {
   ConfigFiles files;
