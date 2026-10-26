@@ -64,6 +64,16 @@ function(check_includes path owner)
       break()
     endif()
     set(header "${CMAKE_MATCH_2}")
+    if(header MATCHES "(^|/)tradingd/server\\.h$")
+      file(RELATIVE_PATH relative "${SOURCE_DIR}" "${path}")
+      if(NOT relative STREQUAL "src/tradingd/main.cc" AND
+         NOT relative STREQUAL "src/tradingd/server.cc" AND
+         NOT relative STREQUAL "src/tradingd/server_persistence.cc")
+        message(SEND_ERROR
+          "Server assembly boundary violation in ${relative}: #include \"${header}\"")
+        set(boundary_errors TRUE PARENT_SCOPE)
+      endif()
+    endif()
     if(header MATCHES "(^|/)(strategyd|marketd|tradingd)/")
       set(included_owner "${CMAKE_MATCH_2}")
       if(NOT included_owner STREQUAL owner)

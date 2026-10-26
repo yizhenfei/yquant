@@ -15,7 +15,7 @@
 #include <thread>
 
 #include "tradingd/recovery.h"
-#include "tradingd/server_storage.h"
+#include "tradingd/server.h"
 #include "tradingd/state_codec.h"
 #include "yquant/base/file.h"
 #include "yquant/base/format.h"
@@ -56,7 +56,7 @@ void WriteInstrumentIdentity(
 }
 
 // A persisted definition must match the validated active catalog exactly.
-// The caller discards initializing Storage on any mismatch or malformed field.
+// Initialization fails on any mismatch or malformed field.
 bool MatchesInstrumentIdentity(
     StateReader& reader,
     const model::InstrumentDefinition& definition) noexcept {
@@ -120,107 +120,106 @@ base::Status ReadMessage(StateReader& reader,
 
 namespace {
 // Fixed half-full table keeps external stable IDs independent of slot indices.
-size_t OwnerBucket(uint64_t id) noexcept {
+size_t OwnerBucket(uint64_t id, size_t capacity) noexcept {
   id = (id ^ (id >> 30)) * 0xbf58476d1ce4e5b9ULL;
   id = (id ^ (id >> 27)) * 0x94d049bb133111ebULL;
-  return (id ^ (id >> 31)) & (kOwnerLookupCapacity - 1);
+  return (id ^ (id >> 31)) & (capacity - 1);
 }
 }  // namespace
-size_t Server::Storage::OwnerIndex(model::ClientOrderId id) const noexcept {
-  auto bucket = OwnerBucket(id.value);
-  for (size_t i = 0; i < owner_lookup.size(); ++i) {
-    const auto value = owner_lookup[bucket];
+size_t Server::OwnerIndex(model::ClientOrderId id) const noexcept {
+  auto bucket = OwnerBucket(id.value, owner_lookup_.size());
+  for (size_t i = 0; i < owner_lookup_.size(); ++i) {
+    const auto value = owner_lookup_[bucket];
     if (value == 0) {
-      return owners.size();
+      return owners_.size();
     }
-    if (owners[value - 1].core_id == id) {
+    if (owners_[value - 1].core_id == id) {
       return value - 1;
     }
     bucket = (bucket + 1) & (kOwnerLookupCapacity - 1);
   }
-  return owners.size();
+  return owners_.size();
 }
-void Server::Storage::BindOwner(size_t slot, const OrderOwner& owner) noexcept {
-  owners[slot] = owner;
-  auto bucket = OwnerBucket(owner.core_id.value);
-  while (owner_lookup[bucket] != 0 && owner_lookup[bucket] != slot + 1) {
+void Server::BindOwner(size_t slot, const OrderOwner& owner) noexcept {
+  owners_[slot] = owner;
+  auto bucket = OwnerBucket(owner.core_id.value, owner_lookup_.size());
+  while (owner_lookup_[bucket] != 0 && owner_lookup_[bucket] != slot + 1) {
     bucket = (bucket + 1) & (kOwnerLookupCapacity - 1);
   }
-  owner_lookup[bucket] = static_cast<uint16_t>(slot + 1);
+  owner_lookup_[bucket] = static_cast<uint16_t>(slot + 1);
 }
 
-base::Status Server::Storage::Adapter::SendOrder(
-    model::ClientOrderId id, const model::OrderRequest& request,
-    uint64_t now) noexcept {
-  if (storage.config.trading.adapter == trading::TradingAdapterKind::kCtp) {
-    return storage.ctp.SendOrder(id, request, now);
+base::Status Server::Adapter::SendOrder(model::ClientOrderId id,
+                                        const model::OrderRequest& request,
+                                        uint64_t now) noexcept {
+  if (server_->config_.trading.adapter == trading::TradingAdapterKind::kCtp) {
+    return server_->ctp_.SendOrder(id, request, now);
   }
-  if (storage.config.trading.adapter ==
+  if (server_->config_.trading.adapter ==
       trading::TradingAdapterKind::kSimulatedFutures) {
-    return storage.futures.SendOrder(id, request, now);
+    return server_->futures_.SendOrder(id, request, now);
   }
-  if (!storage.config.persistence.enabled()) {
-    return storage.mock.SendOrder(id, request, now);
+  if (!server_->config_.persistence.enabled()) {
+    return server_->mock_.SendOrder(id, request, now);
   }
-  const auto index = storage.OwnerIndex(id);
-  if (index == storage.owners.size()) {
+  const auto index = server_->OwnerIndex(id);
+  if (index == server_->owners_.size()) {
     return CorruptState();
   }
-  const auto owner = storage.owners[index];
+  const auto owner = server_->owners_[index];
   char key[kAdapterRequestKeyBytes + 1];
   const auto status = EncodeAdapterRequestKey(
-      storage.clients[owner.client].session_id, AdapterRequestKind::kNewOrder,
+      server_->clients_[owner.client].session_id, AdapterRequestKind::kNewOrder,
       owner.local + 1, key);
   if (!status.ok()) {
     return status;
   }
-  return storage.mock.SendOrderWithIdentity(id, request, key, now);
+  return server_->mock_.SendOrderWithIdentity(id, request, key, now);
 }
 
-base::Status Server::Storage::Append(uint16_t type,
-                                     std::span<const std::byte> payload,
-                                     bool new_risk) noexcept {
-  if (replaying || !config.persistence.enabled()) {
+base::Status Server::Append(uint16_t type, std::span<const std::byte> payload,
+                            bool new_risk) noexcept {
+  if (replaying_ || !config_.persistence.enabled()) {
     return {};
   }
-  base::Status status = persistence_failure;
-  if (!degraded) {
+  base::Status status = persistence_failure_;
+  if (!degraded_) {
     uint64_t lsn = 0;
-    status = journal.TryAppend(type, payload, lsn);
+    status = journal_.TryAppend(type, payload, lsn);
     if (status.ok()) {
       return {};
     }
-    degraded = true;
-    persistence_failure = status;
-    ::yquant::base::FormatTo(persistence_detail, sizeof(persistence_detail),
+    degraded_ = true;
+    persistence_failure_ = status;
+    ::yquant::base::FormatTo(persistence_detail_, sizeof(persistence_detail_),
                              "journal append failed: {}",
-                             journal.error_detail());
+                             journal_.error_detail());
   }
   // True broker facts and risk-reducing cancels still commit in memory. New
   // orders/sends fail before their ledger change or external side effect.
   return new_risk ? status : base::Status{};
 }
 
-base::Status Server::Storage::BeforeCommit(
+base::Status Server::BeforeCommit(
     const trading::TradingMutation& mutation) noexcept {
-  if (!config.persistence.enabled() || replaying) {
+  if (!config_.persistence.enabled() || replaying_) {
     return {};
   }
   using Kind = trading::TradingMutationKind;
-  size_t client_index = context_client;
-  size_t local_index = context_local;
-  auto cancel = context_cancel;
+  size_t client_index = context_client_;
+  size_t local_index = context_local_;
+  auto cancel = context_cancel_;
   if (mutation.kind != Kind::kNewOrder &&
-      context_client == trading::kMaxClients) {
+      context_client_ == trading::kMaxClients) {
     const auto index = OwnerIndex(mutation.client_order_id);
-    if (index == owners.size()) {
+    if (index == owners_.size()) {
       return CorruptState();
     }
-    client_index = owners[index].client;
-    local_index = owners[index].local;
-    cancel = clients[client_index].orders[local_index].local_cancel;
+    client_index = owners_[index].client;
+    local_index = owners_[index].local;
+    cancel = clients_[client_index].orders[local_index].local_cancel;
   }
-  if (client_index >= config.max_clients ||
+  if (client_index >= config_.max_clients ||
       local_index >= trading::kMaxTradingOrders) {
     return CorruptState();
   }
@@ -240,32 +239,32 @@ base::Status Server::Storage::BeforeCommit(
       kLedgerRecord, std::span(bytes).first(writer.size()),
       mutation.kind == Kind::kNewOrder || mutation.kind == Kind::kSendNew);
   if (status.ok()) {
-    last_record_time = mutation.now;
+    last_record_time_ = mutation.now;
   }
   return status;
 }
 
-base::Status Server::Storage::ObserveMock(
+base::Status Server::ObserveMock(
     void* context, const trading::MockTradingMutation& mutation) noexcept {
-  auto& s = *static_cast<Storage*>(context);
+  auto& server = *static_cast<Server*>(context);
   std::array<std::byte, trading::kMaxMockTradingMutationBytes> bytes{};
   size_t size = 0;
   auto status = trading::EncodeMockTradingMutation(mutation, bytes, size);
   if (!status.ok()) {
     return status;
   }
-  status =
-      s.Append(kMockRecord, std::span(bytes).first(size),
-               mutation.kind == trading::MockTradingMutationKind::kSendOrder);
+  status = server.Append(
+      kMockRecord, std::span(bytes).first(size),
+      mutation.kind == trading::MockTradingMutationKind::kSendOrder);
   if (status.ok()) {
-    s.last_record_time = mutation.now;
+    server.last_record_time_ = mutation.now;
   }
   return status;
 }
 
-base::Status Server::Storage::PersistRejection(
+base::Status Server::PersistRejection(
     size_t client, size_t local, const trading::Message& message) noexcept {
-  if (!config.persistence.enabled()) {
+  if (!config_.persistence.enabled()) {
     return {};
   }
   std::array<std::byte, kJournalMaxPayloadBytes> bytes{};
@@ -279,30 +278,29 @@ base::Status Server::Storage::PersistRejection(
   return Append(kRejectedRecord, std::span(bytes).first(writer.size()), false);
 }
 
-base::Status Server::Storage::ReplayRecord(
-    void* context, uint16_t type, uint64_t,
-    std::span<const std::byte> payload) noexcept {
-  auto& s = *static_cast<Storage*>(context);
+base::Status Server::ReplayRecord(void* context, uint16_t type, uint64_t,
+                                  std::span<const std::byte> payload) noexcept {
+  auto& server = *static_cast<Server*>(context);
   if (type == kMockRecord) {
     trading::MockTradingMutation mutation;
     auto status = trading::DecodeMockTradingMutation(payload, mutation);
     if (status.ok()) {
-      status = s.mock.ReplayMutation(mutation);
+      status = server.mock_.ReplayMutation(mutation);
     }
     if (status.ok()) {
-      s.last_record_time = mutation.now;
+      server.last_record_time_ = mutation.now;
     }
     return status;
   }
   StateReader reader(payload);
   const auto client_index = reader.U64();
   const auto local_index = reader.U64();
-  if (!reader.ok() || client_index >= s.config.max_clients ||
+  if (!reader.ok() || client_index >= server.config_.max_clients ||
       local_index >= trading::kMaxTradingOrders ||
-      s.clients[client_index].id == 0) {
+      server.clients_[client_index].id == 0) {
     return CorruptState();
   }
-  auto& client = s.clients[client_index];
+  auto& client = server.clients_[client_index];
   auto& local = client.orders[local_index];
   client.order_count =
       std::max(client.order_count, static_cast<size_t>(local_index + 1));
@@ -337,16 +335,16 @@ base::Status Server::Storage::ReplayRecord(
     return status;
   }
   trading::TradingDispatch dispatch;
-  status = s.trading.ReplayMutation(mutation, &dispatch);
+  status = server.trading_.ReplayMutation(mutation, &dispatch);
   if (!status.ok()) {
     return status;
   }
   using Kind = trading::TradingMutationKind;
   if (mutation.kind == Kind::kNewOrder) {
-    const auto index = s.trading.order_count() - 1;
-    s.BindOwner(index,
-                {mutation.client_order_id, static_cast<size_t>(client_index),
-                 static_cast<size_t>(local_index)});
+    const auto index = server.trading_.order_count() - 1;
+    server.BindOwner(
+        index, {mutation.client_order_id, static_cast<size_t>(client_index),
+                static_cast<size_t>(local_index)});
     local.core_id = mutation.client_order_id;
   } else if (mutation.kind == Kind::kCancel) {
     local.core_cancel = mutation.cancel_id;
@@ -356,30 +354,30 @@ base::Status Server::Storage::ReplayRecord(
   if (dispatch.update.order.client_order_id.value != 0) {
     ++local.report_sequence;
   }
-  s.last_record_time = mutation.now;
+  server.last_record_time_ = mutation.now;
   return {};
 }
 
-base::Status Server::Storage::SaveIdentity() noexcept {
+base::Status Server::SaveIdentity() noexcept {
   WaitCheckpoint();
   std::array<std::byte, kIdentityBufferBytes> bytes{};
   StateWriter writer(bytes);
   writer.U64(kIdentityVersion);
-  writer.Text(config.persistence.account_key);
-  for (const auto value : ledger_id) {
+  writer.Text(config_.persistence.account_key);
+  for (const auto value : ledger_id_) {
     writer.U64(value);
   }
-  writer.U64(last_namespace);
-  writer.U64(order_id_highwater);
-  writer.U64(cancel_id_highwater);
-  writer.U64(config.market_data.instrument_count);
-  for (size_t i = 0; i < config.market_data.instrument_count; ++i) {
-    const auto& instrument = config.market_data.instruments[i].instrument;
+  writer.U64(last_namespace_);
+  writer.U64(order_id_highwater_);
+  writer.U64(cancel_id_highwater_);
+  writer.U64(config_.market_data.instrument_count);
+  for (size_t i = 0; i < config_.market_data.instrument_count; ++i) {
+    const auto& instrument = config_.market_data.instruments[i].instrument;
     WriteInstrumentIdentity(writer, instrument);
   }
-  writer.U64(static_cast<unsigned>(config.trading.mode));
-  writer.U64(config.trading.report_interval_ns);
-  for (const auto& client : clients) {
+  writer.U64(static_cast<unsigned>(config_.trading.mode));
+  writer.U64(config_.trading.report_interval_ns);
+  for (const auto& client : clients_) {
     writer.U64(client.id);
     writer.U64(client.session_id);
     writer.U64(client.instrument_count);
@@ -392,19 +390,19 @@ base::Status Server::Storage::SaveIdentity() noexcept {
     return {base::ErrorCode::kResourceExhausted, {}};
   }
   auto status =
-      journal.SaveFile("IDENTITY", std::span(bytes).first(writer.size()));
-  if (status.ok() && config.mysql_archive.enabled) {
+      journal_.SaveFile("IDENTITY", std::span(bytes).first(writer.size()));
+  if (status.ok() && config_.mysql_archive.enabled) {
     char name[96];
-    ArchiveName(name, "identity", last_namespace);
-    status = journal.SaveFile(name, std::span(bytes).first(writer.size()));
+    ArchiveName(name, "identity", last_namespace_);
+    status = journal_.SaveFile(name, std::span(bytes).first(writer.size()));
   }
   return status;
 }
 
-base::Status Server::Storage::LoadIdentity() noexcept {
+base::Status Server::LoadIdentity() noexcept {
   std::array<std::byte, kIdentityBufferBytes> bytes{};
   size_t size = 0;
-  auto status = journal.LoadFile("IDENTITY", bytes, size);
+  auto status = journal_.LoadFile("IDENTITY", bytes, size);
   if (!status.ok()) {
     return status;
   }
@@ -414,38 +412,38 @@ base::Status Server::Storage::LoadIdentity() noexcept {
   }
   char key[kMaxAccountKeyBytes + 1];
   if (!reader.Text(key, sizeof(key)) ||
-      std::strcmp(key, config.persistence.account_key) != 0) {
+      std::strcmp(key, config_.persistence.account_key) != 0) {
     return CorruptState();
   }
-  for (auto& value : ledger_id) {
+  for (auto& value : ledger_id_) {
     value = reader.U64();
   }
-  last_namespace = reader.U64();
-  order_id_highwater = reader.U64();
-  cancel_id_highwater = reader.U64();
-  if ((ledger_id[0] | ledger_id[1]) == 0 ||
-      reader.U64() != config.market_data.instrument_count) {
+  last_namespace_ = reader.U64();
+  order_id_highwater_ = reader.U64();
+  cancel_id_highwater_ = reader.U64();
+  if ((ledger_id_[0] | ledger_id_[1]) == 0 ||
+      reader.U64() != config_.market_data.instrument_count) {
     return CorruptState();
   }
-  for (size_t i = 0; i < config.market_data.instrument_count; ++i) {
-    const auto& instrument = config.market_data.instruments[i].instrument;
+  for (size_t i = 0; i < config_.market_data.instrument_count; ++i) {
+    const auto& instrument = config_.market_data.instruments[i].instrument;
     if (!MatchesInstrumentIdentity(reader, instrument)) {
       return CorruptState();
     }
   }
-  if (reader.U64() != static_cast<unsigned>(config.trading.mode) ||
-      reader.U64() != config.trading.report_interval_ns) {
+  if (reader.U64() != static_cast<unsigned>(config_.trading.mode) ||
+      reader.U64() != config_.trading.report_interval_ns) {
     return CorruptState();
   }
-  for (size_t i = 0; i < clients.size(); ++i) {
-    auto& client = clients[i];
+  for (size_t i = 0; i < clients_.size(); ++i) {
+    auto& client = clients_[i];
     client.id = reader.U64();
     client.session_id = reader.U64();
     client.instrument_count = reader.U64();
     if (client.instrument_count > trading::kMaxInstruments ||
         ((client.id == 0) != (client.session_id == 0)) ||
-        client.session_id > last_namespace ||
-        (client.id != 0 && i >= config.max_clients)) {
+        client.session_id > last_namespace_ ||
+        (client.id != 0 && i >= config_.max_clients)) {
       return CorruptState();
     }
     for (size_t j = 0; j < client.instrument_count; ++j) {
@@ -456,7 +454,7 @@ base::Status Server::Storage::LoadIdentity() noexcept {
       }
       client.instruments[j] = {{id}, static_cast<uint8_t>(decimals)};
       model::InstrumentDefinition known;
-      if (!instruments.TryGetInstrument(client.instruments[j].id, known) ||
+      if (!instruments_.TryGetInstrument(client.instruments[j].id, known) ||
           known.price_decimals != decimals) {
         return CorruptState();
       }
@@ -468,8 +466,8 @@ base::Status Server::Storage::LoadIdentity() noexcept {
       client.authenticated = true;
       client.stopping = true;
       for (size_t j = 0; j < i; ++j) {
-        if (clients[j].id == client.id ||
-            clients[j].session_id == client.session_id) {
+        if (clients_[j].id == client.id ||
+            clients_[j].session_id == client.session_id) {
           return CorruptState();
         }
       }
@@ -478,41 +476,41 @@ base::Status Server::Storage::LoadIdentity() noexcept {
   return reader.done() ? base::Status{} : CorruptState();
 }
 
-base::Status Server::Storage::RegisterClient(size_t index) noexcept {
-  if (!config.persistence.enabled()) {
+base::Status Server::RegisterClient(size_t index) noexcept {
+  if (!config_.persistence.enabled()) {
     return {};
   }
-  if (last_namespace == UINT64_MAX) {
+  if (last_namespace_ == UINT64_MAX) {
     return {base::ErrorCode::kResourceExhausted, {}};
   }
-  clients[index].session_id = ++last_namespace;
+  clients_[index].session_id = ++last_namespace_;
   auto status = SaveIdentity();
   if (!status.ok()) {
-    degraded = true;
-    persistence_failure = status;
-    ::yquant::base::FormatTo(persistence_detail, sizeof(persistence_detail),
+    degraded_ = true;
+    persistence_failure_ = status;
+    ::yquant::base::FormatTo(persistence_detail_, sizeof(persistence_detail_),
                              "client identity sync failed");
   }
   return status;
 }
 
-base::Status Server::Storage::CaptureCheckpoint(uint64_t now) noexcept {
-  if (degraded) {
-    return persistence_failure;
+base::Status Server::CaptureCheckpoint(uint64_t now) noexcept {
+  if (degraded_) {
+    return persistence_failure_;
   }
-  StateWriter writer{std::span(checkpoint.get(), kJournalMaxSnapshotBytes)};
+  StateWriter writer{std::span(checkpoint_.get(), kJournalMaxSnapshotBytes)};
   writer.U64(kGatewayStateVersion);
-  for (const auto id : ledger_id) {
+  for (const auto id : ledger_id_) {
     writer.U64(id);
   }
-  writer.U64(run_id);
-  checkpoint_cursor = journal.GetCursor();
-  checkpoint_lsn = checkpoint_cursor.lsn;
-  writer.U64(checkpoint_lsn);
-  writer.U64(checkpoint_cursor.segment);
-  writer.U64(checkpoint_cursor.offset);
+  writer.U64(run_id_);
+  checkpoint_cursor_ = journal_.GetCursor();
+  checkpoint_lsn_ = checkpoint_cursor_.lsn;
+  writer.U64(checkpoint_lsn_);
+  writer.U64(checkpoint_cursor_.segment);
+  writer.U64(checkpoint_cursor_.offset);
   writer.U64(now);
-  for (const auto& client : clients) {
+  for (const auto& client : clients_) {
     writer.U64(client.id);
     writer.U64(client.session_id);
     writer.U64(client.order_count);
@@ -529,7 +527,7 @@ base::Status Server::Storage::CaptureCheckpoint(uint64_t now) noexcept {
         message.type = trading::MessageType::kOrderUpdate;
         message.update.kind = model::OrderUpdateKind::kRejected;
         message.update.order = local.rejected;
-        message.account = account;
+        message.account = account_;
         auto status = WriteMessage(writer, message);
         if (!status.ok()) {
           return status;
@@ -559,11 +557,11 @@ base::Status Server::Storage::CaptureCheckpoint(uint64_t now) noexcept {
     return {base::ErrorCode::kResourceExhausted, {}};
   }
   auto status = encode_blob([&](auto out, auto& size) noexcept {
-    return trading.ExportCheckpoint(out, size);
+    return trading_.ExportCheckpoint(out, size);
   });
   if (status.ok()) {
     status = encode_blob([&](auto out, auto& size) noexcept {
-      return mock.EncodeState(now, out, size);
+      return mock_.EncodeState(now, out, size);
     });
   }
   if (!status.ok()) {
@@ -572,34 +570,34 @@ base::Status Server::Storage::CaptureCheckpoint(uint64_t now) noexcept {
   if (!writer.ok()) {
     return {base::ErrorCode::kResourceExhausted, {}};
   }
-  checkpoint_size = writer.size();
+  checkpoint_size_ = writer.size();
   return {};
 }
 
-base::Status Server::Storage::PublishCheckpoint() noexcept {
+base::Status Server::PublishCheckpoint() noexcept {
   char name[kSnapshotNameBytes];
-  ::yquant::base::FormatTo(name, sizeof(name), "snapshot-{}-{}.bin", run_id,
-                           checkpoint_lsn);
-  auto status = journal.SaveFile(name, {checkpoint.get(), checkpoint_size});
+  ::yquant::base::FormatTo(name, sizeof(name), "snapshot-{}-{}.bin", run_id_,
+                           checkpoint_lsn_);
+  auto status = journal_.SaveFile(name, {checkpoint_.get(), checkpoint_size_});
   if (!status.ok()) {
     return status;
   }
   std::array<std::byte, kControlBufferBytes> bytes{};
   StateWriter writer(bytes);
   writer.U64(kGatewayStateVersion);
-  writer.U64(run_id);
-  writer.U64(checkpoint_lsn);
-  writer.U64(checkpoint_cursor.segment);
-  writer.U64(checkpoint_cursor.offset);
+  writer.U64(run_id_);
+  writer.U64(checkpoint_lsn_);
+  writer.U64(checkpoint_cursor_.segment);
+  writer.U64(checkpoint_cursor_.offset);
   writer.Text(name);
-  return journal.SaveFile("CURRENT", std::span(bytes).first(writer.size()));
+  return journal_.SaveFile("CURRENT", std::span(bytes).first(writer.size()));
 }
 
-base::Status Server::Storage::LoadCheckpoint(uint64_t& stream,
-                                             uint64_t& covered) noexcept {
+base::Status Server::LoadCheckpoint(uint64_t& stream,
+                                    uint64_t& covered) noexcept {
   std::array<std::byte, kControlBufferBytes> bytes{};
   size_t size = 0;
-  auto status = journal.LoadFile("CURRENT", bytes, size);
+  auto status = journal_.LoadFile("CURRENT", bytes, size);
   if (!status.ok()) {
     return status;
   }
@@ -609,33 +607,33 @@ base::Status Server::Storage::LoadCheckpoint(uint64_t& stream,
   }
   stream = control.U64();
   covered = control.U64();
-  replay_cursor = {stream, control.U64(), control.U64(), covered};
+  replay_cursor_ = {stream, control.U64(), control.U64(), covered};
   char name[kSnapshotNameBytes];
   if (!control.Text(name, sizeof(name)) || !control.done() || stream == 0 ||
-      stream > last_namespace) {
+      stream > last_namespace_) {
     return CorruptState();
   }
-  status = journal.LoadFile(name, {checkpoint.get(), kJournalMaxSnapshotBytes},
-                            size);
+  status = journal_.LoadFile(
+      name, {checkpoint_.get(), kJournalMaxSnapshotBytes}, size);
   if (!status.ok()) {
     return status;
   }
-  StateReader reader{std::span(checkpoint.get(), size)};
+  StateReader reader{std::span(checkpoint_.get(), size)};
   if (reader.U64() != kGatewayStateVersion) {
     return CorruptState();
   }
-  for (const auto id : ledger_id) {
+  for (const auto id : ledger_id_) {
     if (reader.U64() != id) {
       return CorruptState();
     }
   }
   if (reader.U64() != stream || reader.U64() != covered ||
-      reader.U64() != replay_cursor.segment ||
-      reader.U64() != replay_cursor.offset) {
+      reader.U64() != replay_cursor_.segment ||
+      reader.U64() != replay_cursor_.offset) {
     return CorruptState();
   }
-  last_record_time = reader.U64();
-  for (auto& client : clients) {
+  last_record_time_ = reader.U64();
+  for (auto& client : clients_) {
     const auto id = reader.U64();
     const auto session = reader.U64();
     if (id != 0 && (id != client.id || session != client.session_id)) {
@@ -671,7 +669,7 @@ base::Status Server::Storage::LoadCheckpoint(uint64_t& stream,
   if (!reader.ok()) {
     return CorruptState();
   }
-  status = trading.RestoreCheckpoint(ledger);
+  status = trading_.RestoreCheckpoint(ledger);
   if (!status.ok()) {
     return status;
   }
@@ -680,19 +678,19 @@ base::Status Server::Storage::LoadCheckpoint(uint64_t& stream,
   if (!reader.done()) {
     return CorruptState();
   }
-  status = mock.RestoreState(mock_state, last_record_time);
+  status = mock_.RestoreState(mock_state, last_record_time_);
   if (!status.ok()) {
     return status;
   }
-  for (size_t i = 0; i < trading.order_count(); ++i) {
+  for (size_t i = 0; i < trading_.order_count(); ++i) {
     model::OrderSnapshot order;
-    if (!trading.TryGetOrderAt(i, order)) {
+    if (!trading_.TryGetOrderAt(i, order)) {
       return CorruptState();
     }
     bool found = false;
-    for (size_t j = 0; j < clients.size(); ++j) {
-      for (size_t k = 0; k < clients[j].order_count; ++k) {
-        if (clients[j].orders[k].core_id == order.client_order_id) {
+    for (size_t j = 0; j < clients_.size(); ++j) {
+      for (size_t k = 0; k < clients_[j].order_count; ++k) {
+        if (clients_[j].orders[k].core_id == order.client_order_id) {
           if (found) {
             return CorruptState();
           }
@@ -708,25 +706,25 @@ base::Status Server::Storage::LoadCheckpoint(uint64_t& stream,
   return {};
 }
 
-base::Status Server::Storage::ReplayMockHistory() noexcept {
+base::Status Server::ReplayMockHistory() noexcept {
   // Both histories come from the same valid local prefix. They are simulation
   // evidence only; a real adapter must use independent complete broker history.
-  trading.AbandonRecoveredRequests();
-  while (trading.has_local_updates()) {
+  trading_.AbandonRecoveredRequests();
+  while (trading_.has_local_updates()) {
     trading::TradingDispatch dispatch;
-    const auto code = trading.ApplyLocalUpdate(dispatch);
+    const auto code = trading_.ApplyLocalUpdate(dispatch);
     if (code != base::ErrorCode::kOk) {
       return {code, {}};
     }
   }
-  for (size_t i = 0; i < mock.recovery_event_count(); ++i) {
+  for (size_t i = 0; i < mock_.recovery_event_count(); ++i) {
     model::TradingEvent event;
-    auto status = mock.ReadRecoveryEvent(i, event);
+    auto status = mock_.ReadRecoveryEvent(i, event);
     if (!status.ok()) {
       return status;
     }
     model::OrderSnapshot order;
-    if (!trading.TryGetOrder(event.client_order_id, order)) {
+    if (!trading_.TryGetOrder(event.client_order_id, order)) {
       return CorruptState();
     }
     if (event.report_sequence <= order.report_sequence) {
@@ -737,7 +735,7 @@ base::Status Server::Storage::ReplayMockHistory() noexcept {
       event.fill.receive_time_ns = event.receive_time_ns;
     }
     trading::TradingDispatch dispatch;
-    const auto code = trading.ApplyEvent(event, dispatch);
+    const auto code = trading_.ApplyEvent(event, dispatch);
     if (code != base::ErrorCode::kOk) {
       return {code, {}};
     }
@@ -745,16 +743,16 @@ base::Status Server::Storage::ReplayMockHistory() noexcept {
   return {};
 }
 
-base::Status Server::Storage::RejectAbsentMockOrders(uint64_t now) noexcept {
-  for (size_t i = 0; i < trading.order_count(); ++i) {
+base::Status Server::RejectAbsentMockOrders(uint64_t now) noexcept {
+  for (size_t i = 0; i < trading_.order_count(); ++i) {
     model::OrderSnapshot order;
-    if (!trading.TryGetOrderAt(i, order)) {
+    if (!trading_.TryGetOrderAt(i, order)) {
       return CorruptState();
     }
     bool found = false;
-    for (size_t j = 0; j < mock.recovery_order_count(); ++j) {
+    for (size_t j = 0; j < mock_.recovery_order_count(); ++j) {
       model::OrderSnapshot broker;
-      const auto status = mock.ReadRecoveryOrder(j, broker);
+      const auto status = mock_.ReadRecoveryOrder(j, broker);
       if (!status.ok()) {
         return status;
       }
@@ -770,7 +768,7 @@ base::Status Server::Storage::RejectAbsentMockOrders(uint64_t now) noexcept {
       rejected.receive_time_ns = now;
       rejected.reason.Set(0, "mock request absent from recovered prefix");
       trading::TradingDispatch dispatch;
-      const auto code = trading.ApplyEvent(rejected, dispatch);
+      const auto code = trading_.ApplyEvent(rejected, dispatch);
       if (code != base::ErrorCode::kOk) {
         return {code, {}};
       }
@@ -780,17 +778,17 @@ base::Status Server::Storage::RejectAbsentMockOrders(uint64_t now) noexcept {
   return {};
 }
 
-base::Status Server::Storage::ScheduleRecoveredCancels(uint64_t now) noexcept {
-  for (size_t i = 0; i < trading.order_count(); ++i) {
+base::Status Server::ScheduleRecoveredCancels(uint64_t now) noexcept {
+  for (size_t i = 0; i < trading_.order_count(); ++i) {
     model::OrderSnapshot order;
-    if (!trading.TryGetOrderAt(i, order)) {
+    if (!trading_.TryGetOrderAt(i, order)) {
       return CorruptState();
     }
     if (order.cancel_pending) {
       bool matched = false;
-      for (size_t j = 0; j < mock.recovery_order_count(); ++j) {
+      for (size_t j = 0; j < mock_.recovery_order_count(); ++j) {
         model::OrderSnapshot broker;
-        auto status = mock.ReadRecoveryOrder(j, broker);
+        auto status = mock_.ReadRecoveryOrder(j, broker);
         if (!status.ok()) {
           return status;
         }
@@ -802,8 +800,8 @@ base::Status Server::Storage::ScheduleRecoveredCancels(uint64_t now) noexcept {
           // The simulated broker proves that the recorded cancel attempt
           // did not reach it. Settle that exact pending intent locally.
           status =
-              mock.SendCancel(order.client_order_id, broker.adapter_order_id,
-                              order.cancel_request_id, now);
+              mock_.SendCancel(order.client_order_id, broker.adapter_order_id,
+                               order.cancel_request_id, now);
           if (!status.ok()) {
             return status;
           }
@@ -814,9 +812,9 @@ base::Status Server::Storage::ScheduleRecoveredCancels(uint64_t now) noexcept {
         return CorruptState();
       }
     } else if (order.state == model::OrderState::kWorking) {
-      trading.SetAcceptingRequests(true);
-      const auto code = trading.CancelOrder(order.client_order_id);
-      trading.SetAcceptingRequests(false);
+      trading_.SetAcceptingRequests(true);
+      const auto code = trading_.CancelOrder(order.client_order_id);
+      trading_.SetAcceptingRequests(false);
       if (code != base::ErrorCode::kOk) {
         return {code, {}};
       }
@@ -825,46 +823,46 @@ base::Status Server::Storage::ScheduleRecoveredCancels(uint64_t now) noexcept {
   return {};
 }
 
-base::Status Server::Storage::DrainRecoveredMock(uint64_t now) noexcept {
+base::Status Server::DrainRecoveredMock(uint64_t now) noexcept {
   uint64_t recovery_now = now;
   for (size_t step = 0; step < kRecoveryStepBudget; ++step) {
     auto status = ScheduleRecoveredCancels(recovery_now);
     if (!status.ok()) {
       return status;
     }
-    status = trading.ProcessRequests(recovery_now);
+    status = trading_.ProcessRequests(recovery_now);
     if (!status.ok()) {
       return status;
     }
-    if (trading.has_local_updates()) {
+    if (trading_.has_local_updates()) {
       trading::TradingDispatch dispatch;
-      const auto code = trading.ApplyLocalUpdate(dispatch);
+      const auto code = trading_.ApplyLocalUpdate(dispatch);
       if (code != base::ErrorCode::kOk) {
         return {code, {}};
       }
       continue;
     }
-    if (trading.is_drained() && mock.is_drained()) {
+    if (trading_.is_drained() && mock_.is_drained()) {
       return {};
     }
-    const auto deadline = mock.next_deadline();
+    const auto deadline = mock_.next_deadline();
     if (!deadline) {
       return CorruptState();
     }
     // Advance only the simulation schedule, keeping emitted receive times
     // in the current process clock domain.
     recovery_now = clock_.Now();
-    status = mock.RebaseDeadlines(*deadline, recovery_now);
+    status = mock_.RebaseDeadlines(*deadline, recovery_now);
     if (!status.ok()) {
       return status;
     }
     model::TradingEvent event;
-    const auto polled = mock.Poll(recovery_now, event);
+    const auto polled = mock_.Poll(recovery_now, event);
     if (polled.state != trading::TradingPollState::kEvent) {
       return CorruptState();
     }
     trading::TradingDispatch dispatch;
-    const auto code = trading.ApplyEvent(event, dispatch);
+    const auto code = trading_.ApplyEvent(event, dispatch);
     if (code != base::ErrorCode::kOk) {
       return {code, {}};
     }
@@ -872,13 +870,13 @@ base::Status Server::Storage::DrainRecoveredMock(uint64_t now) noexcept {
   return {base::ErrorCode::kResourceExhausted, {}};
 }
 
-base::Status Server::Storage::RecoverMock() noexcept {
+base::Status Server::RecoverMock() noexcept {
   auto status = ReplayMockHistory();
   if (!status.ok()) {
     return status;
   }
   const auto now = clock_.Now();
-  status = mock.RebaseDeadlines(last_record_time, now);
+  status = mock_.RebaseDeadlines(last_record_time_, now);
   if (status.ok()) {
     status = RejectAbsentMockOrders(now);
   }
@@ -888,22 +886,22 @@ base::Status Server::Storage::RecoverMock() noexcept {
   return status;
 }
 
-base::Status Server::Storage::StartPersistence() noexcept {
-  if (!config.persistence.enabled()) {
+base::Status Server::StartPersistence() noexcept {
+  if (!config_.persistence.enabled()) {
     return {};
   }
-  checkpoint.reset(new (std::nothrow) std::byte[kJournalMaxSnapshotBytes]);
-  if (!checkpoint) {
+  checkpoint_.reset(new (std::nothrow) std::byte[kJournalMaxSnapshotBytes]);
+  if (!checkpoint_) {
     return {base::ErrorCode::kResourceExhausted, {}};
   }
   // Fault in the reusable image on the cold path, before periodic capture.
-  std::memset(checkpoint.get(), 0, kJournalMaxSnapshotBytes);
-  const auto& p = config.persistence;
+  std::memset(checkpoint_.get(), 0, kJournalMaxSnapshotBytes);
+  const auto& p = config_.persistence;
   JournalOptions options{p.directory, p.wal_segment_bytes, p.reserve_segments,
                          p.sync_interval_ms, p.sync_after_bytes};
-  auto status = journal.Acquire(options);
+  auto status = journal_.Acquire(options);
   auto failure = [&](base::Status result, const char* detail) noexcept {
-    ::yquant::base::FormatTo(persistence_detail, sizeof(persistence_detail),
+    ::yquant::base::FormatTo(persistence_detail_, sizeof(persistence_detail_),
                              "{}", detail);
     return result;
   };
@@ -931,8 +929,8 @@ base::Status Server::Storage::StartPersistence() noexcept {
                        "state directory is not empty; initialization refused");
       }
     }
-    if (getentropy(ledger_id.data(), sizeof(ledger_id)) != 0 ||
-        (ledger_id[0] | ledger_id[1]) == 0) {
+    if (getentropy(ledger_id_.data(), sizeof(ledger_id_)) != 0 ||
+        (ledger_id_[0] | ledger_id_[1]) == 0) {
       return {base::ErrorCode::kIoError, {}};
     }
   } else {
@@ -947,32 +945,32 @@ base::Status Server::Storage::StartPersistence() noexcept {
       return failure(status, "invalid/missing CURRENT or checkpoint");
     }
     JournalReplayResult result;
-    replaying = true;
-    status = journal.ReplayFrom(replay_cursor, ReplayRecord, this, result);
-    replaying = false;
+    replaying_ = true;
+    status = journal_.ReplayFrom(replay_cursor_, ReplayRecord, this, result);
+    replaying_ = false;
     if (!status.ok()) {
       return failure(status, "invalid journal transition during replay");
     }
     // A snapshot may cover records beyond a physically surviving WAL prefix.
   }
-  if (last_namespace == UINT64_MAX ||
-      order_id_highwater > UINT64_MAX - trading::kMaxTradingOrders ||
-      cancel_id_highwater > UINT64_MAX - trading::kMaxMockTradingReports) {
+  if (last_namespace_ == UINT64_MAX ||
+      order_id_highwater_ > UINT64_MAX - trading::kMaxTradingOrders ||
+      cancel_id_highwater_ > UINT64_MAX - trading::kMaxMockTradingReports) {
     return {base::ErrorCode::kResourceExhausted, {}};
   }
-  run_id = ++last_namespace;
-  const auto next_order = order_id_highwater + 1;
-  order_id_highwater += trading::kMaxTradingOrders;
-  const auto next_cancel = cancel_id_highwater + 1;
-  cancel_id_highwater += trading::kMaxMockTradingReports;
+  run_id_ = ++last_namespace_;
+  const auto next_order = order_id_highwater_ + 1;
+  order_id_highwater_ += trading::kMaxTradingOrders;
+  const auto next_cancel = cancel_id_highwater_ + 1;
+  cancel_id_highwater_ += trading::kMaxMockTradingReports;
   status = SaveIdentity();
   if (!status.ok()) {
     return status;
   }
-  trading.SetAcceptingRequests(false);
-  status = trading.SetNextOrderIdAtLeast(next_order);
+  trading_.SetAcceptingRequests(false);
+  status = trading_.SetNextOrderIdAtLeast(next_order);
   if (status.ok()) {
-    status = trading.SetNextCancelIdAtLeast(next_cancel);
+    status = trading_.SetNextCancelIdAtLeast(next_cancel);
   }
   if (!status.ok()) {
     return status;
@@ -983,19 +981,19 @@ base::Status Server::Storage::StartPersistence() noexcept {
       return failure(status, "cannot reconcile recovered mock orders");
     }
   }
-  status = journal.Start(run_id);
+  status = journal_.Start(run_id_);
   if (!status.ok()) {
     return status;
   }
-  account.revision = 1;
-  (void)trading.TryGetCash(account.cash);
-  account.position_count = 0;
-  for (size_t i = 0; i < config.market_data.instrument_count; ++i) {
+  account_.revision = 1;
+  (void)trading_.TryGetCash(account_.cash);
+  account_.position_count = 0;
+  for (size_t i = 0; i < config_.market_data.instrument_count; ++i) {
     model::PositionSnapshot position;
-    if (trading.TryGetPosition(config.market_data.instruments[i].instrument.id,
-                               position) &&
+    if (trading_.TryGetPosition(
+            config_.market_data.instruments[i].instrument.id, position) &&
         (position.total_qty != 0 || position.reserved_qty != 0)) {
-      account.positions[account.position_count++] = position;
+      account_.positions[account_.position_count++] = position;
     }
   }
   status = CaptureCheckpoint(clock_.Now());
@@ -1005,31 +1003,31 @@ base::Status Server::Storage::StartPersistence() noexcept {
   if (!status.ok()) {
     return status;
   }
-  if (config.mysql_archive.enabled) {
+  if (config_.mysql_archive.enabled) {
     status = PublishArchiveBaseline(p.initialize);
     if (status.ok()) {
-      status = mysql_archive.Start(config, journal, run_id);
+      status = mysql_archive_.Start(config_, journal_, run_id_);
     }
     if (!status.ok()) {
       return status;
     }
   }
-  status = trading.SetMutationSink(this);
+  status = trading_.SetMutationSink(this);
   if (!status.ok()) {
     return status;
   }
-  mock.SetMutationObserver(ObserveMock, this);
-  next_snapshot_at = clock_.Now() + config.persistence.snapshot_interval_ms *
-                                        kNanosecondsPerMillisecond;
-  if (pthread_create(&checkpoint_thread, nullptr, CheckpointEntry, this) != 0) {
+  mock_.SetMutationObserver(ObserveMock, this);
+  next_snapshot_at_ = clock_.Now() + config_.persistence.snapshot_interval_ms *
+                                         kNanosecondsPerMillisecond;
+  if (pthread_create(&checkpoint_thread_, nullptr, CheckpointEntry, this) !=
+      0) {
     return {base::ErrorCode::kResourceExhausted, {}};
   }
-  checkpoint_thread_started = true;
+  checkpoint_thread_started_ = true;
   return {};
 }
 
-base::Status Server::Storage::SaveArchiveEnd(uint64_t run,
-                                             uint64_t lsn) noexcept {
+base::Status Server::SaveArchiveEnd(uint64_t run, uint64_t lsn) noexcept {
   char name[96];
   ArchiveName(name, "end", run);
   std::array<std::byte, 32> bytes{};
@@ -1041,7 +1039,7 @@ base::Status Server::Storage::SaveArchiveEnd(uint64_t run,
   // extend a previously published final boundary.
   std::array<std::byte, 32> existing{};
   size_t size = 0;
-  auto status = journal.LoadFile(name, existing, size);
+  auto status = journal_.LoadFile(name, existing, size);
   if (status.ok()) {
     if (size != writer.size() ||
         std::memcmp(existing.data(), bytes.data(), size) != 0) {
@@ -1052,22 +1050,21 @@ base::Status Server::Storage::SaveArchiveEnd(uint64_t run,
   if (status.system_error.value() != ENOENT) {
     return status;
   }
-  return journal.SaveFile(name, std::span(bytes).first(writer.size()));
+  return journal_.SaveFile(name, std::span(bytes).first(writer.size()));
 }
 
-base::Status Server::Storage::PublishArchiveBaseline(
-    bool initialized) noexcept {
+base::Status Server::PublishArchiveBaseline(bool initialized) noexcept {
   uint64_t previous = 0;
   for (;;) {
     uint64_t next = 0;
-    auto status = NextArchiveRun(config.persistence.directory, previous, next);
+    auto status = NextArchiveRun(config_.persistence.directory, previous, next);
     if (!status.ok()) {
       return status;
     }
     if (next == 0) {
       break;
     }
-    if (next >= run_id) {
+    if (next >= run_id_) {
       return CorruptState();
     }
     previous = next;
@@ -1075,7 +1072,7 @@ base::Status Server::Storage::PublishArchiveBaseline(
   JournalReplayResult prefix;
   bool gap = !initialized && previous == 0;
   if (previous != 0) {
-    auto status = ProbeJournal(config.persistence.directory, previous, prefix);
+    auto status = ProbeJournal(config_.persistence.directory, previous, prefix);
     if (!status.ok()) {
       return status;
     }
@@ -1083,15 +1080,15 @@ base::Status Server::Storage::PublishArchiveBaseline(
     if (!status.ok()) {
       return status;
     }
-    gap = prefix.tail_discarded || replay_cursor.stream_id != previous;
+    gap = prefix.tail_discarded || replay_cursor_.stream_id != previous;
     // A durable checkpoint may cover missing records. Preserve the state while
     // explicitly recording that individual historical events are unavailable.
-    gap |= replay_cursor.stream_id == previous &&
-           replay_cursor.lsn > prefix.last_lsn;
+    gap |= replay_cursor_.stream_id == previous &&
+           replay_cursor_.lsn > prefix.last_lsn;
   }
   std::array<std::byte, kIdentityBufferBytes> metadata{};
   size_t metadata_size = 0;
-  auto status = journal.LoadFile("IDENTITY", metadata, metadata_size);
+  auto status = journal_.LoadFile("IDENTITY", metadata, metadata_size);
   if (!status.ok()) {
     return status;
   }
@@ -1102,90 +1099,119 @@ base::Status Server::Storage::PublishArchiveBaseline(
   }
   StateWriter baseline({bytes.get(), kJournalMaxSnapshotBytes});
   baseline.U64(kArchiveFormatVersion);
-  for (auto id : ledger_id) {
+  for (auto id : ledger_id_) {
     baseline.U64(id);
   }
-  baseline.U64(run_id);
-  baseline.Text(config.persistence.account_key);
+  baseline.U64(run_id_);
+  baseline.Text(config_.persistence.account_key);
   baseline.U64(metadata_size);
   baseline.Bytes(std::span(metadata).first(metadata_size));
-  baseline.U64(checkpoint_size);
-  baseline.Bytes({checkpoint.get(), checkpoint_size});
+  baseline.U64(checkpoint_size_);
+  baseline.Bytes({checkpoint_.get(), checkpoint_size_});
   if (!baseline.ok()) {
     return {base::ErrorCode::kResourceExhausted, {}};
   }
   char name[96];
-  ArchiveName(name, "base", run_id);
-  status = journal.SaveFile(name, {bytes.get(), baseline.size()});
+  ArchiveName(name, "base", run_id_);
+  status = journal_.SaveFile(name, {bytes.get(), baseline.size()});
   if (!status.ok()) {
     return status;
   }
   std::array<std::byte, 64> manifest{};
   StateWriter writer(manifest);
   writer.U64(kArchiveFormatVersion);
-  writer.U64(run_id);
+  writer.U64(run_id_);
   writer.U64(previous);
   writer.U64(prefix.last_lsn);
   writer.U64(gap);
-  ArchiveName(name, "run", run_id);
-  return journal.SaveFile(name, std::span(manifest).first(writer.size()));
+  ArchiveName(name, "run", run_id_);
+  return journal_.SaveFile(name, std::span(manifest).first(writer.size()));
 }
 
-void* Server::Storage::CheckpointEntry(void* context) noexcept {
-  auto& s = *static_cast<Storage*>(context);
-  while (!s.checkpoint_stop.load(std::memory_order_acquire)) {
-    if (s.checkpoint_pending.load(std::memory_order_acquire)) {
-      if (!s.PublishCheckpoint().ok()) {
-        s.checkpoint_failed.store(true, std::memory_order_release);
+void* Server::CheckpointEntry(void* context) noexcept {
+  auto& server = *static_cast<Server*>(context);
+  while (!server.checkpoint_stop_.load(std::memory_order_acquire)) {
+    if (server.checkpoint_pending_.load(std::memory_order_acquire)) {
+      if (!server.PublishCheckpoint().ok()) {
+        server.checkpoint_failed_.store(true, std::memory_order_release);
       }
-      s.checkpoint_pending.store(false, std::memory_order_release);
+      server.checkpoint_pending_.store(false, std::memory_order_release);
     } else {
       usleep(1000);
     }
   }
   return nullptr;
 }
-void Server::Storage::WaitCheckpoint() noexcept {
-  while (checkpoint_pending.load(std::memory_order_acquire)) {
+void Server::WaitCheckpoint() noexcept {
+  while (checkpoint_pending_.load(std::memory_order_acquire)) {
     std::this_thread::yield();
   }
 }
-void Server::Storage::PollCheckpoint(uint64_t now) noexcept {
-  if (!config.persistence.enabled()) {
+void Server::PollCheckpoint(uint64_t now) noexcept {
+  if (!config_.persistence.enabled()) {
     return;
   }
-  if (checkpoint_failed.load(std::memory_order_acquire) || !journal.healthy()) {
-    if (!degraded) {
-      degraded = true;
-      persistence_failure = {base::ErrorCode::kIoError, {}};
-      ::yquant::base::FormatTo(persistence_detail, sizeof(persistence_detail),
+  if (checkpoint_failed_.load(std::memory_order_acquire) ||
+      !journal_.healthy()) {
+    if (!degraded_) {
+      degraded_ = true;
+      persistence_failure_ = {base::ErrorCode::kIoError, {}};
+      ::yquant::base::FormatTo(persistence_detail_, sizeof(persistence_detail_),
                                "background storage failure");
     }
   }
-  if (degraded || now < next_snapshot_at ||
-      checkpoint_pending.load(std::memory_order_acquire)) {
+  if (degraded_ || now < next_snapshot_at_ ||
+      checkpoint_pending_.load(std::memory_order_acquire)) {
     return;
   }
   auto status = CaptureCheckpoint(now);
   if (!status.ok()) {
-    degraded = true;
-    persistence_failure = status;
-    ::yquant::base::FormatTo(persistence_detail, sizeof(persistence_detail),
+    degraded_ = true;
+    persistence_failure_ = status;
+    ::yquant::base::FormatTo(persistence_detail_, sizeof(persistence_detail_),
                              "checkpoint capture failed");
     return;
   }
-  next_snapshot_at = now + config.persistence.snapshot_interval_ms *
-                               kNanosecondsPerMillisecond;
-  checkpoint_pending.store(true, std::memory_order_release);
+  next_snapshot_at_ = now + config_.persistence.snapshot_interval_ms *
+                                kNanosecondsPerMillisecond;
+  checkpoint_pending_.store(true, std::memory_order_release);
 }
-void Server::Storage::StopCheckpoint() noexcept {
-  if (!checkpoint_thread_started) {
+void Server::StopCheckpoint() noexcept {
+  if (!checkpoint_thread_started_) {
     return;
   }
   WaitCheckpoint();
-  checkpoint_stop.store(true, std::memory_order_release);
-  pthread_join(checkpoint_thread, nullptr);
-  checkpoint_thread_started = false;
+  checkpoint_stop_.store(true, std::memory_order_release);
+  pthread_join(checkpoint_thread_, nullptr);
+  checkpoint_thread_started_ = false;
+}
+
+void Server::ResetPersistenceState() noexcept {
+  run_id_ = 0;
+  ledger_id_ = {};
+  last_namespace_ = 0;
+  order_id_highwater_ = 0;
+  cancel_id_highwater_ = 0;
+  context_client_ = trading::kMaxClients;
+  context_local_ = 0;
+  context_cancel_ = {};
+  last_record_time_ = 0;
+  degraded_ = false;
+  archive_disk_pressure_ = false;
+  replaying_ = false;
+  persistence_failure_ = {};
+  persistence_detail_[0] = '\0';
+  checkpoint_.reset();
+  checkpoint_size_ = 0;
+  checkpoint_lsn_ = 0;
+  checkpoint_cursor_ = {};
+  replay_cursor_ = {};
+  next_snapshot_at_ = 0;
+  checkpoint_thread_ = {};
+  checkpoint_thread_started_ = false;
+  checkpoint_pending_.store(false, std::memory_order_relaxed);
+  checkpoint_stop_.store(false, std::memory_order_relaxed);
+  checkpoint_failed_.store(false, std::memory_order_relaxed);
 }
 
 }  // namespace yquant::tradingd

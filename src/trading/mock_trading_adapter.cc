@@ -1615,4 +1615,13 @@ base::Status MockTradingAdapter::Stop() noexcept {
   return {};
 }
 
+void MockTradingAdapter::Reset() noexcept {
+  (void)Stop();
+  state_ = State::kUnprepared;
+  drained_on_stop_ = true;
+  observer_ = nullptr;
+  observer_context_ = nullptr;
+  error_detail_[0] = '\0';
+}
+
 }  // namespace yquant::trading

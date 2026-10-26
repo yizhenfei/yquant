@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <new>
 #include <system_error>
 #include <thread>
@@ -348,10 +349,11 @@ void CheckEstablishedTradingHeap(bool persistent) {
     config.persistence.initialize = true;
     config.persistence.wal_segment_bytes = kMinWalSegmentBytes;
   }
-  Server server(&clock);
-  ASSERT_TRUE(server.Init(config).ok()) << server.error_detail();
+  auto server = std::unique_ptr<Server>(new (std::nothrow) Server(&clock));
+  ASSERT_NE(server, nullptr);
+  ASSERT_TRUE(server->Init(config).ok()) << server->error_detail();
   trading::Endpoint endpoint;
-  endpoint.port = server.port();
+  endpoint.port = server->port();
   trading::Connection client;
   ASSERT_TRUE(client.Connect(endpoint, 1000000000).ok());
   trading::Message hello;
@@ -362,13 +364,13 @@ void CheckEstablishedTradingHeap(bool persistent) {
   hello.instruments[0] = {item.instrument.id, 2};
   ASSERT_TRUE(client.Queue(hello).ok());
   Observation observation;
-  ASSERT_EQ(PumpUntil(server, client, clock, observation,
+  ASSERT_EQ(PumpUntil(*server, client, clock, observation,
                       [&] { return observation.generation != 0; }),
             nullptr);
   ASSERT_EQ(observation.account.cash.balance, 1000000000);
   const char* failure = nullptr;
   const auto activity = ObserveCppHeap([&]() noexcept {
-    failure = Exercise(server, client, clock, item.instrument.id, observation);
+    failure = Exercise(*server, client, clock, item.instrument.id, observation);
   });
   EXPECT_EQ(failure, nullptr) << (failure == nullptr ? "" : failure);
   EXPECT_TRUE(observation.saw_account);

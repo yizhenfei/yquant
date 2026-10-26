@@ -8,6 +8,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <memory>
+#include <new>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -39,7 +41,7 @@ struct PersistentPeer {
 };
 
 // Drives the real TCP framing and shared ledger while keeping broker deadlines
-// deterministic. A fresh Server object reloads state on every Restart.
+// deterministic. Restart reloads persistent state into the same Server.
 class TradingdPersistenceTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -212,12 +214,42 @@ TEST_F(TradingdPersistenceTest,
 
 TEST_F(TradingdPersistenceTest, UniquePublisherLockExcludesSecondServer) {
   Start();
-  Server second{&clock};
+  auto second = std::unique_ptr<Server>(new (std::nothrow) Server(&clock));
+  ASSERT_NE(second, nullptr);
   config.persistence.initialize = false;
-  EXPECT_FALSE(second.Init(config).ok());
+  EXPECT_FALSE(second->Init(config).ok());
   EXPECT_NE(server.port(), 0U);
   Connect(11);
   EXPECT_NE(peer.generation, 0U);
+  peer.connection.Close();
+  server.Close();
+  server.Close();
+  EXPECT_TRUE(second->Init(config).ok()) << second->error_detail();
+  EXPECT_NE(second->port(), 0U);
+}
+
+TEST_F(TradingdPersistenceTest, ListenerFailureReleasesStateForRetry) {
+  trading::Listener blocker;
+  trading::Endpoint endpoint;
+  endpoint.port = 0;
+  ASSERT_TRUE(blocker.Open(endpoint).ok());
+  config.listen.port = blocker.port();
+  ASSERT_FALSE(server.Init(config).ok());
+  EXPECT_EQ(server.port(), 0U);
+  server.Close();
+  server.Close();
+  blocker.Close();
+
+  config.listen.port = 0;
+  config.persistence.initialize = false;
+  ASSERT_TRUE(server.Init(config).ok()) << server.error_detail();
+  EXPECT_STREQ(server.error_detail(), "");
+  Connect(11);
+  ASSERT_NE(peer.generation, 0U);
+  Order();
+  Advance();
+  ASSERT_NE(Update(model::OrderUpdateKind::kAccepted), nullptr);
+  EXPECT_EQ(server.account().cash.reserved, 100000000);
 }
 
 TEST_F(TradingdPersistenceTest, MissingStateRequiresExplicitInitialization) {

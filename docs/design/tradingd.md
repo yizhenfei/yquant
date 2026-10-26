@@ -28,7 +28,7 @@ flowchart LR
 
 各进程内部串行驱动交易，不在策略回调栈内处理回报。策略通过 `context.trading()` 访问公共 [Trading 接口](../../include/yquant/strategy/trading.h)，所有交易均经网关执行。股票使用 `mock`，本地期货模拟使用 `simulated_futures`，SimNow 使用 `ctp`；期货模式不支持持久化。
 
-网关持有 `TradingEngine`、`md::InstrumentScope`、时钟和适配器。引擎完成柜台初始化、请求发送、回报读取和权威落账，不实现策略侧 `TradingService`。客户端权限与订单归属由 `Server` 校验，按客户端的停止撤单由网关安排。策略侧 `TradingServiceImpl` 只维护客户端状态。两侧通过公共 `yquant::trading` 库复用模型、配置加载和传输协议；生产策略不创建网关引擎。构建归属见[目录与模块](engineering.md#目录与模块)。
+`Server` 是网关的进程组装根，直接持有 `TradingEngine`、`md::InstrumentScope`、适配器、客户端记录及持久化组件，借用进程入口提供的时钟。入口在堆上创建整个 `Server`；`server.h` 仅供入口、Server 实现及其专用测试包含。引擎完成柜台初始化、请求发送、回报读取和权威落账，不实现策略侧 `TradingService`。客户端权限与订单归属由 `Server` 校验，按客户端的停止撤单由网关安排。策略侧 `TradingServiceImpl` 只维护客户端状态。两侧通过公共 `yquant::trading` 库复用模型、配置加载和传输协议；生产策略不创建网关引擎。构建归属见[目录与模块](engineering.md#目录与模块)。
 
 ## 账户与事件一致性
 

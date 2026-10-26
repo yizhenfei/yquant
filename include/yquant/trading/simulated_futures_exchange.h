@@ -57,6 +57,9 @@ class SimulatedFuturesExchange final : public TradingAdapter {
   std::optional<uint64_t> next_deadline() const noexcept override;
   bool is_drained() const noexcept override;
   [[nodiscard]] base::Status Stop() noexcept override;
+  // Stops the session and discards its state and diagnostics. Allows Prepare
+  // to begin a new session; all operations require serial access.
+  void Reset() noexcept;
   const char* error_detail() const noexcept override { return error_detail_; }
 
  private:

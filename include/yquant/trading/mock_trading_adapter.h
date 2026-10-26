@@ -55,7 +55,7 @@ using MockTradingMutationObserver = base::Status (*)(
 
 // Single-thread timed counter. Prepare allocates fixed storage once; sends and
 // polling perform no allocation or waits. An installed mutation observer runs
-// synchronously before each commit. One session per object.
+// synchronously before each commit. Reset is required before another session.
 class MockTradingAdapter final : public TradingAdapter {
  public:
   MockTradingAdapter() noexcept;
@@ -79,6 +79,9 @@ class MockTradingAdapter final : public TradingAdapter {
   std::optional<uint64_t> next_deadline() const noexcept override;
   bool is_drained() const noexcept override;
   [[nodiscard]] base::Status Stop() noexcept override;
+  // Stops the session and discards its state, observer and diagnostics. Allows
+  // Prepare to begin a new session; all operations require serial access.
+  void Reset() noexcept;
   const char* error_detail() const noexcept override { return error_detail_; }
 
   // Installs a borrowed observer/context until replaced or Stop. The caller

@@ -179,6 +179,37 @@ TEST_F(ServerTest, HandshakeReturnsAuthoritativeAccountAndSubset) {
   EXPECT_EQ(welcome.account.cash.available, 1000000000);
 }
 
+TEST_F(ServerTest, RepeatedCloseAndInitResetClientAndOrderState) {
+  Connect(first, 11);
+  ASSERT_NE(first.generation, 0U);
+  const auto old_generation = first.generation;
+  Order(first, 1, 60);
+  Pump();
+  Advance();
+  ASSERT_NE(Update(first, model::OrderUpdateKind::kAccepted), nullptr);
+  ASSERT_EQ(server.account().cash.reserved, 600000000);
+  server.BeginStopping(clock.now);
+  server.Close();
+  server.Close();
+  EXPECT_EQ(server.port(), 0U);
+  EXPECT_EQ(server.Service(clock.now).code, base::ErrorCode::kInvalidState);
+
+  config.trading.initial_account.cash_balance = 500000000;
+  Restart();
+  EXPECT_STREQ(server.error_detail(), "");
+  EXPECT_EQ(server.account().revision, 1U);
+  EXPECT_EQ(server.account().cash.balance, 500000000);
+  EXPECT_EQ(server.account().cash.reserved, 0);
+  Connect(first, 11);
+  ASSERT_NE(first.generation, 0U);
+  EXPECT_NE(first.generation, old_generation);
+  Order(first, 1, 10);
+  Pump();
+  Advance();
+  ASSERT_NE(Update(first, model::OrderUpdateKind::kAccepted), nullptr);
+  EXPECT_EQ(server.account().cash.reserved, 100000000);
+}
+
 TEST_F(ServerTest, WrongTokenDoesNotAuthenticate) {
   Connect(first, 1, "incorrect-token");
   EXPECT_FALSE(Has(first, trading::MessageType::kWelcome));
@@ -549,6 +580,35 @@ class ConfigFiles {
   char directory_[64] = "/tmp/yquant-tradingd-config-XXXXXX";
   bool valid_ = false;
 };
+
+TEST_F(ServerTest, StartupFailureDiagnosticMatchesCurrentAttempt) {
+  ConfigFiles files;
+  ASSERT_TRUE(files.valid());
+  ASSERT_TRUE(files.Write("state", "ordinary file"));
+  ::yquant::base::FormatTo(config.persistence.directory,
+                           sizeof(config.persistence.directory), "{}",
+                           files.Path("state"));
+  ::yquant::base::FormatTo(config.persistence.account_key,
+                           sizeof(config.persistence.account_key),
+                           "simulation/failed-start/CNY");
+  config.persistence.initialize = true;
+  ASSERT_FALSE(server.Init(config).ok());
+  ASSERT_NE(std::strstr(server.error_detail(), "cannot lock state directory"),
+            nullptr);
+
+  trading::Listener blocker;
+  trading::Endpoint endpoint;
+  endpoint.port = 0;
+  ASSERT_TRUE(blocker.Open(endpoint).ok());
+  config.persistence = {};
+  config.listen.port = blocker.port();
+  ASSERT_FALSE(server.Init(config).ok());
+  EXPECT_NE(std::strstr(server.error_detail(), "listener startup failed"),
+            nullptr);
+  EXPECT_EQ(std::strstr(server.error_detail(), "journal"), nullptr);
+  EXPECT_EQ(std::strstr(server.error_detail(), "cannot lock state directory"),
+            nullptr);
+}
 
 TEST(TradingdConfigTest, LoadsStrictConfigurationAndRelativeReferences) {
   ConfigFiles files;
