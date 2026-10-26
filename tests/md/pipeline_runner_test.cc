@@ -1,4 +1,4 @@
-#include "marketd/runner.h"
+#include "yquant/md/pipeline_runner.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -8,11 +8,11 @@
 #include <optional>
 
 #include "gtest/gtest.h"
-#include "test_support.h"
+#include "md/pipeline_test_support.h"
 #include "yquant/md/quote_codec.h"
 #include "yquant/md/shm_broadcast.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 namespace {
 
 // Advances one mock interval per source poll; no wall-clock waiting is needed.
@@ -47,13 +47,13 @@ class Environment final : public base::EventLoopEnvironment {
   bool fail = false;
 };
 
-TEST(MarketdRunnerTest, PublishesExactlyLimitToEveryOutputAndClosesDiscovery) {
+TEST(PipelineRunnerTest, PublishesExactlyLimitToEveryOutputAndClosesDiscovery) {
   testing::RuntimeDirectory directory;
   ASSERT_TRUE(directory.valid());
   auto config = testing::LocalConfig(directory.path());
   config.publishers[1] = testing::ShmOutput(directory.path(), "other");
   config.publisher_count = 2;
-  MarketdRunner runner;
+  PipelineRunner runner;
   ASSERT_TRUE(runner.Init(config, 0).ok()) << runner.error_detail();
   md::ShmReader first;
   md::ShmReader second;
@@ -81,11 +81,11 @@ TEST(MarketdRunnerTest, PublishesExactlyLimitToEveryOutputAndClosesDiscovery) {
   EXPECT_FALSE(later.Open({directory.path(), "quotes"}).ok());
 }
 
-TEST(MarketdRunnerTest, ChecksTerminationAtBoundedBatchBoundaries) {
+TEST(PipelineRunnerTest, ChecksTerminationAtBoundedBatchBoundaries) {
   testing::RuntimeDirectory directory;
   ASSERT_TRUE(directory.valid());
   const auto config = testing::LocalConfig(directory.path());
-  MarketdRunner runner;
+  PipelineRunner runner;
   ASSERT_TRUE(runner.Init(config, 0).ok());
   AdvancingClock clock;
   Environment environment;
@@ -95,14 +95,14 @@ TEST(MarketdRunnerTest, ChecksTerminationAtBoundedBatchBoundaries) {
   EXPECT_EQ(runner.event_count(), 64U);
 }
 
-TEST(MarketdRunnerTest, ValidatesAllConfigurationBeforeCreatingOutputs) {
+TEST(PipelineRunnerTest, ValidatesAllConfigurationBeforeCreatingOutputs) {
   testing::RuntimeDirectory directory;
   ASSERT_TRUE(directory.valid());
   auto config = testing::LocalConfig(directory.path());
   config.publishers[1] = testing::ShmOutput(directory.path(), "invalid");
   config.publishers[1].capacity = 3;
   config.publisher_count = 2;
-  MarketdRunner runner;
+  PipelineRunner runner;
   EXPECT_FALSE(runner.Init(config, 0).ok());
   EXPECT_STREQ(runner.error_stage(), "config");
   EXPECT_FALSE(::yquant::testing::files::Exists(
@@ -111,7 +111,7 @@ TEST(MarketdRunnerTest, ValidatesAllConfigurationBeforeCreatingOutputs) {
   EXPECT_FALSE(reader.Open({directory.path(), "quotes"}).ok());
 }
 
-TEST(MarketdRunnerTest, PartialOutputInitializationUnwindsAndReleasesLocks) {
+TEST(PipelineRunnerTest, PartialOutputInitializationUnwindsAndReleasesLocks) {
   testing::RuntimeDirectory directory;
   ASSERT_TRUE(directory.valid());
   md::ShmPublisher existing;
@@ -119,7 +119,7 @@ TEST(MarketdRunnerTest, PartialOutputInitializationUnwindsAndReleasesLocks) {
   auto config = testing::LocalConfig(directory.path());
   config.publishers[1] = testing::ShmOutput(directory.path(), "taken");
   config.publisher_count = 2;
-  MarketdRunner runner;
+  PipelineRunner runner;
   EXPECT_FALSE(runner.Init(config, 0).ok());
   EXPECT_STREQ(runner.error_stage(), "publisher_init");
   md::ShmReader reader;
@@ -128,10 +128,10 @@ TEST(MarketdRunnerTest, PartialOutputInitializationUnwindsAndReleasesLocks) {
   EXPECT_TRUE(replacement.Create({{directory.path(), "quotes"}, 16, 80}).ok());
 }
 
-TEST(MarketdRunnerTest, StopCheckFailureClosesOutputsAndPreservesReason) {
+TEST(PipelineRunnerTest, StopCheckFailureClosesOutputsAndPreservesReason) {
   testing::RuntimeDirectory directory;
   ASSERT_TRUE(directory.valid());
-  MarketdRunner runner;
+  PipelineRunner runner;
   ASSERT_TRUE(runner.Init(testing::LocalConfig(directory.path()), 0).ok());
   AdvancingClock clock;
   Environment environment;
@@ -146,4 +146,4 @@ TEST(MarketdRunnerTest, StopCheckFailureClosesOutputsAndPreservesReason) {
 }
 
 }  // namespace
-}  // namespace yquant::marketd
+}  // namespace yquant::md

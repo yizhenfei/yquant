@@ -20,18 +20,18 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "marketd/csv_replay.h"
-#include "marketd/recording.h"
+#include "md/pipeline_test_support.h"
 #include "scoped_working_directory.h"
-#include "test_support.h"
 #include "trading_gateway.h"
 #include "yquant/base/format.h"
+#include "yquant/md/csv_replay.h"
 #include "yquant/md/quote_codec.h"
+#include "yquant/md/recording.h"
 #include "yquant/md/shm_broadcast.h"
 
 extern char** environ;
 
-namespace yquant::marketd {
+namespace yquant::md {
 namespace {
 
 constexpr auto kProcessTimeout = std::chrono::seconds(10);
@@ -604,4 +604,4 @@ TEST_F(MarketdIntegrationTest, ReplayFeedsSharedMemoryWhileRecording) {
 }
 
 }  // namespace
-}  // namespace yquant::marketd
+}  // namespace yquant::md

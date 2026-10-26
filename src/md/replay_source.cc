@@ -1,4 +1,4 @@
-#include "marketd/replay_source.h"
+#include "yquant/md/replay_source.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -10,11 +10,11 @@
 #include <span>
 #include <utility>
 
-#include "marketd/csv_replay.h"
-#include "marketd/recording.h"
 #include "yquant/base/format.h"
+#include "yquant/md/csv_replay.h"
+#include "yquant/md/recording.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 
 base::Status ReplaySource::Init(const ReplayConfig& config) noexcept {
   Close();
@@ -131,4 +131,4 @@ void ReplaySource::Close() noexcept {
   active_ = false;
 }
 
-}  // namespace yquant::marketd
+}  // namespace yquant::md

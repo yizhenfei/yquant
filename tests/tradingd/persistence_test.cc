@@ -15,7 +15,7 @@
 
 #include "file_test_support.h"
 #include "gtest/gtest.h"
-#include "marketd/test_support.h"
+#include "md/pipeline_test_support.h"
 #include "process_support.h"
 #include "scoped_working_directory.h"
 #include "tradingd/server.h"
@@ -24,7 +24,7 @@
 
 namespace yquant::tradingd {
 namespace {
-using marketd::testing::RuntimeDirectory;
+using md::testing::RuntimeDirectory;
 
 class PersistenceClock final : public base::MonotonicClock {
  public:
@@ -47,7 +47,7 @@ class TradingdPersistenceTest : public ::testing::Test {
     config.listen.port = 0;
     ::yquant::base::FormatTo(config.token, sizeof(config.token),
                              "persistence-token");
-    config.market_data = marketd::testing::ScopeConfig();
+    config.market_data = md::testing::ScopeConfig();
     config.trading.mode = trading::MockTradingMode::kWorking;
     config.trading.initial_account.cash_balance = 1000000000;
     ::yquant::base::FormatTo(config.persistence.directory,

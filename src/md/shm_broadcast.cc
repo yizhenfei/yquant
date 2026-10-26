@@ -5,6 +5,7 @@
 
 #include <array>
 #include <chrono>
+#include <limits>
 #include <memory>
 #include <new>
 #include <optional>
@@ -12,9 +13,17 @@
 #include <utility>
 
 #include "md/internal/event_codec.h"
+#include "yquant/base/format.h"
+#include "yquant/md/quote_codec.h"
 
 namespace yquant::md {
 namespace {
+constexpr uint64_t kControlIntervalNs = 250000000;
+uint64_t NextControl(uint64_t now) noexcept {
+  return now > std::numeric_limits<uint64_t>::max() - kControlIntervalNs
+             ? std::numeric_limits<uint64_t>::max()
+             : now + kControlIntervalNs;
+}
 constexpr size_t kWordBytes = sizeof(uint64_t);
 constexpr size_t kMaxWordCount =
     (internal::kWireHeaderSize + kMaxEventPayloadSize + kWordBytes - 1) /
@@ -99,6 +108,8 @@ base::Status ShmPublisher::Create(const PublishConfig& config) {
     return status;
   }
   impl_ = std::move(impl);
+  next_tick_ = 0;
+  error_detail_[0] = '\0';
   return {};
 }
 base::Status ShmPublisher::Publish(EventView event, uint64_t* sequence) {
@@ -127,7 +138,62 @@ size_t ShmPublisher::max_payload_size() const noexcept {
   return impl_ ? impl_->writer.max_record_size() - internal::kWireHeaderSize
                : 0;
 }
-void ShmPublisher::Close() noexcept { impl_.reset(); }
+base::Status ShmPublisher::Init(const md::PublishConfig& config) noexcept {
+  if (impl_) {
+    return {base::ErrorCode::kInvalidState, {}};
+  }
+  if (config.max_payload_size < md::kQuoteFrameSize) {
+    ::yquant::base::FormatTo(
+        error_detail_, sizeof(error_detail_),
+        "output payload limit is smaller than quote frame");
+    return {base::ErrorCode::kInvalidArgument, {}};
+  }
+  const auto status = Create(config);
+  if (!status.ok()) {
+    ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_),
+                             "cannot create shared-memory output");
+    return status;
+  }
+  return {};
+}
+
+base::Status ShmPublisher::Publish(const model::QuoteTick& quote) noexcept {
+  md::QuoteFrame frame;
+  auto status = md::EncodeQuote(quote, frame);
+  if (!status.ok()) {
+    ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_),
+                             "invalid quote");
+    return status;
+  }
+  status = Publish(md::QuoteEvent(quote, frame));
+  if (!status.ok()) {
+    ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_),
+                             "shared-memory publication failed");
+  }
+  return status;
+}
+
+base::Status ShmPublisher::Service(uint64_t now) noexcept {
+  if (!impl_) {
+    return {base::ErrorCode::kInvalidState, {}};
+  }
+  if (now < next_tick_) {
+    return {};
+  }
+  const auto status = Tick();
+  if (!status.ok()) {
+    ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_),
+                             "shared-memory heartbeat failed");
+    return status;
+  }
+  next_tick_ = NextControl(now);
+  return {};
+}
+
+void ShmPublisher::Close() noexcept {
+  impl_.reset();
+  next_tick_ = 0;
+}
 
 struct ShmReader::Impl {
   // Storage precedes the transport so transport detaches before it is freed.

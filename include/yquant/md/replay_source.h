@@ -1,14 +1,14 @@
-#ifndef YQUANT_MARKETD_REPLAY_SOURCE_H_
-#define YQUANT_MARKETD_REPLAY_SOURCE_H_
+#ifndef YQUANT_MD_REPLAY_SOURCE_H_
+#define YQUANT_MD_REPLAY_SOURCE_H_
 
 #include <stddef.h>
 #include <stdint.h>
 
-#include "marketd/file_config.h"
-#include "marketd/pipeline.h"
-#include "marketd/replay_data.h"
+#include "yquant/md/file_config.h"
+#include "yquant/md/pipeline.h"
+#include "yquant/md/replay_data.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 
 // Preloads and validates a bounded file before serving quotes in file order.
 // Poll performs no allocation or file I/O. All calls are serialized by the
@@ -48,6 +48,6 @@ class ReplaySource final : public Source {
   char error_detail_[256] = {};
 };
 
-}  // namespace yquant::marketd
+}  // namespace yquant::md
 
-#endif  // YQUANT_MARKETD_REPLAY_SOURCE_H_
+#endif  // YQUANT_MD_REPLAY_SOURCE_H_

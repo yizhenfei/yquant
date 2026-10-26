@@ -1,14 +1,14 @@
-#ifndef YQUANT_MARKETD_TCP_TRANSPORT_H_
-#define YQUANT_MARKETD_TCP_TRANSPORT_H_
+#ifndef YQUANT_MD_TCP_TRANSPORT_H_
+#define YQUANT_MD_TCP_TRANSPORT_H_
 
 #include <stddef.h>
 #include <stdint.h>
 
 #include <memory>
 
-#include "marketd/pipeline.h"
+#include "yquant/md/pipeline.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 
 inline constexpr size_t kMaxTcpClients = 16;
 
@@ -68,6 +68,6 @@ class TcpSource final : public Source {
   char error_detail_[256] = {};
 };
 
-}  // namespace yquant::marketd
+}  // namespace yquant::md
 
-#endif  // YQUANT_MARKETD_TCP_TRANSPORT_H_
+#endif  // YQUANT_MD_TCP_TRANSPORT_H_

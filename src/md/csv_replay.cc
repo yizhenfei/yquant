@@ -1,4 +1,4 @@
-#include "marketd/csv_replay.h"
+#include "yquant/md/csv_replay.h"
 
 #include <fcntl.h>
 #include <stddef.h>
@@ -23,7 +23,7 @@
 #include "yquant/base/format.h"
 #include "yquant/md/instrument_catalog.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 namespace {
 
 constexpr size_t kMaxCsvRecordBytes = 64 * 1024;
@@ -521,4 +521,4 @@ base::Status LoadDolphinDbCsv(const ReplayConfig& config, ReplayData& output,
   return {};
 }
 
-}  // namespace yquant::marketd
+}  // namespace yquant::md

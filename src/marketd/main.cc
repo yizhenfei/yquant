@@ -6,11 +6,11 @@
 #include <string_view>
 #include <system_error>
 
-#include "marketd/config.h"
-#include "marketd/runner.h"
 #include "yquant/base/format.h"
 #include "yquant/base/monotonic_clock.h"
 #include "yquant/base/termination_signals.h"
+#include "yquant/md/pipeline_config.h"
+#include "yquant/md/pipeline_runner.h"
 
 namespace {
 
@@ -69,7 +69,7 @@ int main(int argc, char* argv[]) {
     PrintUsage(stderr);
     return 2;
   }
-  yquant::marketd::ConfigLoader loader;
+  yquant::md::PipelineConfigLoader loader;
   auto status = loader.Load(config_path);
   if (!status.ok()) {
     char detail[768];
@@ -89,7 +89,7 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   yquant::base::SteadyMonotonicClock clock;
-  yquant::marketd::MarketdRunner runner;
+  yquant::md::PipelineRunner runner;
   status = runner.Init(loader.config(), clock.Now());
   if (!status.ok()) {
     PrintFailure(runner.error_stage(), status, runner.error_detail());

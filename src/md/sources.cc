@@ -1,4 +1,4 @@
-#include "marketd/adapters.h"
+#include "yquant/md/sources.h"
 
 #include <stdint.h>
 
@@ -8,7 +8,7 @@
 #include "yquant/base/format.h"
 #include "yquant/md/quote_codec.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 namespace {
 
 constexpr uint64_t kControlIntervalNs = 250000000;
@@ -160,66 +160,4 @@ void ShmSource::Close() noexcept {
   active_ = false;
 }
 
-base::Status ShmPublisherAdapter::Init(
-    const md::PublishConfig& config) noexcept {
-  if (active_) {
-    return {base::ErrorCode::kInvalidState, {}};
-  }
-  if (config.max_payload_size < md::kQuoteFrameSize) {
-    ::yquant::base::FormatTo(
-        error_detail_, sizeof(error_detail_),
-        "output payload limit is smaller than quote frame");
-    return {base::ErrorCode::kInvalidArgument, {}};
-  }
-  const auto status = publisher_.Create(config);
-  if (!status.ok()) {
-    ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_),
-                             "cannot create shared-memory output");
-    return status;
-  }
-  active_ = true;
-  next_tick_ = 0;
-  error_detail_[0] = '\0';
-  return {};
-}
-
-base::Status ShmPublisherAdapter::Publish(
-    const model::QuoteTick& quote) noexcept {
-  md::QuoteFrame frame;
-  auto status = md::EncodeQuote(quote, frame);
-  if (!status.ok()) {
-    ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_),
-                             "invalid quote");
-    return status;
-  }
-  status = publisher_.Publish(md::QuoteEvent(quote, frame));
-  if (!status.ok()) {
-    ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_),
-                             "shared-memory publication failed");
-  }
-  return status;
-}
-
-base::Status ShmPublisherAdapter::Service(uint64_t now) noexcept {
-  if (!active_) {
-    return {base::ErrorCode::kInvalidState, {}};
-  }
-  if (now < next_tick_) {
-    return {};
-  }
-  const auto status = publisher_.Tick();
-  if (!status.ok()) {
-    ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_),
-                             "shared-memory heartbeat failed");
-    return status;
-  }
-  next_tick_ = NextControl(now);
-  return {};
-}
-
-void ShmPublisherAdapter::Close() noexcept {
-  publisher_.Close();
-  active_ = false;
-}
-
-}  // namespace yquant::marketd
+}  // namespace yquant::md

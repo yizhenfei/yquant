@@ -40,14 +40,14 @@ YQuant 是一个支持多策略运行的低延迟量化交易系统，使用 C++
 
 - `include/yquant/base/`：基础组件公开头文件。
 - `include/yquant/model/`：交易领域公共类型。
-- `include/yquant/md/`：标的字典与运行范围、行情配置、模拟报价、编解码与广播。
+- `include/yquant/md/`：标的字典与运行范围、行情配置、输入输出、回放录制与管线调度。
 - `include/yquant/trading/`：交易账本、柜台接入、交易配置与网关传输。
 - `include/yquant/strategy/`：策略开发接口与动态库协议。
 - `src/base/`：基础组件及内部实现，包括内存广播队列和共享内存封装。
 - `src/md/`：行情库实现。
 - `src/trading/`：交易库实现。
 - `src/strategyd/`：策略程序专用的动态库加载、行情服务、远端交易服务与调度。
-- `src/marketd/`：行情程序专用的配置、输入与输出适配及调度。
+- `src/marketd/`：行情服务入口，负责命令行、信号与行情管线组装。
 - `src/tradingd/`：交易网关专用的配置、账户服务与请求路由。
 - `src/logd/`：独立日志进程。
 - `examples/tradingd/`：共享交易网关与策略客户端配置。

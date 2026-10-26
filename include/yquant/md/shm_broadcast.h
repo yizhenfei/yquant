@@ -11,6 +11,7 @@
 #include "yquant/base/shm_broadcast.h"
 #include "yquant/base/status.h"
 #include "yquant/md/event.h"
+#include "yquant/md/pipeline.h"
 
 namespace yquant::md {
 
@@ -59,14 +60,22 @@ struct ReadResult {
 // Single-thread-owned market-event adapter over base::ShmBroadcastWriter.
 // Owns reusable encoding storage; queue synchronization and SHM lifecycle
 // are delegated to the byte broadcast layer. Constructors do not allocate.
-class ShmPublisher {
+class ShmPublisher final : public Publisher {
  public:
   ShmPublisher() noexcept;
   ShmPublisher(ShmPublisher&&) noexcept;
   ShmPublisher& operator=(ShmPublisher&&) noexcept;
-  ~ShmPublisher();
+  ~ShmPublisher() override;
   ShmPublisher(const ShmPublisher&) = delete;
   ShmPublisher& operator=(const ShmPublisher&) = delete;
+
+  // Quote pipeline setup also requires room for a complete quote frame.
+  [[nodiscard]] base::Status Init(const PublishConfig& config) noexcept;
+  [[nodiscard]] base::Status Publish(
+      const model::QuoteTick& quote) noexcept override;
+  // Refreshes the heartbeat at most once per 250 ms.
+  [[nodiscard]] base::Status Service(uint64_t now) noexcept override;
+  const char* error_detail() const noexcept override { return error_detail_; }
 
   // Requires a closed object, power-of-two capacity and payload limit <= 4096.
   // Failure leaves the object closed; the stable lock file is never removed.
@@ -81,11 +90,13 @@ class ShmPublisher {
   size_t capacity() const noexcept;
   size_t max_payload_size() const noexcept;
   // Idempotent; stops the generation, retires discovery and releases the lock.
-  void Close() noexcept;
+  void Close() noexcept override;
 
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
+  uint64_t next_tick_ = 0;
+  char error_detail_[256] = {};
 };
 
 // Single-thread-owned market-event adapter over base::ShmBroadcastReader.

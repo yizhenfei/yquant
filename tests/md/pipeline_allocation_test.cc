@@ -13,12 +13,12 @@
 #include <utility>
 
 #include "gtest/gtest.h"
-#include "marketd/adapters.h"
-#include "marketd/recording.h"
-#include "marketd/replay_source.h"
-#include "marketd/tcp_transport.h"
-#include "test_support.h"
+#include "md/pipeline_test_support.h"
 #include "yquant/base/format.h"
+#include "yquant/md/recording.h"
+#include "yquant/md/replay_source.h"
+#include "yquant/md/sources.h"
+#include "yquant/md/tcp_transport.h"
 
 namespace {
 
@@ -145,7 +145,7 @@ void operator delete[](void* memory, std::align_val_t,
   DeallocateCppHeap(memory);
 }
 
-namespace yquant::marketd {
+namespace yquant::md {
 namespace {
 
 constexpr size_t kQuoteCount = 128;
@@ -153,7 +153,7 @@ constexpr size_t kQuoteCount = 128;
 // Caller completes initialization before observation. Every event includes
 // first-use quote encoding/decoding; the prior idle Poll only refreshes
 // discovery.
-const char* ExerciseShm(ShmPublisherAdapter& publisher, ShmSource& source,
+const char* ExerciseShm(ShmPublisher& publisher, ShmSource& source,
                         model::QuoteTick quote, size_t& received) noexcept {
   model::QuoteTick output;
   for (uint64_t sequence = 1; sequence <= kQuoteCount; ++sequence) {
@@ -252,7 +252,7 @@ TEST(MarketdCppHeapTest, ShmFirstQuoteAndSteadyDeliveryHaveNoCppHeapActivity) {
   testing::RuntimeDirectory directory;
   ASSERT_TRUE(directory.valid());
   const md::Endpoint endpoint{directory.path(), "allocation-quotes"};
-  ShmPublisherAdapter publisher;
+  ShmPublisher publisher;
   ASSERT_TRUE(publisher.Init({endpoint, 256, 256}).ok());
   ShmSource source;
   ASSERT_TRUE(source.Init(endpoint).ok());
@@ -348,4 +348,4 @@ TEST(MarketdCppHeapTest, ReplayAndRecordingHaveNoCppHeapActivity) {
 }
 
 }  // namespace
-}  // namespace yquant::marketd
+}  // namespace yquant::md

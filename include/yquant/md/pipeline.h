@@ -1,12 +1,12 @@
-#ifndef YQUANT_MARKETD_PIPELINE_H_
-#define YQUANT_MARKETD_PIPELINE_H_
+#ifndef YQUANT_MD_PIPELINE_H_
+#define YQUANT_MD_PIPELINE_H_
 
 #include <stdint.h>
 
 #include "yquant/base/status.h"
 #include "yquant/model/quote_tick.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 
 enum class PollState { kEvent, kIdle, kError, kEnd };
 
@@ -46,6 +46,6 @@ class Publisher {
   virtual const char* error_detail() const noexcept = 0;
 };
 
-}  // namespace yquant::marketd
+}  // namespace yquant::md
 
-#endif  // YQUANT_MARKETD_PIPELINE_H_
+#endif  // YQUANT_MD_PIPELINE_H_

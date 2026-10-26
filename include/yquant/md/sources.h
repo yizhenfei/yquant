@@ -1,14 +1,14 @@
-#ifndef YQUANT_MARKETD_ADAPTERS_H_
-#define YQUANT_MARKETD_ADAPTERS_H_
+#ifndef YQUANT_MD_SOURCES_H_
+#define YQUANT_MD_SOURCES_H_
 
 #include <stdint.h>
 
-#include "marketd/config.h"
-#include "marketd/pipeline.h"
+#include "yquant/md/mock_quote_config.h"
 #include "yquant/md/mock_quote_source.h"
+#include "yquant/md/pipeline.h"
 #include "yquant/md/shm_broadcast.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 
 // Wraps the standalone generator and emits every configured instrument.
 // Poll and Close are serialized by the owning daemon thread.
@@ -57,28 +57,6 @@ class ShmSource final : public Source {
   char error_detail_[256] = {};
 };
 
-// Encodes one quote into preallocated storage and publishes its envelope.
-// Heartbeats run through Service, never once per quote. Single-thread-owned.
-class ShmPublisherAdapter final : public Publisher {
- public:
-  ShmPublisherAdapter() = default;
-  ShmPublisherAdapter(const ShmPublisherAdapter&) = delete;
-  ShmPublisherAdapter& operator=(const ShmPublisherAdapter&) = delete;
+}  // namespace yquant::md
 
-  [[nodiscard]] base::Status Init(const md::PublishConfig& config) noexcept;
-  [[nodiscard]] base::Status Publish(
-      const model::QuoteTick& quote) noexcept override;
-  [[nodiscard]] base::Status Service(uint64_t now) noexcept override;
-  void Close() noexcept override;
-  const char* error_detail() const noexcept override { return error_detail_; }
-
- private:
-  md::ShmPublisher publisher_;
-  uint64_t next_tick_ = 0;
-  bool active_ = false;
-  char error_detail_[256] = {};
-};
-
-}  // namespace yquant::marketd
-
-#endif  // YQUANT_MARKETD_ADAPTERS_H_
+#endif  // YQUANT_MD_SOURCES_H_

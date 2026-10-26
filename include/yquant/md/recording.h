@@ -1,5 +1,5 @@
-#ifndef YQUANT_MARKETD_RECORDING_H_
-#define YQUANT_MARKETD_RECORDING_H_
+#ifndef YQUANT_MD_RECORDING_H_
+#define YQUANT_MD_RECORDING_H_
 
 #include <pthread.h>
 #include <stddef.h>
@@ -9,12 +9,12 @@
 #include <atomic>
 #include <span>
 
-#include "marketd/file_config.h"
-#include "marketd/pipeline.h"
-#include "marketd/replay_data.h"
 #include "yquant/base/spsc_queue.h"
+#include "yquant/md/file_config.h"
+#include "yquant/md/pipeline.h"
+#include "yquant/md/replay_data.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 
 inline constexpr size_t kRecordingHeaderSize = 64;
 inline constexpr size_t kRecordingRecordSize = 96;
@@ -95,6 +95,6 @@ class RecordPublisher final : public Publisher {
   char error_detail_[256] = {};
 };
 
-}  // namespace yquant::marketd
+}  // namespace yquant::md
 
-#endif  // YQUANT_MARKETD_RECORDING_H_
+#endif  // YQUANT_MD_RECORDING_H_

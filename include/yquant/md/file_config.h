@@ -1,12 +1,12 @@
-#ifndef YQUANT_MARKETD_FILE_CONFIG_H_
-#define YQUANT_MARKETD_FILE_CONFIG_H_
+#ifndef YQUANT_MD_FILE_CONFIG_H_
+#define YQUANT_MD_FILE_CONFIG_H_
 
 #include <stddef.h>
 #include <stdint.h>
 
 #include "yquant/model/identifiers.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 
 inline constexpr size_t kMaxDataPathBytes = 4095;
 inline constexpr size_t kMaxReplayRecords = 2000000;
@@ -36,6 +36,6 @@ struct RecordConfig {
   size_t queue_capacity = 1024 * 1024;
 };
 
-}  // namespace yquant::marketd
+}  // namespace yquant::md
 
-#endif  // YQUANT_MARKETD_FILE_CONFIG_H_
+#endif  // YQUANT_MD_FILE_CONFIG_H_

@@ -1,5 +1,5 @@
-#ifndef YQUANT_MARKETD_REPLAY_DATA_H_
-#define YQUANT_MARKETD_REPLAY_DATA_H_
+#ifndef YQUANT_MD_REPLAY_DATA_H_
+#define YQUANT_MD_REPLAY_DATA_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -8,11 +8,11 @@
 #include <new>
 #include <utility>
 
-#include "marketd/file_config.h"
 #include "yquant/base/status.h"
+#include "yquant/md/file_config.h"
 #include "yquant/model/quote_tick.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 
 // File order is authoritative; offset_ns is a nondecreasing arrival offset.
 struct ReplayRecord {
@@ -81,6 +81,6 @@ class ReplayData {
   size_t capacity_ = 0;
 };
 
-}  // namespace yquant::marketd
+}  // namespace yquant::md
 
-#endif  // YQUANT_MARKETD_REPLAY_DATA_H_
+#endif  // YQUANT_MD_REPLAY_DATA_H_

@@ -66,7 +66,7 @@ src/base/                  基础库实现及内部平台适配
 src/md/                    行情库实现
 src/trading/               交易库实现
 src/strategyd/             策略程序专用实现
-src/marketd/               行情程序专用实现
+src/marketd/               行情服务入口与组装
 src/tradingd/              交易网关程序专用实现
 tests/                     各库和程序的单元与集成测试
 tests/cmake/               构建与测试数据准备流程验证
@@ -83,7 +83,7 @@ CMakePresets.json
 | --- | --- | --- |
 | `yquant::base` | `yquant_base`，别名 `yquant::base` | 日志、队列、共享内存、路径与文件操作、文本格式化、JSON 文档、单调时钟及进程等待和退出信号；队列不依赖日志或 fmt |
 | `yquant::model` | `yquant_model`，别名 `yquant::model`，`INTERFACE` 目标 | 标识、标的、行情、委托和账户等领域类型 |
-| `yquant::md` | `yquant_md`，别名 `yquant::md` | 标的字典、运行标的范围、接收配置、模拟报价、编解码及行情广播适配；依赖 `base` 和 `model` |
+| `yquant::md` | `yquant_md`，别名 `yquant::md` | 标的字典、运行标的范围、行情配置、输入输出、回放录制及管线调度；依赖 `base` 和 `model` |
 | `yquant::trading` | `yquant_trading`，别名 `yquant::trading` | 网关交易引擎、账本、客户端服务接口、配置、模拟柜台、协议及连接；依赖 `base`、`md`、`model` 和策略服务接口 |
 | `yquant::strategy` | `yquant_strategy_api`，别名 `yquant::strategy_api` | 策略 SDK 的 `INTERFACE` 目标，提供公开头文件和编译要求；宿主回调阶段枚举位于 `callback_phase.h` |
 
@@ -133,8 +133,9 @@ CMakePresets.json
 | 私有对象目标 | 可执行目标 | 输出程序 |
 | --- | --- | --- |
 | `yquant_strategyd_objects` | `yquant_strategyd` | `yquant-strategyd` |
-| `yquant_marketd_objects` | `yquant_marketd` | `yquant-marketd` |
 | `yquant_tradingd_objects` | `yquant_tradingd` | `yquant-tradingd` |
+
+`yquant_marketd` 仅编译服务入口，直接链接 `yquant::md`，由行情库提供配置加载、输入输出组件及管线调度。
 
 编译选项按 target 配置：C++20、公开 include 路径和日志编译级别向调用方传播；项目警告选项设为私有，不强加给依赖。基础库的日志与文本格式化模板使用 fmt，因此 `fmt::fmt` 为公开依赖。异常开关和 fmt 配置同时应用于依赖自身及相关调用方，避免不同编译单元采用不同配置。
 

@@ -1,4 +1,4 @@
-#include "marketd/tcp_transport.h"
+#include "yquant/md/tcp_transport.h"
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -21,7 +21,7 @@
 #include "gtest/gtest.h"
 #include "yquant/md/quote_codec.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -485,4 +485,4 @@ TEST(TcpTransportTest, ConnectionRefusalReturnsTerminalFailure) {
 }
 
 }  // namespace
-}  // namespace yquant::marketd
+}  // namespace yquant::md

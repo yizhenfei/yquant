@@ -45,7 +45,14 @@ add_library(yquant_md STATIC
   src/md/mock_quote_source.cc
   src/md/event_codec.cc
   src/md/quote_codec.cc
-  src/md/shm_broadcast.cc)
+  src/md/shm_broadcast.cc
+  src/md/sources.cc
+  src/md/replay_source.cc
+  src/md/csv_replay.cc
+  src/md/pipeline_runner.cc
+  src/md/recording.cc
+  src/md/tcp_transport.cc
+  src/md/pipeline_config.cc)
 add_library(yquant::md ALIAS yquant_md)
 target_include_directories(yquant_md PUBLIC
   "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
@@ -136,24 +143,8 @@ set_target_properties(yquant_tradingd PROPERTIES
   OUTPUT_NAME yquant-tradingd
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
-add_library(yquant_marketd_objects OBJECT
-  src/marketd/adapters.cc
-  src/marketd/config.cc
-  src/marketd/csv_replay.cc
-  src/marketd/recording.cc
-  src/marketd/replay_source.cc
-  src/marketd/runner.cc
-  src/marketd/tcp_transport.cc)
-target_include_directories(yquant_marketd_objects PRIVATE
-  "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(yquant_marketd_objects PUBLIC
-  yquant::md yquant::base
-  PRIVATE simdjson::simdjson Threads::Threads)
-target_compile_options(yquant_marketd_objects PRIVATE -Wall -Wextra -Wpedantic)
-
 add_executable(yquant_marketd src/marketd/main.cc)
-target_include_directories(yquant_marketd PRIVATE "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(yquant_marketd PRIVATE yquant_marketd_objects)
+target_link_libraries(yquant_marketd PRIVATE yquant::md)
 target_compile_options(yquant_marketd PRIVATE -Wall -Wextra -Wpedantic)
 set_target_properties(yquant_marketd PROPERTIES
   OUTPUT_NAME yquant-marketd
@@ -453,6 +444,7 @@ if(BUILD_TESTING)
 
   include(cmake/LoggingCompileTests.cmake)
   include(cmake/StrategydTests.cmake)
+  include(cmake/MdTests.cmake)
   include(cmake/MarketdTests.cmake)
   include(cmake/TradingdTests.cmake)
   foreach(target IN ITEMS yquant_strategyd_test yquant_marketd_test

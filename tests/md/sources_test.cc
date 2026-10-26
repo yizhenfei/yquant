@@ -1,4 +1,4 @@
-#include "marketd/adapters.h"
+#include "yquant/md/sources.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -7,10 +7,10 @@
 #include <string>
 
 #include "gtest/gtest.h"
-#include "test_support.h"
+#include "md/pipeline_test_support.h"
 #include "yquant/md/quote_codec.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 namespace {
 
 TEST(MockSourceTest, SubscribesAllInstrumentsAndUsesLocalReceiveTime) {
@@ -34,11 +34,11 @@ TEST(MockSourceTest, SubscribesAllInstrumentsAndUsesLocalReceiveTime) {
   EXPECT_EQ(quote, last);
 }
 
-TEST(ShmAdapterTest, BroadcastPreservesMetadataAndRestampsLocalClock) {
+TEST(ShmPipelineTest, BroadcastPreservesMetadataAndRestampsLocalClock) {
   testing::RuntimeDirectory directory;
   ASSERT_TRUE(directory.valid());
   const md::Endpoint endpoint{directory.path(), "quotes"};
-  ShmPublisherAdapter publisher;
+  ShmPublisher publisher;
   ASSERT_TRUE(publisher.Init({endpoint, 16, 80}).ok());
   ASSERT_TRUE(publisher.Service(0).ok());
   ShmSource first;
@@ -60,11 +60,47 @@ TEST(ShmAdapterTest, BroadcastPreservesMetadataAndRestampsLocalClock) {
   EXPECT_EQ(out, unchanged);
 }
 
-TEST(ShmAdapterTest, GapIsTerminalAndDiagnosticSurvivesClose) {
+TEST(ShmPipelineTest, PublishesQuotesAndEventsThroughOnePublisher) {
   testing::RuntimeDirectory directory;
   ASSERT_TRUE(directory.valid());
   const md::Endpoint endpoint{directory.path(), "quotes"};
-  ShmPublisherAdapter publisher;
+  ShmPublisher publisher;
+  ASSERT_TRUE(publisher.Init({endpoint, 16, 80}).ok());
+  Publisher& output = publisher;
+  ASSERT_TRUE(output.Service(0).ok());
+  ShmSource source;
+  ASSERT_TRUE(source.Init(endpoint).ok());
+
+  auto first = testing::Quote(1);
+  ASSERT_TRUE(output.Publish(first).ok());
+  auto second = testing::Quote(2);
+  QuoteFrame frame;
+  ASSERT_TRUE(EncodeQuote(second, frame).ok());
+  uint64_t sequence = 0;
+  ASSERT_TRUE(publisher.Publish(QuoteEvent(second, frame), &sequence).ok());
+  EXPECT_EQ(sequence, 2U);
+
+  model::QuoteTick out;
+  ASSERT_EQ(source.Poll(100, out).state, PollState::kEvent);
+  first.receive_time_ns = 100;
+  EXPECT_EQ(out, first);
+  ASSERT_EQ(source.Poll(101, out).state, PollState::kEvent);
+  second.receive_time_ns = 101;
+  EXPECT_EQ(out, second);
+
+  ASSERT_TRUE(output.Finish().ok());
+  ASSERT_TRUE(output.Finish().ok());
+  EXPECT_FALSE(output.Publish(first).ok());
+  EXPECT_FALSE(output.Service(102).ok());
+  ShmPublisher replacement;
+  EXPECT_TRUE(replacement.Init({endpoint, 16, 80}).ok());
+}
+
+TEST(ShmPipelineTest, GapIsTerminalAndDiagnosticSurvivesClose) {
+  testing::RuntimeDirectory directory;
+  ASSERT_TRUE(directory.valid());
+  const md::Endpoint endpoint{directory.path(), "quotes"};
+  ShmPublisher publisher;
   ASSERT_TRUE(publisher.Init({endpoint, 2, 80}).ok());
   ShmSource source;
   ASSERT_TRUE(source.Init(endpoint).ok());
@@ -87,7 +123,7 @@ TEST(ShmAdapterTest, GapIsTerminalAndDiagnosticSurvivesClose) {
   EXPECT_EQ(out, unchanged);
 }
 
-TEST(ShmAdapterTest, CorruptFramesAreTerminalWithoutChangingOutput) {
+TEST(ShmPipelineTest, CorruptFramesAreTerminalWithoutChangingOutput) {
   testing::RuntimeDirectory directory;
   ASSERT_TRUE(directory.valid());
   const md::Endpoint endpoint{directory.path(), "quotes"};
@@ -108,11 +144,11 @@ TEST(ShmAdapterTest, CorruptFramesAreTerminalWithoutChangingOutput) {
   EXPECT_EQ(source.Poll(11, out).state, PollState::kError);
 }
 
-TEST(ShmAdapterTest, GenerationReplacementAndEndAreTerminal) {
+TEST(ShmPipelineTest, GenerationReplacementAndEndAreTerminal) {
   testing::RuntimeDirectory directory;
   ASSERT_TRUE(directory.valid());
   const md::Endpoint endpoint{directory.path(), "quotes"};
-  ShmPublisherAdapter publisher;
+  ShmPublisher publisher;
   ASSERT_TRUE(publisher.Init({endpoint, 16, 80}).ok());
   ShmSource source;
   ASSERT_TRUE(source.Init(endpoint).ok());
@@ -130,11 +166,11 @@ TEST(ShmAdapterTest, GenerationReplacementAndEndAreTerminal) {
   EXPECT_NE(std::strstr(source.error_detail(), "changed"), nullptr);
 }
 
-TEST(ShmAdapterTest, MissingDiscoveryDrainsCommittedEventsBeforeError) {
+TEST(ShmPipelineTest, MissingDiscoveryDrainsCommittedEventsBeforeError) {
   testing::RuntimeDirectory directory;
   ASSERT_TRUE(directory.valid());
   const md::Endpoint endpoint{directory.path(), "quotes"};
-  ShmPublisherAdapter publisher;
+  ShmPublisher publisher;
   ASSERT_TRUE(publisher.Init({endpoint, 16, 80}).ok());
   ShmSource source;
   ASSERT_TRUE(source.Init(endpoint).ok());
@@ -153,11 +189,11 @@ TEST(ShmAdapterTest, MissingDiscoveryDrainsCommittedEventsBeforeError) {
   EXPECT_EQ(out, unchanged);
 }
 
-TEST(ShmAdapterTest, RejectsInsufficientPayloadCapacityBeforeOpeningInput) {
+TEST(ShmPipelineTest, RejectsInsufficientPayloadCapacityBeforeOpeningInput) {
   testing::RuntimeDirectory directory;
   ASSERT_TRUE(directory.valid());
   const md::Endpoint endpoint{directory.path(), "quotes"};
-  ShmPublisherAdapter adapter;
+  ShmPublisher adapter;
   EXPECT_FALSE(adapter.Init({endpoint, 16, 79}).ok());
   md::ShmPublisher publisher;
   ASSERT_TRUE(publisher.Create({endpoint, 16, 32}).ok());
@@ -166,4 +202,4 @@ TEST(ShmAdapterTest, RejectsInsufficientPayloadCapacityBeforeOpeningInput) {
 }
 
 }  // namespace
-}  // namespace yquant::marketd
+}  // namespace yquant::md

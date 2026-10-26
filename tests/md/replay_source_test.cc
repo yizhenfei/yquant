@@ -1,4 +1,4 @@
-#include "marketd/replay_source.h"
+#include "yquant/md/replay_source.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -11,11 +11,11 @@
 
 #include "file_test_support.h"
 #include "gtest/gtest.h"
-#include "marketd/recording.h"
-#include "test_support.h"
+#include "md/pipeline_test_support.h"
 #include "yquant/base/format.h"
+#include "yquant/md/recording.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 namespace {
 
 constexpr char kCsv[] =
@@ -315,4 +315,4 @@ TEST(ReplaySourceTest, CloseAndReinitializationRestartTheCursor) {
 }
 
 }  // namespace
-}  // namespace yquant::marketd
+}  // namespace yquant::md

@@ -8,7 +8,11 @@
 Source → model::QuoteTick → Publisher[]
 ```
 
-`Source` 负责获取数据并形成完整报价，`Publisher` 负责向下游提供报价。`MarketdRunner` 管理组件生命周期，串行执行轮询和发布。接入或中继由组件组合形成。
+`Source` 负责获取数据并形成完整报价，`Publisher` 负责向下游提供报价。`md::PipelineRunner` 管理组件生命周期，串行执行轮询和发布。接入或中继由组件组合形成。
+
+输入、输出、配置加载和管线调度属于 `yquant::md` 库，公开接口位于 `include/yquant/md/`，实现位于 `src/md/`。`src/marketd/main.cc` 负责命令行处理、加载 `md::PipelineConfig`、准备时钟与停止信号，并创建和运行 `md::PipelineRunner`。
+
+`md::Publisher` 的实现包括 `ShmPublisher`、`TcpPublisher` 和 `RecordPublisher`。`ShmPublisher` 直接完成报价编码、事件封装、共享内存写入及周期心跳，同时保留 `Publish(EventView, sequence)` 供事件发布使用。
 
 | 输入适配器 | 数据来源 | 行为 |
 | --- | --- | --- |
@@ -78,7 +82,7 @@ yquant-marketd --config /path/to/marketd.json --max-events 100
 
 #### 模拟报价生成
 
-`md::MockQuoteSource` 属于行情组件，持有 `MockQuoteConfig` 中的报价种子和批次状态。`marketd::MockSource` 为生产端选择配置中的全部标的，逐条取得规范化报价。对象由单一执行流使用，不创建线程、不执行等待，轮询路径不分配内存。
+`md::MockQuoteSource` 属于行情组件，持有 `MockQuoteConfig` 中的报价种子和批次状态。`md::MockSource` 为生产端选择配置中的全部标的，逐条取得规范化报价。对象由单一执行流使用，不创建线程、不执行等待，轮询路径不分配内存。
 
 每隔 `interval_ms` 对每个选择的标的生成一次报价，按配置中的标的顺序通过多次 `Poll()` 返回。第一批在激活后经过一个间隔生成，此后持续运行，不设置自动结束条数。
 

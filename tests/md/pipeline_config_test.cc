@@ -1,4 +1,4 @@
-#include "marketd/config.h"
+#include "yquant/md/pipeline_config.h"
 
 #include <cstdio>
 #include <cstring>
@@ -6,11 +6,11 @@
 #include <string_view>
 
 #include "gtest/gtest.h"
+#include "md/pipeline_test_support.h"
 #include "scoped_working_directory.h"
-#include "test_support.h"
 #include "yquant/base/format.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 namespace {
 
 using testing::RuntimeDirectory;
@@ -41,7 +41,7 @@ class ConfigTest : public ::testing::Test {
   RuntimeDirectory directory_;
   ::yquant::testing::ScopedWorkingDirectory working_directory_{
       directory_.path()};
-  ConfigLoader loader_;
+  PipelineConfigLoader loader_;
 };
 
 TEST_F(ConfigTest, LoadsRelativeMockAndPublisherDefaultsWithoutOutputs) {
@@ -166,7 +166,7 @@ TEST_F(ConfigTest, RejectsNetworkAndStringBoundViolations) {
   std::memset(config.publishers[0].stream, 'x',
               sizeof(config.publishers[0].stream));
   base::ConfigError error;
-  EXPECT_FALSE(ValidateConfig(config, error).ok());
+  EXPECT_FALSE(ValidatePipelineConfig(config, error).ok());
 }
 
 TEST_F(ConfigTest, RejectsDirectFeedbackAndNormalizedDuplicateEndpoints) {
@@ -182,7 +182,7 @@ TEST_F(ConfigTest, RejectsDirectFeedbackAndNormalizedDuplicateEndpoints) {
                            "{}/./", directory_.path());
   config.publisher_count = 2;
   base::ConfigError error;
-  EXPECT_FALSE(ValidateConfig(config, error).ok());
+  EXPECT_FALSE(ValidatePipelineConfig(config, error).ok());
   EXPECT_FALSE(Load(R"({"adapter":"tcp","address":"127.0.0.1","port":19100})",
                     R"([{"adapter":"tcp","address":"0.0.0.0","port":19100}])")
                    .ok());
@@ -308,4 +308,4 @@ TEST_F(ConfigTest, RejectsRecordingFeedbackAndNormalizedDuplicatePaths) {
 }
 
 }  // namespace
-}  // namespace yquant::marketd
+}  // namespace yquant::md

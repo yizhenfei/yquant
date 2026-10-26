@@ -1,5 +1,5 @@
-#ifndef YQUANT_TESTS_MARKETD_TEST_SUPPORT_H_
-#define YQUANT_TESTS_MARKETD_TEST_SUPPORT_H_
+#ifndef YQUANT_TESTS_MD_PIPELINE_TEST_SUPPORT_H_
+#define YQUANT_TESTS_MD_PIPELINE_TEST_SUPPORT_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -14,14 +14,14 @@
 
 #include "file_test_support.h"
 #include "gtest/gtest.h"
-#include "marketd/config.h"
 #include "yquant/base/format.h"
 #include "yquant/md/market_data_config.h"
+#include "yquant/md/pipeline_config.h"
 #include "yquant/model/identifiers.h"
 #include "yquant/model/instrument.h"
 #include "yquant/model/quote_tick.h"
 
-namespace yquant::marketd::testing {
+namespace yquant::md::testing {
 
 // Isolates on-disk discovery, lock files and a shared catalog copy per test.
 class RuntimeDirectory {
@@ -129,8 +129,8 @@ inline PublisherConfig ShmOutput(const char* directory, const char* stream) {
   return output;
 }
 
-inline MarketdConfig LocalConfig(const char* directory) {
-  MarketdConfig config;
+inline PipelineConfig LocalConfig(const char* directory) {
+  PipelineConfig config;
   config.source.adapter = Adapter::kMock;
   config.source.mock = MockConfig();
   config.publishers[0] = ShmOutput(directory, "quotes");
@@ -148,6 +148,6 @@ inline constexpr std::string_view kMockJson = R"({
     "price_step":1}]
 })";
 
-}  // namespace yquant::marketd::testing
+}  // namespace yquant::md::testing
 
-#endif  // YQUANT_TESTS_MARKETD_TEST_SUPPORT_H_
+#endif  // YQUANT_TESTS_MD_PIPELINE_TEST_SUPPORT_H_

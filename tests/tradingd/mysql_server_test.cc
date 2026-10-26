@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "marketd/test_support.h"
+#include "md/pipeline_test_support.h"
 #include "tradingd/server.h"
 #include "yquant/base/format.h"
 #include "yquant/trading/connection.h"
@@ -52,7 +52,7 @@ class MysqlServerTest : public ::testing::Test {
     config.listen.port = 0;
     ::yquant::base::FormatTo(config.token, sizeof(config.token),
                              "mysql-test-token");
-    config.market_data = marketd::testing::ScopeConfig();
+    config.market_data = md::testing::ScopeConfig();
     config.trading.mode = trading::MockTradingMode::kFill;
     config.trading.initial_account.cash_balance = 1000000000;
     config.heartbeat_timeout_ns = kMaximumTimeoutNs;
@@ -255,7 +255,7 @@ class MysqlServerTest : public ::testing::Test {
     return false;
   }
 
-  marketd::testing::RuntimeDirectory directory;
+  md::testing::RuntimeDirectory directory;
   MysqlServerClock clock;
   ServerConfig config;
   Server server{&clock};

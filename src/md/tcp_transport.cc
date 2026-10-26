@@ -1,4 +1,4 @@
-#include "marketd/tcp_transport.h"
+#include "yquant/md/tcp_transport.h"
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -23,7 +23,7 @@
 #include "yquant/base/format.h"
 #include "yquant/md/quote_codec.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 namespace {
 
 constexpr size_t kMaxClients = kMaxTcpClients;
@@ -468,4 +468,4 @@ PollResult TcpSource::Poll(uint64_t now, model::QuoteTick& out) noexcept {
 void TcpSource::Close() noexcept { impl_.reset(); }
 const char* TcpSource::error_detail() const noexcept { return error_detail_; }
 
-}  // namespace yquant::marketd
+}  // namespace yquant::md

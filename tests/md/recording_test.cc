@@ -1,4 +1,4 @@
-#include "marketd/recording.h"
+#include "yquant/md/recording.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -21,10 +21,10 @@
 
 #include "file_test_support.h"
 #include "gtest/gtest.h"
-#include "test_support.h"
+#include "md/pipeline_test_support.h"
 #include "yquant/base/format.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 namespace {
 
 RecordConfig Config(const std::string& path, size_t capacity = 1 << 20) {
@@ -467,4 +467,4 @@ TEST(RecordingTest, FinalSyncAndCloseErrorsPropagate) {
 }
 
 }  // namespace
-}  // namespace yquant::marketd
+}  // namespace yquant::md

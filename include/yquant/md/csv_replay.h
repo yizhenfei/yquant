@@ -1,13 +1,13 @@
-#ifndef YQUANT_MARKETD_CSV_REPLAY_H_
-#define YQUANT_MARKETD_CSV_REPLAY_H_
+#ifndef YQUANT_MD_CSV_REPLAY_H_
+#define YQUANT_MD_CSV_REPLAY_H_
 
 #include <span>
 
-#include "marketd/file_config.h"
-#include "marketd/replay_data.h"
 #include "yquant/base/status.h"
+#include "yquant/md/file_config.h"
+#include "yquant/md/replay_data.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 
 // Loads a regular DolphinDB snapshot CSV into bounded, owned replay storage.
 // Required columns are Date, Time, SecurityID, SecurityIDSource, OfferPX1,
@@ -23,6 +23,6 @@ namespace yquant::marketd {
     const ReplayConfig& config, ReplayData& output,
     std::span<char> error_detail) noexcept;
 
-}  // namespace yquant::marketd
+}  // namespace yquant::md
 
-#endif  // YQUANT_MARKETD_CSV_REPLAY_H_
+#endif  // YQUANT_MD_CSV_REPLAY_H_

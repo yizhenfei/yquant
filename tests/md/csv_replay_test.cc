@@ -1,4 +1,4 @@
-#include "marketd/csv_replay.h"
+#include "yquant/md/csv_replay.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -11,11 +11,11 @@
 #include <string_view>
 
 #include "gtest/gtest.h"
-#include "test_support.h"
+#include "md/pipeline_test_support.h"
 #include "yquant/base/format.h"
 #include "yquant/md/quote_codec.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 namespace {
 
 constexpr std::string_view kHeader =
@@ -325,4 +325,4 @@ TEST_F(CsvReplayTest, RejectsNonRegularInputWithoutWaitingForPipeWriter) {
 }
 
 }  // namespace
-}  // namespace yquant::marketd
+}  // namespace yquant::md

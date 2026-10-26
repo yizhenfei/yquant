@@ -1,4 +1,4 @@
-#include "marketd/runner.h"
+#include "yquant/md/pipeline_runner.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -7,33 +7,34 @@
 #include <new>
 #include <thread>
 
-#include "marketd/adapters.h"
-#include "marketd/recording.h"
-#include "marketd/replay_source.h"
-#include "marketd/tcp_transport.h"
 #include "yquant/base/format.h"
 #include "yquant/md/quote_codec.h"
+#include "yquant/md/recording.h"
+#include "yquant/md/replay_source.h"
+#include "yquant/md/shm_broadcast.h"
+#include "yquant/md/sources.h"
+#include "yquant/md/tcp_transport.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 
-MarketdRunner::~MarketdRunner() noexcept { Close(); }
+PipelineRunner::~PipelineRunner() noexcept { Close(); }
 
-base::Status MarketdRunner::Fail(base::Status status, const char* stage,
-                                 const char* detail) noexcept {
+base::Status PipelineRunner::Fail(base::Status status, const char* stage,
+                                  const char* detail) noexcept {
   ::yquant::base::FormatTo(error_stage_, sizeof(error_stage_), "{}", stage);
   ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_), "{}", detail);
   Close();
   return status;
 }
 
-base::Status MarketdRunner::Init(const MarketdConfig& config,
-                                 uint64_t now) noexcept {
+base::Status PipelineRunner::Init(const PipelineConfig& config,
+                                  uint64_t now) noexcept {
   if (source_) {
     return Fail({base::ErrorCode::kInvalidState, {}}, "initialize",
                 "pipeline is already initialized");
   }
   base::ConfigError error;
-  auto status = ValidateConfig(config, error);
+  auto status = ValidatePipelineConfig(config, error);
   if (!status.ok()) {
     char detail[768];
     ::yquant::base::FormatTo(detail, sizeof(detail), "{}: {}", error.field_path,
@@ -79,7 +80,7 @@ base::Status MarketdRunner::Init(const MarketdConfig& config,
   for (size_t i = 0; i < config.publisher_count; ++i) {
     const auto& output = config.publishers[i];
     if (output.adapter == Adapter::kShm) {
-      auto* adapter = new (std::nothrow) ShmPublisherAdapter;
+      auto* adapter = new (std::nothrow) ShmPublisher;
       if (adapter != nullptr) {
         publishers_[i].reset(adapter);
         status = adapter->Init({{output.runtime_directory, output.stream},
@@ -112,9 +113,9 @@ base::Status MarketdRunner::Init(const MarketdConfig& config,
   return {};
 }
 
-base::Status MarketdRunner::Run(const base::MonotonicClock& clock,
-                                base::EventLoopEnvironment& environment,
-                                uint64_t max_events) noexcept {
+base::Status PipelineRunner::Run(const base::MonotonicClock& clock,
+                                 base::EventLoopEnvironment& environment,
+                                 uint64_t max_events) noexcept {
   if (!source_) {
     return Fail({base::ErrorCode::kInvalidState, {}}, "run",
                 "pipeline is not initialized");
@@ -170,9 +171,9 @@ base::Status MarketdRunner::Run(const base::MonotonicClock& clock,
   }
 }
 
-void MarketdRunner::Close() noexcept { (void)Finish(); }
+void PipelineRunner::Close() noexcept { (void)Finish(); }
 
-base::Status MarketdRunner::Finish() noexcept {
+base::Status PipelineRunner::Finish() noexcept {
   if (source_) {
     source_->Close();
   }
@@ -197,4 +198,4 @@ base::Status MarketdRunner::Finish() noexcept {
   return first_error;
 }
 
-}  // namespace yquant::marketd
+}  // namespace yquant::md

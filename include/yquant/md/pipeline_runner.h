@@ -1,5 +1,5 @@
-#ifndef YQUANT_MARKETD_RUNNER_H_
-#define YQUANT_MARKETD_RUNNER_H_
+#ifndef YQUANT_MD_PIPELINE_RUNNER_H_
+#define YQUANT_MD_PIPELINE_RUNNER_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -7,28 +7,28 @@
 #include <array>
 #include <memory>
 
-#include "marketd/config.h"
-#include "marketd/pipeline.h"
 #include "yquant/base/event_loop_environment.h"
 #include "yquant/base/monotonic_clock.h"
+#include "yquant/md/pipeline.h"
+#include "yquant/md/pipeline_config.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 
 // Owns a configuration-assembled Source -> Publisher[] pipeline. All methods
 // run on the daemon thread. Publishers may own workers for file I/O. Each loop
 // services every output and polls at most 64 quotes before checking
 // termination.
-class MarketdRunner {
+class PipelineRunner {
  public:
-  MarketdRunner() noexcept = default;
-  ~MarketdRunner() noexcept;
-  MarketdRunner(const MarketdRunner&) = delete;
-  MarketdRunner& operator=(const MarketdRunner&) = delete;
+  PipelineRunner() noexcept = default;
+  ~PipelineRunner() noexcept;
+  PipelineRunner(const PipelineRunner&) = delete;
+  PipelineRunner& operator=(const PipelineRunner&) = delete;
 
   // Validates all configuration before opening any output. Failure closes all
   // resources acquired by this attempt and preserves an owned diagnostic.
   // now uses the same process-relative clock later passed to Run().
-  [[nodiscard]] base::Status Init(const MarketdConfig& config,
+  [[nodiscard]] base::Status Init(const PipelineConfig& config,
                                   uint64_t now) noexcept;
   // Requires successful Init. max_events=0 means unlimited; otherwise stops
   // after publishing exactly that many quotes to every output. Any source or
@@ -61,6 +61,6 @@ class MarketdRunner {
   char error_detail_[768] = {};
 };
 
-}  // namespace yquant::marketd
+}  // namespace yquant::md
 
-#endif  // YQUANT_MARKETD_RUNNER_H_
+#endif  // YQUANT_MD_PIPELINE_RUNNER_H_

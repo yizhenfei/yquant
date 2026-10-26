@@ -1,4 +1,4 @@
-#include "marketd/config.h"
+#include "yquant/md/pipeline_config.h"
 
 #include <arpa/inet.h>
 #include <ifaddrs.h>
@@ -23,7 +23,7 @@
 #include "yquant/md/quote_codec.h"
 #include "yquant/md/shm_broadcast.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 namespace {
 
 using base::InvalidConfig;
@@ -267,7 +267,7 @@ base::Status ParseAdapter(simdjson::ondemand::value value, bool source,
 }
 
 // Applies the daemon schema to already validated UTF-8 JSON.
-base::Status Parse(const base::JsonConfigDocument& source, MarketdConfig& out,
+base::Status Parse(const base::JsonConfigDocument& source, PipelineConfig& out,
                    char* mock_path, base::ConfigError& error) noexcept {
   simdjson::ondemand::parser parser;
   simdjson::ondemand::document document;
@@ -489,8 +489,8 @@ bool TcpFeedback(const TcpEndpoint& input, const TcpEndpoint& output) noexcept {
 
 }  // namespace
 
-base::Status ValidateConfig(const MarketdConfig& config,
-                            base::ConfigError& error) noexcept {
+base::Status ValidatePipelineConfig(const PipelineConfig& config,
+                                    base::ConfigError& error) noexcept {
   error.Clear();
   if (config.publisher_count == 0 || config.publisher_count > kMaxPublishers) {
     return InvalidConfig("publishers", "must contain from 1 to 8 publishers",
@@ -649,7 +649,7 @@ base::Status ValidateConfig(const MarketdConfig& config,
   return {};
 }
 
-base::Status ConfigLoader::Load(const char* path) noexcept {
+base::Status PipelineConfigLoader::Load(const char* path) noexcept {
   config_ = {};
   error_.Clear();
   base::JsonConfigDocument document;
@@ -658,7 +658,7 @@ base::Status ConfigLoader::Load(const char* path) noexcept {
     error_ = document.error();
     return status;
   }
-  MarketdConfig parsed;
+  PipelineConfig parsed;
   char mock_path[kMaxRuntimePathBytes + 1] = {};
   status = Parse(document, parsed, mock_path, error_);
   if (!status.ok()) {
@@ -709,11 +709,11 @@ base::Status ConfigLoader::Load(const char* path) noexcept {
       return status;
     }
   }
-  status = ValidateConfig(parsed, error_);
+  status = ValidatePipelineConfig(parsed, error_);
   if (status.ok()) {
     config_ = parsed;
   }
   return status;
 }
 
-}  // namespace yquant::marketd
+}  // namespace yquant::md

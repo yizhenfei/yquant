@@ -1,4 +1,4 @@
-#include "marketd/recording.h"
+#include "yquant/md/recording.h"
 
 #include <fcntl.h>
 #include <stddef.h>
@@ -23,7 +23,7 @@
 #include "yquant/base/format.h"
 #include "yquant/md/quote_codec.h"
 
-namespace yquant::marketd {
+namespace yquant::md {
 namespace {
 
 using Header = std::array<std::byte, kRecordingHeaderSize>;
@@ -539,4 +539,4 @@ base::Status RecordPublisher::Finish() noexcept {
 
 void RecordPublisher::Close() noexcept { (void)Finish(); }
 
-}  // namespace yquant::marketd
+}  // namespace yquant::md
