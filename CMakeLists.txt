@@ -63,6 +63,8 @@ target_link_libraries(yquant_market PRIVATE simdjson::simdjson)
 target_compile_options(yquant_market PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(yquant_trading STATIC
+  src/trading/order_core.cc
+  src/trading/order_request_executor.cc
   src/trading/ctp_trading_adapter.cc
   src/trading/protocol.cc
   src/trading/connection.cc
@@ -71,8 +73,7 @@ add_library(yquant_trading STATIC
   src/trading/trading_config.cc
   src/trading/trading_client_config.cc
   src/trading/futures_ledger.cc
-  src/trading/simulated_futures_exchange.cc
-  src/trading/trading_persistence.cc)
+  src/trading/simulated_futures_exchange.cc)
 add_library(yquant::trading ALIAS yquant_trading)
 target_include_directories(yquant_trading PUBLIC
   "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
@@ -114,27 +115,13 @@ set_target_properties(yquant_strategyd PROPERTIES
 
 add_library(yquant_tradingd_objects OBJECT
   src/tradingd/config.cc
-  src/tradingd/server.cc
-  src/tradingd/archive_projection.cc
-  src/tradingd/mysql_archive.cc
-  src/tradingd/mysql_archive_store.cc
-  src/tradingd/journal.cc
-  src/tradingd/recovery.cc
-  src/tradingd/server_persistence.cc)
+  src/tradingd/server.cc)
 target_include_directories(yquant_tradingd_objects PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(yquant_tradingd_objects PUBLIC
   yquant::base yquant::market yquant::trading
   PRIVATE simdjson::simdjson Threads::Threads)
 target_compile_options(yquant_tradingd_objects PRIVATE
   -Wall -Wextra -Wpedantic -Werror=switch)
-option(YQUANT_WITH_MYSQL "Enable MySQL trading archive (Oracle client API)" OFF)
-if(YQUANT_WITH_MYSQL)
-  find_path(YQUANT_MYSQL_INCLUDE_DIR mysql.h PATH_SUFFIXES mysql REQUIRED)
-  find_library(YQUANT_MYSQL_LIBRARY NAMES mysqlclient REQUIRED)
-  target_include_directories(yquant_tradingd_objects PRIVATE "${YQUANT_MYSQL_INCLUDE_DIR}")
-  target_link_libraries(yquant_tradingd_objects PRIVATE "${YQUANT_MYSQL_LIBRARY}")
-  target_compile_definitions(yquant_tradingd_objects PUBLIC YQUANT_WITH_MYSQL=1)
-endif()
 add_executable(yquant_tradingd src/tradingd/main.cc)
 target_include_directories(yquant_tradingd PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(yquant_tradingd PRIVATE yquant_tradingd_objects)
@@ -198,7 +185,7 @@ foreach(config IN ITEMS mock_source local tcp_source tcp_relay record_local
     "${CMAKE_BINARY_DIR}/marketd/${config}.json" COPYONLY)
 endforeach()
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/tradingd")
-foreach(config IN ITEMS local persistent mysql client_1 client_2 instrument_scope
+foreach(config IN ITEMS local client_1 client_2 instrument_scope
                         bbo_mock_trading futures_trading simnow_bridge)
   configure_file("examples/tradingd/${config}.json"
     "${CMAKE_BINARY_DIR}/tradingd/${config}.json" COPYONLY)

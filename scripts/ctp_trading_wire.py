@@ -1,10 +1,11 @@
 """Bounded codec for YQuant's owned trading messages.
 
-The bridge writes wire version 4 and reads versions 1 through 4. Message
+The bridge writes wire version 5 and reads versions 1 through 5. Message
 objects are dictionaries using the C++ field names; instrument dictionaries
 use ``id`` and futures positions use ``instrument_id``. Opaque identifiers,
 tokens and diagnostics accept UTF-8 strings or bytes and decode to bytes.
 Version 4 separates strategy and client order identities.
+Version 5 adds local cancel-not-sent updates.
 Version 3 carries broker identity and unallocated directional position freezes.
 There is no socket or CTP dependency here. Live bridges reject simulation
 quote messages at the framing boundary.
@@ -20,7 +21,8 @@ MAX_FRAME_SIZE = 16384
 # Keep these values aligned with trading/protocol.cc and identifiers.h.
 _MAGIC = 0x52545159
 _ORDER_IDENTITY_VERSION = 4
-_VERSION = _ORDER_IDENTITY_VERSION
+_LOCAL_ORDER_RESULT_VERSION = 5
+_VERSION = _LOCAL_ORDER_RESULT_VERSION
 _HEADER = struct.Struct("<IHHIIQQ")
 _MAX_INSTRUMENTS = 64
 _MAX_TOKEN_BYTES = 64
@@ -473,8 +475,15 @@ def _write_payload(writer, message):
         writer.put("BB", notify, has_fill)
         order = _mapping(message.get("order"), "order")
         _write_order(writer, order)
-        update_kind = _int_field(message, "kind", minimum=0, maximum=5)
-        writer.put("BQ", update_kind, _int_field(message, "cancel_request_id", 0))
+        update_kind = _int_field(message, "kind", minimum=0, maximum=6)
+        cancel_id = _int_field(message, "cancel_request_id", 0)
+        if (update_kind == 6 and
+                (order.get("state", 0) < 2
+                 or order.get("cancel_pending", False)
+                 or not notify or has_fill
+                 or cancel_id != order.get("cancel_request_id", 0))):
+            raise WireError("inconsistent local cancel-not-sent result")
+        writer.put("BQ", update_kind, cancel_id)
         _write_reason(writer, message.get("reason", {}))
         if has_fill:
             if update_kind != 2:
@@ -489,7 +498,7 @@ def _write_payload(writer, message):
 
 
 def encode_message(message):
-    """Encode one version-4 dictionary; invalid values raise WireError.
+    """Encode one version-5 dictionary; invalid values raise WireError.
 
     ``type`` and nonzero ``sequence`` are required; ``generation`` defaults to
     zero. Unused fields are ignored, as in the C++ codec. Optional order flags,
@@ -509,8 +518,8 @@ def encode_message(message):
 def frame_size(header):
     """Return full size for an exact valid header, otherwise zero.
 
-    The header does not establish payload validity. Versions 1..3 are accepted
-    for journal compatibility; simulation-quote message type 11 is rejected.
+    The header does not establish payload validity. Versions 1..4 remain
+    accepted; simulation-quote message type 11 is rejected.
     """
     if not isinstance(header, (bytes, bytearray, memoryview)) or len(header) != HEADER_SIZE:
         return 0
@@ -518,7 +527,7 @@ def frame_size(header):
         magic, version, kind, size, reserved, _, sequence = _HEADER.unpack(header)
     except (struct.error, BufferError, TypeError):
         return 0
-    if (magic != _MAGIC or version not in (1, 2, 3, 4)
+    if (magic != _MAGIC or version not in (1, 2, 3, 4, 5)
             or not HELLO <= kind <= ERROR or reserved != 0 or sequence == 0
             or not HEADER_SIZE <= size <= MAX_FRAME_SIZE):
         return 0
@@ -562,6 +571,8 @@ def decode_message(frame):
         result["notify_order"], result["has_fill"] = reader.boolean(), reader.boolean()
         result["order"] = _read_order(reader)
         result["kind"], result["cancel_request_id"] = reader.get("BQ")
+        if (version < _LOCAL_ORDER_RESULT_VERSION and result["kind"] == 6):
+            raise WireError("legacy frame cannot carry cancel-not-sent")
         result["reason"] = _read_reason(reader)
         if result["has_fill"]:
             result["fill"] = _read_fill(reader)

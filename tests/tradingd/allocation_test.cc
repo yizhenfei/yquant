@@ -7,16 +7,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <new>
-#include <system_error>
 #include <thread>
 #include <utility>
 
-#include "file_test_support.h"
 #include "gtest/gtest.h"
-#include "tradingd/journal.h"
 #include "tradingd/server.h"
-#include "yquant/base/format.h"
 #include "yquant/trading/connection.h"
 
 namespace {
@@ -303,24 +300,8 @@ TEST(TradingdCppHeapCounter, CountsAllReplacementAllocationForms) {
   EXPECT_EQ(activity.deallocation_calls, 8U);
 }
 
-// Runs the full gateway path after authentication; cold identity persistence
-// and segment preparation finish before observing the owning thread.
-void CheckEstablishedTradingHeap(bool persistent) {
-  char directory[] = "/tmp/yquant-persistent-allocation-XXXXXX";
-  if (persistent) {
-    ASSERT_NE(mkdtemp(directory), nullptr);
-  }
-  struct Cleanup {
-    const char* path;
-    bool enabled;
-    ~Cleanup() {
-      std::error_code error;
-      if (enabled) {
-        ::yquant::testing::files::RemoveTree(
-            ::yquant::testing::files::FilePath(path), error);
-      }
-    }
-  } cleanup{directory, persistent};
+// Runs the full gateway path after authentication.
+void CheckEstablishedTradingHeap() {
   TestClock clock;
   ServerConfig config;
   config.listen.port = 0;
@@ -338,20 +319,11 @@ void CheckEstablishedTradingHeap(bool persistent) {
   config.trading.mode = trading::MockTradingMode::kFill;
   config.trading.report_interval_ns = 1000000;
   config.trading.initial_account.cash_balance = 1000000000;
-  if (persistent) {
-    ::yquant::base::FormatTo(config.persistence.directory,
-                             sizeof(config.persistence.directory), "{}",
-                             directory);
-    ::yquant::base::FormatTo(config.persistence.account_key,
-                             sizeof(config.persistence.account_key), "{}",
-                             "simulation/allocation/CNY");
-    config.persistence.initialize = true;
-    config.persistence.wal_segment_bytes = kMinWalSegmentBytes;
-  }
-  Server server(&clock);
-  ASSERT_TRUE(server.Init(config).ok()) << server.error_detail();
+  auto server = std::unique_ptr<Server>(new (std::nothrow) Server(&clock));
+  ASSERT_NE(server, nullptr);
+  ASSERT_TRUE(server->Init(config).ok()) << server->error_detail();
   trading::Endpoint endpoint;
-  endpoint.port = server.port();
+  endpoint.port = server->port();
   trading::Connection client;
   ASSERT_TRUE(client.Connect(endpoint, 1000000000).ok());
   trading::Message hello;
@@ -362,13 +334,13 @@ void CheckEstablishedTradingHeap(bool persistent) {
   hello.instruments[0] = {item.instrument.id, 2};
   ASSERT_TRUE(client.Queue(hello).ok());
   Observation observation;
-  ASSERT_EQ(PumpUntil(server, client, clock, observation,
+  ASSERT_EQ(PumpUntil(*server, client, clock, observation,
                       [&] { return observation.generation != 0; }),
             nullptr);
   ASSERT_EQ(observation.account.cash.balance, 1000000000);
   const char* failure = nullptr;
   const auto activity = ObserveCppHeap([&]() noexcept {
-    failure = Exercise(server, client, clock, item.instrument.id, observation);
+    failure = Exercise(*server, client, clock, item.instrument.id, observation);
   });
   EXPECT_EQ(failure, nullptr) << (failure == nullptr ? "" : failure);
   EXPECT_TRUE(observation.saw_account);
@@ -393,46 +365,7 @@ void CheckEstablishedTradingHeap(bool persistent) {
 }
 
 TEST(TradingdCppHeap, EstablishedOrderFillAndCancelHaveNoCppHeapActivity) {
-  CheckEstablishedTradingHeap(false);
-}
-TEST(TradingdCppHeap, PersistentOrderFillAndCancelHaveNoCppHeapActivity) {
-  CheckEstablishedTradingHeap(true);
-}
-
-TEST(TradingdCppHeap, JournalAppendAndRotationHaveNoCppHeapActivity) {
-  char directory[] = "/tmp/yquant-journal-allocation-XXXXXX";
-  ASSERT_NE(::mkdtemp(directory), nullptr);
-  struct DirectoryCleanup {
-    const char* path;
-    ~DirectoryCleanup() {
-      std::error_code error;
-      ::yquant::testing::files::RemoveTree(
-          ::yquant::testing::files::FilePath(path), error);
-    }
-  } cleanup{directory};
-  Journal journal;
-  JournalOptions options;
-  options.directory = directory;
-  options.segment_bytes = 65536;
-  options.sync_after_bytes = 4096;
-  ASSERT_TRUE(journal.Acquire(options).ok());
-  ASSERT_TRUE(journal.Start(1).ok());
-  std::array<std::byte, kJournalMaxPayloadBytes> payload{};
-  uint64_t lsn = 0;
-  base::Status status;
-  const auto activity = ObserveCppHeap([&]() noexcept {
-    for (unsigned i = 0; i < 8; ++i) {
-      status = journal.TryAppend(7, payload, lsn);
-      if (!status.ok()) {
-        break;
-      }
-    }
-  });
-  EXPECT_TRUE(status.ok()) << journal.error_detail();
-  EXPECT_EQ(lsn, 8);
-  EXPECT_EQ(activity.allocation_calls, 0U);
-  EXPECT_EQ(activity.deallocation_calls, 0U);
-  EXPECT_TRUE(journal.Close().ok());
+  CheckEstablishedTradingHeap();
 }
 
 }  // namespace

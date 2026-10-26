@@ -1,8 +1,8 @@
 #ifndef YQUANT_TRADING_TRADING_STORAGE_H_
 #define YQUANT_TRADING_TRADING_STORAGE_H_
 
-// Defines private engine storage, staged transactions and lookup helpers shared
-// with the cold checkpoint codec. Public order models belong in model/.
+// Defines private engine storage, staged transactions and lookup helpers.
+// Public order models belong in model/.
 
 #include <stddef.h>
 #include <stdint.h>
@@ -11,31 +11,17 @@
 #include <optional>
 
 #include "yquant/trading/futures_ledger.h"
+#include "yquant/trading/order_core.h"
+#include "yquant/trading/order_request_executor.h"
 #include "yquant/trading/trading_engine.h"
 
 namespace yquant::trading {
-// Private fixed storage shared by the ledger and its cold checkpoint codec.
+// Capacities for the fixed identity lookup tables.
 inline constexpr size_t kFillLookupCapacity = 2 * kMaxTradingFills;
 inline constexpr size_t kBrokerLookupCapacity = 2 * kMaxTradingOrders;
 inline constexpr size_t kOrderLookupCapacity = 2 * kMaxTradingOrders;
 
-// Rejects unknown mutation bytes before replay or codec dispatch. Every new
-// mutation kind requires an explicit decision in this shared validation.
-inline bool IsValidTradingMutationKind(TradingMutationKind kind) noexcept {
-  switch (kind) {
-    case TradingMutationKind::kNewOrder:
-    case TradingMutationKind::kCancel:
-    case TradingMutationKind::kSendNew:
-    case TradingMutationKind::kSendCancel:
-    case TradingMutationKind::kScheduleLocalCancel:
-    case TradingMutationKind::kLocalCancel:
-    case TradingMutationKind::kReport:
-      return true;
-  }
-  return false;
-}
-
-// Integral identity hashing keeps sparse cold-leased IDs independent of slots.
+// Integral identity hashing maps order IDs to fixed lookup buckets.
 inline size_t TradingOrderHash(model::ClientOrderId order) noexcept {
   auto value = order.value;
   value ^= value >> 30;
@@ -46,7 +32,7 @@ inline size_t TradingOrderHash(model::ClientOrderId order) noexcept {
   return value & (kOrderLookupCapacity - 1);
 }
 
-// Open-addressed lookup hashes must match for live commits and cold rebuilds.
+// Hashes broker and execution identities for open-addressed lookup tables.
 inline size_t TradingBrokerHash(const model::AdapterOrderId& broker) noexcept {
   uint64_t hash = 14695981039346656037ULL;
   for (const unsigned char byte : broker.view()) {
@@ -63,8 +49,10 @@ inline size_t TradingFillHash(model::ClientOrderId order,
   return hash & (kFillLookupCapacity - 1);
 }
 
-// Holds an unpublished request and its resource claim until journal append.
+// Stages an unpublished request and its resource claim.
 struct TradingEngine::Submission {
+  OrderCore core;
+  OrderRequestExecutionTransition execution;
   model::OrderSnapshot order;
   model::CashSnapshot cash;
   model::PositionSnapshot position;
@@ -76,9 +64,11 @@ struct TradingEngine::Submission {
   bool futures = false;
 };
 
-// Stages one report's order and cash effects until validation and WAL append
-// succeed. Owned on the stack; it neither borrows events nor allocates storage.
+// Stages one report's order and cash effects until validation succeeds.
+// Stored on the stack without retaining event references or allocating memory.
 struct TradingEngine::ReportTransaction {
+  OrderCore core;
+  OrderRequestExecutionTransition execution;
   model::OrderSnapshot next;
   TradingDispatch dispatch;
   model::CashSnapshot cash;
@@ -89,14 +79,13 @@ struct TradingEngine::ReportTransaction {
   size_t broker_slot = 0;
   size_t fill_slot = 0;
   bool bind_broker = false;
+  bool ignored = false;
+  bool release_remaining = false;
 };
 
 struct TradingEngine::Storage {
   struct OrderRecord {
-    model::OrderSnapshot snapshot;
-    bool new_attempted = false;
-    bool cancel_attempted = false;
-    bool local_cancel_pending = false;
+    OrderCore core;
     uint64_t retry_not_before_ns = 0;
     size_t position_index = 0;
     int64_t price_scale = 1;
@@ -106,30 +95,18 @@ struct TradingEngine::Storage {
     int64_t reserved_qty = 0;
     FuturesReservation futures_reservation;
   };
-  enum class RequestKind { kNew, kCancel };
-  struct Request {
-    RequestKind kind = RequestKind::kNew;
-    size_t order_index = 0;
-    model::CancelRequestId cancel_id;
-  };
   std::array<OrderRecord, kMaxTradingOrders> orders = {};
   std::array<uint16_t, kOrderLookupCapacity> order_lookup = {};
   std::array<model::Fill, kMaxTradingFills> fills = {};
   std::array<uint16_t, kFillLookupCapacity> fill_lookup = {};
   std::array<uint16_t, kBrokerLookupCapacity> broker_lookup = {};
-  std::array<Request, kMaxTradingRequests> requests = {};
-  std::array<size_t, kMaxLocalOrderUpdates> local_updates = {};
+  OrderRequestExecutor executor;
   size_t order_count = 0;
   size_t fill_count = 0;
   size_t active_count = 0;
   size_t pending_cancel_count = 0;
-  size_t request_head = 0;
-  size_t request_count = 0;
-  size_t local_head = 0;
-  size_t local_count = 0;
   uint64_t last_cancel_id = 0;
   uint64_t next_order_id = 1;
-  uint64_t mutation_revision = 0;
   size_t scan_cursor = 0;
   bool scan_pending = false;
   bool rescan_required = false;

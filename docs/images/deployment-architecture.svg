@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="2100" height="1600" viewBox="0 0 2100 1600" role="img" aria-labelledby="title desc">
   <title id="title">YQuant 集群部署架构</title>
-  <desc id="desc">从左到右为行情源、行情主机、策略主机集群、交易主机和交易柜台。策略主机以 1、省略号和 N 表示；每台策略主机内的策略进程也以 1、省略号和 N 表示，进程编号在各自主机内有效。每台策略主机的行情中继通过本机共享内存广播队列分发行情。交易主机内的 tradingd 分别连接独立的 WAL 文件图元和 MySQL 数据库图元。图中在策略主机内展示日志链路：本机业务进程通过各 Logger 独立的共享内存 SPSC 队列发送日志，由本机 logd 写入日志文件。行情和交易主机的同类日志链路省略。</desc>
+  <desc id="desc">从左到右为行情源、行情主机、策略主机集群、交易主机和交易柜台。策略主机以 1、省略号和 N 表示；每台策略主机内的策略进程也以 1、省略号和 N 表示，进程编号在各自主机内有效。每台策略主机的行情中继通过本机共享内存广播队列分发行情。图中在策略主机内展示日志链路：本机业务进程通过各 Logger 独立的共享内存 SPSC 队列发送日志，由本机 logd 写入日志文件。行情和交易主机的同类日志链路省略。</desc>
   <defs>
     <marker id="blue" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto-start-reverse">
       <path d="M0 0 L9 4.5 L0 9 Z" fill="#112D4E" />
@@ -117,26 +117,6 @@
     <text x="965" y="778" font-size="46" font-weight="400" text-anchor="middle" fill="#64748b" data-role="omitted-hosts">⋮</text>
     <text x="1187.5" y="356" font-size="32" font-weight="400" text-anchor="middle" fill="#64748b" data-role="omitted-processes-host-1">⋮</text>
     <text x="1187.5" y="1056" font-size="32" font-weight="400" text-anchor="middle" fill="#64748b" data-role="omitted-processes-host-n">⋮</text>
-    <g id="local-persistence" aria-label="交易主机内的 WAL 和 MySQL" transform="translate(0 210)">
-      <polyline points="1560,600 1560,730" fill="none" stroke="#112D4E" stroke-width="2.5" />
-      <path d="M1510 730 L1588 730 L1610 752 L1610 845 L1510 845 Z" fill="#F9F7F7" stroke="#112D4E" stroke-width="2" />
-      <path d="M1588 730 L1588 752 L1610 752" fill="none" stroke="#112D4E" stroke-width="2" />
-      <text x="1560" y="801" font-size="25" font-weight="600" text-anchor="middle" fill="#112D4E">WAL</text>
-      <polyline points="1685,600 1685,665 1690,665 1690,730" fill="none" stroke="#112D4E" stroke-width="2.5" />
-      <path d="M1635 742 A55 12 0 0 1 1745 742 L1745 833 A55 12 0 0 1 1635 833 Z" fill="#F9F7F7" stroke="#112D4E" stroke-width="2" />
-      <ellipse cx="1690" cy="742" rx="55" ry="12" fill="#F9F7F7" stroke="#112D4E" stroke-width="2" />
-      <text x="1690" y="801" font-size="23" font-weight="600" text-anchor="middle" fill="#112D4E">MySQL</text>
-    </g>
-    <g id="wal-legend" transform="translate(0 500)">
-      <path d="M1720 1025 L1742 1025 L1752 1035 L1752 1055 L1720 1055 Z" fill="#F9F7F7" stroke="#112D4E" stroke-width="1.5" />
-      <path d="M1742 1025 L1742 1035 L1752 1035" fill="none" stroke="#112D4E" stroke-width="1.5" />
-      <text x="1770" y="1048" font-size="20" text-anchor="start" fill="#112D4E">WAL</text>
-    </g>
-    <g id="database-legend" transform="translate(0 500)">
-      <path d="M1850 1033 A24 6 0 0 1 1898 1033 L1898 1050 A24 6 0 0 1 1850 1050 Z" fill="#F9F7F7" stroke="#112D4E" stroke-width="1.5" />
-      <ellipse cx="1874" cy="1033" rx="24" ry="6" fill="#F9F7F7" stroke="#112D4E" stroke-width="1.5" />
-      <text x="1915" y="1048" font-size="20" text-anchor="start" fill="#112D4E">数据库</text>
-    </g>
     <g id="logging-strategy-1" aria-label="策略主机上的本地日志队列 logd 和日志文件">
       <polyline points="660,385 660,520" fill="none" stroke="#64748B" stroke-width="1.8" stroke-dasharray="6 5" stroke-linejoin="round" />
       <polyline points="1325,315 1345,315 1345,520" fill="none" stroke="#64748B" stroke-width="1.8" stroke-dasharray="6 5" stroke-linejoin="round" />

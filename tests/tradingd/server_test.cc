@@ -179,6 +179,37 @@ TEST_F(ServerTest, HandshakeReturnsAuthoritativeAccountAndSubset) {
   EXPECT_EQ(welcome.account.cash.available, 1000000000);
 }
 
+TEST_F(ServerTest, RepeatedCloseAndInitResetClientAndOrderState) {
+  Connect(first, 11);
+  ASSERT_NE(first.generation, 0U);
+  const auto old_generation = first.generation;
+  Order(first, 1, 60);
+  Pump();
+  Advance();
+  ASSERT_NE(Update(first, model::OrderUpdateKind::kAccepted), nullptr);
+  ASSERT_EQ(server.account().cash.reserved, 600000000);
+  server.BeginStopping(clock.now);
+  server.Close();
+  server.Close();
+  EXPECT_EQ(server.port(), 0U);
+  EXPECT_EQ(server.Service(clock.now).code, base::ErrorCode::kInvalidState);
+
+  config.trading.initial_account.cash_balance = 500000000;
+  Restart();
+  EXPECT_STREQ(server.error_detail(), "");
+  EXPECT_EQ(server.account().revision, 1U);
+  EXPECT_EQ(server.account().cash.balance, 500000000);
+  EXPECT_EQ(server.account().cash.reserved, 0);
+  Connect(first, 11);
+  ASSERT_NE(first.generation, 0U);
+  EXPECT_NE(first.generation, old_generation);
+  Order(first, 1, 10);
+  Pump();
+  Advance();
+  ASSERT_NE(Update(first, model::OrderUpdateKind::kAccepted), nullptr);
+  EXPECT_EQ(server.account().cash.reserved, 100000000);
+}
+
 TEST_F(ServerTest, WrongTokenDoesNotAuthenticate) {
   Connect(first, 1, "incorrect-token");
   EXPECT_FALSE(Has(first, trading::MessageType::kWelcome));
@@ -456,41 +487,6 @@ TEST(TradingdConfigTest,
   config = Config();
   config.trading.adapter = static_cast<trading::TradingAdapterKind>(99);
   EXPECT_FALSE(ValidateConfig(config, error).ok());
-}
-
-TEST(TradingdConfigTest, MysqlArchiveRequiresDurableSourceAndBoundedOptions) {
-  auto config = Config();
-  auto& archive = config.mysql_archive;
-  archive.enabled = true;
-  ::yquant::base::FormatTo(archive.database, sizeof(archive.database),
-                           "yquant");
-  ::yquant::base::FormatTo(archive.user, sizeof(archive.user), "archive");
-  ::yquant::base::FormatTo(archive.password_env, sizeof(archive.password_env),
-                           "MYSQL_PASSWORD");
-  base::ConfigError error;
-  EXPECT_FALSE(ValidateConfig(config, error).ok());
-  ::yquant::base::FormatTo(config.persistence.directory,
-                           sizeof(config.persistence.directory),
-                           "/tmp/yquant-config-only");
-  ::yquant::base::FormatTo(config.persistence.account_key,
-                           sizeof(config.persistence.account_key),
-                           "simulation/test");
-#ifdef YQUANT_WITH_MYSQL
-  EXPECT_TRUE(ValidateConfig(config, error).ok()) << error.message;
-  archive.batch_bytes = 1;
-  EXPECT_FALSE(ValidateConfig(config, error).ok());
-  archive.batch_bytes = 1048576;
-  ::yquant::base::FormatTo(archive.host, sizeof(archive.host),
-                           "database.example.test");
-  EXPECT_FALSE(ValidateConfig(config, error).ok());
-  EXPECT_STREQ(error.field_path, "mysql_archive.tls_ca");
-  ::yquant::base::FormatTo(archive.tls_ca, sizeof(archive.tls_ca),
-                           "/tmp/ca.pem");
-  EXPECT_TRUE(ValidateConfig(config, error).ok()) << error.message;
-#else
-  EXPECT_FALSE(ValidateConfig(config, error).ok());
-  EXPECT_STREQ(error.field_path, "mysql_archive");
-#endif
 }
 
 TEST(TradingdConfigTest, UnknownBootstrapInstrumentIsRejected) {

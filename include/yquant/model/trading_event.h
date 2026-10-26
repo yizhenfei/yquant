@@ -24,7 +24,10 @@ enum class OrderUpdateKind : uint8_t {
   kCanceled,
   kCancelRejected,
   // Local shutdown canceled an order before any attempt to send it.
-  kCanceledBeforeSend
+  kCanceledBeforeSend,
+  // A queued cancel ended locally after the order became terminal. Preserves
+  // the terminal order state and broker report position.
+  kCancelNotSent
 };
 
 // Owns a bounded diagnostic so it survives reuse of an adapter buffer.
@@ -97,8 +100,9 @@ struct Fill {
 };
 
 // Owns a normalized broker report for trading consumers. Sequence starts at
-// one for each order; non-fill events leave fill empty. No field borrows SDK
-// data.
+// one for each order; non-fill events leave fill empty. Local update kinds
+// kCanceledBeforeSend and kCancelNotSent are not broker events. No field
+// borrows SDK data.
 struct TradingEvent {
   ClientOrderId client_order_id;
   AdapterOrderId adapter_order_id;

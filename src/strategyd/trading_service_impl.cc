@@ -709,7 +709,8 @@ ErrorCode TradingServiceImpl::ApplyUpdate(
     return Fail(ErrorCode::kCorrupt, "remote order report sequence gap");
   }
   const bool cancel_result = wire.kind == OrderUpdateKind::kCanceled ||
-                             wire.kind == OrderUpdateKind::kCancelRejected;
+                             wire.kind == OrderUpdateKind::kCancelRejected ||
+                             wire.kind == OrderUpdateKind::kCancelNotSent;
   if (cancel_result && wire.cancel_request_id.value != 0 &&
       (!old.cancel_pending || !record.cancel_attempted ||
        wire.cancel_request_id != old.cancel_request_id)) {
@@ -765,6 +766,13 @@ ErrorCode TradingServiceImpl::ApplyUpdate(
       valid = (old.state == OrderState::kWorking ||
                old.state == OrderState::kFilled) &&
               next.state == old.state;
+      break;
+    case OrderUpdateKind::kCancelNotSent:
+      valid = model::IsTerminalOrderState(old.state) && old.cancel_pending &&
+              next.state == old.state &&
+              next.cancel_request_id == old.cancel_request_id &&
+              wire.cancel_request_id == old.cancel_request_id &&
+              next.adapter_order_id == old.adapter_order_id;
       break;
     case OrderUpdateKind::kCanceledBeforeSend:
       break;

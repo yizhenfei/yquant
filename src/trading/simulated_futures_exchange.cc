@@ -533,4 +533,11 @@ base::Status SimulatedFuturesExchange::Stop() noexcept {
   return {};
 }
 
+void SimulatedFuturesExchange::Reset() noexcept {
+  (void)Stop();
+  state_ = State::kUnprepared;
+  drained_on_stop_ = true;
+  error_detail_[0] = '\0';
+}
+
 }  // namespace yquant::trading

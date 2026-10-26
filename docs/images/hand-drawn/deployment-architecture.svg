@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="2100" height="1600" viewBox="0 0 2100 1600" role="img" aria-labelledby="title desc">
   <title id="title">YQuant 集群部署架构</title>
-  <desc id="desc">从左到右为行情源、行情主机、策略主机集群、交易主机和交易柜台。策略主机以 1、省略号和 N 表示；每台策略主机内的策略进程也以 1、省略号和 N 表示，进程编号在各自主机内有效。每台策略主机的行情中继通过本机共享内存广播队列分发行情。交易主机内的 tradingd 分别连接独立的 WAL 文件图元和 MySQL 数据库图元。图中在策略主机内展示日志链路：本机业务进程通过各 Logger 独立的共享内存 SPSC 队列发送日志，由本机 logd 写入日志文件。行情和交易主机的同类日志链路省略。</desc>
+  <desc id="desc">从左到右为行情源、行情主机、策略主机集群、交易主机和交易柜台。策略主机以 1、省略号和 N 表示；每台策略主机内的策略进程也以 1、省略号和 N 表示，进程编号在各自主机内有效。每台策略主机的行情中继通过本机共享内存广播队列分发行情。图中在策略主机内展示日志链路：本机业务进程通过各 Logger 独立的共享内存 SPSC 队列发送日志，由本机 logd 写入日志文件。行情和交易主机的同类日志链路省略。</desc>
   <defs>
     <marker id="blue" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto-start-reverse">
       <path d="M0 0 L9 4.5 L0 9 Z" fill="#112D4E" />
@@ -216,38 +216,6 @@
 <text x="965" y="778" font-size="46" font-weight="400" text-anchor="middle" fill="#64748b" data-role="omitted-hosts">⋮</text>
 <text x="1187.5" y="356" font-size="32" font-weight="400" text-anchor="middle" fill="#64748b" data-role="omitted-processes-host-1">⋮</text>
 <text x="1187.5" y="1056" font-size="32" font-weight="400" text-anchor="middle" fill="#64748b" data-role="omitted-processes-host-n">⋮</text>
-<g id="local-persistence" aria-label="交易主机内的 WAL 和 MySQL" transform="translate(0 210)">
-<path fill="none" stroke="#112D4E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M 1560.00 600.00 C 1559.59 643.33, 1560.95 686.67, 1560.00 730.00"/>
-<path d="M 1560.17 599.50 C 1561.02 642.91, 1559.47 686.30, 1559.76 729.70" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".4" stroke-linecap="round"/>
-<path d="M1510 730 L1588 730 L1610 752 L1610 845 L1510 845 Z" fill="#F9F7F7" stroke="none"/>
-<path d="M 1510.00 730.00 C 1536.00 730.50, 1562.00 731.77, 1588.00 730.00 C 1596.32 736.34, 1604.26 743.07, 1610.00 752.00 C 1612.12 783.00, 1611.93 814.00, 1610.00 845.00 C 1576.67 846.83, 1543.33 845.92, 1510.00 845.00 C 1509.93 806.67, 1507.64 768.33, 1510.00 730.00 Z" fill="none" stroke="#112D4E" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M 1510.11 730.02 C 1535.97 730.41, 1561.84 731.06, 1587.70 730.01 C 1594.67 737.61, 1602.24 744.59, 1609.99 751.39 C 1609.26 782.81, 1609.52 814.23, 1609.93 845.65 C 1576.39 844.43, 1542.83 844.96, 1509.29 844.48 C 1509.50 806.33, 1509.26 768.17, 1510.11 730.02 Z" fill="none" stroke="#112D4E" stroke-width="0.8" opacity="0.45" stroke-linejoin="round"/>
-<path d="M 1588.00 730.00 C 1589.78 737.33, 1587.16 744.67, 1588.00 752.00 C 1595.33 749.88, 1602.67 750.16, 1610.00 752.00" fill="none" stroke="#112D4E" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M 1588.56 729.30 C 1587.36 736.96, 1589.19 744.64, 1588.40 752.30 C 1595.69 751.74, 1603.00 752.86, 1610.28 752.07" fill="none" stroke="#112D4E" stroke-width="0.8" opacity="0.45" stroke-linejoin="round"/>
-<text x="1560" y="801" font-size="25" font-weight="600" text-anchor="middle" fill="#112D4E">WAL</text>
-<path fill="none" stroke="#112D4E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M 1685.00 600.00 C 1683.73 621.67, 1684.94 643.33, 1685.00 665.00 C 1686.67 664.01, 1688.33 664.54, 1690.00 665.00 C 1689.32 686.67, 1688.29 708.33, 1690.00 730.00"/>
-<path d="M 1684.45 600.25 C 1684.17 622.03, 1683.82 643.81, 1685.06 665.58 C 1686.93 665.20, 1688.83 665.46, 1690.70 665.30 C 1689.82 686.88, 1689.97 708.46, 1689.98 730.05" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".4" stroke-linecap="round"/>
-<path d="M1635 742 A55 12 0 0 1 1745 742 L1745 833 A55 12 0 0 1 1635 833 Z" fill="#F9F7F7" stroke="#112D4E" stroke-width="2" />
-<path d="M1635 742 A55 12 0 0 1 1745 742 L1745 833 A55 12 0 0 1 1635 833 Z" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".45" transform="translate(0.8 -0.5)"/>
-<ellipse cx="1690" cy="742" rx="55" ry="12" fill="#F9F7F7" stroke="#112D4E" stroke-width="2" />
-<ellipse cx="1690" cy="742" rx="55" ry="12" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".45" transform="translate(0.8 -0.5)"/>
-<text x="1690" y="801" font-size="23" font-weight="600" text-anchor="middle" fill="#112D4E">MySQL</text>
-</g>
-<g id="wal-legend" transform="translate(0 500)">
-<path d="M1720 1025 L1742 1025 L1752 1035 L1752 1055 L1720 1055 Z" fill="#F9F7F7" stroke="none"/>
-<path d="M 1720.00 1025.00 C 1727.33 1025.75, 1734.67 1026.73, 1742.00 1025.00 C 1743.85 1029.82, 1749.92 1030.41, 1752.00 1035.00 C 1751.51 1041.67, 1754.28 1048.33, 1752.00 1055.00 C 1741.33 1054.80, 1730.67 1053.87, 1720.00 1055.00 C 1719.62 1045.00, 1722.00 1035.00, 1720.00 1025.00 Z" fill="none" stroke="#112D4E" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M 1720.52 1025.42 C 1727.68 1026.57, 1734.84 1024.76, 1742.01 1025.44 C 1744.43 1029.49, 1747.86 1032.57, 1751.58 1035.36 C 1750.52 1042.07, 1752.62 1048.73, 1751.92 1055.44 C 1741.20 1056.01, 1730.56 1054.19, 1719.86 1054.28 C 1719.22 1044.64, 1720.92 1035.05, 1720.52 1025.42 Z" fill="none" stroke="#112D4E" stroke-width="0.8" opacity="0.45" stroke-linejoin="round"/>
-<path d="M 1742.00 1025.00 C 1741.01 1028.33, 1740.98 1031.67, 1742.00 1035.00 C 1745.33 1036.33, 1748.67 1033.69, 1752.00 1035.00" fill="none" stroke="#112D4E" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M 1741.51 1025.81 C 1742.04 1028.69, 1741.53 1031.64, 1742.11 1034.51 C 1745.62 1034.01, 1749.13 1033.44, 1752.62 1034.64" fill="none" stroke="#112D4E" stroke-width="0.8" opacity="0.45" stroke-linejoin="round"/>
-<text x="1770" y="1048" font-size="20" text-anchor="start" fill="#112D4E">WAL</text>
-</g>
-<g id="database-legend" transform="translate(0 500)">
-<path d="M1850 1033 A24 6 0 0 1 1898 1033 L1898 1050 A24 6 0 0 1 1850 1050 Z" fill="#F9F7F7" stroke="#112D4E" stroke-width="1.5" />
-<path d="M1850 1033 A24 6 0 0 1 1898 1033 L1898 1050 A24 6 0 0 1 1850 1050 Z" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".45" transform="translate(0.8 -0.5)"/>
-<ellipse cx="1874" cy="1033" rx="24" ry="6" fill="#F9F7F7" stroke="#112D4E" stroke-width="1.5" />
-<ellipse cx="1874" cy="1033" rx="24" ry="6" fill="none" stroke="#112D4E" stroke-width=".8" opacity=".45" transform="translate(0.8 -0.5)"/>
-<text x="1915" y="1048" font-size="20" text-anchor="start" fill="#112D4E">数据库</text>
-</g>
 <g id="logging-strategy-1" aria-label="策略主机上的本地日志队列 logd 和日志文件">
 <path fill="none" stroke="#64748B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="6 5" d="M 660.00 385.00 C 659.80 430.00, 659.67 475.00, 660.00 520.00"/>
 <path d="M 659.57 384.56 C 660.36 429.61, 660.04 474.68, 660.45 519.73" fill="none" stroke="#64748B" stroke-width=".8" opacity=".4" stroke-linecap="round" stroke-dasharray="6 5"/>

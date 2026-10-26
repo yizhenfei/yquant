@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="2200" height="1280" viewBox="0 0 2200 1280" role="img" aria-labelledby="title desc">
   <title id="title">YQuant 单机部署架构</title>
-  <desc id="desc">单机部署包含一个 marketd、多个 strategyd 和一个 tradingd。策略进程及交易通道以 1 到 N 表示。tradingd 分别连接独立的 WAL 文件图元和 MySQL 数据库图元。图中采用 logd 后端，本机业务进程经各 Logger 独立的共享内存 SPSC 队列发送日志，由一个本机 logd 写入日志文件。</desc>
+  <desc id="desc">单机部署包含一个 marketd、多个 strategyd 和一个 tradingd。策略进程及交易通道以 1 到 N 表示。图中采用 logd 后端，本机业务进程经各 Logger 独立的共享内存 SPSC 队列发送日志，由一个本机 logd 写入日志文件。</desc>
   <defs>
     <marker id="blue" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto-start-reverse">
       <path d="M0 0 L9 4.5 L0 9 Z" fill="#112D4E" />
@@ -96,26 +96,6 @@
     <text x="1490" y="1208" font-size="20" font-weight="400" text-anchor="start" fill="#112D4E">交易请求／回报</text>
     <text x="940" y="500" font-size="46" font-weight="400" text-anchor="middle" fill="#64748b" data-role="omitted-strategies">⋮</text>
     <text x="1305" y="500" font-size="46" font-weight="400" text-anchor="middle" fill="#64748b" data-role="omitted-channels">⋮</text>
-    <g id="local-persistence" aria-label="tradingd 分别连接 WAL 和 MySQL">
-      <polyline points="1615,530 1615,590 1590,590 1590,650" fill="none" stroke="#112D4E" stroke-width="2.5" />
-      <path d="M1510 650 L1645 650 L1670 675 L1670 770 L1510 770 Z" fill="#F9F7F7" stroke="#112D4E" stroke-width="2" />
-      <path d="M1645 650 L1645 675 L1670 675" fill="none" stroke="#112D4E" stroke-width="2" />
-      <text x="1590" y="720" font-size="26" font-weight="600" text-anchor="middle" fill="#112D4E">WAL</text>
-      <polyline points="1775,530 1775,590 1795,590 1795,650" fill="none" stroke="#112D4E" stroke-width="2.5" />
-      <path d="M1715 664 A80 14 0 0 1 1875 664 L1875 756 A80 14 0 0 1 1715 756 Z" fill="#F9F7F7" stroke="#112D4E" stroke-width="2" />
-      <ellipse cx="1795" cy="664" rx="80" ry="14" fill="#F9F7F7" stroke="#112D4E" stroke-width="2" />
-      <text x="1795" y="725" font-size="25" font-weight="600" text-anchor="middle" fill="#112D4E">MySQL</text>
-    </g>
-    <g id="local-storage-legend" transform="translate(0 260)">
-      <path d="M1870 933 A24 6 0 0 1 1918 933 L1918 950 A24 6 0 0 1 1870 950 Z" fill="#F9F7F7" stroke="#112D4E" stroke-width="1.5" />
-      <ellipse cx="1894" cy="933" rx="24" ry="6" fill="#F9F7F7" stroke="#112D4E" stroke-width="1.5" />
-      <text x="1935" y="948" font-size="20" text-anchor="start" fill="#112D4E">数据库</text>
-    </g>
-    <g id="wal-legend" transform="translate(0 260)">
-      <path d="M1740 925 L1762 925 L1772 935 L1772 955 L1740 955 Z" fill="#F9F7F7" stroke="#112D4E" stroke-width="1.5" />
-      <path d="M1762 925 L1762 935 L1772 935" fill="none" stroke="#112D4E" stroke-width="1.5" />
-      <text x="1790" y="948" font-size="20" text-anchor="start" fill="#112D4E">WAL</text>
-    </g>
     <g id="logging-local" aria-label="同机业务进程通过独立日志共享队列连接 logd">
       <text x="830" y="982" font-size="21" text-anchor="end" fill="#64748B" data-role="log-producer-summary">本机业务进程日志</text>
       <polyline points="860,975 950,975" fill="none" stroke="#64748B" stroke-width="1.8" stroke-dasharray="6 5" marker-end="url(#log-arrow)" />

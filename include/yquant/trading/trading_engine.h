@@ -6,15 +6,14 @@
 
 #include <memory>
 #include <optional>
-#include <span>
 
 #include "yquant/base/monotonic_clock.h"
 #include "yquant/market/instrument_scope.h"
 #include "yquant/model/trading_event.h"
+#include "yquant/trading/order_request_executor.h"
 #include "yquant/trading/trading_adapter.h"
 #include "yquant/trading/trading_dispatch.h"
 #include "yquant/trading/trading_limits.h"
-#include "yquant/trading/trading_persistence.h"
 
 namespace yquant::trading {
 
@@ -99,21 +98,11 @@ class TradingEngine final {
   // Serial access and the runtime's monotonic clock domain are required.
   [[nodiscard]] base::ErrorCode ApplyEvent(const model::TradingEvent& event,
                                            TradingDispatch& out) noexcept;
-  // Commits one queued CanceledBeforeSend event. Empty input returns
-  // kInvalidState without changing out or account/order facts.
+  // Commits one queued CanceledBeforeSend or CancelNotSent result. Empty input
+  // returns kInvalidState without changing out or account/order facts.
   [[nodiscard]] base::ErrorCode ApplyLocalUpdate(TradingDispatch& out) noexcept;
   bool has_local_updates() const noexcept;
 
-  // Installs a borrowed main-thread sink on a configured cash ledger. It must
-  // outlive ledger work. nullptr disables it, including on an empty ledger.
-  // Call outside callbacks/replay; failure preserves the existing sink.
-  // Futures persistence is unsupported and rejected before any mutation.
-  [[nodiscard]] base::Status SetMutationSink(
-      TradingMutationSink* sink) noexcept;
-  // Cash journal revision; futures execution leaves this zero.
-  uint64_t mutation_revision() const noexcept;
-  uint64_t next_order_id() const noexcept;
-  uint64_t next_cancel_id() const noexcept;
   // Cold/bounded retained-slot iteration; false preserves out.
   [[nodiscard]] bool TryGetOrderAt(size_t index,
                                    model::OrderSnapshot& out) const noexcept;
@@ -122,41 +111,6 @@ class TradingEngine final {
   // serialized with ledger mutations, matching the order iteration contract.
   [[nodiscard]] bool TryGetFillAt(size_t index,
                                   model::Fill& out) const noexcept;
-  // Cold identity allocation: never lowers the next ID, allocates no storage,
-  // and changes no existing order. The owner persists its lease before use.
-  [[nodiscard]] base::Status SetNextOrderIdAtLeast(uint64_t id) noexcept;
-  // Same cold lease contract for cancel IDs; id is the next assignable value.
-  [[nodiscard]] base::Status SetNextCancelIdAtLeast(uint64_t id) noexcept;
-  // Cash-only cold codec operations; futures return kUnsupported.
-  // Export does not allocate and preserves size on failure. Restore validates
-  // a private candidate and preserves this ledger
-  // on failure; successful restore leaves execution stopped and callbacks off.
-  // The checkpoint includes pending queues, reservations and dedup identities.
-  [[nodiscard]] base::Status ExportCheckpoint(std::span<std::byte> bytes,
-                                              size_t& size) const noexcept;
-  [[nodiscard]] base::Status RestoreCheckpoint(
-      std::span<const std::byte> bytes) noexcept;
-  // Installs an independently reconciled cash baseline without financially
-  // applying historical executions again. All supplied orders must be terminal
-  // with no outstanding cancels; every cumulative fill needs its unique detail.
-  // Baseline reservations must be zero; sellable quantities are preserved.
-  // Orders may be unordered, but IDs must be unique, nonzero and below
-  // UINT64_MAX. Cold-only and failure atomic. Existing ID leases are never
-  // lowered; the mutation revision starts at zero for the new recovery
-  // baseline.
-  [[nodiscard]] base::Status RestoreReconciled(
-      const TradingAccountSnapshot& baseline,
-      std::span<const model::OrderSnapshot> terminal_orders,
-      std::span<const model::Fill> executions) noexcept;
-  // Cash-only: replays the next fact without sending, invoking the sink or
-  // notifying a strategy. Failure preserves business state. Call only while
-  // stopped, outside callbacks; time-dependent validation uses the fact's now.
-  [[nodiscard]] base::Status ReplayMutation(
-      const TradingMutation& mutation, TradingDispatch* out = nullptr) noexcept;
-  // Cold recovery boundary: conservatively marks restored queued requests as
-  // attempted and removes them. No external request is sent. The owner must
-  // reconcile these uncertain orders before enabling execution.
-  void AbandonRecoveredRequests() noexcept;
 
  private:
   struct Storage;
@@ -168,41 +122,26 @@ class TradingEngine final {
   // Stages cash claims or atomically reserves simulated futures resources.
   base::ErrorCode ReserveSubmission(const model::OrderRequest& request,
                                     Submission& transaction) noexcept;
-  // Publishes an already journaled request, ownership slot and reservation.
+  // Publishes a validated request, order slot and reservation.
   void CommitSubmission(const model::OrderRequest& request,
                         const Submission& transaction) noexcept;
-  // Validates report fields before duplicate suppression, preserving all state.
-  base::ErrorCode ValidateReportFields(const model::TradingEvent& event,
-                                       const model::OrderSnapshot& old,
-                                       uint64_t transaction_now) noexcept;
-  // Checks execution identity, instrument units, timestamps and limit price.
-  base::ErrorCode ValidateExecution(const model::TradingEvent& event,
-                                    const model::OrderSnapshot& old) noexcept;
-  // Stages the next order state and deduplication slots without committing.
+  // Stages a domain transition plus request, identity and execution checks.
   base::ErrorCode PrepareOrderTransition(
       const model::TradingEvent& event, size_t index, uint64_t transaction_now,
       ReportTransaction& transaction) noexcept;
-  // Stages a unique execution and verifies cumulative quantity progression.
-  base::ErrorCode PrepareExecution(const model::TradingEvent& event,
-                                   size_t index,
-                                   ReportTransaction& transaction) noexcept;
-  // Resolves a matching cancel attempt and stages any retry deadline.
-  base::ErrorCode PrepareCancelResult(const model::TradingEvent& event,
-                                      size_t index, uint64_t transaction_now,
-                                      ReportTransaction& transaction) noexcept;
+  // Marks a failed, timed-out or disconnected request as uncertain.
+  base::ErrorCode MarkRequestUncertain(
+      const OrderExecutionRequest& request) noexcept;
   // Stages cash effects or applies an atomic simulated-futures transaction.
   base::ErrorCode PrepareReportAccount(size_t index,
                                        ReportTransaction& transaction) noexcept;
   // Stages execution cash, holdings and reservation changes.
   base::ErrorCode PrepareCashExecution(size_t index,
                                        ReportTransaction& transaction) noexcept;
-  // Publishes a validated, journaled report; no remaining operation can fail.
-  void CommitReport(const model::TradingEvent& event, size_t index,
-                    ReportTransaction& transaction) noexcept;
+  // Publishes a validated report; no remaining operation can fail.
+  void CommitReport(size_t index, ReportTransaction& transaction) noexcept;
   // Revisits an already-scanned order on the next bounded stopping pass.
   void ScheduleReportRescan(size_t index) noexcept;
-  // Appends a fact before publication, rejecting reentrant sink invocation.
-  [[nodiscard]] base::ErrorCode BeforeCommit(TradingMutation& fact) noexcept;
   // Requires no account storage and closed requests. Validates initial cash
   // and distinct, known, unreserved positions before allocating. Failure keeps
   // the account unavailable and preserves caller input.
@@ -212,7 +151,7 @@ class TradingEngine final {
   // retained orders/account or caller input. Financial values remain verbatim.
   [[nodiscard]] base::ErrorCode ValidateBrokerAccount(
       const BrokerAccountSnapshot& account) noexcept;
-  // Finds a retained order; cold-leased IDs may be sparse and are never reused.
+  // Finds a retained order; IDs are never reused within the session.
   std::optional<size_t> FindIndex(model::ClientOrderId id) const noexcept;
   // Finds a retained position; a known untouched instrument has no slot yet.
   std::optional<size_t> FindPosition(model::InstrumentId id) const noexcept;
@@ -224,11 +163,6 @@ class TradingEngine final {
   // Records the adapter stage and diagnostic for a failed lifecycle operation.
   base::Status FailStage(base::Status status, const char* stage,
                          const char* detail) noexcept;
-
-  TradingMutationSink* sink_ = nullptr;
-  bool replaying_ = false;
-  bool invoking_sink_ = false;
-  uint64_t replay_now_ = 0;
 
   static constexpr size_t kErrorDetailSize = 1024;
   const base::MonotonicClock& clock_;

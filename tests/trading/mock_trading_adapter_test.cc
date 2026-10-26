@@ -413,6 +413,35 @@ TEST(MockTradingAdapterTest, AccountBootstrapOwnsConfigAndCopiesOutput) {
   EXPECT_EQ(snapshot, after_stop);
 }
 
+TEST(MockTradingAdapterTest, ResetDiscardsSessionBeforeReuse) {
+  MockTradingAdapter adapter;
+  ASSERT_TRUE(Start(adapter, MockTradingMode::kWorking));
+  ASSERT_TRUE(adapter.SendOrder({1}, Request(), 0).ok());
+  EXPECT_FALSE(adapter.is_drained());
+
+  adapter.Reset();
+  adapter.Reset();
+  EXPECT_TRUE(adapter.is_drained());
+  EXPECT_FALSE(adapter.next_deadline());
+  EXPECT_EQ(adapter.error_detail()[0], '\0');
+  TradingConfig config;
+  config.report_interval_ns = 0;
+  ASSERT_FALSE(adapter.Prepare(config).ok());
+  ASSERT_TRUE(adapter.Stop().ok());
+  EXPECT_EQ(adapter.Prepare({}).code, base::ErrorCode::kInvalidState);
+  adapter.Reset();
+  EXPECT_EQ(adapter.error_detail()[0], '\0');
+
+  ASSERT_TRUE(Start(adapter, MockTradingMode::kReject));
+  ASSERT_TRUE(adapter.SendOrder({1}, Request(), 0).ok());
+  model::TradingEvent event;
+  ASSERT_EQ(adapter.Poll(kInterval, event).state, TradingPollState::kEvent);
+  EXPECT_EQ(event.kind, model::OrderUpdateKind::kRejected);
+  EXPECT_EQ(event.client_order_id.value, 1U);
+  EXPECT_EQ(event.report_sequence, 1U);
+  EXPECT_TRUE(adapter.is_drained());
+}
+
 TEST(MockTradingAdapterTest,
      BootstrapClosesAfterFirstAcceptedOrderEvenIfDrained) {
   trading::MockTradingAdapter adapter;

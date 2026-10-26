@@ -212,6 +212,44 @@ TEST(FuturesExchangeTest,
   EXPECT_TRUE(exchange.Stop().ok());
 }
 
+TEST(FuturesExchangeTest, ResetDiscardsOrdersAndQuoteLiquidityBeforeReuse) {
+  SimulatedFuturesExchange exchange;
+  ASSERT_TRUE(exchange.Prepare(ExchangeConfig()).ok());
+  ASSERT_TRUE(exchange.Start(0).ok());
+  ASSERT_TRUE(exchange.OnQuote(ExchangeQuote(), 0).ok());
+  ASSERT_TRUE(exchange.SendOrder({1}, ExchangeOrder(), 0).ok());
+  EXPECT_FALSE(exchange.is_drained());
+
+  exchange.Reset();
+  exchange.Reset();
+  EXPECT_TRUE(exchange.is_drained());
+  EXPECT_FALSE(exchange.next_deadline());
+  EXPECT_EQ(exchange.error_detail()[0], '\0');
+  auto config = ExchangeConfig();
+  config.initial_account.type = model::AccountType::kCash;
+  ASSERT_FALSE(exchange.Prepare(config).ok());
+  ASSERT_TRUE(exchange.Stop().ok());
+  EXPECT_EQ(exchange.Prepare(ExchangeConfig()).code, ErrorCode::kInvalidState);
+  exchange.Reset();
+  EXPECT_EQ(exchange.error_detail()[0], '\0');
+
+  config = ExchangeConfig();
+  config.initial_account.cash_balance = 123;
+  ASSERT_TRUE(exchange.Prepare(config).ok());
+  ASSERT_TRUE(exchange.Start(0).ok());
+  TradingAccountSnapshot account;
+  ASSERT_TRUE(exchange.ReadAccountSnapshot(account).ok());
+  EXPECT_EQ(account, config.initial_account);
+  ASSERT_TRUE(exchange.SendOrder({1}, ExchangeOrder(3502), 0).ok());
+  const auto accepted = PollEvent(exchange, kInterval);
+  EXPECT_EQ(accepted.kind, OrderUpdateKind::kAccepted);
+  EXPECT_EQ(accepted.client_order_id.value, 1U);
+  EXPECT_EQ(accepted.report_sequence, 1U);
+  model::TradingEvent event;
+  EXPECT_EQ(exchange.Poll(kInterval, event).state, TradingPollState::kIdle);
+  EXPECT_FALSE(exchange.is_drained());
+}
+
 TEST(FuturesExchangeTest, FillHistoryCapacityFailureDoesNotConsumeTheLastLot) {
   SimulatedFuturesExchange exchange;
   ASSERT_TRUE(exchange.Prepare(ExchangeConfig()).ok());

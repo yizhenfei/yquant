@@ -65,7 +65,8 @@ struct OrderSnapshot {
   // Potential future fills; zero for terminal states, otherwise original-cum.
   int64_t leaves_qty = 0;
   OrderState state = OrderState::kPendingNew;
-  // Remains true until the cancel result arrives, even after a full fill.
+  // Remains true until a broker or local result ends the cancel attempt, even
+  // after a full fill; request transport progress is tracked separately.
   bool cancel_pending = false;
   // Most recent locally accepted cancel attempt; zero if none.
   CancelRequestId cancel_request_id;

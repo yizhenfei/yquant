@@ -1,22 +1,9 @@
 add_executable(yquant_tradingd_test
-  tests/tradingd/journal_reader_test.cc
-  tests/tradingd/archive_projection_test.cc
-  tests/tradingd/mysql_archive_store_test.cc
-  tests/tradingd/mysql_server_test.cc
-  tests/tradingd/mysql_archive_test.cc
-  tests/tradingd/persistence_test.cc
-  tests/tradingd/recovery_test.cc
-  tests/tradingd/journal_test.cc
   tests/tradingd/server_test.cc
   tests/tradingd/process_test.cc)
 target_link_libraries(yquant_tradingd_test PRIVATE
   yquant_tradingd_objects GTest::gtest_main Threads::Threads)
 target_compile_options(yquant_tradingd_test PRIVATE -Wall -Wextra -Wpedantic)
-if(YQUANT_WITH_MYSQL)
-  target_include_directories(yquant_tradingd_test PRIVATE "${YQUANT_MYSQL_INCLUDE_DIR}")
-  target_compile_definitions(yquant_tradingd_test PRIVATE
-    YQUANT_TEST_ARCHIVE_SQL_PATH="${PROJECT_SOURCE_DIR}/sql/trading_archive_v1.sql")
-endif()
 target_compile_definitions(yquant_tradingd_test PRIVATE
   YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json"
   YQUANT_TEST_TRADINGD_PATH="$<TARGET_FILE:yquant_tradingd>"

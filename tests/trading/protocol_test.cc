@@ -134,7 +134,7 @@ TEST(TradingProtocol, HeaderHasStableLittleEndianLayout) {
   ASSERT_TRUE(trading::EncodeMessage(message, bytes, size).ok());
   ASSERT_EQ(size, 32);
   EXPECT_EQ(std::memcmp(bytes.data(), "YQTR", 4), 0);
-  EXPECT_EQ(bytes[4], std::byte{4});
+  EXPECT_EQ(bytes[4], std::byte{5});
   EXPECT_EQ(bytes[5], std::byte{0});
   EXPECT_EQ(bytes[8], std::byte{32});
   for (size_t index = 0; index < 8; ++index) {
@@ -316,6 +316,71 @@ TEST(TradingProtocol, GatewayOwnedPendingCancelUsesZeroRequestId) {
   EXPECT_EQ(output.update.order.cancel_request_id.value, 0);
 }
 
+TEST(TradingProtocol, LocalCancelNotSentPreservesFilledOrderAndIdentity) {
+  auto message = Example(MessageType::kOrderUpdate);
+  message.update.kind = model::OrderUpdateKind::kCancelNotSent;
+  message.update.order.state = model::OrderState::kFilled;
+  message.update.order.cumulative_filled_qty = 100;
+  message.update.order.leaves_qty = 0;
+  message.update.order.cancel_pending = false;
+  message.has_fill = false;
+  std::array<std::byte, kMaxFrameSize> bytes{};
+  size_t size = 0;
+  ASSERT_TRUE(EncodeMessage(message, bytes, size).ok());
+  Message output;
+  ASSERT_TRUE(DecodeMessage(std::span(bytes).first(size), output).ok());
+  EXPECT_EQ(output.update.kind, model::OrderUpdateKind::kCancelNotSent);
+  EXPECT_EQ(output.update.order, message.update.order);
+  EXPECT_EQ(output.update.cancel_request_id, message.update.cancel_request_id);
+  EXPECT_FALSE(output.has_fill);
+  // v4 has the same field layout but cannot express this local result.
+  bytes[4] = std::byte{4};
+  output.sequence = 789;
+  EXPECT_EQ(DecodeMessage(std::span(bytes).first(size), output).code,
+            base::ErrorCode::kCorrupt);
+  EXPECT_EQ(output.sequence, 789);
+  message.update.cancel_request_id = {};
+  message.update.order.cancel_request_id = {};
+  ASSERT_TRUE(EncodeMessage(message, bytes, size).ok());
+  ASSERT_TRUE(DecodeMessage(std::span(bytes).first(size), output).ok());
+  EXPECT_EQ(output.update.cancel_request_id.value, 0);
+}
+
+TEST(TradingProtocol, RejectsInconsistentLocalCancelNotSent) {
+  auto message = Example(MessageType::kOrderUpdate);
+  message.update.kind = model::OrderUpdateKind::kCancelNotSent;
+  message.update.order.state = model::OrderState::kFilled;
+  message.update.order.cumulative_filled_qty = 100;
+  message.update.order.leaves_qty = 0;
+  message.has_fill = false;
+  ExpectEncodingRejected(message);  // Attempt is still pending.
+  message.update.order.cancel_pending = false;
+  message.update.cancel_request_id = {10};
+  ExpectEncodingRejected(message);
+  message.update.cancel_request_id = message.update.order.cancel_request_id;
+  message.notify_order = false;
+  ExpectEncodingRejected(message);
+  message.notify_order = true;
+  message.update.order.state = model::OrderState::kWorking;
+  message.update.order.cumulative_filled_qty = 10;
+  message.update.order.leaves_qty = 90;
+  ExpectEncodingRejected(message);
+}
+
+TEST(TradingProtocol, ReadsVersionFourWithoutChangingIdentityLayout) {
+  auto message = Example(MessageType::kOrderUpdate);
+  message.update.order.strategy_order_id = {3};
+  message.fill.strategy_order_id = {3};
+  std::array<std::byte, kMaxFrameSize> bytes{};
+  size_t size = 0;
+  ASSERT_TRUE(EncodeMessage(message, bytes, size).ok());
+  bytes[4] = std::byte{4};
+  Message output;
+  ASSERT_TRUE(DecodeMessage(std::span(bytes).first(size), output).ok());
+  EXPECT_EQ(output.update.order, message.update.order);
+  EXPECT_EQ(output.fill.strategy_order_id.value, 3);
+}
+
 TEST(TradingProtocol, EveryTruncatedPrefixPreservesDecodeOutput) {
   std::array<std::byte, trading::kMaxFrameSize> bytes;
   size_t size = 0;
@@ -434,7 +499,7 @@ TEST(TradingProtocol, VersionOneRejectsPositionEffectsWithoutDroppingFields) {
   }
 }
 
-TEST(TradingProtocol, DecodesLegacyCashAccountFramesForJournalRecovery) {
+TEST(TradingProtocol, DecodesLegacyCashAccountFrames) {
   std::array<std::byte, 66> frame{};
   size_t offset = 0;
   const auto put = [&](uint64_t value, size_t width) {
@@ -548,7 +613,7 @@ TEST(TradingProtocol, BrokerAccountAndUnallocatedFreezesRoundTrip) {
   std::array<std::byte, trading::kMaxFrameSize> bytes{};
   size_t size = 0;
   ASSERT_TRUE(EncodeMessage(message, bytes, size).ok());
-  EXPECT_EQ(bytes[4], std::byte{4});
+  EXPECT_EQ(bytes[4], std::byte{5});
   Message decoded;
   ASSERT_TRUE(DecodeMessage(std::span(bytes).first(size), decoded).ok());
   EXPECT_TRUE(decoded.account.broker_managed);
