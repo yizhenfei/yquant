@@ -1,9 +1,0 @@
-{
-  "strategy_id": "shared-account-example",
-  "parameters": {
-    "venue": "SSE",
-    "symbol": "600000",
-    "side": "buy",
-    "quantity": 200
-  }
-}

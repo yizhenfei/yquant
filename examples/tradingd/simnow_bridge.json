@@ -1,9 +1,0 @@
-{
-  "adapter": "ctp",
-  "address": "127.0.0.1",
-  "port": 19300,
-  "token": "replace-with-this-run-bridge-token",
-  "connect_timeout_ms": 60000,
-  "heartbeat_timeout_ms": 5000,
-  "shutdown_timeout_ms": 30000
-}

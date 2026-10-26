@@ -1,7 +1,0 @@
-{
-  "strategy_id": "quote-observer-001",
-  "parameters": {
-    "venue": "SSE",
-    "symbol": "600000"
-  }
-}

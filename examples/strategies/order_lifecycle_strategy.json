@@ -1,8 +1,0 @@
-{
-  "strategy_id": "order-lifecycle-example",
-  "parameters": {
-    "venue": "SSE",
-    "symbol": "600000",
-    "quantity": 200
-  }
-}
