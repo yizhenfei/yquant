@@ -185,7 +185,7 @@ CTest 的 `Project.HeaderSelfContainment` 使用编译数据库逐个检查项�
 
 `--trading-config` 指定网关连接、客户端身份和超时，不接受柜台或初始账户配置。柜台和账户由 `tradingd` 的配置决定。示例在首次有效卖一报价提交 200 股买单，网关的默认 `fill` 模式按 100 股、100 股两笔成交，输出 `order_lifecycle: terminal state=filled cumulative=200 leaves=0`。成交后进程继续运行，停止时输出 `order_lifecycle: stopped fills=2 filled_qty=200 state=filled`。
 
-将网关柜台配置的 `mode` 改为 `working`，等到 `order_lifecycle: working` 后发送停止信号，可验证宿主自动撤单和排空。交易接口、配置及收尾规则见[交易执行与账户账本](docs/design/trading.md)。交易服务同时提供持仓与资金查询，买单预占资金，卖单预占可卖持仓。
+将网关柜台配置的 `mode` 改为 `working`，等到 `order_lifecycle: working` 后发送停止信号，可验证宿主自动撤单和排空。交易接口、配置及收尾规则见[交易模块设计](docs/design/trading.md)。交易服务同时提供持仓与资金查询，买单预占资金，卖单预占可卖持仓。
 
 多个策略共享同一个网关时，为每个客户端配置不同的 `client_id`。沿用前面的网关，启动共享账户策略：
 
@@ -299,7 +299,7 @@ cmake --build --preset debug --target download_test_data
 - [行情进程设计](docs/design/marketd.md)：可配置行情管线、本机广播和跨机中继。
 - [行情回放与录制](docs/design/market-data-replay.md)：真实 CSV 转换、回放时序和异步录制格式。
 - [共享内存行情广播组件](docs/design/shared-memory-broadcast.md)：映射、流注册、心跳、重启隔离和行情适配。
-- [交易执行与账户账本](docs/design/trading.md)：限价委托、撤单与异步回报的执行闭环。
+- [交易模块设计](docs/design/trading.md)：功能需求、订单与成交、账户管理及交易接入设计。
 - [订单核心与请求执行](docs/design/order-core.md)：订单业务状态机、新单与撤单的 in-flight 跟踪及事务边界。
 - [共享交易网关](docs/design/tradingd.md)：多机策略共享账户、订单归属、TCP 协议和断线收尾。
 - [交易网关持久化与恢复](docs/design/tradingd-persistence.md)：mmap 日志、后台同步、快照和柜台对账设计。

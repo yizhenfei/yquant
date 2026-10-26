@@ -100,7 +100,7 @@ YQuant 是一个支持多策略运行的低延迟量化交易系统，使用 C++
 
 网关支持本地模拟柜台和通过 CTP 交易桥接入的 SimNow 模拟柜台。SimNow 的 `CFFEX/TF2612` 单合约接入已完成个人账户上的报撤单、双向开平及独立账户核对，见[SimNow 模拟柜台接入](design/simnow-trading.md#柜台验收)。
 
-本地现金模拟账户通过 mmap WAL 和检查点持久化与恢复交易状态，并可由后台线程将交易历史与查询投影异步归档至 MySQL；期货模式尚不支持网关日志恢复。详细设计见[交易执行与账户账本](design/trading.md)、[共享交易网关](design/tradingd.md)、[交易网关持久化与恢复](design/tradingd-persistence.md)和[交易历史 MySQL 存储](design/tradingd-mysql.md)。
+本地现金模拟账户通过 mmap WAL 和检查点持久化与恢复交易状态，并可由后台线程将交易历史与查询投影异步归档至 MySQL；期货模式尚不支持网关日志恢复。详细设计见[交易模块设计](design/trading.md)、[共享交易网关](design/tradingd.md)、[交易网关持久化与恢复](design/tradingd-persistence.md)和[交易历史 MySQL 存储](design/tradingd-mysql.md)。
 
 ## 验证与工程实现
 
