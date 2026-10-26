@@ -22,8 +22,8 @@ class ContextTestClock final : public base::MonotonicClock {
 };
 
 // Two dictionary entries allow testing a known but unsubscribed instrument.
-md::MarketDataConfig ContextConfig(model::SourceId source_id = {1}) {
-  md::MarketDataConfig config;
+market::MarketDataConfig ContextConfig(model::SourceId source_id = {1}) {
+  market::MarketDataConfig config;
   config.source_id = source_id;
 
   config.instrument_count = 2;

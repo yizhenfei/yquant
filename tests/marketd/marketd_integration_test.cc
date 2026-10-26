@@ -20,18 +20,18 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "md/pipeline_test_support.h"
+#include "market/pipeline_test_support.h"
 #include "scoped_working_directory.h"
 #include "trading_gateway.h"
 #include "yquant/base/format.h"
-#include "yquant/md/csv_replay.h"
-#include "yquant/md/quote_codec.h"
-#include "yquant/md/recording.h"
-#include "yquant/md/shm_broadcast.h"
+#include "yquant/market/csv_replay.h"
+#include "yquant/market/quote_codec.h"
+#include "yquant/market/recording.h"
+#include "yquant/market/shm_broadcast.h"
 
 extern char** environ;
 
-namespace yquant::md {
+namespace yquant::market {
 namespace {
 
 constexpr auto kProcessTimeout = std::chrono::seconds(10);
@@ -189,16 +189,16 @@ class ChildProcess {
 };
 
 // Reads a live IPC stream without silently skipping gaps or malformed events.
-bool ReadQuote(md::ShmReader& reader, model::QuoteTick& out) {
+bool ReadQuote(market::ShmReader& reader, model::QuoteTick& out) {
   const auto deadline = std::chrono::steady_clock::now() + kProcessTimeout;
-  md::EventBuffer buffer;
+  market::EventBuffer buffer;
   for (;;) {
     const auto result = reader.TryNext(buffer);
-    if (result.status == md::ReadStatus::kEvent) {
-      return md::DecodeQuoteEvent(buffer.view(), out).ok();
+    if (result.status == market::ReadStatus::kEvent) {
+      return market::DecodeQuoteEvent(buffer.view(), out).ok();
     }
-    if (result.status != md::ReadStatus::kEmpty &&
-        result.status != md::ReadStatus::kRetry) {
+    if (result.status != market::ReadStatus::kEmpty &&
+        result.status != market::ReadStatus::kRetry) {
       return false;
     }
     if (std::chrono::steady_clock::now() >= deadline) {
@@ -285,11 +285,11 @@ TEST_F(MarketdIntegrationTest, TwoStrategiesAndRawReadersObserveBroadcast) {
   ChildProcess marketd;
   ASSERT_EQ(StartMarketd(marketd), 0);
   ASSERT_TRUE(marketd.WaitForOutput("Running")) << marketd.output();
-  md::ShmReader first_reader;
-  md::ShmReader second_reader;
-  const md::Endpoint endpoint{directory_.path(), "quotes"};
-  ASSERT_TRUE(first_reader.Open(endpoint, md::StartPosition::At(1)).ok());
-  ASSERT_TRUE(second_reader.Open(endpoint, md::StartPosition::At(1)).ok());
+  market::ShmReader first_reader;
+  market::ShmReader second_reader;
+  const market::Endpoint endpoint{directory_.path(), "quotes"};
+  ASSERT_TRUE(first_reader.Open(endpoint, market::StartPosition::At(1)).ok());
+  ASSERT_TRUE(second_reader.Open(endpoint, market::StartPosition::At(1)).ok());
   ChildProcess first_strategy;
   ChildProcess second_strategy;
   ASSERT_EQ(StartStrategy(first_strategy), 0);
@@ -313,7 +313,7 @@ TEST_F(MarketdIntegrationTest, TwoStrategiesAndRawReadersObserveBroadcast) {
   EXPECT_NE(first_strategy.output().find("ticks="), std::string::npos);
   EXPECT_NE(second_strategy.output().find("ticks="), std::string::npos);
   Stop(marketd);
-  md::ShmReader later;
+  market::ShmReader later;
   EXPECT_FALSE(later.Open(endpoint).ok());
 }
 
@@ -384,7 +384,7 @@ TEST_F(MarketdIntegrationTest, DuplicatePublisherFailsWhileOriginalStaysLive) {
   ASSERT_TRUE(second.Wait()) << second.output();
   EXPECT_NE(second.exit_code(), 0) << second.output();
   EXPECT_NE(second.output().find("publisher_init"), std::string::npos);
-  md::ShmReader reader;
+  market::ShmReader reader;
   ASSERT_TRUE(reader.Open({directory_.path(), "quotes"}).ok());
   model::QuoteTick quote;
   EXPECT_TRUE(ReadQuote(reader, quote));
@@ -411,7 +411,7 @@ TEST_F(MarketdIntegrationTest, EventLimitExitsAndRemovesDiscovery) {
   EXPECT_NE(child.output().find("Stopped events=17"), std::string::npos);
   EXPECT_FALSE(::yquant::testing::files::Exists(
       ::yquant::testing::files::FilePath(directory_.File("quotes.manifest"))));
-  md::ShmPublisher publisher;
+  market::ShmPublisher publisher;
   EXPECT_TRUE(publisher.Create({{directory_.path(), "quotes"}, 16, 80}).ok());
 }
 
@@ -419,7 +419,7 @@ TEST_F(MarketdIntegrationTest, CrashRestartChangesGenerationAndReleasesLock) {
   ChildProcess first;
   ASSERT_EQ(StartMarketd(first), 0);
   ASSERT_TRUE(first.WaitForOutput("Running")) << first.output();
-  md::ShmReader old_reader;
+  market::ShmReader old_reader;
   ASSERT_TRUE(old_reader.Open({directory_.path(), "quotes"}).ok());
   const auto generation = old_reader.generation();
   ASSERT_TRUE(first.Signal(SIGKILL));
@@ -427,12 +427,12 @@ TEST_F(MarketdIntegrationTest, CrashRestartChangesGenerationAndReleasesLock) {
   ChildProcess replacement;
   ASSERT_EQ(StartMarketd(replacement), 0);
   ASSERT_TRUE(replacement.WaitForOutput("Running")) << replacement.output();
-  md::ShmReader new_reader;
+  market::ShmReader new_reader;
   ASSERT_TRUE(new_reader.Open({directory_.path(), "quotes"}).ok());
   EXPECT_NE(new_reader.generation(), generation);
-  md::RefreshResult result;
+  market::RefreshResult result;
   ASSERT_TRUE(old_reader.Refresh(result).ok());
-  EXPECT_EQ(result.status, md::RefreshStatus::kStreamChanged);
+  EXPECT_EQ(result.status, market::RefreshStatus::kStreamChanged);
   model::QuoteTick quote;
   EXPECT_TRUE(ReadQuote(new_reader, quote));
   Stop(replacement);
@@ -459,9 +459,9 @@ TEST_F(MarketdIntegrationTest,
   ChildProcess relay;
   ASSERT_EQ(StartMarketd(relay, "relay.json"), 0);
   ASSERT_TRUE(relay.WaitForOutput("Running")) << relay.output();
-  md::ShmReader reader;
+  market::ShmReader reader;
   ASSERT_TRUE(
-      reader.Open({directory_.path(), "quotes"}, md::StartPosition::At(1))
+      reader.Open({directory_.path(), "quotes"}, market::StartPosition::At(1))
           .ok());
   ChildProcess strategy;
   ASSERT_EQ(StartStrategy(strategy), 0);
@@ -583,7 +583,7 @@ TEST_F(MarketdIntegrationTest, ReplayFeedsSharedMemoryWhileRecording) {
   ChildProcess marketd;
   ASSERT_EQ(StartMarketd(marketd, "replay.json"), 0);
   ASSERT_TRUE(marketd.WaitForOutput("Running")) << marketd.output();
-  md::ShmReader reader;
+  market::ShmReader reader;
   ASSERT_TRUE(reader.Open({directory_.path(), "quotes"}).ok());
   model::QuoteTick quote;
   for (uint64_t sequence = 1; sequence <= 2; ++sequence) {
@@ -604,4 +604,4 @@ TEST_F(MarketdIntegrationTest, ReplayFeedsSharedMemoryWhileRecording) {
 }
 
 }  // namespace
-}  // namespace yquant::md
+}  // namespace yquant::market

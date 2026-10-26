@@ -279,7 +279,7 @@ base::Status Parse(const base::JsonConfigDocument& source, ServerConfig& config,
       status = Listen(field.value(), config.listen, error);
     } else if (index < 4) {
       char* target = index == 1 ? market_path : trading_path;
-      const auto capacity = md::kMaxRuntimeDirectoryLength + 1;
+      const auto capacity = market::kMaxRuntimeDirectoryLength + 1;
       status = ReadConfigText(field.value(),
                               {index == 3 ? config.token : target,
                                index == 3 ? sizeof(config.token) : capacity},
@@ -323,7 +323,7 @@ base::Status Parse(const base::JsonConfigDocument& source, ServerConfig& config,
 base::Status Resolve(char* value, std::string_view field,
                      base::ConfigError& error) noexcept {
   const auto status =
-      base::ResolvePath(value, {value, md::kMaxRuntimeDirectoryLength + 1});
+      base::ResolvePath(value, {value, market::kMaxRuntimeDirectoryLength + 1});
   if (!status.ok()) {
     error.Set(field, status.code == base::ErrorCode::kIoError
                          ? "cannot resolve path from working directory"
@@ -469,7 +469,7 @@ base::Status ValidateConfig(const ServerConfig& config,
   if (!status.ok()) {
     return status;
   }
-  status = md::ValidateMarketDataScope(config.market_data, error);
+  status = market::ValidateMarketDataScope(config.market_data, error);
   if (!status.ok()) {
     return status;
   }
@@ -501,8 +501,8 @@ base::Status ConfigLoader::Load(const char* path) noexcept {
     return status;
   }
   ServerConfig parsed;
-  char market_path[md::kMaxRuntimeDirectoryLength + 1] = {};
-  char trading_path[md::kMaxRuntimeDirectoryLength + 1] = {};
+  char market_path[market::kMaxRuntimeDirectoryLength + 1] = {};
+  char trading_path[market::kMaxRuntimeDirectoryLength + 1] = {};
   status = Parse(document, parsed, market_path, trading_path, error_);
   if (!status.ok()) {
     return status;
@@ -515,7 +515,7 @@ base::Status ConfigLoader::Load(const char* path) noexcept {
   if (!status.ok()) {
     return status;
   }
-  md::MarketDataConfigLoader market_loader;
+  market::MarketDataConfigLoader market_loader;
   status = market_loader.Load(market_path);
   if (!status.ok()) {
     error_ = market_loader.error();

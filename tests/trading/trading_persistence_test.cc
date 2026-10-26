@@ -137,9 +137,9 @@ class TradingPersistenceTest : public ::testing::Test {
     return bytes;
   }
   Clock clock;
-  md::MarketDataConfig config;
+  market::MarketDataConfig config;
   TradingAccountSnapshot account;
-  md::InstrumentScope market;
+  market::InstrumentScope market;
   testing::TradingEngineHarness ledger{clock, market};
   Sink sink;
   Adapter adapter;
@@ -548,7 +548,7 @@ TEST_F(TradingPersistenceTest,
   instrument.margin_rate_ppm = 100000;
   instrument.open_fee_per_lot = 2000000;
 
-  md::InstrumentScope futures_market;
+  market::InstrumentScope futures_market;
   ASSERT_TRUE(futures_market.Configure(futures_config).ok());
   TradingAccountSnapshot initial;
   initial.type = model::AccountType::kFutures;

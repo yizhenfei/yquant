@@ -113,7 +113,7 @@ class TradingQuoteSource final : public MarketDataSource {
   std::optional<uint64_t> service_deadline;
   IdleClockStep idle;
 
-  base::Status Prepare(const md::MarketDataConfig&) noexcept override {
+  base::Status Prepare(const market::MarketDataConfig&) noexcept override {
     return {};
   }
   base::Status Start(std::span<const model::InstrumentId> ids,

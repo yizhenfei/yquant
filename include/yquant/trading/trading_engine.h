@@ -9,7 +9,7 @@
 #include <span>
 
 #include "yquant/base/monotonic_clock.h"
-#include "yquant/md/instrument_scope.h"
+#include "yquant/market/instrument_scope.h"
 #include "yquant/model/trading_event.h"
 #include "yquant/trading/trading_adapter.h"
 #include "yquant/trading/trading_dispatch.h"
@@ -28,7 +28,7 @@ class TradingEngine final {
  public:
   // Borrows non-null dependencies; all must outlive this engine.
   TradingEngine(const base::MonotonicClock* clock,
-                const md::InstrumentScope* instruments,
+                const market::InstrumentScope* instruments,
                 TradingAdapter* adapter) noexcept;
   ~TradingEngine() noexcept;
   TradingEngine(const TradingEngine&) = delete;
@@ -40,7 +40,7 @@ class TradingEngine final {
   // an initialized account. Inputs are call-only.
   [[nodiscard]] base::Status Init(
       const TradingConfig& config,
-      const md::MarketDataConfig& dictionary) noexcept;
+      const market::MarketDataConfig& dictionary) noexcept;
   // Closes requests and releases adapter resources, retaining order/account
   // facts until Reset. Idempotent, including after partial initialization.
   [[nodiscard]] base::Status Stop() noexcept;
@@ -232,7 +232,7 @@ class TradingEngine final {
 
   static constexpr size_t kErrorDetailSize = 1024;
   const base::MonotonicClock& clock_;
-  const md::InstrumentScope& instruments_;
+  const market::InstrumentScope& instruments_;
   TradingAdapter& adapter_;
   std::unique_ptr<Storage> storage_;
   bool prepared_ = false;

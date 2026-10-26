@@ -18,7 +18,7 @@ bool ValidSide(uint8_t flags, model::QuoteFlag side, int64_t price,
 }  // namespace
 
 base::Status MarketDataImpl::Configure(
-    const md::MarketDataConfig& config) noexcept {
+    const market::MarketDataConfig& config) noexcept {
   if (phase_ != strategy::CallbackPhase::kNone) {
     return {base::ErrorCode::kInvalidState, {}};
   }

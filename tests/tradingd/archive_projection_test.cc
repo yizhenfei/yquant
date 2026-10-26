@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "md/pipeline_test_support.h"
+#include "market/pipeline_test_support.h"
 #include "trading_engine_harness.h"
 #include "tradingd/state_codec.h"
 #include "yquant/base/format.h"
@@ -40,7 +40,7 @@ class FactSink final : public trading::TradingMutationSink {
 class ArchiveProjectionTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    config.market_data = md::testing::ScopeConfig();
+    config.market_data = market::testing::ScopeConfig();
     config.trading.initial_account.cash_balance = 1000000000;
     ::yquant::base::FormatTo(config.persistence.directory,
                              sizeof(config.persistence.directory), "/unused");
@@ -214,7 +214,7 @@ class ArchiveProjectionTest : public ::testing::Test {
 
   ArchiveClock clock;
   ServerConfig config;
-  md::InstrumentScope market;
+  market::InstrumentScope market;
   testing::TradingEngineHarness source{clock, market};
   trading::MockTradingAdapter mock;
   FactSink sink;

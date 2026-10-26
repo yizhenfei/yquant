@@ -6,7 +6,7 @@
 #include <memory>
 #include <optional>
 
-#include "yquant/md/instrument_scope.h"
+#include "yquant/market/instrument_scope.h"
 #include "yquant/model/trading_event.h"
 #include "yquant/trading/protocol.h"
 #include "yquant/trading/trading_adapter.h"
@@ -24,7 +24,8 @@ class CtpTradingAdapter final : public TradingAdapter {
 
   // Borrows a non-null, initialized, immutable scope until destruction.
   // Construction does not connect or allocate transport storage.
-  explicit CtpTradingAdapter(const md::InstrumentScope* instruments) noexcept;
+  explicit CtpTradingAdapter(
+      const market::InstrumentScope* instruments) noexcept;
 
   ~CtpTradingAdapter() noexcept override;
   [[nodiscard]] base::Status Prepare(
@@ -72,7 +73,7 @@ class CtpTradingAdapter final : public TradingAdapter {
   // Retains the first terminal transport/protocol failure until next Prepare.
   [[nodiscard]] base::Status Fail(base::ErrorCode code,
                                   const char* detail) noexcept;
-  const md::InstrumentScope& instruments_;
+  const market::InstrumentScope& instruments_;
   std::unique_ptr<Storage> storage_;
   char error_detail_[256] = {};
 };

@@ -10,7 +10,7 @@
 #include <string_view>
 
 #include "tradingd/config.h"
-#include "yquant/md/instrument_scope.h"
+#include "yquant/market/instrument_scope.h"
 #include "yquant/trading/mock_trading_adapter.h"
 #include "yquant/trading/trading_engine.h"
 
@@ -108,7 +108,7 @@ class ArchiveProjection {
   [[nodiscard]] base::Status RestoreGateway(
       std::span<const std::byte> checkpoint) noexcept;
   [[nodiscard]] base::Status RefreshOrders() noexcept;
-  md::InstrumentScope instruments_;
+  market::InstrumentScope instruments_;
   trading::MockTradingAdapter replay_adapter_;
   trading::TradingEngine trading_;
   std::unique_ptr<Storage> storage_;

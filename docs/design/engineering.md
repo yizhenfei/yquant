@@ -59,11 +59,11 @@ fmt 内部格式错误属于程序契约违例，不作为可恢复的格式化�
 ```text
 include/yquant/base/        基础库公开接口
 include/yquant/model/       公共领域类型
-include/yquant/md/          行情库公开接口
+include/yquant/market/      行情库公开接口
 include/yquant/trading/     交易库公开接口
 include/yquant/strategy/    策略 SDK
 src/base/                  基础库实现及内部平台适配
-src/md/                    行情库实现
+src/market/                行情库实现
 src/trading/               交易库实现
 src/strategyd/             策略程序专用实现
 src/marketd/               行情服务入口与组装
@@ -83,11 +83,11 @@ CMakePresets.json
 | --- | --- | --- |
 | `yquant::base` | `yquant_base`，别名 `yquant::base` | 日志、队列、共享内存、路径与文件操作、文本格式化、JSON 文档、单调时钟及进程等待和退出信号；队列不依赖日志或 fmt |
 | `yquant::model` | `yquant_model`，别名 `yquant::model`，`INTERFACE` 目标 | 标识、标的、行情、委托和账户等领域类型 |
-| `yquant::md` | `yquant_md`，别名 `yquant::md` | 标的字典、运行标的范围、行情配置、输入输出、回放录制及管线调度；依赖 `base` 和 `model` |
+| `yquant::market` | `yquant_market`，别名 `yquant::market` | 标的字典、运行标的范围、行情配置、输入输出、回放录制及管线调度；依赖 `base` 和 `model` |
 | `yquant::trading` | `yquant_trading`，别名 `yquant::trading` | 网关交易引擎、账本、客户端服务接口、配置、模拟柜台、协议及连接；依赖 `base`、`md`、`model` 和策略服务接口 |
 | `yquant::strategy` | `yquant_strategy_api`，别名 `yquant::strategy_api` | 策略 SDK 的 `INTERFACE` 目标，提供公开头文件和编译要求；宿主回调阶段枚举位于 `callback_phase.h` |
 
-库不依赖程序私有实现。`MarketDataImpl` 保留在 `strategyd` 中，负责策略订阅、缓存与回调阶段；网关引擎借用 `md::InstrumentScope` 查询标的，策略侧只持有网关客户端。程序私有对象目标与可执行目标的组织见[构建与依赖](#构建与依赖)。
+库不依赖程序私有实现。`MarketDataImpl` 保留在 `strategyd` 中，负责策略订阅、缓存与回调阶段；网关引擎借用 `market::InstrumentScope` 查询标的，策略侧只持有网关客户端。程序私有对象目标与可执行目标的组织见[构建与依赖](#构建与依赖)。
 
 ## 进程基础设施
 
@@ -128,14 +128,14 @@ CMakePresets.json
 
 构建使用 CMake 3.21 或更高版本，生成器使用 Ninja。仓库维护 configure、build、test presets；本机路径及个人工具链放入不提交的 `CMakeUserPresets.json`。构建产物统一位于 `build/<preset>/`。[CMake Presets](https://cmake.org/cmake/help/v3.21/manual/cmake-presets.7.html)
 
-公共实现由 `yquant_base`、`yquant_md`、`yquant_trading` 三个 `STATIC` 库提供。程序专用实现按下表编译为 `OBJECT` 目标，只供对应可执行程序及其单元测试使用；各程序对象目标之间不相互链接。测试访问程序内部接口不构成跨程序公共接口。
+公共实现由 `yquant_base`、`yquant_market`、`yquant_trading` 三个 `STATIC` 库提供。程序专用实现按下表编译为 `OBJECT` 目标，只供对应可执行程序及其单元测试使用；各程序对象目标之间不相互链接。测试访问程序内部接口不构成跨程序公共接口。
 
 | 私有对象目标 | 可执行目标 | 输出程序 |
 | --- | --- | --- |
 | `yquant_strategyd_objects` | `yquant_strategyd` | `yquant-strategyd` |
 | `yquant_tradingd_objects` | `yquant_tradingd` | `yquant-tradingd` |
 
-`yquant_marketd` 仅编译服务入口，直接链接 `yquant::md`，由行情库提供配置加载、输入输出组件及管线调度。
+`yquant_marketd` 仅编译服务入口，直接链接 `yquant::market`，由行情库提供配置加载、输入输出组件及管线调度。
 
 编译选项按 target 配置：C++20、公开 include 路径和日志编译级别向调用方传播；项目警告选项设为私有，不强加给依赖。基础库的日志与文本格式化模板使用 fmt，因此 `fmt::fmt` 为公开依赖。异常开关和 fmt 配置同时应用于依赖自身及相关调用方，避免不同编译单元采用不同配置。
 

@@ -20,10 +20,10 @@
 #include "file_test_support.h"
 #include "yquant/base/format.h"
 #include "yquant/base/json_config_document.h"
-#include "yquant/md/market_data_config.h"
-#include "yquant/md/mock_quote_source.h"
-#include "yquant/md/quote_codec.h"
-#include "yquant/md/shm_broadcast.h"
+#include "yquant/market/market_data_config.h"
+#include "yquant/market/mock_quote_source.h"
+#include "yquant/market/quote_codec.h"
+#include "yquant/market/shm_broadcast.h"
 
 namespace yquant::testing {
 // Supplies real SHM traffic to process tests using the reserved test endpoint.
@@ -55,7 +55,7 @@ class MarketDataFeed {
     if (option == arguments.end() || option + 1 == arguments.end()) {
       return 0;
     }
-    md::MarketDataConfigLoader loader;
+    market::MarketDataConfigLoader loader;
     if (!loader.Load((option + 1)->c_str()).ok()) {
       return 0;
     }
@@ -90,10 +90,10 @@ class MarketDataFeed {
     if (!written || closed) {
       return EIO;
     }
-    if (host.instrument_count > md::kMaxMockQuoteInstruments) {
+    if (host.instrument_count > market::kMaxMockQuoteInstruments) {
       return EINVAL;
     }
-    md::MockQuoteConfig config;
+    market::MockQuoteConfig config;
     config.source_id = host.source_id;
     config.interval_ns = std::max<uint64_t>(1000000, host.poll_interval_ns);
     config.instrument_count = host.instrument_count;
@@ -108,7 +108,7 @@ class MarketDataFeed {
     }
     if (!source_.Prepare(config).ok() ||
         !publisher_
-             .Create({{directory_, host.stream}, 4096, md::kQuoteFrameSize})
+             .Create({{directory_, host.stream}, 4096, market::kQuoteFrameSize})
              .ok()) {
       return EINVAL;
     }
@@ -134,13 +134,13 @@ class MarketDataFeed {
         }
         model::QuoteTick quote;
         const auto result = source_.Poll(now, quote);
-        if (result.state == md::MockQuotePollState::kEvent) {
-          md::QuoteFrame frame;
-          if (!md::EncodeQuote(quote, frame).ok() ||
-              !publisher_.Publish(md::QuoteEvent(quote, frame)).ok()) {
+        if (result.state == market::MockQuotePollState::kEvent) {
+          market::QuoteFrame frame;
+          if (!market::EncodeQuote(quote, frame).ok() ||
+              !publisher_.Publish(market::QuoteEvent(quote, frame)).ok()) {
             return;
           }
-        } else if (result.state == md::MockQuotePollState::kError) {
+        } else if (result.state == market::MockQuotePollState::kError) {
           return;
         } else {
           std::this_thread::sleep_for(std::chrono::microseconds(100));
@@ -162,8 +162,8 @@ class MarketDataFeed {
   }
   char directory_[64] = {};
   std::string config_path_;
-  md::MockQuoteSource source_;
-  md::ShmPublisher publisher_;
+  market::MockQuoteSource source_;
+  market::ShmPublisher publisher_;
   std::atomic<bool> stop_{false};
   std::atomic<bool> receiving_{false};
   std::thread thread_;

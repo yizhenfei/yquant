@@ -209,8 +209,8 @@ class TradingServiceImplTest : public ::testing::Test {
   }
 
   RemoteClock clock;
-  md::MarketDataConfig dictionary;
-  md::InstrumentScope market;
+  market::MarketDataConfig dictionary;
+  market::InstrumentScope market;
   TradingServiceImpl remote{clock, market};
   trading::TradingClientConfig config;
   trading::Listener listener;

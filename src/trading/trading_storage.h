@@ -135,8 +135,8 @@ struct TradingEngine::Storage {
   bool rescan_required = false;
   std::optional<uint64_t> next_retry;
   model::CashSnapshot cash;
-  std::array<model::PositionSnapshot, md::kMaxMarketDataInstruments> positions =
-      {};
+  std::array<model::PositionSnapshot, market::kMaxMarketDataInstruments>
+      positions = {};
   size_t position_count = 0;
   model::AccountType type = model::AccountType::kCash;
   bool broker_managed = false;

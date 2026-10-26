@@ -13,13 +13,13 @@
 | 行情适配 | `ShmPublisher`、`ShmReader` | 自持编解码缓冲区、事件校验、行情读取状态映射 |
 | 事件编解码 | `EncodeEvent()`、`DecodeEvent()` | 行情事件头、schema、载荷长度及字段约束 |
 
-通用队列及共享内存封装属于 `yquant::base`；行情适配属于 `yquant::md`，只调用字节广播接口，不直接操作槽位、原子标记或共享内存文件。
+通用队列及共享内存封装属于 `yquant::base`；行情适配属于 `yquant::market`，只调用字节广播接口，不直接操作槽位、原子标记或共享内存文件。
 
 过滤由接收方的 [EventFilter](market-data.md#接收端事件过滤)独立执行。广播接口不保存订阅或过滤条件。
 
 ## 公共接口
 
-字节广播接口见 [base/shm_broadcast.h](../../include/yquant/base/shm_broadcast.h)；行情接口见 [md/shm_broadcast.h](../../include/yquant/md/shm_broadcast.h)。
+字节广播接口见 [base/shm_broadcast.h](../../include/yquant/base/shm_broadcast.h)；行情接口见 [market/shm_broadcast.h](../../include/yquant/market/shm_broadcast.h)。
 
 | 接口 | 语义 |
 | --- | --- |

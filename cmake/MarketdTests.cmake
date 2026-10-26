@@ -1,7 +1,7 @@
 add_executable(yquant_marketd_test
   tests/marketd/marketd_integration_test.cc)
 target_link_libraries(yquant_marketd_test PRIVATE
-  yquant::md yquant::trading GTest::gtest_main Threads::Threads)
+  yquant::market yquant::trading GTest::gtest_main Threads::Threads)
 target_compile_options(yquant_marketd_test PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(yquant_marketd_test PRIVATE
   YQUANT_TEST_INSTRUMENT_CATALOG_PATH="${PROJECT_SOURCE_DIR}/tests/fixtures/instruments.json"

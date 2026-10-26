@@ -90,7 +90,7 @@ struct CtpTradingAdapter::Storage {
 };
 
 CtpTradingAdapter::CtpTradingAdapter(
-    const md::InstrumentScope* instruments) noexcept
+    const market::InstrumentScope* instruments) noexcept
     : instruments_(*instruments) {}
 CtpTradingAdapter::~CtpTradingAdapter() noexcept { (void)Stop(); }
 

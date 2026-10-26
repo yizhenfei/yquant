@@ -18,7 +18,7 @@ namespace yquant::testing {
 class TradingEngineHarness {
  public:
   TradingEngineHarness(const base::MonotonicClock& clock,
-                       const md::InstrumentScope& instruments) noexcept
+                       const market::InstrumentScope& instruments) noexcept
       : engine_(&clock, &instruments, &adapter_) {}
   base::Status Configure(
       const trading::TradingAccountSnapshot& account) noexcept {

@@ -18,7 +18,7 @@ namespace yquant::strategyd {
 // Prepare/Start/Stop and gives lifecycle fixtures a configured dictionary.
 class IdleTestSource final : public MarketDataSource {
  public:
-  base::Status Prepare(const md::MarketDataConfig&) noexcept override {
+  base::Status Prepare(const market::MarketDataConfig&) noexcept override {
     return {};
   }
   base::Status Start(std::span<const model::InstrumentId>,

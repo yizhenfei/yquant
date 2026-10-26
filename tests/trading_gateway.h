@@ -21,7 +21,7 @@
 
 #include "file_test_support.h"
 #include "yquant/base/format.h"
-#include "yquant/md/market_data_config.h"
+#include "yquant/market/market_data_config.h"
 #include "yquant/trading/trading_config.h"
 
 extern char** environ;
@@ -75,7 +75,7 @@ class TradingGateway {
       return 0;
     }
     trading::TradingConfigLoader broker;
-    md::MarketDataConfigLoader dictionary;
+    market::MarketDataConfigLoader dictionary;
     if (!broker.Load((trading + 1)->c_str()).ok() ||
         !dictionary.Load((market + 1)->c_str()).ok()) {
       return 0;

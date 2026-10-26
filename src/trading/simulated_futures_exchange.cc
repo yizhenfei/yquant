@@ -81,7 +81,7 @@ struct SimulatedFuturesExchange::Storage {
   std::array<Order, kMaxTradingOrders> orders;
   std::array<size_t, kLookupCapacity> lookup = {};
   size_t order_count = 0;
-  std::array<Book, md::kMaxMarketDataInstruments> books;
+  std::array<Book, market::kMaxMarketDataInstruments> books;
   size_t book_count = 0;
   std::array<Plan, kPlanCapacity> plans;
   size_t plan_count = 0;

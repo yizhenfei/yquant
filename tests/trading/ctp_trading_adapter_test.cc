@@ -157,8 +157,8 @@ class BridgePeer {
   std::thread thread_;
 };
 
-md::MarketDataConfig Dictionary() {
-  md::MarketDataConfig config;
+market::MarketDataConfig Dictionary() {
+  market::MarketDataConfig config;
   config.source_id = {1};
   config.instrument_count = 1;
   auto& d = config.instruments[0].instrument;
@@ -200,7 +200,7 @@ TradingPollResult Wait(CtpTradingAdapter& adapter, model::TradingEvent& event) {
 }
 
 TEST(CtpTradingAdapterTest, BrokerAccountReportsAndCancelUseActualWire) {
-  md::InstrumentScope scope;
+  market::InstrumentScope scope;
   const auto dictionary = Dictionary();
   ASSERT_TRUE(scope.Configure(dictionary).ok());
   BridgePeer peer;
@@ -251,7 +251,7 @@ TEST(CtpTradingAdapterTest, BrokerAccountReportsAndCancelUseActualWire) {
 }
 
 TEST(CtpTradingAdapterTest, MismatchedBrokerOrderFailsWithoutChangingOutput) {
-  md::InstrumentScope scope;
+  market::InstrumentScope scope;
   ASSERT_TRUE(scope.Configure(Dictionary()).ok());
   BridgePeer peer;
   ASSERT_TRUE(peer.Open());

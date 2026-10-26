@@ -10,7 +10,7 @@
 #include <span>
 #include <string_view>
 
-#include "yquant/md/quote_codec.h"
+#include "yquant/market/quote_codec.h"
 
 namespace yquant::trading {
 namespace {
@@ -622,8 +622,8 @@ bool WritePayload(Writer& writer, const Message& message) noexcept {
       WriteAccount(writer, message.account);
       break;
     case MessageType::kSimulationQuote: {
-      md::QuoteFrame frame;
-      if (!md::EncodeQuote(message.quote, frame).ok()) {
+      market::QuoteFrame frame;
+      if (!market::EncodeQuote(message.quote, frame).ok()) {
         return false;
       }
       writer.Bytes(std::string_view(reinterpret_cast<const char*>(frame.data()),
@@ -729,9 +729,9 @@ void ReadPayload(Reader& reader, Message& message) noexcept {
       ReadAccount(reader, message.account);
       break;
     case MessageType::kSimulationQuote: {
-      const auto bytes = reader.Bytes(md::kQuoteFrameSize);
+      const auto bytes = reader.Bytes(market::kQuoteFrameSize);
       if (!reader.ok() ||
-          !md::DecodeQuote(
+          !market::DecodeQuote(
                {reinterpret_cast<const std::byte*>(bytes.data()), bytes.size()},
                message.quote)
                .ok()) {

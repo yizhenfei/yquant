@@ -9,8 +9,8 @@
 #include <string_view>
 
 #include "yquant/base/monotonic_clock.h"
-#include "yquant/md/instrument_scope.h"
-#include "yquant/md/market_data_config.h"
+#include "yquant/market/instrument_scope.h"
+#include "yquant/market/market_data_config.h"
 #include "yquant/strategy/callback_phase.h"
 #include "yquant/strategy/market_data.h"
 
@@ -35,7 +35,7 @@ class MarketDataImpl final : public strategy::MarketData {
   // Borrows config only for this call. Returns kInvalidState during a callback
   // or if already configured; all failures preserve the current configuration.
   [[nodiscard]] base::Status Configure(
-      const md::MarketDataConfig& config) noexcept;
+      const market::MarketDataConfig& config) noexcept;
   // Clears configuration, snapshots, subscriptions, and callback phase. Call
   // outside callbacks after the strategy has finished using the view.
   void Reset() noexcept;
@@ -78,9 +78,9 @@ class MarketDataImpl final : public strategy::MarketData {
     bool has_quote = false;
   };
   const base::MonotonicClock& clock_;
-  md::InstrumentScope instruments_;
-  std::array<InstrumentSlot, md::kMaxMarketDataInstruments> snapshots_ = {};
-  std::array<model::InstrumentId, md::kMaxMarketDataInstruments>
+  market::InstrumentScope instruments_;
+  std::array<InstrumentSlot, market::kMaxMarketDataInstruments> snapshots_ = {};
+  std::array<model::InstrumentId, market::kMaxMarketDataInstruments>
       subscriptions_ = {};
   size_t subscription_count_ = 0;  // Populated prefix of subscriptions_.
   strategy::CallbackPhase phase_ = strategy::CallbackPhase::kNone;

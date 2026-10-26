@@ -1,0 +1,149 @@
+#include "yquant/market/pipeline_runner.h"
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include <cstring>
+#include <limits>
+#include <optional>
+
+#include "gtest/gtest.h"
+#include "market/pipeline_test_support.h"
+#include "yquant/market/quote_codec.h"
+#include "yquant/market/shm_broadcast.h"
+
+namespace yquant::market {
+namespace {
+
+// Advances one mock interval per source poll; no wall-clock waiting is needed.
+class AdvancingClock final : public base::MonotonicClock {
+ public:
+  uint64_t Now() const noexcept override {
+    now_ += 1000000;
+    return now_;
+  }
+
+ private:
+  mutable uint64_t now_ = 0;
+};
+
+// Requests stop at a selected batch boundary.
+class Environment final : public base::EventLoopEnvironment {
+ public:
+  base::Status CheckStop(bool& out) noexcept override {
+    ++checks;
+    if (fail) {
+      return {base::ErrorCode::kIoError, {}};
+    }
+    out = checks >= stop_after;
+    return {};
+  }
+  // Marketd polls in bounded batches; a wait here would be unexpected.
+  base::Status Wait(std::optional<uint64_t>) noexcept override {
+    return {base::ErrorCode::kInternalError, {}};
+  }
+  size_t checks = 0;
+  size_t stop_after = std::numeric_limits<size_t>::max();
+  bool fail = false;
+};
+
+TEST(PipelineRunnerTest, PublishesExactlyLimitToEveryOutputAndClosesDiscovery) {
+  testing::RuntimeDirectory directory;
+  ASSERT_TRUE(directory.valid());
+  auto config = testing::LocalConfig(directory.path());
+  config.publishers[1] = testing::ShmOutput(directory.path(), "other");
+  config.publisher_count = 2;
+  PipelineRunner runner;
+  ASSERT_TRUE(runner.Init(config, 0).ok()) << runner.error_detail();
+  market::ShmReader first;
+  market::ShmReader second;
+  ASSERT_TRUE(first.Open({directory.path(), "quotes"}).ok());
+  ASSERT_TRUE(second.Open({directory.path(), "other"}).ok());
+  AdvancingClock clock;
+  Environment environment;
+  ASSERT_TRUE(runner.Run(clock, environment, 5).ok()) << runner.error_detail();
+  EXPECT_EQ(runner.event_count(), 5U);
+  for (uint64_t sequence = 1; sequence <= 5; ++sequence) {
+    market::EventBuffer first_buffer;
+    market::EventBuffer second_buffer;
+    ASSERT_EQ(first.TryNext(first_buffer).status, market::ReadStatus::kEvent);
+    ASSERT_EQ(second.TryNext(second_buffer).status, market::ReadStatus::kEvent);
+    model::QuoteTick quote;
+    ASSERT_TRUE(market::DecodeQuoteEvent(first_buffer.view(), quote).ok());
+    EXPECT_EQ(quote.sequence, sequence);
+    EXPECT_EQ(quote.source_id, config.source.mock.source_id);
+    EXPECT_EQ(first_buffer.payload, second_buffer.payload);
+    EXPECT_EQ(first_buffer.payload_size, second_buffer.payload_size);
+  }
+  market::EventBuffer buffer;
+  EXPECT_EQ(first.TryNext(buffer).status, market::ReadStatus::kEndOfGeneration);
+  market::ShmReader later;
+  EXPECT_FALSE(later.Open({directory.path(), "quotes"}).ok());
+}
+
+TEST(PipelineRunnerTest, ChecksTerminationAtBoundedBatchBoundaries) {
+  testing::RuntimeDirectory directory;
+  ASSERT_TRUE(directory.valid());
+  const auto config = testing::LocalConfig(directory.path());
+  PipelineRunner runner;
+  ASSERT_TRUE(runner.Init(config, 0).ok());
+  AdvancingClock clock;
+  Environment environment;
+  environment.stop_after = 2;
+  ASSERT_TRUE(runner.Run(clock, environment).ok());
+  EXPECT_EQ(environment.checks, 2U);
+  EXPECT_EQ(runner.event_count(), 64U);
+}
+
+TEST(PipelineRunnerTest, ValidatesAllConfigurationBeforeCreatingOutputs) {
+  testing::RuntimeDirectory directory;
+  ASSERT_TRUE(directory.valid());
+  auto config = testing::LocalConfig(directory.path());
+  config.publishers[1] = testing::ShmOutput(directory.path(), "invalid");
+  config.publishers[1].capacity = 3;
+  config.publisher_count = 2;
+  PipelineRunner runner;
+  EXPECT_FALSE(runner.Init(config, 0).ok());
+  EXPECT_STREQ(runner.error_stage(), "config");
+  EXPECT_FALSE(::yquant::testing::files::Exists(
+      ::yquant::testing::files::FilePath(directory.File("quotes.lock"))));
+  market::ShmReader reader;
+  EXPECT_FALSE(reader.Open({directory.path(), "quotes"}).ok());
+}
+
+TEST(PipelineRunnerTest, PartialOutputInitializationUnwindsAndReleasesLocks) {
+  testing::RuntimeDirectory directory;
+  ASSERT_TRUE(directory.valid());
+  market::ShmPublisher existing;
+  ASSERT_TRUE(existing.Create({{directory.path(), "taken"}, 16, 80}).ok());
+  auto config = testing::LocalConfig(directory.path());
+  config.publishers[1] = testing::ShmOutput(directory.path(), "taken");
+  config.publisher_count = 2;
+  PipelineRunner runner;
+  EXPECT_FALSE(runner.Init(config, 0).ok());
+  EXPECT_STREQ(runner.error_stage(), "publisher_init");
+  market::ShmReader reader;
+  EXPECT_FALSE(reader.Open({directory.path(), "quotes"}).ok());
+  market::ShmPublisher replacement;
+  EXPECT_TRUE(replacement.Create({{directory.path(), "quotes"}, 16, 80}).ok());
+}
+
+TEST(PipelineRunnerTest, StopCheckFailureClosesOutputsAndPreservesReason) {
+  testing::RuntimeDirectory directory;
+  ASSERT_TRUE(directory.valid());
+  PipelineRunner runner;
+  ASSERT_TRUE(runner.Init(testing::LocalConfig(directory.path()), 0).ok());
+  AdvancingClock clock;
+  Environment environment;
+  environment.fail = true;
+  EXPECT_FALSE(runner.Run(clock, environment).ok());
+  EXPECT_STREQ(runner.error_stage(), "termination");
+  EXPECT_NE(std::strstr(runner.error_detail(), "stop requests"), nullptr);
+  runner.Close();
+  EXPECT_STREQ(runner.error_stage(), "termination");
+  market::ShmPublisher replacement;
+  EXPECT_TRUE(replacement.Create({{directory.path(), "quotes"}, 16, 80}).ok());
+}
+
+}  // namespace
+}  // namespace yquant::market

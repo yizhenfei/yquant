@@ -1,6 +1,6 @@
 """Validate a sealed one-contract recording and export finite strategy replay.
 
-The version-1 layouts are shared with md/recording.cc and md/quote_codec.cc.
+The version-1 layouts are shared with market/recording.cc and market/quote_codec.cc.
 Only recorded arrival gaps, event times, BBO and flags enter the CSV. The
 strategy replay source assigns fresh sequence numbers in the original order.
 """

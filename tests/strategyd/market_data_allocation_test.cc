@@ -16,7 +16,7 @@
 #include "strategyd/strategy_context.h"
 #include "strategyd/timer.h"
 #include "test_config_file.h"
-#include "yquant/md/mock_quote_source.h"
+#include "yquant/market/mock_quote_source.h"
 #include "yquant/model/identifiers.h"
 
 namespace {
@@ -165,7 +165,7 @@ struct ExerciseCounts {
 
 // Performs only allocation-counted work. A literal failure reason and counters
 // defer all GoogleTest reporting until after the observation window closes.
-const char* ExerciseMarketData(md::MockQuoteSource& source,
+const char* ExerciseMarketData(market::MockQuoteSource& source,
                                MarketDataImpl& market_data,
                                const strategy::StrategyContext& context,
                                ManualClock& clock, uint64_t interval,
@@ -177,7 +177,8 @@ const char* ExerciseMarketData(md::MockQuoteSource& source,
   for (size_t batch = 0; batch < kBatches; ++batch) {
     const auto idle_output = tick;
     clock.now += interval - 1;
-    if (source.Poll(clock.Now(), tick).state != md::MockQuotePollState::kIdle ||
+    if (source.Poll(clock.Now(), tick).state !=
+            market::MockQuotePollState::kIdle ||
         tick != idle_output) {
       return "idle polling changed the output or produced early data";
     }
@@ -185,7 +186,7 @@ const char* ExerciseMarketData(md::MockQuoteSource& source,
     ++clock.now;
     for (size_t instrument = 0; instrument < instrument_count; ++instrument) {
       const auto result = source.Poll(clock.Now(), tick);
-      if (result.state != md::MockQuotePollState::kEvent ||
+      if (result.state != market::MockQuotePollState::kEvent ||
           !result.status.ok()) {
         return "source failed to produce the next scheduled quote";
       }
@@ -285,10 +286,10 @@ TEST(MarketDataCppHeapCounterTest, CountsReplacementOperatorCalls) {
 }
 
 TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
-  md::MockQuoteConfig config;
+  market::MockQuoteConfig config;
   config.source_id = {17};
   config.interval_ns = 1000000;
-  config.instrument_count = md::kMaxMarketDataInstruments;
+  config.instrument_count = market::kMaxMarketDataInstruments;
   for (size_t index = 0; index < config.instrument_count; ++index) {
     auto& item = config.instruments[index];
     item.instrument.venue = model::Venue::kSse;
@@ -312,7 +313,7 @@ TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
   testing::MockTradingService trading;
   TimerImpl timer;
   StrategyContextImpl context(clock, market_data, trading, timer);
-  md::MarketDataConfig host;
+  market::MarketDataConfig host;
   host.source_id = config.source_id;
   host.instrument_count = config.instrument_count;
   for (size_t i = 0; i < host.instrument_count; ++i) {
@@ -326,7 +327,7 @@ TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
               base::ErrorCode::kOk);
   }
   market_data.EndCallback();
-  md::MockQuoteSource source;
+  market::MockQuoteSource source;
   ASSERT_TRUE(source.Prepare(config).ok());
   ASSERT_TRUE(source.Start(clock.Now()).ok());
 
@@ -340,10 +341,10 @@ TEST(MarketDataCppHeapTest, FirstPollAndSteadyDispatchHaveNoCppHeapActivity) {
                            config.interval_ns, config.instrument_count, counts);
   });
   EXPECT_EQ(failure, nullptr) << (failure == nullptr ? "" : failure);
-  EXPECT_EQ(counts.quotes, 128U * md::kMaxMarketDataInstruments);
+  EXPECT_EQ(counts.quotes, 128U * market::kMaxMarketDataInstruments);
   EXPECT_EQ(counts.idle, 128U);
   EXPECT_EQ(counts.duplicates, counts.quotes);
-  EXPECT_EQ(counts.old_quotes, 127U * md::kMaxMarketDataInstruments);
+  EXPECT_EQ(counts.old_quotes, 127U * market::kMaxMarketDataInstruments);
   EXPECT_EQ(counts.rejected, counts.quotes);
   EXPECT_EQ(counts.query_misses, 2 * counts.quotes);
   EXPECT_EQ(activity.allocation_calls, 0U);
@@ -358,8 +359,8 @@ TEST(MarketDataCppHeapTest,
       "0,0,1000,100,1001,200,7\n4,0,1000,100,1001,200,7\n"
       "4,0,1000,100,1001,200,7\n10,0,1000,100,1001,200,7\n");
   ASSERT_TRUE(csv.valid());
-  md::MarketDataConfig config;
-  config.adapter = md::MarketDataAdapter::kReplay;
+  market::MarketDataConfig config;
+  config.adapter = market::MarketDataAdapter::kReplay;
   config.source_id = {1};
   config.instrument_count = 1;
   config.replay_speed = 2;

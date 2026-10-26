@@ -7,7 +7,7 @@
 #include "tradingd/journal.h"
 #include "tradingd/mysql_archive_store.h"
 #include "yquant/base/config_error.h"
-#include "yquant/md/market_data_config.h"
+#include "yquant/market/market_data_config.h"
 #include "yquant/trading/protocol.h"
 #include "yquant/trading/trading_config.h"
 
@@ -47,7 +47,7 @@ struct PersistenceConfig {
 // instrument dictionary. No broker adapter other than mock is configured yet.
 struct ServerConfig {
   trading::Endpoint listen;
-  md::MarketDataConfig market_data;
+  market::MarketDataConfig market_data;
   trading::TradingConfig trading;
   char token[trading::kMaxTokenBytes + 1] = {};
   size_t max_clients = trading::kMaxClients;

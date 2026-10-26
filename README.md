@@ -36,15 +36,15 @@ YQuant 是一个支持多策略运行的低延迟量化交易系统，使用 C++
 
 ## 项目目录
 
-公共实现按职责组织为 `yquant_base`、`yquant_md` 和 `yquant_trading` 静态库，供可执行程序复用。
+公共实现按职责组织为 `yquant_base`、`yquant_market` 和 `yquant_trading` 静态库，供可执行程序复用。
 
 - `include/yquant/base/`：基础组件公开头文件。
 - `include/yquant/model/`：交易领域公共类型。
-- `include/yquant/md/`：标的字典与运行范围、行情配置、输入输出、回放录制与管线调度。
+- `include/yquant/market/`：标的字典与运行范围、行情配置、输入输出、回放录制与管线调度。
 - `include/yquant/trading/`：交易账本、柜台接入、交易配置与网关传输。
 - `include/yquant/strategy/`：策略开发接口与动态库协议。
 - `src/base/`：基础组件及内部实现，包括内存广播队列和共享内存封装。
-- `src/md/`：行情库实现。
+- `src/market/`：行情库实现。
 - `src/trading/`：交易库实现。
 - `src/strategyd/`：策略程序专用的动态库加载、行情服务、远端交易服务与调度。
 - `src/marketd/`：行情服务入口，负责命令行、信号与行情管线组装。
@@ -59,7 +59,7 @@ YQuant 是一个支持多策略运行的低延迟量化交易系统，使用 C++
 - `tests/base/`：基础组件测试。
 - `tests/trading/`：交易账本、配置、模拟柜台与网关传输组件测试。
 - `tests/strategyd/`：策略运行时与进程集成测试。
-- `tests/md/`、`tests/marketd/`：行情组件与多进程分发测试。
+- `tests/market/`、`tests/marketd/`：行情组件与多进程分发测试。
 - `tests/tradingd/`：交易网关服务与多进程共享账户测试。
 - `tests/scripts/`：CTP 字段、协议、录制转换及运行脚本的离线与进程测试。
 - `cmake/`：依赖与编译配置。

@@ -54,7 +54,8 @@ class FuturesSource final : public MarketDataSource {
  public:
   std::array<FuturesFrame, 16> frames = {};
   size_t count = 0;
-  base::Status Prepare(const md::MarketDataConfig& config) noexcept override {
+  base::Status Prepare(
+      const market::MarketDataConfig& config) noexcept override {
     id_ = config.instruments[0].instrument.id;
     return {};
   }

@@ -6,7 +6,7 @@
 
 #include <optional>
 
-#include "yquant/md/market_data_config.h"
+#include "yquant/market/market_data_config.h"
 #include "yquant/strategy/trading.h"
 #include "yquant/trading/trading_client_config.h"
 #include "yquant/trading/trading_dispatch.h"
@@ -23,7 +23,7 @@ class TradingService : public strategy::Trading {
   // safe to Stop; error_stage/detail remain valid until the next operation.
   [[nodiscard]] virtual base::Status Init(
       const TradingClientConfig& config,
-      const md::MarketDataConfig& dictionary) noexcept = 0;
+      const market::MarketDataConfig& dictionary) noexcept = 0;
   // Releases transport resources after callbacks and unconfirmed-order reports.
   // Safe after partial Init; does not erase ledger facts. Reset then frees
   // them.

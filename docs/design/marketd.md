@@ -8,11 +8,11 @@
 Source → model::QuoteTick → Publisher[]
 ```
 
-`Source` 负责获取数据并形成完整报价，`Publisher` 负责向下游提供报价。`md::PipelineRunner` 管理组件生命周期，串行执行轮询和发布。接入或中继由组件组合形成。
+`Source` 负责获取数据并形成完整报价，`Publisher` 负责向下游提供报价。`market::PipelineRunner` 管理组件生命周期，串行执行轮询和发布。接入或中继由组件组合形成。
 
-输入、输出、配置加载和管线调度属于 `yquant::md` 库，公开接口位于 `include/yquant/md/`，实现位于 `src/md/`。`src/marketd/main.cc` 负责命令行处理、加载 `md::PipelineConfig`、准备时钟与停止信号，并创建和运行 `md::PipelineRunner`。
+输入、输出、配置加载和管线调度属于 `yquant::market` 库，公开接口位于 `include/yquant/market/`，实现位于 `src/market/`。`src/marketd/main.cc` 负责命令行处理、加载 `market::PipelineConfig`、准备时钟与停止信号，并创建和运行 `market::PipelineRunner`。
 
-`md::Publisher` 的实现包括 `ShmPublisher`、`TcpPublisher` 和 `RecordPublisher`。`ShmPublisher` 直接完成报价编码、事件封装、共享内存写入及周期心跳，同时保留 `Publish(EventView, sequence)` 供事件发布使用。
+`market::Publisher` 的实现包括 `ShmPublisher`、`TcpPublisher` 和 `RecordPublisher`。`ShmPublisher` 直接完成报价编码、事件封装、共享内存写入及周期心跳，同时保留 `Publish(EventView, sequence)` 供事件发布使用。
 
 | 输入适配器 | 数据来源 | 行为 |
 | --- | --- | --- |
@@ -48,7 +48,7 @@ mock → marketd → tcp → marketd → shm → strategyd × N
 
 `receive_time_ns` 属于所在进程的单调时钟域，不通过共享内存报价帧或 TCP 帧透传。`strategyd` 接收时用本进程时钟重新赋值，因此策略计算的报价年龄表示接收到回调之间的时间。跨进程或跨机器传输延迟需要单独测量。
 
-[QuoteCodec](../../include/yquant/md/quote_codec.h) 编解码固定 80 字节的小端帧。帧包含 magic、版本、固定长度、来源、品种、序号、事件时间、买卖一价量和标志位；保留字节为零。编码逐字段进行，避免复制 C++ 结构体填充。共享内存事件外层的来源、品种、序号和时间必须与帧一致，解码失败保留调用方输出。
+[QuoteCodec](../../include/yquant/market/quote_codec.h) 编解码固定 80 字节的小端帧。帧包含 magic、版本、固定长度、来源、品种、序号、事件时间、买卖一价量和标志位；保留字节为零。编码逐字段进行，避免复制 C++ 结构体填充。共享内存事件外层的来源、品种、序号和时间必须与帧一致，解码失败保留调用方输出。
 
 ## 配置
 
@@ -76,13 +76,13 @@ yquant-marketd --config /path/to/marketd.json --max-events 100
 }
 ```
 
-`source.config` 与模拟源配置中的 `instrument_catalog` 均按进程工作目录解析，遵循[路径解析约定](../../README.md#路径解析)。模拟行情配置引用[共享标的字典](market-data.md#共享标的字典)，保存来源、间隔、运行标的及其模拟报价，标的精度由字典提供；由 `md::MockQuoteConfigLoader` 独立解析，示例见 [mock_source.json](../../examples/marketd/mock_source.json)。
+`source.config` 与模拟源配置中的 `instrument_catalog` 均按进程工作目录解析，遵循[路径解析约定](../../README.md#路径解析)。模拟行情配置引用[共享标的字典](market-data.md#共享标的字典)，保存来源、间隔、运行标的及其模拟报价，标的精度由字典提供；由 `market::MockQuoteConfigLoader` 独立解析，示例见 [mock_source.json](../../examples/marketd/mock_source.json)。
 
 共享内存输出的容量为 2 的幂，默认 1024；载荷上限默认 256 字节，本报价帧要求至少 80 字节，组件上限为 4096 字节。运行目录必须使用当前用户拥有的绝对路径，组和其他用户不可写入。
 
 #### 模拟报价生成
 
-`md::MockQuoteSource` 属于行情组件，持有 `MockQuoteConfig` 中的报价种子和批次状态。`md::MockSource` 为生产端选择配置中的全部标的，逐条取得规范化报价。对象由单一执行流使用，不创建线程、不执行等待，轮询路径不分配内存。
+`market::MockQuoteSource` 属于行情组件，持有 `MockQuoteConfig` 中的报价种子和批次状态。`market::MockSource` 为生产端选择配置中的全部标的，逐条取得规范化报价。对象由单一执行流使用，不创建线程、不执行等待，轮询路径不分配内存。
 
 每隔 `interval_ms` 对每个选择的标的生成一次报价，按配置中的标的顺序通过多次 `Poll()` 返回。第一批在激活后经过一个间隔生成，此后持续运行，不设置自动结束条数。
 

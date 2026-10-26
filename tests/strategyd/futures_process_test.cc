@@ -13,7 +13,7 @@
 #include "gtest/gtest.h"
 #include "test_config_file.h"
 #include "trading_process_helpers.h"
-#include "yquant/md/market_data_config.h"
+#include "yquant/market/market_data_config.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -21,7 +21,7 @@ namespace {
 // Copies the shipped replay configuration, retaining its data/catalog paths
 // when the temporary configuration moves to another directory.
 std::string AcceleratedReplay() {
-  md::MarketDataConfigLoader loader;
+  market::MarketDataConfigLoader loader;
   if (!loader.Load(YQUANT_TEST_FUTURES_MARKET_CONFIG_PATH).ok()) {
     return {};
   }

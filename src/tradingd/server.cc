@@ -14,7 +14,7 @@
 #include "tradingd/journal.h"
 #include "tradingd/server_storage.h"
 #include "yquant/base/format.h"
-#include "yquant/md/instrument_scope.h"
+#include "yquant/market/instrument_scope.h"
 #include "yquant/trading/connection.h"
 #include "yquant/trading/mock_trading_adapter.h"
 #include "yquant/trading/trading_adapter.h"

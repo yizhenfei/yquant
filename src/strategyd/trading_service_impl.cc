@@ -134,7 +134,7 @@ struct TradingServiceImpl::Storage {
 
 TradingServiceImpl::TradingServiceImpl(
     const base::MonotonicClock& clock,
-    const md::InstrumentScope& instruments) noexcept
+    const market::InstrumentScope& instruments) noexcept
     : clock_(clock), instruments_(instruments) {}
 TradingServiceImpl::~TradingServiceImpl() noexcept { Reset(); }
 
@@ -155,7 +155,7 @@ base::Status TradingServiceImpl::FailSession(base::Status status,
 
 base::Status TradingServiceImpl::Init(
     const trading::TradingClientConfig& config,
-    const md::MarketDataConfig& dictionary) noexcept {
+    const market::MarketDataConfig& dictionary) noexcept {
   error_stage_ = "trading_connect";
   if (storage_ != nullptr || accept_requests_) {
     return {

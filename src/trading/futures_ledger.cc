@@ -12,7 +12,7 @@
 #include <utility>
 
 #include "yquant/base/format.h"
-#include "yquant/md/instrument_scope.h"
+#include "yquant/market/instrument_scope.h"
 #include "yquant/trading/trading_limits.h"
 
 namespace yquant::trading {
@@ -23,7 +23,7 @@ constexpr auto kMax = std::numeric_limits<int64_t>::max();
 constexpr auto kMin = std::numeric_limits<int64_t>::min();
 constexpr uint32_t kNoLot = UINT32_MAX;
 constexpr size_t kMaxOpeningLots =
-    kMaxTradingFills + 4 * md::kMaxMarketDataInstruments;
+    kMaxTradingFills + 4 * market::kMaxMarketDataInstruments;
 
 // Checked integer primitives preserve out on failure. Signed PnL/available
 // values may be negative; notionals, fees and quantities may not.
@@ -160,7 +160,7 @@ int64_t Fee(const model::InstrumentDefinition& instrument,
 }
 
 // Initializes only a temporary position; dictionary values are copied once.
-bool NewPosition(const md::InstrumentScope& market, model::InstrumentId id,
+bool NewPosition(const market::InstrumentScope& market, model::InstrumentId id,
                  PositionRecord& out) noexcept {
   model::InstrumentDefinition instrument;
   if (!market.TryGetInstrument(id, instrument) ||
@@ -250,7 +250,8 @@ bool Claim(const model::OrderRequest& request,
 }
 
 std::optional<size_t> Find(
-    const std::array<PositionRecord, md::kMaxMarketDataInstruments>& positions,
+    const std::array<PositionRecord, market::kMaxMarketDataInstruments>&
+        positions,
     size_t count, model::InstrumentId id) noexcept {
   for (size_t i = 0; i != count; ++i) {
     if (positions[i].position.instrument_id == id) {
@@ -267,7 +268,7 @@ model::OrderRequest Request(const model::OrderSnapshot& order) noexcept {
 
 struct FuturesLedger::Storage {
   model::FuturesAccountSnapshot account;
-  std::array<PositionRecord, md::kMaxMarketDataInstruments> positions{};
+  std::array<PositionRecord, market::kMaxMarketDataInstruments> positions{};
   std::array<OpeningLot, kMaxOpeningLots> lots{};
   size_t position_count = 0;
   size_t lot_count = 0;
@@ -289,13 +290,13 @@ void FuturesLedger::Reset() noexcept {
 
 ErrorCode FuturesLedger::Configure(
     const TradingAccountSnapshot& account,
-    const md::InstrumentScope* market_data) noexcept {
+    const market::InstrumentScope* market_data) noexcept {
   if (storage_ != nullptr) {
     return Fail(ErrorCode::kInvalidState, "already configured");
   }
   if (account.type != model::AccountType::kFutures ||
       account.cash_balance < 0 || account.position_count != 0 ||
-      account.futures_position_count > md::kMaxMarketDataInstruments) {
+      account.futures_position_count > market::kMaxMarketDataInstruments) {
     return Fail(ErrorCode::kInvalidArgument,
                 "invalid futures bootstrap account");
   }

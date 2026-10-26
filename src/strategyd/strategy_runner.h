@@ -40,7 +40,7 @@ struct StrategyStartOptions {
   // Null-terminated plugin path. Null and empty paths are invalid.
   const char* library_path;
   StrategyConfigLoader& config;
-  const md::MarketDataConfig& market_data;
+  const market::MarketDataConfig& market_data;
   const trading::TradingClientConfig& trading_config;
 };
 

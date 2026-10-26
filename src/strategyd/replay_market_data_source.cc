@@ -19,7 +19,7 @@
 #include <utility>
 
 #include "yquant/base/format.h"
-#include "yquant/md/quote_codec.h"
+#include "yquant/market/quote_codec.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -111,7 +111,7 @@ bool ParseRecord(std::string_view line,
     return false;
   }
   quote.flags = static_cast<uint8_t>(flags);
-  return md::ValidateQuote(quote).ok() &&
+  return market::ValidateQuote(quote).ok() &&
          quote.bid_price % definition.price_tick == 0 &&
          quote.ask_price % definition.price_tick == 0 &&
          quote.bid_qty % definition.quantity_step == 0 &&
@@ -127,7 +127,7 @@ base::Status ReplayMarketDataSource::Error(base::ErrorCode code,
 }
 
 base::Status ReplayMarketDataSource::ReadFrames(
-    const md::MarketDataConfig& config) noexcept {
+    const market::MarketDataConfig& config) noexcept {
   FileDescriptor file{
       open(config.replay_path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)};
   if (file.value < 0) {
@@ -242,19 +242,19 @@ base::Status ReplayMarketDataSource::ReadFrames(
 }
 
 base::Status ReplayMarketDataSource::Prepare(
-    const md::MarketDataConfig& config) noexcept {
+    const market::MarketDataConfig& config) noexcept {
   if (state_ != State::kUnprepared) {
     return Error(base::ErrorCode::kInvalidState,
                  "source can only be prepared once");
   }
   base::ConfigError error;
-  const auto validated = md::ValidateMarketDataConfig(config, error);
+  const auto validated = market::ValidateMarketDataConfig(config, error);
   if (!validated.ok()) {
     ::yquant::base::FormatTo(error_detail_, sizeof(error_detail_), "{}: {}",
                              error.field_path, error.message);
     return validated;
   }
-  if (config.adapter != md::MarketDataAdapter::kReplay) {
+  if (config.adapter != market::MarketDataAdapter::kReplay) {
     return Error(base::ErrorCode::kInvalidArgument,
                  "replay source requires adapter=replay");
   }

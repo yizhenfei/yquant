@@ -20,9 +20,9 @@ constexpr std::string_view kHeader =
     "elapsed_ns,event_time_ns,bid_price,bid_qty,ask_price,ask_qty,flags\n";
 constexpr std::string_view kRow = "0,0,3500,10,3502,20,7\n";
 
-md::MarketDataConfig ReplayConfig(const char* path) {
-  md::MarketDataConfig config;
-  config.adapter = md::MarketDataAdapter::kReplay;
+market::MarketDataConfig ReplayConfig(const char* path) {
+  market::MarketDataConfig config;
+  config.adapter = market::MarketDataAdapter::kReplay;
   config.source_id = {42};
   config.instrument_count = 1;
   std::strcpy(config.replay_path, path);

@@ -9,7 +9,7 @@
 #include <span>
 
 #include "strategyd/market_data_source.h"
-#include "yquant/md/shm_broadcast.h"
+#include "yquant/market/shm_broadcast.h"
 
 namespace yquant::strategyd {
 
@@ -33,7 +33,7 @@ class ShmMarketDataSource final : public MarketDataSource {
   // Validates and copies an adapter=shm configuration without attaching. May
   // succeed only once; failure leaves state and stored configuration unchanged.
   [[nodiscard]] base::Status Prepare(
-      const md::MarketDataConfig& config) noexcept override;
+      const market::MarketDataConfig& config) noexcept override;
   // Rejects unknown or duplicate subscriptions before attachment. An open
   // failure preserves prepared state for retry. An empty selection still
   // attaches and schedules health checks, but has no quote-polling deadline.
@@ -76,15 +76,15 @@ class ShmMarketDataSource final : public MarketDataSource {
                                  const char* detail) noexcept;
 
   State state_ = State::kUnprepared;
-  md::MarketDataConfig config_;
-  md::ShmReader reader_;
-  md::EventBuffer buffer_;
+  market::MarketDataConfig config_;
+  market::ShmReader reader_;
+  market::EventBuffer buffer_;
   // Populated prefix is the subscription selection copied at Start.
-  std::array<uint64_t, md::kMaxMarketDataInstruments> instruments_{};
+  std::array<uint64_t, market::kMaxMarketDataInstruments> instruments_{};
   size_t instrument_count_ = 0;
   std::optional<uint64_t> deadline_;  // Absolute quote-poll time, or idle.
   std::optional<uint64_t> service_deadline_;  // Absolute health-check time.
-  md::RefreshResult
+  market::RefreshResult
       health_;  // Last observation; Poll drains before reporting it.
   base::Status terminal_status_;  // Non-OK while state_ is kFailed.
   char error_detail_[768] = {};

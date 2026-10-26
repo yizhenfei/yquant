@@ -6,7 +6,7 @@
 
 #include <array>
 
-#include "yquant/md/market_data_config.h"
+#include "yquant/market/market_data_config.h"
 #include "yquant/model/account.h"
 #include "yquant/model/futures.h"
 
@@ -37,11 +37,11 @@ struct FuturesInitialPosition {
 // Initial reservations must be zero; the host creates its own reservations.
 struct TradingAccountSnapshot {
   int64_t cash_balance = 0;
-  std::array<model::PositionSnapshot, md::kMaxMarketDataInstruments> positions =
-      {};
+  std::array<model::PositionSnapshot, market::kMaxMarketDataInstruments>
+      positions = {};
   size_t position_count = 0;
   model::AccountType type = model::AccountType::kCash;
-  std::array<FuturesInitialPosition, md::kMaxMarketDataInstruments>
+  std::array<FuturesInitialPosition, market::kMaxMarketDataInstruments>
       futures_positions = {};
   size_t futures_position_count = 0;
   friend bool operator==(const TradingAccountSnapshot&,
@@ -56,7 +56,7 @@ struct TradingAccountSnapshot {
 struct BrokerAccountSnapshot {
   uint64_t revision = 0;
   model::FuturesAccountSnapshot account;
-  std::array<model::FuturesPositionSnapshot, md::kMaxMarketDataInstruments>
+  std::array<model::FuturesPositionSnapshot, market::kMaxMarketDataInstruments>
       positions = {};
   size_t position_count = 0;
 };

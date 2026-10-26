@@ -7,7 +7,7 @@
 #include <memory>
 
 #include "yquant/base/status.h"
-#include "yquant/md/instrument_scope.h"
+#include "yquant/market/instrument_scope.h"
 #include "yquant/model/futures.h"
 #include "yquant/model/order.h"
 #include "yquant/model/quote_tick.h"
@@ -39,7 +39,7 @@ class FuturesLedger {
   // disabled.
   [[nodiscard]] base::ErrorCode Configure(
       const TradingAccountSnapshot& account,
-      const md::InstrumentScope* market_data) noexcept;
+      const market::InstrumentScope* market_data) noexcept;
   void Reset() noexcept;
 
   // Open requires sufficient available margin plus fees. A valid close may
@@ -79,7 +79,7 @@ class FuturesLedger {
   // Copies diagnostics while preserving all account and reservation facts.
   base::ErrorCode Fail(base::ErrorCode code, const char* detail) noexcept;
   std::unique_ptr<Storage> storage_;
-  const md::InstrumentScope* instruments_ = nullptr;
+  const market::InstrumentScope* instruments_ = nullptr;
   char error_detail_[256] = {};
 };
 }  // namespace yquant::trading

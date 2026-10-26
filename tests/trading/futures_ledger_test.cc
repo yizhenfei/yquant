@@ -9,7 +9,7 @@
 
 #include "gtest/gtest.h"
 #include "trading_engine_harness.h"
-#include "yquant/md/instrument_scope.h"
+#include "yquant/market/instrument_scope.h"
 #include "yquant/trading/trading_adapter.h"
 #include "yquant/trading/trading_engine.h"
 
@@ -114,8 +114,8 @@ class FuturesLedgerTest : public ::testing::Test {
   }
 
   FuturesClock clock;
-  md::InstrumentScope market;
-  md::MarketDataConfig config;
+  market::InstrumentScope market;
+  market::MarketDataConfig config;
   model::InstrumentId id;
   TradingAccountSnapshot account;
   FuturesLedger ledger;
@@ -365,7 +365,7 @@ TEST_F(FuturesLedgerTest,
   account.cash_balance = 10000000 * kYuan;
   Configure();
   constexpr auto kCapacity =
-      kMaxTradingFills + 4 * md::kMaxMarketDataInstruments;
+      kMaxTradingFills + 4 * market::kMaxMarketDataInstruments;
   for (size_t i = 0; i != kCapacity; ++i) {
     auto order = Order(OrderSide::kBuy, PositionEffect::kOpen, 1);
     auto reservation = Reserve(order);
@@ -520,7 +520,7 @@ TEST_F(FuturesLedgerTest, LocalCancellationReleasesFuturesClaimBeforeSend) {
 
 TEST_F(FuturesLedgerTest,
        EquityOrdersAndExecutionsHonorExplicitSpecifications) {
-  md::MarketDataConfig stock_config;
+  market::MarketDataConfig stock_config;
   stock_config.source_id = {1};
 
   stock_config.instrument_count = 1;
@@ -534,7 +534,7 @@ TEST_F(FuturesLedgerTest,
   item.instrument.price_tick = 2;
   item.instrument.quantity_step = 2;
 
-  md::InstrumentScope stock_market;
+  market::InstrumentScope stock_market;
   ASSERT_TRUE(stock_market.Configure(stock_config).ok());
   TradingAccountSnapshot initial;
   initial.cash_balance = 1000000 * kYuan;
@@ -809,7 +809,7 @@ TEST_F(FuturesLedgerTest, BrokerGenericCloseUsesExchangeAllocationOnly) {
   instrument.venue = model::Venue::kDce;
   std::memset(instrument.symbol, 0, sizeof(instrument.symbol));
   std::memcpy(instrument.symbol, "a2701", 5);
-  md::InstrumentScope generic_market;
+  market::InstrumentScope generic_market;
   ASSERT_TRUE(generic_market.Configure(generic).ok());
   BrokerSnapshotAdapter adapter;
   adapter.account.revision = 1;

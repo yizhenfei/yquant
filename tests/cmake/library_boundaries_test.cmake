@@ -82,10 +82,10 @@ endfunction()
 
 set(boundary_errors FALSE)
 set(library_patterns)
-foreach(component IN ITEMS base md model strategy trading)
+foreach(component IN ITEMS base market model strategy trading)
   list(APPEND library_patterns "${SOURCE_DIR}/include/yquant/${component}/*.h")
 endforeach()
-foreach(component IN ITEMS base md trading)
+foreach(component IN ITEMS base market trading)
   list(APPEND library_patterns "${SOURCE_DIR}/src/${component}/*.h"
     "${SOURCE_DIR}/src/${component}/*.cc")
 endforeach()

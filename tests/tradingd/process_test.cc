@@ -10,7 +10,7 @@
 #include <thread>
 
 #include "gtest/gtest.h"
-#include "md/pipeline_test_support.h"
+#include "market/pipeline_test_support.h"
 #include "process_support.h"
 #include "scoped_working_directory.h"
 #include "yquant/base/format.h"
@@ -18,7 +18,7 @@
 
 namespace yquant::tradingd {
 namespace {
-using md::testing::RuntimeDirectory;
+using market::testing::RuntimeDirectory;
 using testing::ChildProcess;
 
 uint16_t AvailablePort() {

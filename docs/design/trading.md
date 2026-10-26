@@ -23,7 +23,7 @@
 | `trading::TradingAdapter` | 柜台接入边界，提供初始账户快照、发送请求和规范化回报，不调用策略 |
 | `trading::MockTradingAdapter` | 以定时脚本生成受理、成交或撤单结果，由使用方持有 |
 | `trading::CtpTradingAdapter` | 连接 SimNow 交易桥，接收规范化委托、成交及柜台账户快照 |
-| `md::InstrumentScope` | 持有运行范围内的只读标的定义，供行情和交易独立查询 |
+| `market::InstrumentScope` | 持有运行范围内的只读标的定义，供行情和交易独立查询 |
 | `strategyd::TradingServiceImpl` | 生产环境的交易服务实现，通过 TCP 访问 tradingd，保存本策略订单缓存和网关账户视图 |
 | `StrategyRunner` | 驱动请求、行情、交易回报及停止排空，串行调用策略 |
 | `StrategyAssembly` | 读取启动配置，持有标的范围、共享内存行情源和网关客户端 |

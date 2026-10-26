@@ -16,7 +16,7 @@
 #include "base/internal/shm_stream_registry.h"
 #include "file_test_support.h"
 #include "gtest/gtest.h"
-#include "yquant/md/quote_codec.h"
+#include "yquant/market/quote_codec.h"
 
 namespace yquant::strategyd {
 namespace {
@@ -26,7 +26,7 @@ class ShmMarketDataSourceTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ASSERT_NE(mkdtemp(directory_), nullptr);
-    config_.adapter = md::MarketDataAdapter::kShm;
+    config_.adapter = market::MarketDataAdapter::kShm;
     config_.source_id = {1};
     std::strcpy(config_.runtime_directory, directory_);
     std::strcpy(config_.stream, "quotes");
@@ -51,8 +51,8 @@ class ShmMarketDataSourceTest : public ::testing::Test {
   }
 
   void StartPublisher(size_t capacity = 8) {
-    const md::PublishConfig config{
-        {directory_, "quotes"}, capacity, md::kQuoteFrameSize};
+    const market::PublishConfig config{
+        {directory_, "quotes"}, capacity, market::kQuoteFrameSize};
     ASSERT_TRUE(publisher_.Create(config).ok());
   }
 
@@ -73,14 +73,14 @@ class ShmMarketDataSourceTest : public ::testing::Test {
   }
 
   void Publish(model::QuoteTick quote) {
-    md::QuoteFrame frame;
-    ASSERT_TRUE(md::EncodeQuote(quote, frame).ok());
-    ASSERT_TRUE(publisher_.Publish(md::QuoteEvent(quote, frame)).ok());
+    market::QuoteFrame frame;
+    ASSERT_TRUE(market::EncodeQuote(quote, frame).ok());
+    ASSERT_TRUE(publisher_.Publish(market::QuoteEvent(quote, frame)).ok());
   }
 
   char directory_[64] = "/tmp/yquant-shm-source-XXXXXX";
-  md::MarketDataConfig config_;
-  md::ShmPublisher publisher_;
+  market::MarketDataConfig config_;
+  market::ShmPublisher publisher_;
 };
 
 TEST_F(ShmMarketDataSourceTest,
@@ -138,7 +138,7 @@ TEST_F(ShmMarketDataSourceTest, FiltersEventTypesBeforeDecodingQuotes) {
   ASSERT_TRUE(source.Start(std::span(&id, 1), 0).ok());
   // Start owns its selection after the borrowed input is changed.
   id = config_.instruments[1].instrument.id;
-  md::EventHeader header;
+  market::EventHeader header;
   header.instrument_id = config_.instruments[0].instrument.id.value;
   header.type = 99;
   ASSERT_TRUE(publisher_.Publish({header, {}}).ok());
@@ -194,9 +194,9 @@ TEST_F(ShmMarketDataSourceTest, InvalidFramePreservesOutputAndStopsDelivery) {
   const auto id = config_.instruments[0].instrument.id;
   ASSERT_TRUE(source.Start(std::span(&id, 1), 0).ok());
   const auto quote = Quote();
-  md::QuoteFrame frame;
-  ASSERT_TRUE(md::EncodeQuote(quote, frame).ok());
-  auto event = md::QuoteEvent(quote, frame);
+  market::QuoteFrame frame;
+  ASSERT_TRUE(market::EncodeQuote(quote, frame).ok());
+  auto event = market::QuoteEvent(quote, frame);
   event.payload = event.payload.first(event.payload.size() - 1);
   ASSERT_TRUE(publisher_.Publish(event).ok());
   model::QuoteTick output = Quote(0, 999);

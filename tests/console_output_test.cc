@@ -22,8 +22,8 @@
 #include "file_test_support.h"
 #include "gtest/gtest.h"
 #include "trading_gateway.h"
-#include "yquant/md/quote_codec.h"
-#include "yquant/md/shm_broadcast.h"
+#include "yquant/market/quote_codec.h"
+#include "yquant/market/shm_broadcast.h"
 
 extern char** environ;
 
@@ -374,9 +374,10 @@ TEST_F(ConsoleOutputTest, TradingdLifecycleIsFlushedToStdout) {
 }
 
 TEST_F(ConsoleOutputTest, StrategydLifecycleIsFlushedToStdout) {
-  md::ShmPublisher publisher;
+  market::ShmPublisher publisher;
   ASSERT_TRUE(
-      publisher.Create({{directory_, "quotes"}, 16, md::kQuoteFrameSize}).ok());
+      publisher.Create({{directory_, "quotes"}, 16, market::kQuoteFrameSize})
+          .ok());
   ConsoleProcess child;
   ASSERT_EQ(child.Start(YQUANT_TEST_STRATEGYD_PATH, StrategyArguments()), 0);
   ASSERT_TRUE(child.WaitForRunning()) << child.stderr_text();
@@ -389,9 +390,10 @@ TEST_F(ConsoleOutputTest, StrategydLifecycleIsFlushedToStdout) {
 }
 
 TEST_F(ConsoleOutputTest, StrategydSeparatesSummaryFromRuntimeFailure) {
-  md::ShmPublisher publisher;
+  market::ShmPublisher publisher;
   ASSERT_TRUE(
-      publisher.Create({{directory_, "quotes"}, 16, md::kQuoteFrameSize}).ok());
+      publisher.Create({{directory_, "quotes"}, 16, market::kQuoteFrameSize})
+          .ok());
   ConsoleProcess child;
   ASSERT_EQ(child.Start(YQUANT_TEST_STRATEGYD_PATH,
                         {"--strategy", YQUANT_TEST_QUOTE_STRATEGY_PATH,
@@ -405,14 +407,14 @@ TEST_F(ConsoleOutputTest, StrategydSeparatesSummaryFromRuntimeFailure) {
   ASSERT_EQ(model::MakeInstrumentId("SSE", "600000", quote.instrument_id),
             base::ErrorCode::kOk);
   quote.sequence = 1;
-  md::QuoteFrame frame;
-  ASSERT_TRUE(md::EncodeQuote(quote, frame).ok());
-  ASSERT_TRUE(publisher.Publish(md::QuoteEvent(quote, frame)).ok());
-  ASSERT_TRUE(publisher.Publish(md::QuoteEvent(quote, frame)).ok());
+  market::QuoteFrame frame;
+  ASSERT_TRUE(market::EncodeQuote(quote, frame).ok());
+  ASSERT_TRUE(publisher.Publish(market::QuoteEvent(quote, frame)).ok());
+  ASSERT_TRUE(publisher.Publish(market::QuoteEvent(quote, frame)).ok());
   // A corrupt frame after the duplicate makes consumption observable without
   // timing assumptions: the reader must process both earlier records first.
   frame[0] = std::byte{0};
-  ASSERT_TRUE(publisher.Publish(md::QuoteEvent(quote, frame)).ok());
+  ASSERT_TRUE(publisher.Publish(market::QuoteEvent(quote, frame)).ok());
   ASSERT_TRUE(child.Wait());
   EXPECT_EQ(child.exit_code(), 1);
   EXPECT_NE(child.stdout_text().find("quote_observer: ticks=1 last_sequence=1"),

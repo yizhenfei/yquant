@@ -14,7 +14,7 @@
 #include "tradingd/journal.h"
 #include "tradingd/mysql_archive.h"
 #include "tradingd/server.h"
-#include "yquant/md/instrument_scope.h"
+#include "yquant/market/instrument_scope.h"
 #include "yquant/trading/connection.h"
 #include "yquant/trading/ctp_trading_adapter.h"
 #include "yquant/trading/mock_trading_adapter.h"
@@ -76,14 +76,14 @@ struct Server::Storage final : trading::TradingMutationSink {
   const base::MonotonicClock& clock_;
   ServerConfig config;
   trading::Listener listener;
-  md::InstrumentScope instruments;
+  market::InstrumentScope instruments;
   trading::MockTradingAdapter mock;
   trading::SimulatedFuturesExchange futures;
   trading::CtpTradingAdapter ctp;
   trading::TradingAdapter* selected_adapter = &mock;
   // One client publishes simulator input for the gateway generation.
   uint64_t simulation_client_id = 0;
-  std::array<model::QuoteTick, md::kMaxMarketDataInstruments>
+  std::array<model::QuoteTick, market::kMaxMarketDataInstruments>
       simulation_quotes = {};
   // Attaches the stable adapter request key without changing the common adapter
   // ABI.

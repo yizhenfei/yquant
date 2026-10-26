@@ -8,7 +8,7 @@
 #include <optional>
 
 #include "yquant/base/monotonic_clock.h"
-#include "yquant/md/instrument_scope.h"
+#include "yquant/market/instrument_scope.h"
 #include "yquant/trading/connection.h"
 #include "yquant/trading/trading_client_config.h"
 #include "yquant/trading/trading_service.h"
@@ -33,7 +33,7 @@ class TradingServiceImpl final : public trading::TradingService {
   // Borrows clock and instruments until destruction. The configured scope must
   // stay unchanged while the client is initialized.
   TradingServiceImpl(const base::MonotonicClock& clock,
-                     const md::InstrumentScope& instruments) noexcept;
+                     const market::InstrumentScope& instruments) noexcept;
   ~TradingServiceImpl() noexcept override;
   // Allocates session storage and completes a timeout-bounded handshake before
   // exposing the initial account. Copies config and dictionary values needed
@@ -43,7 +43,7 @@ class TradingServiceImpl final : public trading::TradingService {
   // returns kInvalidState and preserves that session.
   [[nodiscard]] base::Status Init(
       const trading::TradingClientConfig& config,
-      const md::MarketDataConfig& dictionary) noexcept override;
+      const market::MarketDataConfig& dictionary) noexcept override;
   // Closes transport and request entry without erasing cached facts or waiting
   // for acknowledgement. Repeated calls succeed and preserve diagnostics.
   [[nodiscard]] base::Status Stop() noexcept override {
@@ -153,7 +153,7 @@ class TradingServiceImpl final : public trading::TradingService {
   base::Status FailSession(base::Status status, const char* detail) noexcept;
 
   const base::MonotonicClock& clock_;
-  const md::InstrumentScope& instruments_;
+  const market::InstrumentScope& instruments_;
   std::unique_ptr<Storage> storage_;
   trading::Connection connection_;
   // Alternates local and wire events when both are ready.

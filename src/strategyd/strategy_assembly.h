@@ -61,7 +61,7 @@ class StrategyAssembly {
   }
   // Returns the configured source, borrowed until this owner is destroyed.
   MarketDataSource& source() noexcept {
-    return market_config_.config().adapter == md::MarketDataAdapter::kReplay
+    return market_config_.config().adapter == market::MarketDataAdapter::kReplay
                ? static_cast<MarketDataSource&>(replay_source_)
                : static_cast<MarketDataSource&>(source_);
   }
@@ -83,9 +83,9 @@ class StrategyAssembly {
   // Diagnostic capacity in bytes, including the terminating null.
   static constexpr size_t kErrorDetailSize = 1024;
   StrategyConfigLoader strategy_config_;
-  md::MarketDataConfigLoader market_config_;
+  market::MarketDataConfigLoader market_config_;
   trading::TradingClientConfigLoader trading_config_;
-  md::InstrumentScope instruments_;
+  market::InstrumentScope instruments_;
   ShmMarketDataSource source_;
   ReplayMarketDataSource replay_source_;
   TradingServiceImpl trading_;

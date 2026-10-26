@@ -17,7 +17,7 @@
 #include "gtest/gtest.h"
 #include "scoped_working_directory.h"
 #include "yquant/base/format.h"
-#include "yquant/md/market_data_config.h"
+#include "yquant/market/market_data_config.h"
 #include "yquant/trading/connection.h"
 
 namespace yquant::tradingd {
@@ -623,7 +623,7 @@ TEST(TradingdConfigTest, NestedMarketConfigAndClientShareCatalogDefinitions) {
   ConfigLoader gateway;
   ASSERT_TRUE(gateway.Load(files.Path("gateway/server.json").c_str()).ok())
       << gateway.error().field_path << ": " << gateway.error().message;
-  md::MarketDataConfigLoader client;
+  market::MarketDataConfigLoader client;
   ASSERT_TRUE(client.Load(files.Path("clients/market.json").c_str()).ok())
       << client.error().field_path << ": " << client.error().message;
   ASSERT_EQ(gateway.config().market_data.instrument_count, 1U);

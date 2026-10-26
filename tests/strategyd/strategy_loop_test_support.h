@@ -149,7 +149,8 @@ class QuoteSource final : public MarketDataSource {
   bool continuous = false;
   int polls = 0;
   int stops = 0;
-  base::Status Prepare(const md::MarketDataConfig& config) noexcept override {
+  base::Status Prepare(
+      const market::MarketDataConfig& config) noexcept override {
     source_id_ = config.source_id;
     return {};
   }
@@ -237,8 +238,9 @@ struct PlannedFill {
 // Histories are retained for assertions; no plan or input is borrowed.
 class Broker final : public trading::TradingService {
  public:
-  base::Status Init(const trading::TradingClientConfig&,
-                    const md::MarketDataConfig& dictionary) noexcept override {
+  base::Status Init(
+      const trading::TradingClientConfig&,
+      const market::MarketDataConfig& dictionary) noexcept override {
     instrument_ = dictionary.instruments[0].instrument;
     cash_ = {account_.cash_balance, 0, account_.cash_balance};
     position_ = {instrument_.id, 0, 0, 0};

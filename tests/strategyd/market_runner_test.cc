@@ -123,7 +123,7 @@ class ControlledSource final : public MarketDataSource {
     return scripted_ && next_quote_ == quotes_.size();
   }
 
-  base::Status Prepare(const md::MarketDataConfig&) noexcept override {
+  base::Status Prepare(const market::MarketDataConfig&) noexcept override {
     ++prepare_calls;
     return fail_prepare ? Fail("injected prepare failure") : base::Status{};
   }
@@ -636,7 +636,7 @@ class MaintenanceSource final : public MarketDataSource {
   int poll_calls = 0;
   int stop_calls = 0;
 
-  base::Status Prepare(const md::MarketDataConfig&) noexcept override {
+  base::Status Prepare(const market::MarketDataConfig&) noexcept override {
     return {};
   }
   base::Status Start(std::span<const model::InstrumentId>,

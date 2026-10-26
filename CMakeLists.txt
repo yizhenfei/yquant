@@ -37,30 +37,30 @@ target_include_directories(yquant_strategy_api INTERFACE
   "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>")
 target_link_libraries(yquant_strategy_api INTERFACE yquant::model yquant_compile_options)
 
-add_library(yquant_md STATIC
-  src/md/instrument_catalog.cc
-  src/md/market_data_config.cc
-  src/md/instrument_scope.cc
-  src/md/mock_quote_config.cc
-  src/md/mock_quote_source.cc
-  src/md/event_codec.cc
-  src/md/quote_codec.cc
-  src/md/shm_broadcast.cc
-  src/md/sources.cc
-  src/md/replay_source.cc
-  src/md/csv_replay.cc
-  src/md/pipeline_runner.cc
-  src/md/recording.cc
-  src/md/tcp_transport.cc
-  src/md/pipeline_config.cc)
-add_library(yquant::md ALIAS yquant_md)
-target_include_directories(yquant_md PUBLIC
+add_library(yquant_market STATIC
+  src/market/instrument_catalog.cc
+  src/market/market_data_config.cc
+  src/market/instrument_scope.cc
+  src/market/mock_quote_config.cc
+  src/market/mock_quote_source.cc
+  src/market/event_codec.cc
+  src/market/quote_codec.cc
+  src/market/shm_broadcast.cc
+  src/market/sources.cc
+  src/market/replay_source.cc
+  src/market/csv_replay.cc
+  src/market/pipeline_runner.cc
+  src/market/recording.cc
+  src/market/tcp_transport.cc
+  src/market/pipeline_config.cc)
+add_library(yquant::market ALIAS yquant_market)
+target_include_directories(yquant_market PUBLIC
   "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
   PRIVATE "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(yquant_md PUBLIC
+target_link_libraries(yquant_market PUBLIC
   yquant::base yquant::model yquant_compile_options Threads::Threads)
-target_link_libraries(yquant_md PRIVATE simdjson::simdjson)
-target_compile_options(yquant_md PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(yquant_market PRIVATE simdjson::simdjson)
+target_compile_options(yquant_market PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(yquant_trading STATIC
   src/trading/ctp_trading_adapter.cc
@@ -78,7 +78,7 @@ target_include_directories(yquant_trading PUBLIC
   "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
   PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(yquant_trading PUBLIC
-  yquant::base yquant::md yquant::strategy_api
+  yquant::base yquant::market yquant::strategy_api
   PRIVATE simdjson::simdjson Threads::Threads)
 target_compile_options(yquant_trading PRIVATE
   -Wall -Wextra -Wpedantic -Werror=switch)
@@ -98,7 +98,7 @@ add_library(yquant_strategyd_objects OBJECT
 target_include_directories(yquant_strategyd_objects PRIVATE
   "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(yquant_strategyd_objects PUBLIC
-  yquant::strategy_api yquant::base yquant::md yquant::trading
+  yquant::strategy_api yquant::base yquant::market yquant::trading
   PRIVATE simdjson::simdjson Threads::Threads ${CMAKE_DL_LIBS})
 target_compile_options(yquant_strategyd_objects PRIVATE
   -Wall -Wextra -Wpedantic -Werror=switch)
@@ -123,7 +123,7 @@ add_library(yquant_tradingd_objects OBJECT
   src/tradingd/server_persistence.cc)
 target_include_directories(yquant_tradingd_objects PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(yquant_tradingd_objects PUBLIC
-  yquant::base yquant::md yquant::trading
+  yquant::base yquant::market yquant::trading
   PRIVATE simdjson::simdjson Threads::Threads)
 target_compile_options(yquant_tradingd_objects PRIVATE
   -Wall -Wextra -Wpedantic -Werror=switch)
@@ -144,7 +144,7 @@ set_target_properties(yquant_tradingd PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 add_executable(yquant_marketd src/marketd/main.cc)
-target_link_libraries(yquant_marketd PRIVATE yquant::md)
+target_link_libraries(yquant_marketd PRIVATE yquant::market)
 target_compile_options(yquant_marketd PRIVATE -Wall -Wextra -Wpedantic)
 set_target_properties(yquant_marketd PROPERTIES
   OUTPUT_NAME yquant-marketd
@@ -303,7 +303,7 @@ if(BUILD_TESTING)
 
   add_executable(console_output_test tests/console_output_test.cc)
   target_link_libraries(console_output_test PRIVATE
-    yquant::trading yquant::md GTest::gtest_main Threads::Threads)
+    yquant::trading yquant::market GTest::gtest_main Threads::Threads)
   target_compile_options(console_output_test PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_definitions(console_output_test PRIVATE
     YQUANT_TEST_BROKER_CONFIG_PATH="${PROJECT_SOURCE_DIR}/tests/strategyd/configs/mock_trading.json"
@@ -444,7 +444,7 @@ if(BUILD_TESTING)
 
   include(cmake/LoggingCompileTests.cmake)
   include(cmake/StrategydTests.cmake)
-  include(cmake/MdTests.cmake)
+  include(cmake/MarketTests.cmake)
   include(cmake/MarketdTests.cmake)
   include(cmake/TradingdTests.cmake)
   foreach(target IN ITEMS yquant_strategyd_test yquant_marketd_test

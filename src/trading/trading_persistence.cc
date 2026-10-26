@@ -254,7 +254,7 @@ model::TradingEvent ReadEvent(Reader& r) noexcept {
 // Checks position units and uniqueness without changing the candidate.
 template <typename Storage>
 bool ValidatePositions(const Storage& s,
-                       const md::InstrumentScope& market) noexcept {
+                       const market::InstrumentScope& market) noexcept {
   for (size_t i = 0; i < s.position_count; ++i) {
     const auto& p = s.positions[i];
     model::InstrumentDefinition instrument;
@@ -281,9 +281,10 @@ bool ValidatePositions(const Storage& s,
 // Rebuilds order lookups and verifies aggregate reservations and activity.
 // Only a private restore candidate may be passed; failure may leave it changed.
 template <typename Storage>
-bool ValidateOrders(Storage& s, const md::InstrumentScope& market) noexcept {
+bool ValidateOrders(Storage& s,
+                    const market::InstrumentScope& market) noexcept {
   constexpr auto kMaximum = std::numeric_limits<int64_t>::max();
-  std::array<int64_t, md::kMaxMarketDataInstruments> quantities = {};
+  std::array<int64_t, market::kMaxMarketDataInstruments> quantities = {};
   int64_t reserved_cash = 0;
   size_t active = 0;
   size_t pending_cancel = 0;
@@ -395,7 +396,7 @@ bool ValidateOrders(Storage& s, const md::InstrumentScope& market) noexcept {
 // Rebuilds execution deduplication and reconciles each order's filled quantity.
 template <typename Storage>
 bool ValidateExecutions(Storage& s,
-                        const md::InstrumentScope& market) noexcept {
+                        const market::InstrumentScope& market) noexcept {
   std::array<int64_t, kMaxTradingOrders> filled = {};
   for (size_t i = 0; i < s.fill_count; ++i) {
     const auto& f = s.fills[i];
@@ -501,7 +502,7 @@ bool ValidateQueues(const Storage& s) noexcept {
 
 // Validates a private cash checkpoint before publishing it to the engine.
 template <typename Storage>
-bool Validate(Storage& s, const md::InstrumentScope& market) noexcept {
+bool Validate(Storage& s, const market::InstrumentScope& market) noexcept {
   if (s.type != model::AccountType::kCash || s.next_order_id == 0 ||
       s.cash.balance < 0 || s.cash.reserved < 0 ||
       s.cash.reserved > s.cash.balance ||
@@ -707,7 +708,7 @@ base::Status TradingEngine::RestoreCheckpoint(
   s.cash.reserved = r.Signed();
   s.cash.available = r.Signed();
   s.position_count = r.Uint(4);
-  if (s.position_count > md::kMaxMarketDataInstruments) {
+  if (s.position_count > market::kMaxMarketDataInstruments) {
     return {ErrorCode::kCorrupt, {}};
   }
   for (size_t i = 0; i < s.position_count; ++i) {
@@ -791,7 +792,7 @@ base::Status TradingEngine::RestoreReconciled(
       (storage_ != nullptr && storage_->type != model::AccountType::kCash)) {
     return {Fail(ErrorCode::kUnsupported, "reconciliation requires cash"), {}};
   }
-  if (baseline.position_count > md::kMaxMarketDataInstruments ||
+  if (baseline.position_count > market::kMaxMarketDataInstruments ||
       terminal_orders.size() > kMaxTradingOrders ||
       executions.size() > kMaxTradingFills) {
     return {Fail(ErrorCode::kResourceExhausted,
@@ -849,7 +850,7 @@ base::Status TradingEngine::RestoreReconciled(
       ++position;
     }
     if (position == s.position_count) {
-      if (s.position_count == md::kMaxMarketDataInstruments) {
+      if (s.position_count == market::kMaxMarketDataInstruments) {
         return {ErrorCode::kResourceExhausted, {}};
       }
       s.positions[s.position_count++].instrument_id = order.instrument_id;

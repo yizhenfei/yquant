@@ -137,7 +137,7 @@ bool ReleaseReservation(model::CashSnapshot& cash,
 }  // namespace
 
 TradingEngine::TradingEngine(const base::MonotonicClock* clock,
-                             const md::InstrumentScope* instruments,
+                             const market::InstrumentScope* instruments,
                              TradingAdapter* adapter) noexcept
     : clock_(*clock), instruments_(*instruments), adapter_(*adapter) {}
 TradingEngine::~TradingEngine() noexcept { Reset(); }
@@ -172,7 +172,7 @@ base::Status TradingEngine::ConfigureAccount(
             {}};
   }
   if (account.cash_balance < 0 ||
-      account.position_count > md::kMaxMarketDataInstruments) {
+      account.position_count > market::kMaxMarketDataInstruments) {
     return {Fail(ErrorCode::kInvalidArgument,
                  "invalid initial cash or position count"),
             {}};
@@ -507,7 +507,7 @@ ErrorCode TradingEngine::ValidateSubmission(const model::OrderRequest& request,
   }
   const auto existing_position = FindPosition(request.instrument_id);
   if (!futures && !existing_position &&
-      s.position_count == md::kMaxMarketDataInstruments) {
+      s.position_count == market::kMaxMarketDataInstruments) {
     return Fail(ErrorCode::kResourceExhausted, "position capacity exhausted");
   }
   transaction.futures = futures;
@@ -1534,7 +1534,7 @@ base::Status TradingEngine::FailStage(base::Status status, const char* stage,
 }
 
 base::Status TradingEngine::Init(const TradingConfig& config,
-                                 const md::MarketDataConfig&) noexcept {
+                                 const market::MarketDataConfig&) noexcept {
   if (prepared_ || storage_ != nullptr || accept_requests_ || stopping_) {
     return FailStage({base::ErrorCode::kInvalidState, {}}, "trading_prepare",
                      "gateway engine already initialized");

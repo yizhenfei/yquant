@@ -206,7 +206,7 @@ TEST(BrokerRecoveryTest, RecoversFilledTerminalOrderAfterEntireWalDisappears) {
     fill.receive_time_ns = 1000;
   }
   Clock clock;
-  md::MarketDataConfig config;
+  market::MarketDataConfig config;
   config.source_id = {1};
 
   config.instrument_count = 1;
@@ -216,7 +216,7 @@ TEST(BrokerRecoveryTest, RecoversFilledTerminalOrderAfterEntireWalDisappears) {
   std::memcpy(instrument.symbol, "600000", model::kSymbolLength);
   instrument.price_decimals = 2;
 
-  md::InstrumentScope market;
+  market::InstrumentScope market;
   ASSERT_TRUE(market.Configure(config).ok());
   testing::TradingEngineHarness ledger(clock, market);
   trading::TradingAccountSnapshot baseline;

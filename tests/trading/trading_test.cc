@@ -8,7 +8,7 @@
 #include <string_view>
 
 #include "gtest/gtest.h"
-#include "yquant/md/instrument_scope.h"
+#include "yquant/market/instrument_scope.h"
 #include "yquant/model/identifiers.h"
 #include "yquant/trading/trading_adapter.h"
 #include "yquant/trading/trading_engine.h"
@@ -206,8 +206,8 @@ class TradingTest : public ::testing::Test {
   }
 
   LedgerClock clock;
-  md::MarketDataConfig market_config;
-  md::InstrumentScope market_data;
+  market::MarketDataConfig market_config;
+  market::InstrumentScope market_data;
   RecordingTradingAdapter adapter;
   trading::TradingEngine trading{&clock, &market_data, &adapter};
   model::InstrumentId instrument_id;
@@ -710,7 +710,7 @@ TEST_F(TradingTest, InvalidBootstrapNeverPublishesAnAccount) {
         invalid.cash_balance = -1;
         break;
       case 1:
-        invalid.position_count = md::kMaxMarketDataInstruments + 1;
+        invalid.position_count = market::kMaxMarketDataInstruments + 1;
         break;
       case 2:
         invalid.positions[0].instrument_id = {99};

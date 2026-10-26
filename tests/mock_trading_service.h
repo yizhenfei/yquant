@@ -8,7 +8,7 @@
 #include <optional>
 #include <vector>
 
-#include "yquant/md/instrument_scope.h"
+#include "yquant/market/instrument_scope.h"
 #include "yquant/trading/trading_service.h"
 
 namespace yquant::testing {
@@ -44,8 +44,9 @@ class MockTradingService final : public trading::TradingService {
   int cancel_calls = 0;
   int delivered = 0;
 
-  base::Status Init(const trading::TradingClientConfig&,
-                    const md::MarketDataConfig& dictionary) noexcept override {
+  base::Status Init(
+      const trading::TradingClientConfig&,
+      const market::MarketDataConfig& dictionary) noexcept override {
     ++init_calls;
     stage_ = "trading_connect";
     if (!init_result.ok()) {
@@ -288,7 +289,7 @@ class MockTradingService final : public trading::TradingService {
   }
 
  private:
-  md::InstrumentScope instruments_;
+  market::InstrumentScope instruments_;
   trading::AccountView account_;
   std::vector<model::OrderSnapshot> orders_;
   std::vector<bool> attempted_;

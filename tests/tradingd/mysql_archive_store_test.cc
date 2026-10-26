@@ -21,7 +21,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "md/pipeline_test_support.h"
+#include "market/pipeline_test_support.h"
 #include "trading_engine_harness.h"
 #include "tradingd/archive_projection.h"
 #include "tradingd/state_codec.h"
@@ -265,7 +265,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
                              ledger_hi, ledger_lo);
     key = std::string("UNHEX('") + encoded + "')";
     ASSERT_TRUE(store.Connect(options).ok()) << store.error_detail();
-    config.market_data = md::testing::ScopeConfig();
+    config.market_data = market::testing::ScopeConfig();
     config.trading.initial_account.cash_balance = 1000000000;
     ::yquant::base::FormatTo(config.persistence.directory,
                              sizeof(config.persistence.directory), "/unused");
@@ -500,7 +500,7 @@ class MysqlArchiveStoreTest : public ::testing::Test {
 
   ArchiveClock clock;
   ServerConfig config;
-  md::InstrumentScope market;
+  market::InstrumentScope market;
   ::yquant::testing::TradingEngineHarness source{clock, market};
   trading::MockTradingAdapter mock;
   FactSink sink;

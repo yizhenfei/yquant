@@ -32,7 +32,7 @@ class ReplayMarketDataSource final : public MarketDataSource {
   // May allocate and perform file I/O. Failure leaves an unprepared source
   // unprepared, preserving only its diagnostic; success is single-use.
   [[nodiscard]] base::Status Prepare(
-      const md::MarketDataConfig& config) noexcept override;
+      const market::MarketDataConfig& config) noexcept override;
   // Accepts no subscriptions or exactly the configured instrument. Uses elapsed
   // time divided by replay speed with integer truncation. Invalid selection or
   // deadline overflow preserves prepared state. An empty selection schedules
@@ -70,7 +70,7 @@ class ReplayMarketDataSource final : public MarketDataSource {
   // config references. Success replaces frames and count; failure preserves
   // them and records a diagnostic.
   [[nodiscard]] base::Status ReadFrames(
-      const md::MarketDataConfig& config) noexcept;
+      const market::MarketDataConfig& config) noexcept;
 
   State state_ = State::kUnprepared;
   std::unique_ptr<Frame[]> frames_;

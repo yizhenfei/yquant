@@ -9,7 +9,7 @@
 #include <utility>
 
 #include "gtest/gtest.h"
-#include "yquant/md/instrument_scope.h"
+#include "yquant/market/instrument_scope.h"
 #include "yquant/model/identifiers.h"
 #include "yquant/trading/mock_trading_adapter.h"
 #include "yquant/trading/simulated_futures_exchange.h"
@@ -328,7 +328,7 @@ const char* ExerciseOrders(trading::TradingEngine& trading,
 // first Poll inside the observation. Covers both fills and cancel outcomes.
 void CheckTradingHeap(bool cancel, bool sell = false) {
   TradingHeapClock clock;
-  md::MarketDataConfig market_config;
+  market::MarketDataConfig market_config;
   market_config.source_id = {1};
 
   market_config.instrument_count = 1;
@@ -339,7 +339,7 @@ void CheckTradingHeap(bool cancel, bool sell = false) {
   std::copy_n("600000", model::kSymbolLength, item.instrument.symbol);
   item.instrument.price_decimals = 2;
 
-  md::InstrumentScope market_data;
+  market::InstrumentScope market_data;
   ASSERT_TRUE(market_data.Configure(market_config).ok());
   trading::MockTradingAdapter adapter;
   trading::TradingEngine trading(&clock, &market_data, &adapter);
@@ -385,7 +385,7 @@ TEST(TradingCppHeapTest, SellCancelReleasesHaveNoCppHeapActivity) {
 
 TEST(TradingCppHeapTest, UnifiedRuntimePollingHasNoCppHeapActivity) {
   TradingHeapClock clock;
-  md::MarketDataConfig dictionary;
+  market::MarketDataConfig dictionary;
   dictionary.source_id = {1};
   dictionary.instrument_count = 1;
   auto& definition = dictionary.instruments[0].instrument;
@@ -394,7 +394,7 @@ TEST(TradingCppHeapTest, UnifiedRuntimePollingHasNoCppHeapActivity) {
   definition.venue = model::Venue::kSse;
   std::copy_n("600000", model::kSymbolLength, definition.symbol);
   definition.price_decimals = 2;
-  md::InstrumentScope instruments;
+  market::InstrumentScope instruments;
   ASSERT_TRUE(instruments.Configure(dictionary).ok());
   trading::MockTradingAdapter adapter;
   trading::TradingEngine runtime(&clock, &instruments, &adapter);
@@ -586,7 +586,7 @@ const char* ExerciseFutures(TradingEngine& trading,
 
 TEST(TradingCppHeapTest, FuturesFifoAndExchangeHotPathsHaveNoCppHeapActivity) {
   TradingHeapClock clock;
-  md::MarketDataConfig market_config;
+  market::MarketDataConfig market_config;
   market_config.source_id = {1};
 
   market_config.instrument_count = 1;
@@ -602,7 +602,7 @@ TEST(TradingCppHeapTest, FuturesFifoAndExchangeHotPathsHaveNoCppHeapActivity) {
   item.instrument.close_today_fee_per_lot = 3000000;
   item.instrument.close_yesterday_fee_per_lot = 1000000;
 
-  md::InstrumentScope market;
+  market::InstrumentScope market;
   ASSERT_TRUE(market.Configure(market_config).ok());
   TradingAccountSnapshot account;
   account.type = model::AccountType::kFutures;

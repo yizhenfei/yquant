@@ -11,7 +11,7 @@
 #include <span>
 
 #include "yquant/base/status.h"
-#include "yquant/md/market_data_config.h"
+#include "yquant/market/market_data_config.h"
 #include "yquant/model/quote_tick.h"
 
 namespace yquant::strategyd {
@@ -41,7 +41,7 @@ class MarketDataSource {
   // this call; any data needed later must be copied or loaded into owned
   // storage. Failure leaves a new source unprepared and safe to Stop.
   [[nodiscard]] virtual base::Status Prepare(
-      const md::MarketDataConfig& config) noexcept = 0;
+      const market::MarketDataConfig& config) noexcept = 0;
   // Activates a prepared source with a copied subscription set and scheduling
   // origin now. Failure preserves prepared state. Retains no input references.
   [[nodiscard]] virtual base::Status Start(
