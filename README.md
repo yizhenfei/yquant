@@ -11,6 +11,21 @@ YQuant 是使用 C++ 编写的多策略、低延迟量化交易系统。
 
 Linux 执行正式构建、功能及并发验收；macOS 支持本机构建、功能测试和调试。
 
+## 构建与验证
+
+使用支持 C++20 的编译器及 CMake 3.20 或更高版本：
+
+```sh
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
+./build/monod
+```
+
+`monod` 处理一条固定行情，输出对应的买卖报价意图。验证策略位于 `examples/strategies/`。
+
+测试构建获取固定版本的 GoogleTest；离线构建可通过 `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/path/to/googletest` 指定已有源码。
+
 ## 首版目标
 
 在 SimNow 环境中运行多个简单做市策略，允许策略共用同一个交易账户，验证从接收行情、生成报价、提交委托到处理成交和撤单的完整交易闭环。
