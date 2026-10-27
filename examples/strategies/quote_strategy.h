@@ -13,6 +13,7 @@ struct QuoteIntent {
   std::uint32_t instrument_id = 0;
   double bid_price = 0;
   double ask_price = 0;
+  std::uint64_t sequence = 0;
 };
 
 // Consumes intents delivered synchronously by the validation strategy.
@@ -35,7 +36,7 @@ class QuoteStrategy final : public market::QuoteListener {
 
   void OnQuote(const model::Quote& quote) override {
     const QuoteIntent intent{quote.instrument_id, quote.bid_price,
-                             quote.ask_price};
+                             quote.ask_price, quote.sequence};
     listener_.OnQuoteIntent(intent);
   }
 

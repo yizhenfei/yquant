@@ -13,6 +13,8 @@ struct Quote {
   double ask_price = 0;
   std::int32_t bid_quantity = 0;
   std::int32_t ask_quantity = 0;
+  // Source-provided sequence number, preserved through quote delivery.
+  std::uint64_t sequence = 0;
 };
 
 }  // namespace yquant::model

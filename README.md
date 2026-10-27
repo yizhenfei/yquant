@@ -22,7 +22,7 @@ ctest --test-dir build --output-on-failure
 ./build/monod
 ```
 
-`monod` 处理一条固定行情，输出对应的买卖报价意图。验证策略位于 `examples/strategies/`。
+`monod` 连续处理三条固定行情，按源序号输出对应的买卖报价意图。固定行情源位于 `examples/market/`，验证策略位于 `examples/strategies/`。
 
 测试构建获取固定版本的 GoogleTest；离线构建可通过 `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/path/to/googletest` 指定已有源码。
 

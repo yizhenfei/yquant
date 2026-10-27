@@ -40,9 +40,15 @@ if(BUILD_TESTING)
   target_link_libraries(single_quote_test PRIVATE
     yquant_strategy GTest::gtest_main)
   add_test(NAME v1_01_single_quote COMMAND single_quote_test)
-  add_test(NAME v1_01_single_quote_monod
+  add_executable(quote_sequence_test tests/quote_sequence_test.cc)
+  target_include_directories(quote_sequence_test PRIVATE examples)
+  target_link_libraries(quote_sequence_test PRIVATE
+    yquant_strategy GTest::gtest_main)
+  add_test(NAME v1_01_quote_sequence COMMAND quote_sequence_test)
+  add_test(NAME v1_01_quote_sequence_monod
     COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_output_test.cmake)
-  set_tests_properties(v1_01_single_quote v1_01_single_quote_monod
+  set_tests_properties(v1_01_single_quote v1_01_quote_sequence
+    v1_01_quote_sequence_monod
     PROPERTIES TIMEOUT 5 LABELS v1_01_market)
 endif()
