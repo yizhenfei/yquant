@@ -66,7 +66,7 @@ service 调用均通过 service client 进行，分为两类：
 | 进程内 client | 直接调用本进程中的 service 对象。 |
 | 跨进程 client | 将调用编码为消息，发给目标 service，并将返回消息转换为回调或缓存更新。 |
 
-service client factory 根据目标 service ID 和拓扑选择实现，并连接 client 所需的依赖。使用方在初始化时通过 factory 获取 client，后续通过该接口调用服务。
+service client factory 根据目标 service ID 和拓扑判断目标是否属于本进程。对于本进程中的目标，从对应类型的本地实例表取得具体服务指针，创建进程内 client；对于其他进程中的目标，创建通过 message bus 通信的跨进程 client。使用方在初始化时通过 factory 获取 client，后续通过该接口调用服务。
 
 接口可以使用 C++ 纯虚类表达。两种实现遵循上述调用契约，调用方不依赖某一种部署方式的执行细节。参数生命周期、具体回调时机及各接口的数据语义在接口设计中细化。
 
@@ -176,10 +176,12 @@ container 通过 `Service` 接口管理需要在主循环中持续运行的服�
 
 container 作为统一的容器框架，以共享库的形式供各程序复用，承载 service 实例及通信组件的执行。`monod`、`marketd`、`strategyd`、`tradingd` 和 `relayd` 各自具有 `.cc` 组装代码，在 `main` 中选择具体实现、建立依赖关系并启动程序。
 
-程序组装层建立本进程的 service 实例、拓扑访问、message bus、service server 和 client factory，并将所需接口注入使用方。依赖倒置所需的具体实现绑定由该层完成。例如，交易 service 依赖交易接口抽象，由组装代码创建 SimNow 接入实现并注入。
+程序组装层建立本进程的 service 实例、拓扑访问、message bus、service server 和 client factory，并将所需接口注入使用方。本地实例表按 service 类型分别维护，保存对应具体类型的指针；组装层建立注册关系，向各 factory 注入对应实例表和部署信息，factory 负责选择并创建 client。取得本地实例时保留具体类型，无需下转型。
+
+依赖倒置所需的具体实现绑定由程序组装层完成。例如，交易 service 依赖交易接口抽象，由组装代码创建 SimNow 接入实现并注入。
 
 行情 service 依赖行情接入抽象，具体接入对象由程序组装层创建并注入。行情接收、缓冲复用和订阅分发在 service 内完成，由 container 调度该 service 推进接收流程。
 
-container 不依赖具体业务 service，也不负责选择业务实现。service 不依赖特定传输实现；client 和 server 承担业务接口与消息通信之间的适配。
+container 不承担业务实例寻址，不依赖具体业务 service，也不负责选择业务实现。service 不依赖特定传输实现；client 和 server 承担业务接口与消息通信之间的适配。
 
 共享实现放在所属库中，程序目录只保存该程序专用的组装及实现代码；共享库不依赖程序私有代码，程序之间不复用彼此的私有实现。

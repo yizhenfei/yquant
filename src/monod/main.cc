@@ -6,9 +6,9 @@
 #include "market/fixed_quote_source.h"
 #include "strategies/quote_strategy.h"
 #include "yquant/container/container.h"
-#include "yquant/market/local_market_client.h"
-#include "yquant/market/market_client.h"
+#include "yquant/market/market_client_factory.h"
 #include "yquant/market/market_service.h"
+#include "yquant/market/market_service_registry.h"
 #include "yquant/model/quote.h"
 #include "yquant/strategy/strategy_service.h"
 
@@ -28,6 +28,7 @@ class PrintIntent final : public yquant::examples::QuoteIntentListener {
 }  // namespace
 
 int main() {
+  constexpr std::uint64_t kMarketServiceId = 1;
   constexpr std::uint32_t kStrategyInstrumentId = 42;
   const std::array<yquant::model::Quote, 5> quotes{{
       {42, 100.25, 100.5, 7, 11, 1},
@@ -39,16 +40,28 @@ int main() {
   yquant::examples::FixedQuoteSource source(quotes);
   PrintIntent output;
   yquant::market::MarketService market(source);
-  yquant::market::LocalMarketClient local_client(market);
-  yquant::market::MarketClient& client = local_client;
+  yquant::market::MarketServiceRegistry local_services;
+  if (!local_services.Register(kMarketServiceId, market)) {
+    std::fprintf(stderr, "Failed to register market service %" PRIu64 "\n",
+                 kMarketServiceId);
+    return 1;
+  }
+  yquant::market::MarketClientFactory factory(local_services);
+  auto client = factory.Create(kMarketServiceId);
+  if (!client) {
+    std::fprintf(stderr,
+                 "Failed to create client for market service %" PRIu64 "\n",
+                 kMarketServiceId);
+    return 1;
+  }
   yquant::examples::QuoteStrategy strategy(output);
   yquant::strategy::StrategyService strategy_service(strategy);
-  client.Subscribe(kStrategyInstrumentId, strategy_service);
+  client->Subscribe(kStrategyInstrumentId, strategy_service);
   yquant::container::Container container;
   const bool completed =
       container.Register(market) &&
       container.Run([&source] { return source.exhausted(); });
-  client.Unsubscribe(kStrategyInstrumentId, strategy_service);
+  client->Unsubscribe(kStrategyInstrumentId, strategy_service);
   if (!completed) {
     std::fprintf(stderr, "Failed to run the market service\n");
     return 1;
