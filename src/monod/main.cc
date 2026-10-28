@@ -3,7 +3,9 @@
 #include <cstdio>
 
 #include "market/fixed_quote_source.h"
+#include "market/quote_publisher.h"
 #include "strategies/quote_strategy.h"
+#include "yquant/container/container.h"
 #include "yquant/market/local_market_client.h"
 #include "yquant/market/market_client.h"
 #include "yquant/market/market_service.h"
@@ -39,9 +41,11 @@ int main() {
       {42, 100.5, 100.75, 15, 4, 3},
   }};
   yquant::examples::FixedQuoteSource source(quotes);
-  yquant::model::Quote quote;
-  while (source.Next(quote)) {
-    market.Publish(quote);
+  yquant::examples::QuotePublisher publisher(source, market);
+  yquant::container::Container container;
+  if (!container.Register(publisher) || !container.Run()) {
+    std::fprintf(stderr, "Failed to run the quote publisher\n");
+    return 1;
   }
   return 0;
 }

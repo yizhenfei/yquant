@@ -15,6 +15,10 @@ add_library(yquant_model INTERFACE)
 target_include_directories(yquant_model INTERFACE include)
 target_link_libraries(yquant_model INTERFACE yquant_options)
 
+add_library(yquant_container src/container/container.cc)
+target_include_directories(yquant_container PUBLIC include)
+target_link_libraries(yquant_container PUBLIC yquant_options)
+
 add_library(yquant_market src/market/market_service.cc)
 target_link_libraries(yquant_market PUBLIC yquant_model)
 
@@ -23,7 +27,7 @@ target_link_libraries(yquant_strategy PUBLIC yquant_market)
 
 add_executable(monod src/monod/main.cc)
 target_include_directories(monod PRIVATE examples)
-target_link_libraries(monod PRIVATE yquant_strategy)
+target_link_libraries(monod PRIVATE yquant_strategy yquant_container)
 
 include(CTest)
 if(BUILD_TESTING)
@@ -45,10 +49,15 @@ if(BUILD_TESTING)
   target_link_libraries(quote_sequence_test PRIVATE
     yquant_strategy GTest::gtest_main)
   add_test(NAME v1_01_quote_sequence COMMAND quote_sequence_test)
+  add_executable(container_test tests/container_test.cc)
+  target_include_directories(container_test PRIVATE examples)
+  target_link_libraries(container_test PRIVATE
+    yquant_container yquant_strategy GTest::gtest_main)
+  add_test(NAME v1_01_container COMMAND container_test)
   add_test(NAME v1_01_quote_sequence_monod
     COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_output_test.cmake)
   set_tests_properties(v1_01_single_quote v1_01_quote_sequence
-    v1_01_quote_sequence_monod
+    v1_01_quote_sequence_monod v1_01_container
     PROPERTIES TIMEOUT 5 LABELS v1_01_market)
 endif()
