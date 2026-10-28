@@ -2,6 +2,7 @@
 
 #include "gtest/gtest.h"
 
+#include "quote_source_stub.h"
 #include "strategies/quote_strategy.h"
 #include "yquant/market/local_market_client.h"
 #include "yquant/market/market_client.h"
@@ -43,16 +44,17 @@ class RecordIntent final : public examples::QuoteIntentListener {
 };
 
 TEST(SingleQuoteTest, ClientDeliversUnchangedQuoteWithoutCopyOnCallerThread) {
-  market::MarketService service;
+  test::QuoteSourceStub source;
+  source.SetQuote({17, 203.5, 204.25, 13, 29});
+  market::MarketService service(source);
   market::LocalMarketClient local_client(service);
   market::MarketClient& client = local_client;
   RecordQuote listener;
   client.Subscribe(17, listener);
-  const model::Quote input{17, 203.5, 204.25, 13, 29};
-  service.Publish(input);
+  service.Run();
 
   EXPECT_EQ(listener.count, 1);
-  EXPECT_EQ(listener.address, &input);
+  EXPECT_EQ(listener.address, source.last_output);
   EXPECT_EQ(listener.thread, std::this_thread::get_id());
   EXPECT_EQ(listener.quote.instrument_id, 17U);
   EXPECT_DOUBLE_EQ(listener.quote.bid_price, 203.5);
@@ -64,13 +66,14 @@ TEST(SingleQuoteTest, ClientDeliversUnchangedQuoteWithoutCopyOnCallerThread) {
 
 TEST(SingleQuoteTest, StrategyProducesOneIntentFromReceivedPrices) {
   RecordIntent output;
-  market::MarketService service;
+  test::QuoteSourceStub source;
+  source.SetQuote({81, 98.75, 99.25, 5, 8});
+  market::MarketService service(source);
   market::LocalMarketClient client(service);
   examples::QuoteStrategy strategy(output);
   strategy::StrategyService strategy_service(strategy);
   client.Subscribe(81, strategy_service);
-  const model::Quote input{81, 98.75, 99.25, 5, 8};
-  service.Publish(input);
+  service.Run();
 
   EXPECT_EQ(output.count, 1);
   EXPECT_EQ(output.thread, std::this_thread::get_id());

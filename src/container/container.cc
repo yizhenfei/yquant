@@ -1,35 +1,36 @@
 #include "yquant/container/container.h"
 
 #include <algorithm>
-#include <cstddef>
+#include <functional>
 
 namespace yquant::container {
 
-bool Container::Register(Pollable& component) {
+bool Container::Register(Service& service) {
   if (running_ ||
-      std::find(components_.begin(), components_.end(), &component) !=
-          components_.end()) {
+      std::find(services_.begin(), services_.end(), &service) !=
+          services_.end()) {
     return false;
   }
-  components_.push_back(&component);
+  services_.push_back(&service);
   return true;
 }
 
-bool Container::Run() {
+bool Container::Run(const std::function<bool()>& should_stop) {
   if (running_) {
     return false;
   }
   running_ = true;
-  std::size_t remaining = components_.size();
-  while (remaining != 0) {
-    for (Pollable*& component : components_) {
-      if (component != nullptr && component->Poll() == PollResult::kFinished) {
-        component = nullptr;
-        --remaining;
+  bool stopped = false;
+  while (!services_.empty() && !stopped) {
+    for (Service* service : services_) {
+      if (should_stop && should_stop()) {
+        stopped = true;
+        break;
       }
+      service->Run();
     }
   }
-  components_.clear();
+  services_.clear();
   running_ = false;
   return true;
 }

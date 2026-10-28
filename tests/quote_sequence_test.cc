@@ -8,6 +8,7 @@
 #include "yquant/market/local_market_client.h"
 #include "yquant/market/market_client.h"
 #include "yquant/market/market_service.h"
+#include "yquant/market/quote_source.h"
 #include "yquant/model/quote.h"
 #include "yquant/strategy/strategy_service.h"
 
@@ -71,27 +72,25 @@ TEST(QuoteSequenceTest, RetainsSnapshotsAndIntentsAcrossBufferReuse) {
     examples::QuoteStrategy strategy(output);
     strategy::StrategyService strategy_service(strategy);
     RecordQuotes receiver(strategy_service);
-    market::MarketService market;
+    examples::FixedQuoteSource source(input);
+    market::MarketService market(source);
     market::LocalMarketClient client(market);
     client.Subscribe(17, receiver);
     client.Subscribe(81, receiver);
-    examples::FixedQuoteSource source(input);
-    model::Quote working_quote;
     EXPECT_FALSE(source.exhausted());
-    while (source.Next(working_quote)) {
-      market.Publish(working_quote);
-    }
+    market.Run();
+    EXPECT_EQ(receiver.count, input.size());
 
     EXPECT_TRUE(source.exhausted());
-    EXPECT_FALSE(source.Next(working_quote));
-    ExpectQuote(working_quote, input.back());
-    working_quote = {};
+    market.Run();
+    market.Run();
     ASSERT_EQ(receiver.count, input.size());
     ASSERT_EQ(output.count, input.size());
+    ASSERT_NE(receiver.addresses[0], nullptr);
     for (std::size_t i = 0; i < input.size(); ++i) {
       SCOPED_TRACE(i);
       ExpectQuote(receiver.quotes[i], input[i]);
-      EXPECT_EQ(receiver.addresses[i], &working_quote);
+      EXPECT_EQ(receiver.addresses[i], receiver.addresses[0]);
       EXPECT_EQ(output.intents[i].instrument_id, input[i].instrument_id);
       EXPECT_EQ(output.intents[i].sequence, input[i].sequence);
       EXPECT_DOUBLE_EQ(output.intents[i].bid_price, input[i].bid_price);
@@ -107,20 +106,20 @@ TEST(QuoteSequenceTest, EmptyInputLeavesOutputUnchanged) {
   const model::Quote sentinel{9, 7.5, 8.5, 2, 3, 99};
   model::Quote quote = sentinel;
   EXPECT_TRUE(source.exhausted());
-  EXPECT_FALSE(source.Next(quote));
+  EXPECT_EQ(source.Read(quote), market::QuoteReadResult::kIdle);
   ExpectQuote(quote, sentinel);
 }
 
-TEST(QuoteSequenceTest, DeliversLastQuoteOnceAndPreservesItAtEnd) {
+TEST(QuoteSequenceTest, DeliversLastQuoteOnceAndPreservesItWhileIdle) {
   const std::array<model::Quote, 1> input{{{3, 10.5, 11.25, 6, 4, 23}}};
   examples::FixedQuoteSource source(input);
   model::Quote quote;
   EXPECT_FALSE(source.exhausted());
-  ASSERT_TRUE(source.Next(quote));
+  ASSERT_EQ(source.Read(quote), market::QuoteReadResult::kQuote);
   EXPECT_TRUE(source.exhausted());
   ExpectQuote(quote, input.front());
-  EXPECT_FALSE(source.Next(quote));
-  EXPECT_FALSE(source.Next(quote));
+  EXPECT_EQ(source.Read(quote), market::QuoteReadResult::kIdle);
+  EXPECT_EQ(source.Read(quote), market::QuoteReadResult::kIdle);
   ExpectQuote(quote, input.front());
 }
 

@@ -5,67 +5,62 @@
 #include "gtest/gtest.h"
 
 #include "market/fixed_quote_source.h"
-#include "market/quote_publisher.h"
 #include "strategies/quote_strategy.h"
 #include "yquant/container/container.h"
+#include "yquant/container/service.h"
 #include "yquant/market/local_market_client.h"
 #include "yquant/market/market_service.h"
+#include "yquant/market/quote_source.h"
 #include "yquant/model/quote.h"
 #include "yquant/strategy/strategy_service.h"
 
 namespace yquant {
 namespace {
 
-// Stores poll order and thread identities in preallocated test storage.
-struct PollTrace {
+// Stores service call order and thread identities in preallocated storage.
+struct RunTrace {
   std::array<int, 8> ids{};
   std::array<std::thread::id, 8> threads{};
   std::size_t count = 0;
 };
 
-// Records each poll and finishes after the specified positive number of polls.
-// Keep the shared trace alive while using this component.
-class CountPolls final : public container::Pollable {
+// Records each Run call. Keep trace alive while using this service.
+class RecordRuns final : public container::Service {
  public:
-  CountPolls(int id, int remaining, PollTrace& trace)
-      : id_(id), remaining_(remaining), trace_(trace) {}
-  CountPolls(const CountPolls&) = delete;
-  CountPolls& operator=(const CountPolls&) = delete;
+  RecordRuns(int id, RunTrace& trace) : id_(id), trace_(trace) {}
+  RecordRuns(const RecordRuns&) = delete;
+  RecordRuns& operator=(const RecordRuns&) = delete;
 
-  container::PollResult Poll() override {
-    EXPECT_LT(trace_.count, trace_.ids.size());
-    if (trace_.count >= trace_.ids.size()) {
-      return container::PollResult::kFinished;
-    }
+  void Run() override {
+    ASSERT_LT(trace_.count, trace_.ids.size());
     trace_.ids[trace_.count] = id_;
     trace_.threads[trace_.count++] = std::this_thread::get_id();
-    return --remaining_ == 0 ? container::PollResult::kFinished
-                             : container::PollResult::kContinue;
   }
 
  private:
   int id_;
-  int remaining_;
-  PollTrace& trace_;
+  RunTrace& trace_;
 };
 
-// Checks that callbacks cannot register components or start a nested Run.
-class TryReentry final : public container::Pollable {
+// Checks that a running service cannot register services or start a nested Run.
+class TryReentry final : public container::Service {
  public:
-  TryReentry(container::Container& owner, container::Pollable& peer)
+  TryReentry(container::Container& owner, container::Service& peer)
       : owner_(owner), peer_(peer) {}
   TryReentry(const TryReentry&) = delete;
   TryReentry& operator=(const TryReentry&) = delete;
 
-  container::PollResult Poll() override {
+  void Run() override {
     EXPECT_FALSE(owner_.Register(peer_));
     EXPECT_FALSE(owner_.Run());
-    return container::PollResult::kFinished;
+    ++runs;
   }
+
+  int runs = 0;
 
  private:
   container::Container& owner_;
-  container::Pollable& peer_;
+  container::Service& peer_;
 };
 
 // Saves every intent and its callback thread for comparison after Run returns.
@@ -82,39 +77,39 @@ class RecordIntents final : public examples::QuoteIntentListener {
   std::size_t count = 0;
 };
 
-// Checks the polling thread and counts calls to the quote publisher.
-class TracePublisher final : public container::Pollable {
+// Checks the reading thread and counts calls to the injected quote source.
+// Keep source alive until this wrapper is destroyed.
+class TraceSource final : public market::QuoteSource {
  public:
-  explicit TracePublisher(examples::QuotePublisher& publisher)
-      : publisher_(publisher) {}
-  TracePublisher(const TracePublisher&) = delete;
-  TracePublisher& operator=(const TracePublisher&) = delete;
+  explicit TraceSource(market::QuoteSource& source) : source_(source) {}
+  TraceSource(const TraceSource&) = delete;
+  TraceSource& operator=(const TraceSource&) = delete;
 
-  container::PollResult Poll() override {
+  market::QuoteReadResult Read(model::Quote& quote) override {
     EXPECT_EQ(std::this_thread::get_id(), caller);
     ++count;
-    return publisher_.Poll();
+    return source_.Read(quote);
   }
 
   std::thread::id caller = std::this_thread::get_id();
   std::size_t count = 0;
 
  private:
-  examples::QuotePublisher& publisher_;
+  market::QuoteSource& source_;
 };
 
-TEST(ContainerTest, PollsInRoundsAndSkipsFinishedComponents) {
-  PollTrace trace;
-  CountPolls first(1, 3, trace);
-  CountPolls second(2, 1, trace);
-  CountPolls third(3, 2, trace);
+TEST(ContainerTest, CallsEveryServiceInRegistrationOrderEachRound) {
+  RunTrace trace;
+  RecordRuns first(1, trace);
+  RecordRuns second(2, trace);
+  RecordRuns third(3, trace);
   container::Container runner;
   ASSERT_TRUE(runner.Register(first));
   ASSERT_TRUE(runner.Register(second));
   ASSERT_TRUE(runner.Register(third));
-  ASSERT_TRUE(runner.Run());
+  ASSERT_TRUE(runner.Run([&trace] { return trace.count == 6; }));
 
-  const std::array<int, 6> expected{1, 2, 3, 1, 3, 1};
+  const std::array<int, 6> expected{1, 2, 3, 1, 2, 3};
   ASSERT_EQ(trace.count, expected.size());
   for (std::size_t i = 0; i < expected.size(); ++i) {
     EXPECT_EQ(trace.ids[i], expected[i]);
@@ -123,38 +118,93 @@ TEST(ContainerTest, PollsInRoundsAndSkipsFinishedComponents) {
 }
 
 TEST(ContainerTest, GrowsRegistrationsAndClearsThemAfterRun) {
-  PollTrace trace;
-  CountPolls first(1, 1, trace);
-  CountPolls second(2, 1, trace);
-  CountPolls third(3, 1, trace);
-  CountPolls fourth(4, 1, trace);
+  RunTrace trace;
+  RecordRuns first(1, trace);
+  RecordRuns second(2, trace);
+  RecordRuns third(3, trace);
+  RecordRuns fourth(4, trace);
   container::Container runner;
   EXPECT_TRUE(runner.Run());
   ASSERT_TRUE(runner.Register(first));
   EXPECT_FALSE(runner.Register(first));
   ASSERT_TRUE(runner.Register(second));
   ASSERT_TRUE(runner.Register(third));
-  ASSERT_TRUE(runner.Run());
+  ASSERT_TRUE(runner.Run([&trace] { return trace.count == 3; }));
   EXPECT_EQ(trace.count, 3U);
   EXPECT_EQ(trace.ids[2], 3);
   ASSERT_TRUE(runner.Register(fourth));
-  ASSERT_TRUE(runner.Run());
+  ASSERT_TRUE(runner.Run([&trace] { return trace.count == 4; }));
   EXPECT_EQ(trace.count, 4U);
   EXPECT_EQ(trace.ids[3], 4);
   EXPECT_TRUE(runner.Run());
   EXPECT_EQ(trace.count, 4U);
 }
 
-TEST(ContainerTest, RejectsRegistrationAndNestedRunDuringPolling) {
-  PollTrace trace;
-  CountPolls peer(1, 1, trace);
+TEST(ContainerTest, RejectsRegistrationAndNestedContainerRunFromService) {
+  RunTrace trace;
+  RecordRuns peer(1, trace);
   container::Container runner;
-  TryReentry component(runner, peer);
-  ASSERT_TRUE(runner.Register(component));
-  ASSERT_TRUE(runner.Run());
+  TryReentry service(runner, peer);
+  ASSERT_TRUE(runner.Register(service));
+  ASSERT_TRUE(runner.Run([&service] { return service.runs == 1; }));
   EXPECT_EQ(trace.count, 0U);
   ASSERT_TRUE(runner.Register(peer));
-  EXPECT_TRUE(runner.Run());
+  EXPECT_TRUE(runner.Run([&trace] { return trace.count == 1; }));
+  EXPECT_EQ(trace.count, 1U);
+}
+
+TEST(ContainerTest, ExitConditionSkipsFurtherCallsAndClearsRegistrations) {
+  RunTrace trace;
+  RecordRuns first(1, trace);
+  RecordRuns later(2, trace);
+  container::Container runner;
+  ASSERT_TRUE(runner.Register(first));
+  ASSERT_TRUE(runner.Register(later));
+  ASSERT_TRUE(runner.Run([&trace] { return trace.count == 1; }));
+  ASSERT_EQ(trace.count, 1U);
+  EXPECT_EQ(trace.ids[0], 1);
+
+  ASSERT_TRUE(runner.Run());
+  EXPECT_EQ(trace.count, 1U);
+  ASSERT_TRUE(runner.Register(first));
+  ASSERT_TRUE(runner.Register(later));
+  ASSERT_TRUE(runner.Run([&trace] { return trace.count == 3; }));
+  ASSERT_EQ(trace.count, 3U);
+  EXPECT_EQ(trace.ids[1], 1);
+  EXPECT_EQ(trace.ids[2], 2);
+}
+
+TEST(ContainerTest, InitiallyTrueExitConditionPreventsAllServiceCalls) {
+  RunTrace trace;
+  RecordRuns service(1, trace);
+  container::Container runner;
+  ASSERT_TRUE(runner.Register(service));
+  ASSERT_TRUE(runner.Run([] { return true; }));
+  EXPECT_EQ(trace.count, 0U);
+  ASSERT_TRUE(runner.Run());
+  EXPECT_EQ(trace.count, 0U);
+  ASSERT_TRUE(runner.Register(service));
+  ASSERT_TRUE(runner.Run([&trace] { return trace.count == 1; }));
+  EXPECT_EQ(trace.count, 1U);
+}
+
+TEST(ContainerTest, ExitConditionRunsOnCallingThreadAndRejectsReentry) {
+  RunTrace trace;
+  RecordRuns service(1, trace);
+  RecordRuns peer(2, trace);
+  container::Container runner;
+  ASSERT_TRUE(runner.Register(service));
+  const std::thread::id caller = std::this_thread::get_id();
+  std::size_t checks = 0;
+  ASSERT_TRUE(runner.Run([&] {
+    EXPECT_EQ(std::this_thread::get_id(), caller);
+    EXPECT_FALSE(runner.Register(peer));
+    EXPECT_FALSE(runner.Run());
+    EXPECT_FALSE(runner.Run([] { return false; }));
+    ++checks;
+    return trace.count == 1;
+  }));
+  EXPECT_EQ(checks, 2U);
   EXPECT_EQ(trace.count, 1U);
 }
 
@@ -169,19 +219,18 @@ TEST(ContainerTest, PublishesFiniteInputsBeforeRunReturns) {
     RecordIntents output;
     examples::QuoteStrategy strategy(output);
     strategy::StrategyService strategy_service(strategy);
-    market::MarketService market;
+    examples::FixedQuoteSource source({input.data(), length});
+    TraceSource traced(source);
+    market::MarketService market(traced);
     market::LocalMarketClient client(market);
     client.Subscribe(17, strategy_service);
     client.Subscribe(81, strategy_service);
-    examples::FixedQuoteSource source({input.data(), length});
-    examples::QuotePublisher publisher(source, market);
-    TracePublisher traced(publisher);
     container::Container runner;
-    ASSERT_TRUE(runner.Register(traced));
-    ASSERT_TRUE(runner.Run());
+    ASSERT_TRUE(runner.Register(market));
+    ASSERT_TRUE(runner.Run([&source] { return source.exhausted(); }));
 
     EXPECT_TRUE(source.exhausted());
-    EXPECT_EQ(traced.count, length == 0 ? 1 : length);
+    EXPECT_EQ(traced.count, length == 0 ? 0 : length + 1);
     ASSERT_EQ(output.count, length);
     for (std::size_t i = 0; i < length; ++i) {
       EXPECT_EQ(output.intents[i].sequence, input[i].sequence);
@@ -190,9 +239,10 @@ TEST(ContainerTest, PublishesFiniteInputsBeforeRunReturns) {
       EXPECT_DOUBLE_EQ(output.intents[i].ask_price, input[i].ask_price);
       EXPECT_EQ(output.threads[i], std::this_thread::get_id());
     }
-    ASSERT_TRUE(runner.Register(traced));
-    EXPECT_TRUE(runner.Run());
+    ASSERT_TRUE(runner.Register(market));
+    EXPECT_TRUE(runner.Run([&source] { return source.exhausted(); }));
     EXPECT_EQ(output.count, length);
+    EXPECT_EQ(traced.count, length == 0 ? 0 : length + 1);
     client.Unsubscribe(17, strategy_service);
     client.Unsubscribe(81, strategy_service);
   }

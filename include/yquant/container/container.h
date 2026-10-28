@@ -1,25 +1,16 @@
 #ifndef YQUANT_CONTAINER_CONTAINER_H_
 #define YQUANT_CONTAINER_CONTAINER_H_
 
+#include <functional>
 #include <vector>
+
+#include "yquant/container/service.h"
 
 namespace yquant::container {
 
-// Tells the container whether to poll this component again.
-enum class PollResult { kContinue, kFinished };
-
-// Implements one step of work whenever the container calls Poll.
-class Pollable {
- public:
-  virtual ~Pollable() = default;
-  // Performs one step. Returns kContinue to run again in the next round,
-  // or kFinished when this component has completed all its work.
-  virtual PollResult Poll() = 0;
-};
-
-// Runs registered components in rounds until every component finishes.
+// Repeatedly calls registered services until the exit condition is met.
 // Register grows the registration list as needed; Run reuses its storage.
-// Components are not owned. Keep them alive until Run returns.
+// Services are not owned. Keep them alive until Run returns.
 // A completed run removes all registrations.
 class Container {
  public:
@@ -27,16 +18,19 @@ class Container {
   Container(const Container&) = delete;
   Container& operator=(const Container&) = delete;
 
-  // Registers a component for the next Run. Returns false if it is already
+  // Registers a service for the next Run. Returns false if it is already
   // registered or Run is active.
-  bool Register(Pollable& component);
-  // Polls components in registration order, skipping those that have finished.
-  // Returns true when all finish, including when none were registered.
-  // Returns false if called from inside an active Run.
-  bool Run();
+  bool Register(Service& service);
+  // Calls each service's Run in registration order on the calling thread.
+  // Checks should_stop before each call. An empty condition runs indefinitely
+  // when services are registered. With no services, returns true immediately.
+  // Returns true when the condition is true and clears all registrations.
+  // Returns false if Run is already active, without checking the condition.
+  // Uses the condition only during this call; it must not block.
+  bool Run(const std::function<bool()>& should_stop = {});
 
  private:
-  std::vector<Pollable*> components_;
+  std::vector<Service*> services_;
   bool running_ = false;
 };
 

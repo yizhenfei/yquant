@@ -4,28 +4,29 @@
 #include <cstddef>
 #include <span>
 
+#include "yquant/market/quote_source.h"
 #include "yquant/model/quote.h"
 
 namespace yquant::examples {
 
 // Reads quotes from a fixed input sequence for validation.
 // Does not own the input data. Keep that data alive and unchanged while using
-// this source. Next copies quotes into the caller's output buffer.
-class FixedQuoteSource {
+// this source. Read copies quotes into the caller's output buffer.
+class FixedQuoteSource final : public market::QuoteSource {
  public:
   explicit FixedQuoteSource(std::span<const model::Quote> quotes)
       : quotes_(quotes) {}
   FixedQuoteSource(const FixedQuoteSource&) = delete;
   FixedQuoteSource& operator=(const FixedQuoteSource&) = delete;
 
-  // Copies the next quote into `quote` and returns true.
-  // Returns false when all quotes have been read, without changing `quote`.
-  bool Next(model::Quote& quote) {
+  // Copies the next quote into quote and returns kQuote.
+  // Returns kIdle when all quotes have been read, without changing quote.
+  market::QuoteReadResult Read(model::Quote& quote) override {
     if (exhausted()) {
-      return false;
+      return market::QuoteReadResult::kIdle;
     }
     quote = quotes_[next_index_++];
-    return true;
+    return market::QuoteReadResult::kQuote;
   }
 
   bool exhausted() const { return next_index_ == quotes_.size(); }

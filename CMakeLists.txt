@@ -20,14 +20,14 @@ target_include_directories(yquant_container PUBLIC include)
 target_link_libraries(yquant_container PUBLIC yquant_options)
 
 add_library(yquant_market src/market/market_service.cc)
-target_link_libraries(yquant_market PUBLIC yquant_model)
+target_link_libraries(yquant_market PUBLIC yquant_model yquant_container)
 
 add_library(yquant_strategy src/strategy/strategy_service.cc)
 target_link_libraries(yquant_strategy PUBLIC yquant_market)
 
 add_executable(monod src/monod/main.cc)
 target_include_directories(monod PRIVATE examples)
-target_link_libraries(monod PRIVATE yquant_strategy yquant_container)
+target_link_libraries(monod PRIVATE yquant_strategy)
 
 include(CTest)
 if(BUILD_TESTING)
@@ -52,16 +52,21 @@ if(BUILD_TESTING)
   add_executable(container_test tests/container_test.cc)
   target_include_directories(container_test PRIVATE examples)
   target_link_libraries(container_test PRIVATE
-    yquant_container yquant_strategy GTest::gtest_main)
+    yquant_strategy GTest::gtest_main)
   add_test(NAME v1_01_container COMMAND container_test)
   add_executable(market_subscription_test tests/market_subscription_test.cc)
   target_link_libraries(market_subscription_test PRIVATE
     yquant_market GTest::gtest_main)
   add_test(NAME v1_01_subscription COMMAND market_subscription_test)
-  add_test(NAME v1_01_subscription_monod
+  add_executable(market_source_test tests/market_source_test.cc)
+  target_link_libraries(market_source_test PRIVATE
+    yquant_market GTest::gtest_main)
+  add_test(NAME v1_01_market_source COMMAND market_source_test)
+  add_test(NAME v1_01_market_source_monod
     COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_output_test.cmake)
   set_tests_properties(v1_01_single_quote v1_01_quote_sequence
-    v1_01_subscription_monod v1_01_container v1_01_subscription
+    v1_01_market_source_monod v1_01_container v1_01_subscription
+    v1_01_market_source
     PROPERTIES TIMEOUT 5 LABELS v1_01_market)
 endif()
