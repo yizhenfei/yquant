@@ -54,10 +54,14 @@ if(BUILD_TESTING)
   target_link_libraries(container_test PRIVATE
     yquant_container yquant_strategy GTest::gtest_main)
   add_test(NAME v1_01_container COMMAND container_test)
-  add_test(NAME v1_01_quote_sequence_monod
+  add_executable(market_subscription_test tests/market_subscription_test.cc)
+  target_link_libraries(market_subscription_test PRIVATE
+    yquant_market GTest::gtest_main)
+  add_test(NAME v1_01_subscription COMMAND market_subscription_test)
+  add_test(NAME v1_01_subscription_monod
     COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_output_test.cmake)
   set_tests_properties(v1_01_single_quote v1_01_quote_sequence
-    v1_01_quote_sequence_monod v1_01_container
+    v1_01_subscription_monod v1_01_container v1_01_subscription
     PROPERTIES TIMEOUT 5 LABELS v1_01_market)
 endif()

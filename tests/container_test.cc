@@ -171,7 +171,8 @@ TEST(ContainerTest, PublishesFiniteInputsBeforeRunReturns) {
     strategy::StrategyService strategy_service(strategy);
     market::MarketService market;
     market::LocalMarketClient client(market);
-    client.Subscribe(strategy_service);
+    client.Subscribe(17, strategy_service);
+    client.Subscribe(81, strategy_service);
     examples::FixedQuoteSource source({input.data(), length});
     examples::QuotePublisher publisher(source, market);
     TracePublisher traced(publisher);
@@ -192,6 +193,8 @@ TEST(ContainerTest, PublishesFiniteInputsBeforeRunReturns) {
     ASSERT_TRUE(runner.Register(traced));
     EXPECT_TRUE(runner.Run());
     EXPECT_EQ(output.count, length);
+    client.Unsubscribe(17, strategy_service);
+    client.Unsubscribe(81, strategy_service);
   }
 }
 

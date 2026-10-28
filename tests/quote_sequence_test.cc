@@ -73,7 +73,8 @@ TEST(QuoteSequenceTest, RetainsSnapshotsAndIntentsAcrossBufferReuse) {
     RecordQuotes receiver(strategy_service);
     market::MarketService market;
     market::LocalMarketClient client(market);
-    client.Subscribe(receiver);
+    client.Subscribe(17, receiver);
+    client.Subscribe(81, receiver);
     examples::FixedQuoteSource source(input);
     model::Quote working_quote;
     EXPECT_FALSE(source.exhausted());
@@ -96,6 +97,8 @@ TEST(QuoteSequenceTest, RetainsSnapshotsAndIntentsAcrossBufferReuse) {
       EXPECT_DOUBLE_EQ(output.intents[i].bid_price, input[i].bid_price);
       EXPECT_DOUBLE_EQ(output.intents[i].ask_price, input[i].ask_price);
     }
+    client.Unsubscribe(17, receiver);
+    client.Unsubscribe(81, receiver);
   }
 }
 

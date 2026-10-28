@@ -22,7 +22,7 @@ ctest --test-dir build --output-on-failure
 ./build/monod
 ```
 
-`monod` 通过 container 运行循环连续处理三条固定行情，按源序号输出对应的买卖报价意图，输入处理完成后退出。固定行情源及其调度适配器位于 `examples/market/`，验证策略位于 `examples/strategies/`。
+`monod` 通过 container 处理两个品种交错的五条固定行情，只为订阅品种输出报价意图，输入处理完成后退订并退出。固定行情源及其调度适配器位于 `examples/market/`，验证策略位于 `examples/strategies/`。
 
 测试构建获取固定版本的 GoogleTest；离线构建可通过 `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/path/to/googletest` 指定已有源码。
 

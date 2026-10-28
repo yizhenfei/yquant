@@ -10,7 +10,7 @@ YQuant 通过 service 实现不同的业务功能。service 可以灵活组装�
 
 | service 类型 | 职责 |
 | --- | --- |
-| `market-service` | 接入行情，向策略提供行情数据。 |
+| `market-service` | 接收行情，按订阅向策略分发。 |
 | `strategy-service` | 承载一个或多个策略实例，使用行情和交易回报生成交易指令。 |
 | `trade-service` | 接入交易接口，处理报单、撤单和回报，维护订单及成交状态。 |
 
@@ -175,6 +175,8 @@ client factory 创建需要参与调度的 client 时，将其接入 container �
 container 作为统一的容器框架，以共享库的形式供各程序复用，承载 service 实例及通信组件的执行。`monod`、`marketd`、`strategyd`、`tradingd` 和 `relayd` 各自具有 `.cc` 组装代码，在 `main` 中选择具体实现、建立依赖关系并启动程序。
 
 程序组装层建立本进程的 service 实例、拓扑访问、message bus、service server 和 client factory，并将所需接口注入使用方。依赖倒置所需的具体实现绑定由该层完成。例如，交易 service 依赖交易接口抽象，由组装代码创建 SimNow 接入实现并注入。
+
+行情 service 依赖行情接入抽象，具体接入对象由程序组装层创建并注入。行情接收、缓冲复用和订阅分发在 service 内完成，由 container 调度该 service 推进接收流程。
 
 container 不依赖具体业务 service，也不负责选择业务实现。service 不依赖特定传输实现；client 和 server 承担业务接口与消息通信之间的适配。
 

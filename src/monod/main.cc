@@ -1,5 +1,6 @@
 #include <array>
 #include <cinttypes>
+#include <cstdint>
 #include <cstdio>
 
 #include "market/fixed_quote_source.h"
@@ -28,22 +29,27 @@ class PrintIntent final : public yquant::examples::QuoteIntentListener {
 }  // namespace
 
 int main() {
+  constexpr std::uint32_t kStrategyInstrumentId = 42;
   PrintIntent output;
   yquant::market::MarketService market;
   yquant::market::LocalMarketClient local_client(market);
   yquant::market::MarketClient& client = local_client;
   yquant::examples::QuoteStrategy strategy(output);
   yquant::strategy::StrategyService strategy_service(strategy);
-  client.Subscribe(strategy_service);
-  const std::array<yquant::model::Quote, 3> quotes{{
+  client.Subscribe(kStrategyInstrumentId, strategy_service);
+  const std::array<yquant::model::Quote, 5> quotes{{
       {42, 100.25, 100.5, 7, 11, 1},
-      {42, 100.5, 100.75, 9, 13, 2},
-      {42, 100.5, 100.75, 15, 4, 3},
+      {81, 98.75, 99.25, 5, 8, 2},
+      {42, 100.5, 100.75, 9, 13, 3},
+      {81, 99, 99.5, 6, 9, 4},
+      {42, 100.5, 100.75, 15, 4, 5},
   }};
   yquant::examples::FixedQuoteSource source(quotes);
   yquant::examples::QuotePublisher publisher(source, market);
   yquant::container::Container container;
-  if (!container.Register(publisher) || !container.Run()) {
+  const bool completed = container.Register(publisher) && container.Run();
+  client.Unsubscribe(kStrategyInstrumentId, strategy_service);
+  if (!completed) {
     std::fprintf(stderr, "Failed to run the quote publisher\n");
     return 1;
   }
