@@ -25,6 +25,8 @@ class MarketService final : public container::Service {
   void Subscribe(std::uint32_t instrument_id, QuoteListener& listener);
   // Removes listener's subscription to instrument_id if one exists.
   void Unsubscribe(std::uint32_t instrument_id, QuoteListener& listener);
+
+  // container::Service implementation.
   // Delivers available quotes until the source is idle or the batch limit
   // is reached, then returns so other services can run.
   // If Run is already active, returns without reading again.

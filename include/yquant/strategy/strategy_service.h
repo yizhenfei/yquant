@@ -16,6 +16,7 @@ class StrategyService final : public market::QuoteListener {
   StrategyService(const StrategyService&) = delete;
   StrategyService& operator=(const StrategyService&) = delete;
 
+  // market::QuoteListener implementation.
   void OnQuote(const model::Quote& quote) override;
 
  private:

@@ -15,6 +15,7 @@ namespace {
 // Saves received quotes so tests can check delivery order and retained values.
 class RecordQuotes final : public QuoteListener {
  public:
+  // QuoteListener implementation.
   void OnQuote(const model::Quote& quote) override {
     ASSERT_LT(count, quotes.size());
     quotes[count++] = quote;

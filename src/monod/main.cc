@@ -2,9 +2,11 @@
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
+#include <string_view>
 
 #include "market/fixed_quote_source.h"
 #include "strategies/quote_strategy.h"
+#include "trading_demo.h"
 #include "yquant/container/container.h"
 #include "yquant/market/market_client_factory.h"
 #include "yquant/market/market_service.h"
@@ -17,6 +19,7 @@ namespace {
 // Writes each intent and its source sequence to stdout for validation.
 class PrintIntent final : public yquant::examples::QuoteIntentListener {
  public:
+  // yquant::examples::QuoteIntentListener implementation.
   void OnQuoteIntent(const yquant::examples::QuoteIntent& intent) override {
     std::printf("quote_intent instrument=%" PRIu32
                 " sequence=%" PRIu64 " bid=%.17g ask=%.17g\n",
@@ -27,7 +30,18 @@ class PrintIntent final : public yquant::examples::QuoteIntentListener {
 
 }  // namespace
 
-int main() {
+int main(int argc, char* argv[]) {
+  if (argc == 2 && std::string_view(argv[1]) == "--orders") {
+    return yquant::monod::RunTradingDemo();
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--help") {
+    std::printf("Usage: monod [--orders]\n");
+    return 0;
+  }
+  if (argc != 1) {
+    std::fprintf(stderr, "Usage: monod [--orders]\n");
+    return 2;
+  }
   constexpr std::uint64_t kMarketServiceId = 1;
   constexpr std::uint32_t kStrategyInstrumentId = 42;
   const std::array<yquant::model::Quote, 5> quotes{{

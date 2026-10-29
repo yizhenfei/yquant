@@ -17,6 +17,7 @@ class LocalMarketClient final : public MarketClient {
   LocalMarketClient(const LocalMarketClient&) = delete;
   LocalMarketClient& operator=(const LocalMarketClient&) = delete;
 
+  // MarketClient implementation.
   void Subscribe(std::uint32_t instrument_id,
                  QuoteListener& listener) override {
     service_.Subscribe(instrument_id, listener);

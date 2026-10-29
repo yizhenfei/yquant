@@ -18,6 +18,7 @@ namespace {
 // Saves a copy of each intent for comparison after the sequence ends.
 class RecordIntents final : public examples::QuoteIntentListener {
  public:
+  // examples::QuoteIntentListener implementation.
   void OnQuoteIntent(const examples::QuoteIntent& intent) override {
     ASSERT_LT(count, intents.size());
     intents[count++] = intent;
@@ -36,6 +37,7 @@ class RecordQuotes final : public market::QuoteListener {
   RecordQuotes(const RecordQuotes&) = delete;
   RecordQuotes& operator=(const RecordQuotes&) = delete;
 
+  // market::QuoteListener implementation.
   void OnQuote(const model::Quote& quote) override {
     ASSERT_LT(count, quotes.size());
     quotes[count] = quote;

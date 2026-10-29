@@ -16,6 +16,7 @@ namespace {
 // Captures payload, address and thread to check synchronous quote delivery.
 class RecordQuote final : public market::QuoteListener {
  public:
+  // market::QuoteListener implementation.
   void OnQuote(const model::Quote& value) override {
     quote = value;
     address = &value;
@@ -32,6 +33,7 @@ class RecordQuote final : public market::QuoteListener {
 // Captures emitted intents and their delivery context for strategy assertions.
 class RecordIntent final : public examples::QuoteIntentListener {
  public:
+  // examples::QuoteIntentListener implementation.
   void OnQuoteIntent(const examples::QuoteIntent& value) override {
     intent = value;
     thread = std::this_thread::get_id();

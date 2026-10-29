@@ -1060,6 +1060,11 @@ prefer the following order:
    `friend` functions)
 8. All other data members (static and non-static)
 
+When implementing an interface, group the declarations of its overridden member
+functions together within each access section. Start each group with a comment
+naming the interface, such as `// ITradingAdapter implementation.`. Use a separate
+group for each interface, and keep class-specific methods outside these groups.
+
 Do not put large method definitions inline in the class definition. Usually,
 only trivial or performance-critical, and very short, methods may be defined
 inline. See

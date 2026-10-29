@@ -40,6 +40,7 @@ class ScriptedSource final : public QuoteSource {
   ScriptedSource(const ScriptedSource&) = default;
   ScriptedSource& operator=(const ScriptedSource&) = default;
 
+  // QuoteSource implementation.
   QuoteReadResult Read(model::Quote& quote) override {
     EXPECT_LT(read_count, addresses.size());
     if (read_count >= addresses.size()) {
@@ -77,6 +78,7 @@ class ScriptedSource final : public QuoteSource {
 // that the callback's input remains unchanged until it returns.
 class RecordQuotes final : public QuoteListener {
  public:
+  // QuoteListener implementation.
   void OnQuote(const model::Quote& quote) override {
     ASSERT_LT(count, quotes.size());
     const std::size_t index = count++;

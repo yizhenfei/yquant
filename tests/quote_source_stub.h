@@ -21,6 +21,7 @@ class QuoteSourceStub final : public market::QuoteSource {
     available_ = true;
   }
 
+  // market::QuoteSource implementation.
   // Consumes the pending quote, or returns kIdle without changing quote.
   market::QuoteReadResult Read(model::Quote& quote) override {
     if (!available_) {

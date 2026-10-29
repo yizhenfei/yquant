@@ -34,6 +34,7 @@ class QuoteStrategy final : public market::QuoteListener {
   QuoteStrategy(const QuoteStrategy&) = delete;
   QuoteStrategy& operator=(const QuoteStrategy&) = delete;
 
+  // market::QuoteListener implementation.
   void OnQuote(const model::Quote& quote) override {
     const QuoteIntent intent{quote.instrument_id, quote.bid_price,
                              quote.ask_price, quote.sequence};

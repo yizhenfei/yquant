@@ -12,7 +12,7 @@ YQuant 通过 service 实现不同的业务功能。service 可以灵活组装�
 | --- | --- |
 | `market-service` | 接收行情，按订阅向策略分发。 |
 | `strategy-service` | 承载一个或多个策略实例，使用行情和交易回报生成交易指令。 |
-| `trade-service` | 接入交易接口，处理报单、撤单和回报，维护订单及成交状态。 |
+| `trade-service` | 接入交易接口，处理报单、撤单和回报，维护订单及成交状态，提供账户资金和持仓查询。 |
 
 service 类型定义功能，service 实例是部署单位。同一种 service 可以创建多个实例，并分别组装到不同程序中。
 
@@ -97,7 +97,7 @@ client 与 server 的接口和消息格式需要配套维护；是否使用 IDL 
 `monod` 同时承载策略和交易 service：
 
 1. 初始化时，策略侧使用目标交易 service 的 ID 向 factory 获取 client。factory 根据拓扑创建进程内 client，连接本进程中的交易 service。
-2. 策略侧生成调用方订单标识，通过 client 提交下单请求。client 直接调用交易 service，由交易 service 向柜台提交委托。
+2. 调用方 service 为策略生成统一 `OrderId`，通过 client 提交下单请求。client 直接调用交易 service，由交易 service 向柜台提交委托。
 3. 交易 service 收到订单或成交回报后，经 client 的回调接口交付给策略侧，由策略侧关联到对应策略实例。
 
 业务调用路径为：策略 → client → 交易 service。同进程的 client 与 service 之间无需进行消息编码和传输。
@@ -113,7 +113,7 @@ client 与 server 的接口和消息格式需要配套维护；是否使用 IDL 
 
 业务调用路径为：策略 → client → 两端 message bus → server → 交易 service。两个进程部署到不同机器时，message bus 通过 relay 转发消息，策略仍使用相同的 client 接口。
 
-在这两种部署中，调用方都通过自己的订单标识关联请求与回报。交易服务和柜台还具有各自的订单标识，由交易服务维护关联；具体字段、唯一性范围、生成规则和映射结构在交易接口设计中细化。service ID 用于定位服务，同一策略 service 内的策略归属也在该接口设计中明确。
+在这两种部署中，YQuant 使用调用方生成的统一 `OrderId` 关联订单请求与回报，client、交易 service 和接入适配器保留该标识。适配器维护它与柜台订单标识 `CounterOrderId` 的关联。分布式生成规则、唯一性范围和策略归属见[交易设计的订单标识](trading.md#订单标识)。
 
 #### 订单状态查询
 

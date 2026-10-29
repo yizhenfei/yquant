@@ -28,9 +28,18 @@ target_link_libraries(yquant_market PUBLIC yquant_model yquant_container)
 add_library(yquant_strategy src/strategy/strategy_service.cc)
 target_link_libraries(yquant_strategy PUBLIC yquant_market)
 
-add_executable(monod src/monod/main.cc)
+add_library(yquant_trading
+  src/trading/local_trading_client.cc
+  src/trading/order_id_generator.cc
+  src/trading/simulated_trading_adapter.cc
+  src/trading/trading_client_factory.cc
+  src/trading/trading_service_registry.cc
+  src/trading/trading_service.cc)
+target_link_libraries(yquant_trading PUBLIC yquant_model yquant_container)
+
+add_executable(monod src/monod/main.cc src/monod/trading_demo.cc)
 target_include_directories(monod PRIVATE examples)
-target_link_libraries(monod PRIVATE yquant_strategy)
+target_link_libraries(monod PRIVATE yquant_strategy yquant_trading)
 
 include(CTest)
 if(BUILD_TESTING)
@@ -41,6 +50,28 @@ if(BUILD_TESTING)
     GIT_REPOSITORY https://github.com/google/googletest.git
     GIT_TAG 6910c9d9165801d8827d628cb72eb7ea9dd538c5)
   FetchContent_MakeAvailable(googletest)
+
+  add_executable(trading_adapter_test tests/trading_adapter_test.cc)
+  target_link_libraries(trading_adapter_test PRIVATE
+    yquant_trading GTest::gtest_main)
+  add_test(NAME v1_02_adapter COMMAND trading_adapter_test)
+  set_tests_properties(v1_02_adapter
+    PROPERTIES TIMEOUT 5 LABELS v1_02_order)
+  add_executable(trading_service_test tests/trading_service_test.cc)
+  target_link_libraries(trading_service_test PRIVATE
+    yquant_trading GTest::gtest_main)
+  add_test(NAME v1_02_service COMMAND trading_service_test)
+  set_tests_properties(v1_02_service
+    PROPERTIES TIMEOUT 5 LABELS v1_02_order)
+  add_executable(trading_client_test tests/trading_client_test.cc)
+  target_link_libraries(trading_client_test PRIVATE
+    yquant_trading GTest::gtest_main)
+  add_test(NAME v1_02_submit COMMAND trading_client_test)
+  add_test(NAME v1_02_submit_monod
+    COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_order_output_test.cmake)
+  set_tests_properties(v1_02_submit v1_02_submit_monod
+    PROPERTIES TIMEOUT 5 LABELS v1_02_order)
 
   add_executable(single_quote_test tests/single_quote_test.cc)
   target_include_directories(single_quote_test PRIVATE examples)

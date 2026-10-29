@@ -24,6 +24,15 @@ ctest --test-dir build --output-on-failure
 
 `monod` 在 `main` 中将行情 service 按 ID 注册到本地实例表，再把实例表注入 factory，取得行情 client。container 调度行情 service，由 service 内部接收两个品种交错的五条固定行情，只为订阅品种输出报价意图。`main` 向 container 提供退出条件，固定行情处理完成后结束运行，随后退订并退出。固定行情源位于 `examples/market/`，验证策略位于 `examples/strategies/`。
 
+运行交易报单验证场景：
+
+```sh
+./build/monod --orders
+ctest --test-dir build -L v1_02_order --output-on-failure
+```
+
+交易场景通过本地 factory 创建 client，向两个模拟账户报单，验证委托接受、柜台拒绝和确定未发送，并验证发送失败后迟到的有效回报能够更新订单状态。委托回报与汇总写入 `stdout`，发送失败及迟到回报诊断写入 `stderr`。
+
 测试构建获取固定版本的 GoogleTest；离线构建可通过 `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/path/to/googletest` 指定已有源码。
 
 ## 首版目标
@@ -39,6 +48,7 @@ ctest --test-dir build --output-on-failure
 | 行情接入 | 接入 SimNow 行情，向策略提供所需行情。 |
 | 多策略运行 | 支持多个策略实例同时运行，各策略独立生成交易指令，并允许共用同一个交易账户。 |
 | 交易执行 | 支持报单、撤单和回报处理，维护订单及成交状态，将订单和成交回报准确分发给所属策略。 |
+| 账户状态 | 获取并更新账户资金和持仓，向策略提供带数据可用性的查询；共享账户的策略读取同一份账户状态。 |
 
 首版支持同进程、同机跨进程和跨机器部署，提供跨机点对点通信与单机广播，不包含跨机广播。部署拓扑通过静态配置文件提供。
 
@@ -49,10 +59,13 @@ ctest --test-dir build --output-on-failure
 - 多个做市策略实例能够同时接收行情并独立生成交易指令。
 - 多个策略能够通过同一个 SimNow 交易账户完成报单和撤单。
 - 订单和成交回报能够正确归属并分发给对应策略。
+- 策略能够查询账户资金及持仓，数据与对应的柜台快照一致；能区分数据尚不可用与有效的零资金、空持仓，接收后续更新且不同账户的数据相互独立。
 - 在同进程、同机跨进程和跨机器部署下，做市策略能够根据行情变化更新报价，完成行情驱动的交易闭环。
 - 单机广播能够向本机多个策略分发行情。
 
 ## 项目文档
 
 - [系统架构](docs/design/architecture.md)
+- [交易接口](docs/design/trading.md)
 - [首版执行计划](docs/plans/v1.md)
+- [项目 TODO](TODO.md)

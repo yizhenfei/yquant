@@ -31,6 +31,7 @@ class RecordRuns final : public container::Service {
   RecordRuns(const RecordRuns&) = delete;
   RecordRuns& operator=(const RecordRuns&) = delete;
 
+  // container::Service implementation.
   void Run() override {
     ASSERT_LT(trace_.count, trace_.ids.size());
     trace_.ids[trace_.count] = id_;
@@ -50,6 +51,7 @@ class TryReentry final : public container::Service {
   TryReentry(const TryReentry&) = delete;
   TryReentry& operator=(const TryReentry&) = delete;
 
+  // container::Service implementation.
   void Run() override {
     EXPECT_FALSE(owner_.Register(peer_));
     EXPECT_FALSE(owner_.Run());
@@ -66,6 +68,7 @@ class TryReentry final : public container::Service {
 // Saves every intent and its callback thread for comparison after Run returns.
 class RecordIntents final : public examples::QuoteIntentListener {
  public:
+  // examples::QuoteIntentListener implementation.
   void OnQuoteIntent(const examples::QuoteIntent& intent) override {
     ASSERT_LT(count, intents.size());
     intents[count] = intent;
@@ -85,6 +88,7 @@ class TraceSource final : public market::QuoteSource {
   TraceSource(const TraceSource&) = delete;
   TraceSource& operator=(const TraceSource&) = delete;
 
+  // market::QuoteSource implementation.
   market::QuoteReadResult Read(model::Quote& quote) override {
     EXPECT_EQ(std::this_thread::get_id(), caller);
     ++count;

@@ -19,6 +19,7 @@ class FixedQuoteSource final : public market::QuoteSource {
   FixedQuoteSource(const FixedQuoteSource&) = delete;
   FixedQuoteSource& operator=(const FixedQuoteSource&) = delete;
 
+  // market::QuoteSource implementation.
   // Copies the next quote into quote and returns kQuote.
   // Returns kIdle when all quotes have been read, without changing quote.
   market::QuoteReadResult Read(model::Quote& quote) override {

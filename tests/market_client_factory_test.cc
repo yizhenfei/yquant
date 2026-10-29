@@ -22,6 +22,7 @@ class RecordQuote final : public QuoteListener {
   RecordQuote(const RecordQuote&) = delete;
   RecordQuote& operator=(const RecordQuote&) = delete;
 
+  // QuoteListener implementation.
   void OnQuote(const model::Quote& value) override {
     EXPECT_EQ(&value, source_.last_output);
     quote = value;
