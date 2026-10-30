@@ -40,6 +40,9 @@ class Listener final : public TradingListener {
       action(report);
     }
   }
+  void OnCancelReport(const CancelReport&) override {
+    ADD_FAILURE() << "Unexpected cancellation report";
+  }
 
   bool in_request = false;
   std::thread::id thread = std::this_thread::get_id();
@@ -186,6 +189,7 @@ TEST_F(TradingServiceTest, NotSentProducesFailureWithRetainedSnapshot) {
   const auto& failure = original.failures[0];
   EXPECT_EQ(failure.order_id, request.order.order_id);
   EXPECT_EQ(failure.reason, FailureReason::kSendFailed);
+  EXPECT_FALSE(failure.cancel_request_id);
   ASSERT_TRUE(failure.snapshot);
   EXPECT_EQ(failure.snapshot->state, OrderState::kSendFailed);
   EXPECT_EQ(failure.snapshot->order, request.order);
@@ -308,6 +312,10 @@ class ReentrantAdapter final : public ITradingAdapter {
     pending_order = request.order.order_id;
     service.Run();
     return SendResult::kSent;
+  }
+  SendResult CancelOrder(const AdapterCancelOrderRequest&) override {
+    ADD_FAILURE() << "Unexpected cancellation request";
+    return SendResult::kNotSent;
   }
   void Run() override {
     ++runs;

@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -25,12 +26,25 @@ struct SubmitOrderRequest {
   bool operator==(const SubmitOrderRequest&) const = default;
 };
 
+// Identifies one cancellation attempt and the order's account and strategy.
+struct CancelOrderRequest {
+  OrderId order_id;
+  std::uint64_t account_id = 0;
+  std::uint64_t strategy_id = 0;
+  std::uint64_t cancel_request_id = 0;
+};
+
 enum class RequestResult { kDelivered, kIdExhausted };
 enum class FailureReason {
   kUnknownAccount,
   kDuplicateOrder,
   kInvalidRequest,
   kSendFailed,
+  kUnknownOrder,
+  kOwnershipMismatch,
+  kOrderInactive,
+  kDuplicateCancel,
+  kIdExhausted,
 };
 
 // Reports a processing or transmission error for order_id.
@@ -40,10 +54,20 @@ struct RequestFailure {
   OrderId order_id;
   FailureReason reason = FailureReason::kInvalidRequest;
   std::optional<OrderSnapshot> snapshot;
+  // Present for cancellation failures, including an invalid request ID of zero.
+  std::optional<std::uint64_t> cancel_request_id = std::nullopt;
 };
 
 // Owns the state at this event's version, independent of later state changes.
 struct OrderReport {
+  OrderSnapshot snapshot;
+};
+
+// Reports one cancellation's counter result and the current order state.
+struct CancelReport {
+  OrderId order_id;
+  std::uint64_t cancel_request_id;
+  CancelResult result;
   OrderSnapshot snapshot;
 };
 
@@ -65,6 +89,11 @@ class TradingService final : public container::Service {
   RequestResult SubmitOrder(const SubmitOrderRequest& request,
                             TradingListener& listener,
                             internal::CallContext call);
+  // Copies data needed after return and retains listener for reporting.
+  // A sent cancellation leaves the order active until the counter confirms it.
+  RequestResult CancelOrder(const CancelOrderRequest& request,
+                            TradingListener& listener,
+                            internal::CallContext call);
 
   // container::Service implementation.
   // Delivers a bounded notification batch, then advances each account once.
@@ -80,6 +109,7 @@ class TradingService final : public container::Service {
 
     // ITradingAdapterCallback implementation.
     void OnOrderReport(const AdapterOrderReport& report) override;
+    void OnCancelReport(const AdapterCancelReport& report) override;
 
     TradingService& owner;
     std::uint64_t id;
@@ -94,11 +124,21 @@ class TradingService final : public container::Service {
     std::int32_t filled_quantity = 0;
     std::uint64_t version = 1;
     std::size_t pending = 0;
+    std::unordered_set<std::uint64_t> cancel_ids{};
+  };
+  // Keeps each attempt independent of other cancellations for the same order.
+  struct CancelRecord {
+    CancelOrderRequest request;
+    OrderRecord* order;
+    TradingListener* listener;
+    internal::CallContext call;
+    bool send_failed = false;
+    std::optional<CancelResult> result = std::nullopt;
   };
   // Keeps an event's snapshot and internal invocation context together.
   struct Notification {
     TradingListener* listener = nullptr;
-    std::variant<RequestFailure, OrderReport> event;
+    std::variant<RequestFailure, OrderReport, CancelReport> event;
     OrderRecord* order = nullptr;
     internal::CallContext call;
   };
@@ -107,14 +147,23 @@ class TradingService final : public container::Service {
   void ProcessSubmitOrder(const SubmitOrderRequest& request,
                           TradingListener& listener,
                           internal::CallContext call);
+  // Validates and sends one attempt while CancelOrder defers notifications.
+  void ProcessCancelOrder(const CancelOrderRequest& request,
+                          TradingListener& listener,
+                          internal::CallContext call);
+  // Applies a counter result to its attempt and updates the order on success.
+  void ApplyCancel(std::uint64_t account_id, const AdapterCancelReport& report);
   // Copies the current order record into an independent value for reporting.
   static OrderSnapshot MakeSnapshot(const OrderRecord& order);
   // Validates the source account and applies one accepted/rejected event.
   void Apply(std::uint64_t account_id, const AdapterOrderReport& report);
-  // Saves a request outcome; record is null when no order was established.
+  // Saves a request failure. A record adds its snapshot and associates the
+  // notification with that order's pending events. Use null for validation
+  // failures.
   void Fail(OrderId order_id, TradingListener& listener,
             internal::CallContext call, FailureReason reason,
-            OrderRecord* record = nullptr);
+            OrderRecord* record = nullptr,
+            std::optional<std::uint64_t> cancel_id = std::nullopt);
   // Queues events during a request or behind an order's pending events.
   // Delivers other events immediately.
   void Notify(Notification notification);
@@ -124,6 +173,8 @@ class TradingService final : public container::Service {
   std::vector<std::unique_ptr<AccountContext>> accounts_;
   std::unordered_map<std::uint64_t, AccountContext*> account_index_;
   std::unordered_map<OrderId, OrderRecord, OrderIdHash> orders_;
+  std::unordered_map<std::uint64_t, CancelRecord> cancels_;
+  std::uint64_t last_cancel_id_ = 0;
   std::vector<Notification> pending_;
   std::size_t head_ = 0;
   std::size_t pending_count_ = 0;

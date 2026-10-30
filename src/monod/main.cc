@@ -34,12 +34,15 @@ int main(int argc, char* argv[]) {
   if (argc == 2 && std::string_view(argv[1]) == "--orders") {
     return yquant::monod::RunTradingDemo();
   }
+  if (argc == 2 && std::string_view(argv[1]) == "--cancel") {
+    return yquant::monod::RunTradingDemo(true);
+  }
   if (argc == 2 && std::string_view(argv[1]) == "--help") {
-    std::printf("Usage: monod [--orders]\n");
+    std::printf("Usage: monod [--orders|--cancel]\n");
     return 0;
   }
   if (argc != 1) {
-    std::fprintf(stderr, "Usage: monod [--orders]\n");
+    std::fprintf(stderr, "Usage: monod [--orders|--cancel]\n");
     return 2;
   }
   constexpr std::uint64_t kMarketServiceId = 1;

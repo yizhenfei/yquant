@@ -27,6 +27,9 @@ class AdapterListener final : public ITradingAdapterCallback {
       action(report);
     }
   }
+  void OnCancelReport(const AdapterCancelReport&) override {
+    ADD_FAILURE() << "Unexpected cancellation report";
+  }
 
   std::thread::id thread = std::this_thread::get_id();
   std::vector<AdapterOrderReport> reports;

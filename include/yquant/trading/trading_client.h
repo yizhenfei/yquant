@@ -17,6 +17,10 @@ class TradingClient {
   // kIdExhausted means no delivery and no callback for this invocation.
   virtual RequestResult SubmitOrder(const SubmitOrderRequest& request,
                                     TradingListener& listener) = 0;
+  // Uses a new cancel_request_id for each attempt. Delivery and listener
+  // lifetime follow SubmitOrder; counter results arrive through OnCancelReport.
+  virtual RequestResult CancelOrder(const CancelOrderRequest& request,
+                                    TradingListener& listener) = 0;
 };
 
 }  // namespace yquant::trading

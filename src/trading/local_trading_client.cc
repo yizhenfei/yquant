@@ -31,4 +31,14 @@ RequestResult LocalTradingClient::SubmitOrder(
                               {instance_id_, ++last_call_id_});
 }
 
+RequestResult LocalTradingClient::CancelOrder(
+    const CancelOrderRequest& request, TradingListener& listener) {
+  if (instance_id_ == 0 ||
+      last_call_id_ == std::numeric_limits<std::uint64_t>::max()) {
+    return RequestResult::kIdExhausted;
+  }
+  return service_.CancelOrder(request, listener,
+                              {instance_id_, ++last_call_id_});
+}
+
 }  // namespace yquant::trading

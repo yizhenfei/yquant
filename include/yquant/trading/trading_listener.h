@@ -5,6 +5,7 @@ namespace yquant::trading {
 
 struct RequestFailure;
 struct OrderReport;
+struct CancelReport;
 
 // Receives reports on the business thread after request methods return.
 // Keep listeners alive for the service's runtime, including terminal orders.
@@ -15,6 +16,7 @@ class TradingListener {
   virtual ~TradingListener() = default;
   virtual void OnRequestFailure(const RequestFailure& failure) = 0;
   virtual void OnOrderReport(const OrderReport& report) = 0;
+  virtual void OnCancelReport(const CancelReport& report) = 0;
 };
 
 }  // namespace yquant::trading

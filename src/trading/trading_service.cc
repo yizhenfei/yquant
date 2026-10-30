@@ -41,6 +41,7 @@ void Diagnose(const char* message, std::uint64_t account_id, OrderId id) {
 
 TradingService::TradingService() {
   orders_.reserve(256);
+  cancels_.reserve(256);
   pending_.resize(256);
 }
 
@@ -128,7 +129,8 @@ void TradingService::Apply(std::uint64_t account_id,
     return;
   }
   if (order.state == OrderState::kAccepted ||
-      order.state == OrderState::kRejected) {
+      order.state == OrderState::kRejected ||
+      order.state == OrderState::kCanceled) {
     Diagnose("contradictory_report", account_id, report.order_id);
     return;
   }
@@ -144,8 +146,9 @@ void TradingService::Apply(std::uint64_t account_id,
 void TradingService::Fail(OrderId order_id, TradingListener& listener,
                           internal::CallContext call,
                           FailureReason reason,
-                          OrderRecord* record) {
-  RequestFailure failure{order_id, reason, std::nullopt};
+                          OrderRecord* record,
+                          std::optional<std::uint64_t> cancel_id) {
+  RequestFailure failure{order_id, reason, std::nullopt, cancel_id};
   if (record != nullptr) {
     failure.snapshot = MakeSnapshot(*record);
   }
@@ -177,9 +180,12 @@ void TradingService::Dispatch(const Notification& notification) {
   ++callback_depth_;
   if (const auto* failure = std::get_if<RequestFailure>(&notification.event)) {
     notification.listener->OnRequestFailure(*failure);
+  } else if (const auto* report =
+                 std::get_if<OrderReport>(&notification.event)) {
+    notification.listener->OnOrderReport(*report);
   } else {
-    notification.listener->OnOrderReport(
-        std::get<OrderReport>(notification.event));
+    notification.listener->OnCancelReport(
+        std::get<CancelReport>(notification.event));
   }
   --callback_depth_;
 }

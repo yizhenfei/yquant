@@ -21,6 +21,8 @@ class LocalTradingClient final : public TradingClient {
   // TradingClient implementation.
   RequestResult SubmitOrder(const SubmitOrderRequest& request,
                             TradingListener& listener) override;
+  RequestResult CancelOrder(const CancelOrderRequest& request,
+                            TradingListener& listener) override;
 
  private:
   TradingService& service_;

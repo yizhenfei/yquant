@@ -28,6 +28,9 @@ class ClientListener final : public TradingListener {
     EXPECT_FALSE(in_request);
     failures.push_back(failure);
   }
+  void OnCancelReport(const CancelReport&) override {
+    ADD_FAILURE() << "Unexpected cancellation report";
+  }
 
   bool in_request = false;
   std::vector<OrderReport> reports;

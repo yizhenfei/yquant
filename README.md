@@ -28,10 +28,13 @@ ctest --test-dir build --output-on-failure
 
 ```sh
 ./build/monod --orders
+./build/monod --cancel
 ctest --test-dir build -L v1_02_order --output-on-failure
 ```
 
 交易场景通过本地 factory 创建 client，向两个模拟账户报单，验证委托接受、柜台拒绝和确定未发送，并验证发送失败后迟到的有效回报能够更新订单状态。委托回报与汇总写入 `stdout`，发送失败及迟到回报诊断写入 `stderr`。
+
+`--cancel` 在已有委托上执行两个账户的撤单，分别验证柜台确认与拒绝，并输出原订单的撤销状态和各次撤单结果。
 
 测试构建获取固定版本的 GoogleTest；离线构建可通过 `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/path/to/googletest` 指定已有源码。
 

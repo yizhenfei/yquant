@@ -28,6 +28,20 @@ const char* FailureName(trading::FailureReason reason) {
   }
 }
 
+// Names the states produced by the executable's order-report scenarios.
+const char* StateName(trading::OrderState state) {
+  switch (state) {
+    case trading::OrderState::kAccepted:
+      return "accepted";
+    case trading::OrderState::kCanceled:
+      return "canceled";
+    case trading::OrderState::kRejected:
+      return "rejected";
+    default:
+      return "unknown";
+  }
+}
+
 // Writes business decisions to stdout and transmission diagnostics to stderr.
 class PrintTradingEvents final : public trading::TradingListener {
  public:
@@ -38,8 +52,7 @@ class PrintTradingEvents final : public trading::TradingListener {
                 " account=%" PRIu64 " strategy=%" PRIu64 " state=%s\n",
                 order.order_id.caller_service_id, order.order_id.sequence,
                 order.account_id, order.strategy_id,
-                report.snapshot.state == trading::OrderState::kAccepted
-                    ? "accepted" : "rejected");
+                StateName(report.snapshot.state));
     ++reports;
   }
   void OnRequestFailure(const trading::RequestFailure& failure) override {
@@ -49,14 +62,24 @@ class PrintTradingEvents final : public trading::TradingListener {
                  FailureName(failure.reason));
     ++failures;
   }
+  void OnCancelReport(const trading::CancelReport& report) override {
+    std::printf("cancel sequence=%" PRIu64 " request=%" PRIu64 " result=%s\n",
+                report.order_id.sequence, report.cancel_request_id,
+                report.result == trading::CancelResult::kCanceled
+                    ? "canceled" : "rejected");
+    ++cancels;
+    canceled += report.result == trading::CancelResult::kCanceled;
+  }
 
   int reports = 0;
   int failures = 0;
+  int cancels = 0;
+  int canceled = 0;
 };
 
 }  // namespace
 
-int RunTradingDemo() {
+int RunTradingDemo(bool cancel_orders) {
   trading::SimulatedTradingAdapter first;
   trading::SimulatedTradingAdapter second;
   PrintTradingEvents output;
@@ -101,9 +124,27 @@ int RunTradingDemo() {
     std::fprintf(stderr, "Failed to run trading service\n");
     return 1;
   }
+  if (cancel_orders) {
+    second.SetNextCancel(
+        {trading::SendResult::kSent, trading::CancelResult::kRejected});
+    if (client->CancelOrder({{100, 1}, 7, 2, 1}, output) !=
+            trading::RequestResult::kDelivered ||
+        client->CancelOrder({{100, 4}, 8, 2, 1}, output) !=
+            trading::RequestResult::kDelivered ||
+        !container.Register(service) ||
+        !container.Run([&output] { return output.cancels == 2; })) {
+      std::fprintf(stderr, "Failed to run cancellation scenario\n");
+      return 1;
+    }
+    std::printf("cancel_summary reports=%d canceled=%d\n",
+                output.cancels, output.canceled);
+  }
   std::printf("trading_summary reports=%d failures=%d\n",
               output.reports, output.failures);
-  return output.reports == 3 && output.failures == 2 ? 0 : 1;
+  const bool valid = output.reports == (cancel_orders ? 4 : 3) &&
+                     output.failures == 2 &&
+                     (!cancel_orders || output.canceled == 1);
+  return valid ? 0 : 1;
 }
 
 }  // namespace yquant::monod

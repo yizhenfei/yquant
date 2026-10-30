@@ -1,6 +1,8 @@
 #ifndef YQUANT_TRADING_TRADING_ADAPTER_H_
 #define YQUANT_TRADING_TRADING_ADAPTER_H_
 
+#include <cstdint>
+
 #include "yquant/trading/order.h"
 
 namespace yquant::trading {
@@ -17,12 +19,26 @@ struct AdapterOrderReport {
   AdapterOrderState state = AdapterOrderState::kAccepted;
 };
 
+// Carries an order ID and the service's cancellation attempt ID to the counter.
+struct AdapterCancelOrderRequest {
+  OrderId order_id;
+  std::uint64_t service_cancel_id = 0;
+};
+
+// Preserves both IDs so delayed results cannot complete another attempt.
+struct AdapterCancelReport {
+  OrderId order_id;
+  std::uint64_t service_cancel_id = 0;
+  CancelResult result = CancelResult::kCanceled;
+};
+
 // Receives reports on the service's business thread.
-// Copy any report data needed after OnOrderReport returns.
+// Copy report data needed after OnOrderReport or OnCancelReport returns.
 class ITradingAdapterCallback {
  public:
   virtual ~ITradingAdapterCallback() = default;
   virtual void OnOrderReport(const AdapterOrderReport& report) = 0;
+  virtual void OnCancelReport(const AdapterCancelReport& report) = 0;
 };
 
 // Connects one account to its counter. All methods use the business thread.
@@ -36,6 +52,9 @@ class ITradingAdapter {
   // Callback during this call. Buffer reports produced by the counter and
   // deliver them after SubmitOrder returns, through Run on the business thread.
   virtual SendResult SubmitOrder(const SubmitOrderRequest& request) = 0;
+  // Copies retained data and sends one attempt. Must not invoke Callback during
+  // this call; deliver cancellation results through subsequent Run calls.
+  virtual SendResult CancelOrder(const AdapterCancelOrderRequest& request) = 0;
   // Delivers available work up to an internal batch limit, then returns.
   virtual void Run() = 0;
 };

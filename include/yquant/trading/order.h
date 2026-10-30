@@ -25,6 +25,7 @@ struct OrderIdHash {
 
 enum class Side { kBuy, kSell };
 enum class Offset { kOpen, kClose, kCloseToday, kCloseYesterday };
+enum class CancelResult { kCanceled, kRejected };
 
 // Stores an order's identity, ownership and original parameters.
 // Requests and snapshots each own a copy of this value.
@@ -50,6 +51,8 @@ struct OrderInfo {
 //   on a valid counter report. A report after kSendFailed emits a diagnostic.
 // - Duplicate reports leave state unchanged. Conflicting acceptance/rejection
 //   reports and invalid reports are diagnosed and ignored.
+// - kSent or kAccepted -> kCanceled on a successful cancellation report.
+//   Later acceptance/rejection reports cannot restore a canceled order.
 enum class OrderState {
   // Initial state: the service saved the request and listener and is awaiting
   // the adapter's send result.
@@ -64,6 +67,8 @@ enum class OrderState {
   // No valid counter report has confirmed otherwise.
   // A later valid report can correct this state.
   kSendFailed,
+  // The counter confirmed cancellation; filled_quantity remains unchanged.
+  kCanceled,
 };
 
 // Owns the original order information and its state at one particular version.

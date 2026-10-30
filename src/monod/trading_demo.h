@@ -3,8 +3,8 @@
 
 namespace yquant::monod {
 
-// Runs the multi-account submission scenario; returns 0 on success.
-int RunTradingDemo();
+// Runs submission and optional cancellation scenarios; returns 0 on success.
+int RunTradingDemo(bool cancel_orders = false);
 
 }  // namespace yquant::monod
 

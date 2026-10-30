@@ -32,6 +32,7 @@ add_library(yquant_trading
   src/trading/local_trading_client.cc
   src/trading/order_id_generator.cc
   src/trading/simulated_trading_adapter.cc
+  src/trading/trading_cancel.cc
   src/trading/trading_client_factory.cc
   src/trading/trading_service_registry.cc
   src/trading/trading_service.cc)
@@ -71,6 +72,15 @@ if(BUILD_TESTING)
     COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_order_output_test.cmake)
   set_tests_properties(v1_02_submit v1_02_submit_monod
+    PROPERTIES TIMEOUT 5 LABELS v1_02_order)
+  add_executable(trading_cancel_test tests/trading_cancel_test.cc)
+  target_link_libraries(trading_cancel_test PRIVATE
+    yquant_trading GTest::gtest_main)
+  add_test(NAME v1_02_cancel COMMAND trading_cancel_test)
+  add_test(NAME v1_02_cancel_monod
+    COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_cancel_output_test.cmake)
+  set_tests_properties(v1_02_cancel v1_02_cancel_monod
     PROPERTIES TIMEOUT 5 LABELS v1_02_order)
 
   add_executable(single_quote_test tests/single_quote_test.cc)
