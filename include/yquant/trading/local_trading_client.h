@@ -27,6 +27,10 @@ class LocalTradingClient final : public TradingClient {
                   OrderSnapshot& snapshot) const override;
   bool QueryFunds(const QueryFundsRequest& query,
                   FundsSnapshot& snapshot) const override;
+  bool QueryPositions(const QueryPositionsRequest& query,
+                      PositionsSnapshot& snapshot) const override;
+  bool QueryPosition(const QueryPositionRequest& query,
+                     PositionInfo& position) const override;
 
  private:
   TradingService& service_;

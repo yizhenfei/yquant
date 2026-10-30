@@ -87,13 +87,14 @@ adapter 接收报单时即取得 `OrderId`，并建立与柜台请求及 `Counte
 
 ### 请求与回报数据
 
-领域模型独立于服务请求：通用币种类型 `model::Currency` 定义在 `model/currency.h`，订单、成交和资金模型分别定义在 `order.h`、`trade.h` 和 `funds.h`，请求及业务回报数据定义在 `trading_service.h`。
+领域模型独立于服务请求：通用币种类型 `model::Currency` 定义在 `model/currency.h`，订单、成交、资金和持仓模型分别定义在 `order.h`、`trade.h`、`funds.h` 和 `position.h`，请求及业务回报数据定义在 `trading_service.h`。
 
 - `OrderInfo` 保存 `order_id`、`account_id`、`strategy_id` 和合约、方向、开平、价格、数量等原始委托参数。
 - `SubmitOrderRequest` 通过 `order` 字段携带一份 `OrderInfo`。
 - `CancelOrderRequest` 包含目标 `order_id`、账户、策略及调用方撤单请求标识。
 - `QueryOrderRequest` 包含目标 `order_id`、账户和策略，用于定位订单并核对归属。
 - `QueryFundsRequest` 包含目标账户；同一账户的各策略读取共享的资金状态。
+- `QueryPositionsRequest` 包含目标账户；`QueryPositionRequest` 另带持仓键，用于单项查询。
 - `OrderSnapshot` 通过 `order` 字段保存一份 `OrderInfo`，另含当前状态、累计成交数量和单调递增的状态版本，不保存服务请求对象。
 - `RequestFailure` 表达某次已交付请求的处理失败，包含 `order_id`、错误码 `reason` 和可选的订单快照 `snapshot`。校验失败没有快照；已建立订单或已通过撤单校验后的发送异常携带订单快照。撤单失败另带本次 `cancel_request_id`，见撤单处理规则。
 - `OrderReport` 通知订单状态的变化，例如委托接受、委托拒绝和订单撤销。
@@ -103,6 +104,9 @@ adapter 接收报单时即取得 `OrderId`，并建立与柜台请求及 `Counte
 - `model::Currency` 统一表示币种，负责三个大写字母代码的构造、校验、比较和读取；默认值及非法输入产生未指定币种。
 - `FundsInfo` 使用 `model::Currency` 表达币种，保存该币种下的账户权益 `balance`、可用资金 `available`、占用保证金 `margin` 和冻结保证金 `frozen_margin`。币种须有效，金额须有限，保留柜台提供的有符号值。
 - `FundsSnapshot` 保存一份完整的 `FundsInfo`，以及产生该数据的刷新轮次 `refresh_id`。
+- `PositionKey` 由合约标识、持仓方向 `PositionSide` 和套保类别 `HedgeFlag` 组成；区分多仓与空仓，以及投机、套利和套保持仓。
+- `PositionInfo` 保存持仓键、今仓与昨仓数量，以及各自的冻结数量；数量均非负，冻结数量不超过对应持仓数量。
+- `PositionsSnapshot` 通过只读连续视图借用完整账户持仓，携带已发布轮次 `refresh_id`；有效空快照的行数为零。行数据有效至下一次成功刷新或所属 service/cache 销毁，需要长期保留时复制。
 
 请求参数只借用到调用返回；接收方复制后续处理所需的数据。回报参数只借用到回调返回，调用方需要长期保留时复制快照。
 
@@ -170,6 +174,10 @@ RequestResult CancelOrder(const CancelOrderRequest& request,
                           TradingListener& listener);
 bool QueryOrder(const QueryOrderRequest& query, OrderSnapshot& snapshot) const;
 bool QueryFunds(const QueryFundsRequest& query, FundsSnapshot& snapshot) const;
+bool QueryPositions(const QueryPositionsRequest& query,
+                    PositionsSnapshot& snapshot) const;
+bool QueryPosition(const QueryPositionRequest& query,
+                   PositionInfo& position) const;
 ```
 
 `RequestResult` 表达请求是否进入当前调用路径：
@@ -184,6 +192,8 @@ bool QueryFunds(const QueryFundsRequest& query, FundsSnapshot& snapshot) const;
 `QueryOrder` 按 `OrderId` 定位订单并核对请求中的账户和策略。记录可用且归属匹配时返回 true 并写入快照；否则返回 false，保持输出参数不变。本地 client 读取 service，远端 client 读取已经建立的本地缓存。
 
 `QueryFunds` 按账户读取最近可用的完整快照，返回 true 并复制结果；账户未知或资金不可用时返回 false，保持输出参数不变。查询读取已处理的接入状态，刷新规则见[账户资金](#账户资金)。
+
+`QueryPositions` 返回 true 并借用账户的完整持仓视图，包括有效空持仓。`QueryPosition` 返回 true 并复制指定持仓；完整视图中不存在的合法持仓键返回该键及零数量。账户未知、持仓不可用或单项查询键非法时，查询返回 false，保持输出参数不变。刷新规则见[账户持仓](#账户持仓)。
 
 ### TradingListener
 
@@ -239,9 +249,10 @@ virtual void OnOrderReport(const AdapterOrderReport& report) = 0;
 virtual void OnCancelReport(const AdapterCancelReport& report) = 0;
 virtual void OnTradeReport(const TradeInfo& trade) = 0;
 virtual void OnFundsReport(const AdapterFundsReport& report) = 0;
+virtual void OnPositionsReport(const AdapterPositionsReport& report) = 0;
 ```
 
-订单与成交回报保留统一 `OrderId`，撤单回报还携带对应的服务撤单标识。资金回报的账户来自 adapter 的绑定上下文，回报携带刷新轮次。所有 Callback 在 service 所属的业务线程调用。回报数据只在回调执行期间有效；adapter 在回调返回后才能复用相应缓冲。
+订单与成交回报保留统一 `OrderId`，撤单回报还携带对应的服务撤单标识。资金与持仓回报的账户来自 adapter 的绑定上下文，回报携带各自刷新轮次。所有 Callback 在 service 所属的业务线程调用。回报数据只在回调执行期间有效；adapter 在回调返回后才能复用相应缓冲。
 
 接入状态变化和无法关联到具体订单的异常也需要传给 Trading，对应回调数据与接口随 N2.13 细化。
 
@@ -324,7 +335,24 @@ adapter 发起初始查询或刷新时分配非零、递增的 `refresh_id`，�
 
 ### 账户持仓
 
-持仓按账户保存完整快照、后续更新及查询可用性，对应回调与查询接口在 N2.8 细化。同一账户的策略读取共享状态；模拟接入提供可控数据，SimNow 接入获取实际持仓，远端 client 通过状态更新维护本地查询视图。
+同一账户的策略共享完整持仓及可用性。账户持仓以连续行存储支持遍历，另以完整 `PositionKey` 建立哈希索引，支持高频单项查询；两个查询接口均不分配内存。已发布区与刷新暂存区分开，账户初始化时预留空间，成功后交换两组存储，下一轮复用容量。条目数超过预留容量时，仅刷新暂存区扩容。
+
+`AdapterPositionsReport` 通过 `event` 携带开始 `PositionsRefreshStarted`、持仓行 `PositionInfo`、完成 `PositionsRefreshCompleted` 或失败 `PositionsRefreshFailed`。`refresh_id` 在本账户的 adapter 运行期和重新连接期间非零、递增且不回绕，与资金刷新轮次独立。
+
+adapter 将柜台明细按持仓键整理为一键一行，今仓、昨仓及其冻结量写入同一行。完成事件的 `expected_count` 是本轮唯一标准化条目数，在接入侧完成数据整理后、交接前确定；service 将已收唯一行数与之核对。接入无法确认数据完整性时交付失败，不能以缺失数据构造空快照。
+
+| 接入事件 | 持仓视图与查询结果 |
+| --- | --- |
+| 初始刷新尚未完成 | 查询不可用，输出参数不变。 |
+| 开始较新轮次 | 清空暂存区并取代此前未完成轮次；此前可用的完整视图继续可查。 |
+| 当前轮次收到有效行 | 按键保存到暂存区，不对查询发布；相同键且内容相同的重复行忽略。 |
+| 当前轮次完成，唯一行数匹配 | 整体替换已发布视图并标记可用；新快照没有的旧持仓被移除，零条目完成建立有效空持仓。 |
+| 行非法、同键内容冲突、完成计数不符或刷新失败 | 关闭本轮并标记不可用，保留上一份完整视图；向 `stderr` 诊断账户、轮次和原因。 |
+| 失败后开始重试 | 保持不可用，直至新轮次成功发布完整快照。 |
+| 重复或旧轮次开始，以及未开始、已关闭或被取代轮次的行与结果 | 忽略，不影响当前视图、暂存数据及可用性。 |
+| 零轮次 ID | 诊断后忽略，不推进轮次。 |
+
+输入行和单项查询共用持仓键校验。资金与持仓分别维护刷新及可用性，一类刷新失败不改变另一类数据。此阶段持仓由接入完整快照更新；N2.9—N2.11 的资金检查与订单事件处理复用持仓维度和数量口径，SimNow 接入负责原生数据转换。
 
 ## 订单存储与生命周期
 
@@ -350,7 +378,9 @@ client 由创建它的调用方持有；实例表和 factory 用于初始化，�
 
 `QueueFunds(const AdapterFundsReport&)` 复制资金事件，按场景排入开始、完整结果或失败事件；也可注入旧轮次及非法值。可以在账户绑定前预置事件，注册 Callback 后由 `Run()` 交付。
 
-模拟接入通过注册的 Callback 交付事件，在报撤单、`Fill` 与 `QueueFunds` 调用期间只保存数据，由 adapter 后续的 `Run()` 交付。每次最多处理 64 个事件，事件共用按入队顺序处理的缓冲。交付前移出当前事件，回调内提交请求导致缓冲扩容时也不会覆盖当前数据。模拟接入可以分别控制发送返回与回调内容，service 先处理发送结果，再处理后续回报。
+`QueuePositions(const AdapterPositionsReport&)` 按相同的交付约定复制持仓事件，支持多条持仓、完成计数、失败以及重复、缺失与轮次交错等验证场景。
+
+模拟接入通过注册的 Callback 交付事件，在请求及验证场景的注入调用中只保存数据，由 adapter 后续的 `Run()` 交付；`Emit`、`EmitCancel` 与 `EmitTrade` 供场景直接注入回报。每次最多处理 64 个排队事件，事件共用按入队顺序处理的缓冲。交付前移出当前事件，回调内提交请求导致缓冲扩容时也不会覆盖当前数据。模拟接入可以分别控制发送返回与回调内容，service 先处理发送结果，再处理后续回报。
 
 固定行情继续使用现有行情源。成交由验证场景显式触发，N2 的报单、撤单、成交节点逐步补齐模拟接入能力。
 

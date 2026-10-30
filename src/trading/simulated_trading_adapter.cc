@@ -74,8 +74,10 @@ void SimulatedTradingAdapter::Run() {
       DeliverCancel(*report);
     } else if (const auto* trade = std::get_if<TradeInfo>(&event)) {
       EmitTrade(*trade);
+    } else if (const auto* report = std::get_if<AdapterFundsReport>(&event)) {
+      callback_->OnFundsReport(*report);
     } else {
-      callback_->OnFundsReport(std::get<AdapterFundsReport>(event));
+      callback_->OnPositionsReport(std::get<AdapterPositionsReport>(event));
     }
   }
   if (head_ == pending_.size()) {
@@ -156,6 +158,11 @@ void SimulatedTradingAdapter::EmitCancel(const AdapterCancelReport& report) {
 }
 
 void SimulatedTradingAdapter::QueueFunds(const AdapterFundsReport& report) {
+  pending_.emplace_back(report);
+}
+
+void SimulatedTradingAdapter::QueuePositions(
+    const AdapterPositionsReport& report) {
   pending_.emplace_back(report);
 }
 

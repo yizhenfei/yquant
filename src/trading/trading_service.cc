@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <initializer_list>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -71,6 +72,10 @@ bool TradingService::BindAccount(std::uint64_t account_id,
     }
   }
   auto account = std::make_unique<AccountContext>(*this, account_id, adapter);
+  for (auto* book : {&account->positions, &account->positions_staging}) {
+    book->rows.reserve(64);
+    book->index.reserve(64);
+  }
   account_index_.emplace(account_id, account.get());
   accounts_.push_back(std::move(account));
   account_index_.at(account_id)->trades.reserve(256);

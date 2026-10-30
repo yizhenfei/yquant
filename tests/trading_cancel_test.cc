@@ -430,6 +430,9 @@ TEST_F(CancellationTest, ARejectedOrderCannotBeChangedByACancelSuccess) {
 class CounterResults final : public ITradingAdapterCallback {
  public:
   // ITradingAdapterCallback implementation.
+  void OnPositionsReport(const AdapterPositionsReport&) override {
+    ADD_FAILURE() << "Unexpected positions report";
+  }
   void OnFundsReport(const AdapterFundsReport&) override {
     ADD_FAILURE() << "Unexpected funds report";
   }

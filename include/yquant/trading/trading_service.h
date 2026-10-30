@@ -14,6 +14,7 @@
 #include "yquant/trading/funds.h"
 #include "yquant/trading/internal/call_context.h"
 #include "yquant/trading/order.h"
+#include "yquant/trading/position.h"
 #include "yquant/trading/trade.h"
 #include "yquant/trading/trading_adapter.h"
 #include "yquant/trading/trading_listener.h"
@@ -46,6 +47,16 @@ struct QueryOrderRequest {
 // Selects the account whose shared funds state the caller wants to read.
 struct QueryFundsRequest {
   std::uint64_t account_id = 0;
+};
+
+// Selects the shared account positions view.
+struct QueryPositionsRequest {
+  std::uint64_t account_id = 0;
+};
+// Selects one holding within an account's complete positions view.
+struct QueryPositionRequest {
+  std::uint64_t account_id = 0;
+  PositionKey key;
 };
 
 enum class RequestResult { kDelivered, kIdExhausted };
@@ -128,12 +139,28 @@ class TradingService final : public container::Service {
   bool QueryFunds(const QueryFundsRequest& query,
                   FundsSnapshot& snapshot) const;
 
+  // Returns true and borrows the complete rows when account state is available.
+  // Returns false without changing snapshot if the account is unknown or its
+  // positions are unavailable.
+  bool QueryPositions(const QueryPositionsRequest& query,
+                      PositionsSnapshot& snapshot) const;
+  // Copies one holding, or zero quantities for an absent valid key, on true.
+  // Returns false for unknown or unavailable accounts and invalid keys.
+  // Leaves position unchanged on false.
+  bool QueryPosition(const QueryPositionRequest& query,
+                     PositionInfo& position) const;
+
   // container::Service implementation.
   // Delivers a bounded notification batch, then advances each account once.
   // Returns immediately during a request, a callback or an existing Run.
   void Run() override;
 
  private:
+  // Keeps row order contiguous and locates a holding by its complete identity.
+  struct PositionsBook {
+    std::vector<PositionInfo> rows;
+    std::unordered_map<PositionKey, std::size_t, PositionKeyHash> index;
+  };
   // Carries the bound account into every callback without a downcast or lookup.
   struct AccountContext final : ITradingAdapterCallback {
     AccountContext(TradingService& owner, std::uint64_t id,
@@ -145,6 +172,7 @@ class TradingService final : public container::Service {
     void OnCancelReport(const AdapterCancelReport& report) override;
     void OnTradeReport(const TradeInfo& trade) override;
     void OnFundsReport(const AdapterFundsReport& report) override;
+    void OnPositionsReport(const AdapterPositionsReport& report) override;
 
     TradingService& owner;
     std::uint64_t id;
@@ -154,6 +182,12 @@ class TradingService final : public container::Service {
     std::uint64_t funds_refresh_id = 0;
     bool funds_refresh_pending = false;
     bool funds_available = false;
+    PositionsBook positions;
+    PositionsBook positions_staging;
+    std::uint64_t positions_refresh_id = 0;
+    std::uint64_t positions_snapshot_id = 0;
+    bool positions_refresh_pending = false;
+    bool positions_available = false;
   };
   // Stores state once for both notifications and subsequent queries.
   struct OrderRecord {
@@ -205,6 +239,16 @@ class TradingService final : public container::Service {
   // Publishes complete funds for the active refresh or marks funds unavailable.
   // Retains the last complete value and ignores superseded or closed rounds.
   void ApplyFunds(AccountContext& account, const AdapterFundsReport& report);
+  // Collects the current refresh without exposing partial rows to queries.
+  void ApplyPositions(AccountContext& account,
+                      const AdapterPositionsReport& report);
+  // Validates and stages a unique row, ignoring identical duplicate rows.
+  static void StagePosition(AccountContext& account,
+                            const PositionInfo& position);
+  // Publishes a complete row set by swapping the staging and published storage.
+  static void CompletePositions(AccountContext& account, std::size_t count);
+  // Closes a failed refresh and makes queries unavailable, retaining old rows.
+  static void FailPositions(AccountContext& account, const char* reason);
   // Copies the current order record into an independent value for reporting.
   static OrderSnapshot MakeSnapshot(const OrderRecord& order);
   // Validates and applies a counter state and cumulative quantity.

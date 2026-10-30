@@ -31,6 +31,7 @@ ctest --test-dir build --output-on-failure
 ./build/monod --cancel
 ./build/monod --fills
 ./build/monod --funds
+./build/monod --positions
 ctest --test-dir build -L v1_02_order --output-on-failure
 ```
 
@@ -41,6 +42,8 @@ ctest --test-dir build -L v1_02_order --output-on-failure
 `--fills` 在两个账户中分别产生部分和全部成交，通过 client 查询两笔订单的最终状态，并输出成交明细和查询结果。
 
 `--funds` 验证两个账户的资金查询，从初始不可用到完整资金可用，再刷新并核对各自的币种和金额；零资金与数据尚未就绪分别表达。
+
+`--positions` 验证两个账户的完整及单项持仓查询，覆盖多个品种、持仓变化、新增、移除和清空，并核对另一账户的持仓保持独立。
 
 测试构建获取固定版本的 GoogleTest；离线构建可通过 `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/path/to/googletest` 指定已有源码。
 

@@ -1,11 +1,13 @@
 #ifndef YQUANT_TRADING_TRADING_ADAPTER_H_
 #define YQUANT_TRADING_TRADING_ADAPTER_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <variant>
 
 #include "yquant/trading/funds.h"
 #include "yquant/trading/order.h"
+#include "yquant/trading/position.h"
 #include "yquant/trading/trade.h"
 
 namespace yquant::trading {
@@ -52,6 +54,25 @@ struct AdapterFundsReport {
   std::variant<FundsRefreshStarted, FundsInfo, FundsRefreshFailed> event;
 };
 
+// Starts collection of one complete account positions snapshot.
+struct PositionsRefreshStarted {};
+// Gives the complete normalized row count, determined before data handoff.
+struct PositionsRefreshCompleted {
+  std::size_t expected_count = 0;
+};
+// Ends a positions refresh without publishing its partial rows.
+struct PositionsRefreshFailed {};
+
+// Carries one positions refresh event on its bound account's business thread.
+// IDs increase across the adapter runtime and reconnects. Begin with a start,
+// send normalized rows, then complete with the distinct row count or fail.
+// Copy data needed after the callback; identical repeated rows keep their key.
+struct AdapterPositionsReport {
+  std::uint64_t refresh_id = 0;
+  std::variant<PositionsRefreshStarted, PositionInfo, PositionsRefreshCompleted,
+               PositionsRefreshFailed> event;
+};
+
 // Receives reports on the service's business thread.
 // Copy report data needed after a callback returns.
 class ITradingAdapterCallback {
@@ -61,6 +82,7 @@ class ITradingAdapterCallback {
   virtual void OnCancelReport(const AdapterCancelReport& report) = 0;
   virtual void OnTradeReport(const TradeInfo& trade) = 0;
   virtual void OnFundsReport(const AdapterFundsReport& report) = 0;
+  virtual void OnPositionsReport(const AdapterPositionsReport& report) = 0;
 };
 
 // Connects one account to its counter. All methods use the business thread.

@@ -33,6 +33,16 @@ class TradingClient {
   // makes funds unavailable until a newer refresh completes successfully.
   virtual bool QueryFunds(const QueryFundsRequest& query,
                           FundsSnapshot& snapshot) const = 0;
+  // Borrows complete account positions on true; the row range may be empty.
+  // On false the account is unknown/unavailable and snapshot stays unchanged.
+  // Copy rows before the next successful refresh or service/cache destruction.
+  virtual bool QueryPositions(const QueryPositionsRequest& query,
+                              PositionsSnapshot& snapshot) const = 0;
+  // Copies one holding and returns true. An absent valid key produces zeros.
+  // Returns false without changing position if the account is unknown,
+  // positions are unavailable, or the key is invalid.
+  virtual bool QueryPosition(const QueryPositionRequest& query,
+                             PositionInfo& position) const = 0;
 };
 
 }  // namespace yquant::trading

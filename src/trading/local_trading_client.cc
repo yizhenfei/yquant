@@ -4,6 +4,7 @@
 #include <limits>
 
 #include "yquant/trading/funds.h"
+#include "yquant/trading/position.h"
 #include "yquant/trading/trading_listener.h"
 #include "yquant/trading/trading_service.h"
 
@@ -50,6 +51,16 @@ bool LocalTradingClient::QueryOrder(const QueryOrderRequest& query,
 bool LocalTradingClient::QueryFunds(const QueryFundsRequest& query,
                                    FundsSnapshot& snapshot) const {
   return service_.QueryFunds(query, snapshot);
+}
+
+bool LocalTradingClient::QueryPositions(const QueryPositionsRequest& query,
+                                       PositionsSnapshot& snapshot) const {
+  return service_.QueryPositions(query, snapshot);
+}
+
+bool LocalTradingClient::QueryPosition(const QueryPositionRequest& query,
+                                      PositionInfo& position) const {
+  return service_.QueryPosition(query, position);
 }
 
 }  // namespace yquant::trading
