@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <string_view>
 
+#include "funds_demo.h"
 #include "market/fixed_quote_source.h"
 #include "strategies/quote_strategy.h"
 #include "trading_demo.h"
@@ -41,12 +42,15 @@ int main(int argc, char* argv[]) {
   if (argc == 2 && std::string_view(argv[1]) == "--fills") {
     return yquant::monod::RunTradingDemo(yquant::monod::TradingScenario::kFill);
   }
+  if (argc == 2 && std::string_view(argv[1]) == "--funds") {
+    return yquant::monod::RunFundsDemo();
+  }
   if (argc == 2 && std::string_view(argv[1]) == "--help") {
-    std::printf("Usage: monod [--orders|--cancel|--fills]\n");
+    std::printf("Usage: monod [--orders|--cancel|--fills|--funds]\n");
     return 0;
   }
   if (argc != 1) {
-    std::fprintf(stderr, "Usage: monod [--orders|--cancel|--fills]\n");
+    std::fprintf(stderr, "Usage: monod [--orders|--cancel|--fills|--funds]\n");
     return 2;
   }
   constexpr std::uint64_t kMarketServiceId = 1;

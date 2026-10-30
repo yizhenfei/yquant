@@ -59,6 +59,9 @@ class SimulatedTradingAdapter final : public ITradingAdapter {
   // Injects an event directly, including malformed and late reports, without
   // updating the simulated book. Call only after a request method returns.
   void EmitTrade(const TradeInfo& trade);
+  // Copies one controlled funds event for delivery by a subsequent Run.
+  // Can be queued before binding; Run waits until a callback is registered.
+  void QueueFunds(const AdapterFundsReport& report);
   // Returns the saved order, or nullptr if absent. The pointer remains valid
   // until this adapter is destroyed; later submissions do not invalidate it.
   const OrderInfo* FindOrder(const OrderId& id) const;
@@ -77,8 +80,8 @@ class SimulatedTradingAdapter final : public ITradingAdapter {
   SimulatedCancel next_cancel_;
   std::unordered_map<OrderId, SimulatedOrder, OrderIdHash> orders_;
   std::unordered_set<TradeId, TradeIdHash> trades_;
-  std::vector<std::variant<AdapterOrderReport, AdapterCancelReport, TradeInfo>>
-      pending_;
+  std::vector<std::variant<AdapterOrderReport, AdapterCancelReport, TradeInfo,
+                           AdapterFundsReport>> pending_;
   std::size_t head_ = 0;
   bool running_ = false;
 };

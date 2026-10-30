@@ -35,13 +35,15 @@ add_library(yquant_trading
   src/trading/simulated_trading_adapter.cc
   src/trading/trade.cc
   src/trading/trading_trade.cc
+  src/trading/trading_funds.cc
   src/trading/trading_cancel.cc
   src/trading/trading_client_factory.cc
   src/trading/trading_service_registry.cc
   src/trading/trading_service.cc)
 target_link_libraries(yquant_trading PUBLIC yquant_model yquant_container)
 
-add_executable(monod src/monod/main.cc src/monod/trading_demo.cc)
+add_executable(monod
+  src/monod/main.cc src/monod/trading_demo.cc src/monod/funds_demo.cc)
 target_include_directories(monod PRIVATE examples)
 target_link_libraries(monod PRIVATE yquant_strategy yquant_trading)
 
@@ -102,6 +104,22 @@ if(BUILD_TESTING)
     COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_fill_output_test.cmake)
   set_tests_properties(v1_02_trade_details v1_02_trade_details_monod
+    PROPERTIES TIMEOUT 5 LABELS v1_02_order)
+
+  add_executable(currency_test tests/currency_test.cc)
+  target_link_libraries(currency_test PRIVATE yquant_model GTest::gtest_main)
+  add_test(NAME v1_02_currency COMMAND currency_test)
+  set_tests_properties(v1_02_currency
+    PROPERTIES TIMEOUT 5 LABELS v1_02_order)
+
+  add_executable(trading_funds_test tests/trading_funds_test.cc)
+  target_link_libraries(trading_funds_test PRIVATE
+    yquant_trading GTest::gtest_main)
+  add_test(NAME v1_02_funds COMMAND trading_funds_test)
+  add_test(NAME v1_02_funds_monod
+    COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_funds_output_test.cmake)
+  set_tests_properties(v1_02_funds v1_02_funds_monod
     PROPERTIES TIMEOUT 5 LABELS v1_02_order)
 
   add_executable(single_quote_test tests/single_quote_test.cc)

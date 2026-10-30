@@ -6,7 +6,8 @@
 
 namespace yquant::trading {
 
-// Submits orders on the caller's business thread across deployment locations.
+// Provides trading requests and cached queries on the caller's business thread.
+// Callers use the same interface across deployment locations.
 // Keep listeners alive for the target service's runtime. Inputs are borrowed
 // until return; reports are borrowed until their callback returns.
 class TradingClient {
@@ -25,6 +26,13 @@ class TradingClient {
   // Returns false and leaves snapshot unchanged if no matching state is ready.
   virtual bool QueryOrder(const QueryOrderRequest& query,
                           OrderSnapshot& snapshot) const = 0;
+  // Copies the account's latest available complete funds and returns true.
+  // Returns false if the account is unknown or its funds are unavailable.
+  // Leaves snapshot unchanged on false.
+  // During refresh the last available value remains readable. A failed refresh
+  // makes funds unavailable until a newer refresh completes successfully.
+  virtual bool QueryFunds(const QueryFundsRequest& query,
+                          FundsSnapshot& snapshot) const = 0;
 };
 
 }  // namespace yquant::trading

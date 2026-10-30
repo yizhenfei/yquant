@@ -2,7 +2,9 @@
 #define YQUANT_TRADING_TRADING_ADAPTER_H_
 
 #include <cstdint>
+#include <variant>
 
+#include "yquant/trading/funds.h"
 #include "yquant/trading/order.h"
 #include "yquant/trading/trade.h"
 
@@ -36,6 +38,20 @@ struct AdapterCancelReport {
   CancelResult result = CancelResult::kCanceled;
 };
 
+// Marks the start of a new account funds refresh.
+struct FundsRefreshStarted {};
+// Ends a refresh without a complete result, including interruption.
+struct FundsRefreshFailed {};
+
+// Associates a start, complete funds value or failure with one account refresh.
+// Use increasing nonzero IDs throughout the adapter's runtime and reconnects.
+// Deliver a start before its result. Assemble the complete funds value before
+// sending FundsInfo.
+struct AdapterFundsReport {
+  std::uint64_t refresh_id = 0;
+  std::variant<FundsRefreshStarted, FundsInfo, FundsRefreshFailed> event;
+};
+
 // Receives reports on the service's business thread.
 // Copy report data needed after a callback returns.
 class ITradingAdapterCallback {
@@ -44,6 +60,7 @@ class ITradingAdapterCallback {
   virtual void OnOrderReport(const AdapterOrderReport& report) = 0;
   virtual void OnCancelReport(const AdapterCancelReport& report) = 0;
   virtual void OnTradeReport(const TradeInfo& trade) = 0;
+  virtual void OnFundsReport(const AdapterFundsReport& report) = 0;
 };
 
 // Connects one account to its counter. All methods use the business thread.

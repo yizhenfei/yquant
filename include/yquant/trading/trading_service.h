@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "yquant/container/service.h"
+#include "yquant/trading/funds.h"
 #include "yquant/trading/internal/call_context.h"
 #include "yquant/trading/order.h"
 #include "yquant/trading/trade.h"
@@ -40,6 +41,11 @@ struct QueryOrderRequest {
   OrderId order_id;
   std::uint64_t account_id = 0;
   std::uint64_t strategy_id = 0;
+};
+
+// Selects the account whose shared funds state the caller wants to read.
+struct QueryFundsRequest {
+  std::uint64_t account_id = 0;
 };
 
 enum class RequestResult { kDelivered, kIdExhausted };
@@ -115,6 +121,13 @@ class TradingService final : public container::Service {
   bool QueryOrder(const QueryOrderRequest& query,
                   OrderSnapshot& snapshot) const;
 
+  // Copies the latest available complete funds snapshot and returns true.
+  // Returns false if the account is unknown or its funds are unavailable.
+  // Leaves snapshot unchanged on false. During refresh the last available
+  // value remains readable.
+  bool QueryFunds(const QueryFundsRequest& query,
+                  FundsSnapshot& snapshot) const;
+
   // container::Service implementation.
   // Delivers a bounded notification batch, then advances each account once.
   // Returns immediately during a request, a callback or an existing Run.
@@ -131,11 +144,16 @@ class TradingService final : public container::Service {
     void OnOrderReport(const AdapterOrderReport& report) override;
     void OnCancelReport(const AdapterCancelReport& report) override;
     void OnTradeReport(const TradeInfo& trade) override;
+    void OnFundsReport(const AdapterFundsReport& report) override;
 
     TradingService& owner;
     std::uint64_t id;
     ITradingAdapter& adapter;
     std::unordered_map<TradeId, TradeInfo, TradeIdHash> trades;
+    FundsSnapshot funds;
+    std::uint64_t funds_refresh_id = 0;
+    bool funds_refresh_pending = false;
+    bool funds_available = false;
   };
   // Stores state once for both notifications and subsequent queries.
   struct OrderRecord {
@@ -184,6 +202,9 @@ class TradingService final : public container::Service {
                          std::int32_t reported, std::int32_t detailed);
   // Finds an account-owned order or diagnoses an unassociated report.
   OrderRecord* FindReportedOrder(std::uint64_t account_id, OrderId id);
+  // Publishes complete funds for the active refresh or marks funds unavailable.
+  // Retains the last complete value and ignores superseded or closed rounds.
+  void ApplyFunds(AccountContext& account, const AdapterFundsReport& report);
   // Copies the current order record into an independent value for reporting.
   static OrderSnapshot MakeSnapshot(const OrderRecord& order);
   // Validates and applies a counter state and cumulative quantity.

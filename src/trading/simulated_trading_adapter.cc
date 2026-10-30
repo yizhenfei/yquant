@@ -59,7 +59,7 @@ SendResult SimulatedTradingAdapter::CancelOrder(
 }
 
 void SimulatedTradingAdapter::Run() {
-  if (running_) {
+  if (running_ || callback_ == nullptr) {
     return;
   }
   running_ = true;
@@ -72,8 +72,10 @@ void SimulatedTradingAdapter::Run() {
       Emit(*report);
     } else if (const auto* report = std::get_if<AdapterCancelReport>(&event)) {
       DeliverCancel(*report);
+    } else if (const auto* trade = std::get_if<TradeInfo>(&event)) {
+      EmitTrade(*trade);
     } else {
-      EmitTrade(std::get<TradeInfo>(event));
+      callback_->OnFundsReport(std::get<AdapterFundsReport>(event));
     }
   }
   if (head_ == pending_.size()) {
@@ -151,6 +153,10 @@ void SimulatedTradingAdapter::EmitCancel(const AdapterCancelReport& report) {
   if (callback_ != nullptr) {
     callback_->OnCancelReport(report);
   }
+}
+
+void SimulatedTradingAdapter::QueueFunds(const AdapterFundsReport& report) {
+  pending_.emplace_back(report);
 }
 
 const OrderInfo* SimulatedTradingAdapter::FindOrder(

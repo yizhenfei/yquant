@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <limits>
 
+#include "yquant/trading/funds.h"
 #include "yquant/trading/trading_listener.h"
 #include "yquant/trading/trading_service.h"
 
@@ -44,6 +45,11 @@ RequestResult LocalTradingClient::CancelOrder(
 bool LocalTradingClient::QueryOrder(const QueryOrderRequest& query,
                                    OrderSnapshot& snapshot) const {
   return service_.QueryOrder(query, snapshot);
+}
+
+bool LocalTradingClient::QueryFunds(const QueryFundsRequest& query,
+                                   FundsSnapshot& snapshot) const {
+  return service_.QueryFunds(query, snapshot);
 }
 
 }  // namespace yquant::trading

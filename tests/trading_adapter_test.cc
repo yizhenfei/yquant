@@ -20,6 +20,9 @@ namespace {
 class AdapterListener final : public ITradingAdapterCallback {
  public:
   // ITradingAdapterCallback implementation.
+  void OnFundsReport(const AdapterFundsReport&) override {
+    ADD_FAILURE() << "Unexpected funds report";
+  }
   void OnTradeReport(const TradeInfo&) override {
     ADD_FAILURE() << "Unexpected trade report";
   }

@@ -25,6 +25,8 @@ class LocalTradingClient final : public TradingClient {
                             TradingListener& listener) override;
   bool QueryOrder(const QueryOrderRequest& query,
                   OrderSnapshot& snapshot) const override;
+  bool QueryFunds(const QueryFundsRequest& query,
+                  FundsSnapshot& snapshot) const override;
 
  private:
   TradingService& service_;
