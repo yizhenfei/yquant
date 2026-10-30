@@ -7,6 +7,7 @@
 #include "funds_demo.h"
 #include "market/fixed_quote_source.h"
 #include "positions_demo.h"
+#include "reservation_demo.h"
 #include "strategies/quote_strategy.h"
 #include "trading_demo.h"
 #include "yquant/container/container.h"
@@ -49,14 +50,19 @@ int main(int argc, char* argv[]) {
   if (argc == 2 && std::string_view(argv[1]) == "--positions") {
     return yquant::monod::RunPositionsDemo();
   }
+  if (argc == 2 && std::string_view(argv[1]) == "--reserve") {
+    return yquant::monod::RunReservationDemo();
+  }
   if (argc == 2 && std::string_view(argv[1]) == "--help") {
     std::printf("Usage: monod "
-                "[--orders|--cancel|--fills|--funds|--positions]\n");
+                "[--orders|--cancel|--fills|--funds|"
+                "--positions|--reserve]\n");
     return 0;
   }
   if (argc != 1) {
     std::fprintf(stderr, "Usage: monod "
-                         "[--orders|--cancel|--fills|--funds|--positions]\n");
+                         "[--orders|--cancel|--fills|--funds|"
+                         "--positions|--reserve]\n");
     return 2;
   }
   constexpr std::uint64_t kMarketServiceId = 1;

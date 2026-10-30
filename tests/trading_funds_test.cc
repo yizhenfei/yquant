@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "trading_test_support.h"
 #include "yquant/model/currency.h"
 #include "yquant/trading/funds.h"
 #include "yquant/trading/order.h"
@@ -309,6 +310,8 @@ TEST_F(FundsTest, FundsQueriesInOrderCallbacksAndFailuresPreserveOrderState) {
   FundsOrderListener listener(*client, service);
   Begin(first, 1);
   Complete(first, 1, kInitial);
+  service.Run();
+  test::ConfigureZeroCostTerms(service, 7);
   ASSERT_EQ(client->SubmitOrder(
       {{{100, 1}, 7, 2, 42, Side::kBuy, Offset::kOpen, 100, 5}}, listener),
       RequestResult::kDelivered);

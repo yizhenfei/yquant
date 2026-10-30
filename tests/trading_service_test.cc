@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "trading_test_support.h"
 #include "yquant/trading/internal/call_context.h"
 #include "yquant/trading/order.h"
 #include "yquant/trading/simulated_trading_adapter.h"
@@ -61,6 +62,8 @@ class TradingServiceTest : public ::testing::Test {
   void SetUp() override {
     ASSERT_TRUE(service.BindAccount(7, first));
     ASSERT_TRUE(service.BindAccount(8, second));
+    test::PrepareTradingAccount(service, 7, first);
+    test::PrepareTradingAccount(service, 8, second);
   }
   RequestResult Submit(SubmitOrderRequest input, Listener& listener,
                        internal::CallContext call = {10, 1}) {
@@ -340,6 +343,10 @@ TEST(TradingServiceReentryTest, RunDuringSubmissionReturnsImmediately) {
   ReentrantAdapter adapter(service);
   Listener listener;
   ASSERT_TRUE(service.BindAccount(7, adapter));
+  test::ConfigureZeroCostTerms(service, 7);
+  adapter.callback->OnFundsReport({1, FundsRefreshStarted{}});
+  adapter.callback->OnFundsReport(
+      {1, FundsInfo{model::Currency("CNY"), 1000000, 1000000, 0, 0}});
   listener.in_request = true;
   EXPECT_EQ(service.SubmitOrder({{{100, 1}, 7, 2, 42, Side::kBuy,
                                   Offset::kOpen, 100, 1}}, listener, {10, 1}),

@@ -12,6 +12,7 @@
 
 #include "yquant/container/service.h"
 #include "yquant/trading/funds.h"
+#include "yquant/trading/funds_terms.h"
 #include "yquant/trading/internal/call_context.h"
 #include "yquant/trading/order.h"
 #include "yquant/trading/position.h"
@@ -70,6 +71,11 @@ enum class FailureReason {
   kOrderInactive,
   kDuplicateCancel,
   kIdExhausted,
+  kFundsUnavailable,
+  kFundsParametersUnavailable,
+  kCurrencyMismatch,
+  kInsufficientFunds,
+  kInvalidFundsRequirement,
 };
 
 // Reports a processing or transmission error for order_id.
@@ -116,6 +122,13 @@ class TradingService final : public container::Service {
   // Binds during initialization. Duplicate accounts or adapter instances fail
   // without replacing the existing binding. Borrows adapter until shutdown.
   bool BindAccount(std::uint64_t account_id, ITradingAdapter& adapter);
+  // Copies supplied rates during assembly and returns true.
+  // Returns false without changing terms for invalid input, an unknown account,
+  // or calls during Run, requests, callbacks or after any order is established.
+  // Missing rates stay unknown; finish all configuration before trading.
+  bool ConfigureFundsTerms(std::uint64_t account_id,
+                           std::uint32_t instrument_id, Side side,
+                           const FundsTerms& terms);
   // Copies data needed after return and retains listener for reporting.
   // Validation and transmission outcomes arrive after return.
   // Entry point for clients and server adapters.
@@ -179,6 +192,8 @@ class TradingService final : public container::Service {
     ITradingAdapter& adapter;
     std::unordered_map<TradeId, TradeInfo, TradeIdHash> trades;
     FundsSnapshot funds;
+    std::unordered_map<std::uint64_t, FundsTerms> funds_terms;
+    long double reserved_funds = 0;
     std::uint64_t funds_refresh_id = 0;
     bool funds_refresh_pending = false;
     bool funds_available = false;
@@ -199,6 +214,7 @@ class TradingService final : public container::Service {
     std::int32_t detailed_filled_quantity = 0;
     std::uint64_t version = 1;
     std::size_t pending = 0;
+    double reserved_funds = 0;
     std::unordered_set<std::uint64_t> cancel_ids{};
   };
   // Keeps each attempt independent of other cancellations for the same order.
@@ -222,6 +238,11 @@ class TradingService final : public container::Service {
   void ProcessSubmitOrder(const SubmitOrderRequest& request,
                           TradingListener& listener,
                           internal::CallContext call);
+  // Reads account state and terms without mutation; on success writes amount.
+  // On failure returns the request error used by the deferred failure callback.
+  std::optional<FailureReason> CheckFunds(const AccountContext& account,
+                                         const OrderInfo& order,
+                                         double& amount) const;
   // Validates and sends one attempt while CancelOrder defers notifications.
   void ProcessCancelOrder(const CancelOrderRequest& request,
                           TradingListener& listener,

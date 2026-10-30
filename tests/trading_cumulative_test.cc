@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "trading_test_support.h"
 #include "yquant/trading/order.h"
 #include "yquant/trading/simulated_trading_adapter.h"
 #include "yquant/trading/trading_client.h"
@@ -48,6 +49,8 @@ class CumulativeTest : public ::testing::Test {
   void SetUp() override {
     ASSERT_TRUE(service.BindAccount(7, adapter));
     ASSERT_TRUE(service.BindAccount(8, other));
+    test::PrepareTradingAccount(service, 7, adapter);
+    test::PrepareTradingAccount(service, 8, other);
     ASSERT_TRUE(registry.Register(3, service));
     client = TradingClientFactory(registry).Create(3);
     ASSERT_NE(client, nullptr);

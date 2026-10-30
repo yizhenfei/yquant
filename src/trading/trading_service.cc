@@ -76,6 +76,7 @@ bool TradingService::BindAccount(std::uint64_t account_id,
     book->rows.reserve(64);
     book->index.reserve(64);
   }
+  account->funds_terms.reserve(16);
   account_index_.emplace(account_id, account.get());
   accounts_.push_back(std::move(account));
   account_index_.at(account_id)->trades.reserve(256);
@@ -110,15 +111,26 @@ void TradingService::ProcessSubmitOrder(const SubmitOrderRequest& request,
     return;
   }
 
+  double required = 0;
+  if (const auto failure = CheckFunds(*account->second, info, required)) {
+    Fail(info.order_id, listener, call, *failure);
+    return;
+  }
   const auto inserted = orders_.emplace(
       info.order_id, OrderRecord{info, &listener, call});
   auto& order = inserted.first->second;
+  order.reserved_funds = required;
+  const auto previous_reservation = account->second->reserved_funds;
+  account->second->reserved_funds += required;
   const auto result = account->second->adapter.SubmitOrder(request);
 
   order.state =
       result == SendResult::kSent ? OrderState::kSent : OrderState::kSendFailed;
   ++order.version;
   if (result == SendResult::kNotSent) {
+    // No adapter callback can change the ledger during SubmitOrder.
+    account->second->reserved_funds = previous_reservation;
+    order.reserved_funds = 0;
     Fail(info.order_id, listener, call, FailureReason::kSendFailed, &order);
   }
 }

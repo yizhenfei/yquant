@@ -32,6 +32,7 @@ ctest --test-dir build --output-on-failure
 ./build/monod --fills
 ./build/monod --funds
 ./build/monod --positions
+./build/monod --reserve
 ctest --test-dir build -L v1_02_order --output-on-failure
 ```
 
@@ -44,6 +45,8 @@ ctest --test-dir build -L v1_02_order --output-on-failure
 `--funds` 验证两个账户的资金查询，从初始不可用到完整资金可用，再刷新并核对各自的币种和金额；零资金与数据尚未就绪分别表达。
 
 `--positions` 验证两个账户的完整及单项持仓查询，覆盖多个品种、持仓变化、新增、移除和清空，并核对另一账户的持仓保持独立。
+
+`--reserve` 验证共享账户的资金检查与下单预占：余额 100 时两笔各需 70 的订单只发送一笔；确定未发送的请求释放预占，后续订单可以使用释放的资金。
 
 测试构建获取固定版本的 GoogleTest；离线构建可通过 `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/path/to/googletest` 指定已有源码。
 

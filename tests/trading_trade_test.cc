@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "trading_test_support.h"
 #include "yquant/trading/order.h"
 #include "yquant/trading/simulated_trading_adapter.h"
 #include "yquant/trading/trade.h"
@@ -59,12 +60,14 @@ class TradeResults final : public TradingListener {
   std::function<void(const TradeReport&)> action;
 };
 
-// Tests observable state through two account adapters and a factory-made client.
+// Tests observable state through two adapters and factory-created clients.
 class TradeTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ASSERT_TRUE(service.BindAccount(7, first));
     ASSERT_TRUE(service.BindAccount(8, second));
+    test::PrepareTradingAccount(service, 7, first);
+    test::PrepareTradingAccount(service, 8, second);
     ASSERT_TRUE(registry.Register(3, service));
     client = TradingClientFactory(registry).Create(3);
     ASSERT_NE(client, nullptr);

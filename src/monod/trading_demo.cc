@@ -4,9 +4,13 @@
 #include <cinttypes>
 #include <cstddef>
 #include <cstdio>
+#include <initializer_list>
 #include <optional>
 
 #include "yquant/container/container.h"
+#include "yquant/model/currency.h"
+#include "yquant/trading/funds.h"
+#include "yquant/trading/funds_terms.h"
 #include "yquant/trading/order.h"
 #include "yquant/trading/order_id_generator.h"
 #include "yquant/trading/simulated_trading_adapter.h"
@@ -94,6 +98,28 @@ class PrintTradingEvents final : public trading::TradingListener {
   int canceled = 0;
 };
 
+// Establishes the funds and cost parameters required before demo order entry.
+bool PrepareFunds(trading::TradingService& service,
+                  trading::SimulatedTradingAdapter& first,
+                  trading::SimulatedTradingAdapter& second) {
+  trading::FundsTerms terms;
+  terms.currency = model::Currency("CNY");
+  terms.contract_multiplier = 1;
+  terms.margin_rate = 0.1;
+  terms.fees[0] = trading::FeeRate{};
+  if (!service.ConfigureFundsTerms(7, 42, trading::Side::kBuy, terms) ||
+      !service.ConfigureFundsTerms(8, 42, trading::Side::kBuy, terms)) {
+    return false;
+  }
+  for (auto* adapter : {&first, &second}) {
+    adapter->QueueFunds({1, trading::FundsRefreshStarted{}});
+    adapter->QueueFunds({1, trading::FundsInfo{
+        terms.currency, 10000, 10000, 0, 0}});
+    adapter->Run();
+  }
+  return true;
+}
+
 // Drives two accounts through partial and full fills, then queries both orders.
 bool RunFills(trading::TradingClient& client, container::Container& container,
               trading::SimulatedTradingAdapter& first,
@@ -143,6 +169,10 @@ int RunTradingDemo(TradingScenario scenario) {
   auto client = factory.Create(3);
   if (!client) {
     std::fprintf(stderr, "Failed to create trading client\n");
+    return 1;
+  }
+  if (!PrepareFunds(service, first, second)) {
+    std::fprintf(stderr, "Failed to initialize trading funds\n");
     return 1;
   }
   trading::OrderIdGenerator ids(100);

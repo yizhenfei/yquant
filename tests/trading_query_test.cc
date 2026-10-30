@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "trading_test_support.h"
 #include "yquant/trading/order.h"
 #include "yquant/trading/simulated_trading_adapter.h"
 #include "yquant/trading/trading_client.h"
@@ -46,6 +47,7 @@ TEST(OrderQueryTest, ReadsTheOrderBeforeAndAfterItsCounterReport) {
   QueryResults listener;
   TradingService service;
   ASSERT_TRUE(service.BindAccount(7, adapter));
+  test::PrepareTradingAccount(service, 7, adapter);
   auto client = MakeClient(service);
   ASSERT_NE(client, nullptr);
   const SubmitOrderRequest request{
@@ -70,6 +72,7 @@ TEST(OrderQueryTest, FailedQueriesPreserveTheEntireOutputValue) {
   QueryResults listener;
   TradingService service;
   ASSERT_TRUE(service.BindAccount(7, adapter));
+  test::PrepareTradingAccount(service, 7, adapter);
   auto client = MakeClient(service);
   ASSERT_NE(client, nullptr);
   EXPECT_EQ(client->SubmitOrder(

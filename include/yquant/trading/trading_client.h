@@ -30,7 +30,8 @@ class TradingClient {
   // Returns false if the account is unknown or its funds are unavailable.
   // Leaves snapshot unchanged on false.
   // During refresh the last available value remains readable. A failed refresh
-  // makes funds unavailable until a newer refresh completes successfully.
+  // or a new snapshot requiring reservation reconciliation makes funds
+  // unavailable.
   virtual bool QueryFunds(const QueryFundsRequest& query,
                           FundsSnapshot& snapshot) const = 0;
   // Borrows complete account positions on true; the row range may be empty.

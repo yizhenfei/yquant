@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "trading_test_support.h"
 #include "yquant/trading/order.h"
 #include "yquant/trading/order_id_generator.h"
 #include "yquant/trading/simulated_trading_adapter.h"
@@ -61,6 +62,7 @@ TEST(TradingClientTest, ClientAndReportsOutliveFactoryRegistryAndClient) {
   ClientListener listener;
   TradingService service;
   ASSERT_TRUE(service.BindAccount(7, adapter));
+  test::PrepareTradingAccount(service, 7, adapter);
   std::unique_ptr<TradingClient> client;
   {
     TradingServiceRegistry registry;
@@ -95,6 +97,9 @@ TEST(TradingClientTest, SharedGeneratorCoversStrategiesAccountsAndTargets) {
   ASSERT_TRUE(first.BindAccount(7, account_a));
   ASSERT_TRUE(first.BindAccount(8, account_b));
   ASSERT_TRUE(second.BindAccount(7, second_target_account));
+  test::PrepareTradingAccount(first, 7, account_a);
+  test::PrepareTradingAccount(first, 8, account_b);
+  test::PrepareTradingAccount(second, 7, second_target_account);
   TradingServiceRegistry registry;
   ASSERT_TRUE(registry.Register(1, first));
   ASSERT_TRUE(registry.Register(2, second));
@@ -137,6 +142,7 @@ TEST(TradingClientTest, DuplicateInvocationDoesNotReplaceOriginalListener) {
   ClientListener other_duplicate;
   TradingService service;
   ASSERT_TRUE(service.BindAccount(7, adapter));
+  test::PrepareTradingAccount(service, 7, adapter);
   TradingServiceRegistry registry;
   ASSERT_TRUE(registry.Register(1, service));
   TradingClientFactory factory(registry);

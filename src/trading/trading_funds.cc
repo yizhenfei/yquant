@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <variant>
 
 #include "yquant/trading/funds.h"
@@ -35,6 +36,11 @@ bool TradingService::QueryFunds(const QueryFundsRequest& query,
     return false;
   }
   snapshot = found->second->funds;
+  snapshot.reserved = static_cast<double>(found->second->reserved_funds);
+  if (snapshot.reserved < found->second->reserved_funds) {
+    snapshot.reserved = std::nextafter(snapshot.reserved,
+                                       std::numeric_limits<double>::infinity());
+  }
   return true;
 }
 
@@ -69,7 +75,11 @@ void TradingService::ApplyFunds(AccountContext& account,
     return;
   }
   account.funds = {*funds, report.refresh_id};
-  account.funds_available = true;
+  account.funds_available = account.reserved_funds == 0;
+  if (!account.funds_available) {
+    DiagnoseFunds("funds_reconciliation_required", account.id,
+                   report.refresh_id);
+  }
 }
 
 }  // namespace yquant::trading
