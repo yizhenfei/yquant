@@ -17,6 +17,9 @@ enum class AdapterOrderState { kAccepted, kRejected };
 struct AdapterOrderReport {
   OrderId order_id;
   AdapterOrderState state = AdapterOrderState::kAccepted;
+  // Total filled quantity reported by the counter, not this event's increment.
+  // Rejection requires zero; acceptance permits values from zero to order size.
+  std::int32_t filled_quantity = 0;
 };
 
 // Carries an order ID and the service's cancellation attempt ID to the counter.

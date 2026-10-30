@@ -58,6 +58,7 @@ class SimulatedTradingAdapter final : public ITradingAdapter {
   struct SimulatedOrder {
     OrderInfo order;
     OrderState state = OrderState::kSent;
+    std::int32_t filled_quantity = 0;
   };
   ITradingAdapterCallback* callback_ = nullptr;
   SimulatedSubmit next_;

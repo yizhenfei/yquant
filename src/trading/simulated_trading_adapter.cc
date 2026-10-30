@@ -1,8 +1,10 @@
 #include "yquant/trading/simulated_trading_adapter.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <utility>
 
+#include "yquant/trading/internal/order_state.h"
 #include "yquant/trading/order.h"
 #include "yquant/trading/trading_adapter.h"
 #include "yquant/trading/trading_service.h"
@@ -44,8 +46,7 @@ SendResult SimulatedTradingAdapter::CancelOrder(
   if (behavior.report) {
     const auto found = orders_.find(request.order_id);
     const bool active = found != orders_.end() &&
-                        (found->second.state == OrderState::kSent ||
-                         found->second.state == OrderState::kAccepted);
+                        internal::IsActiveOrder(found->second.state);
     pending_cancels_.push_back(
         {request.order_id, request.service_cancel_id,
          active ? *behavior.report : CancelResult::kRejected});
@@ -73,8 +74,7 @@ void SimulatedTradingAdapter::Run() {
       const auto found = orders_.find(report.order_id);
       if (report.result == CancelResult::kCanceled &&
           (found == orders_.end() ||
-           (found->second.state != OrderState::kSent &&
-            found->second.state != OrderState::kAccepted))) {
+           !internal::IsActiveOrder(found->second.state))) {
         report.result = CancelResult::kRejected;
       }
       EmitCancel(report);
@@ -93,11 +93,22 @@ void SimulatedTradingAdapter::Run() {
 
 void SimulatedTradingAdapter::Emit(const AdapterOrderReport& report) {
   const auto found = orders_.find(report.order_id);
-  if (found != orders_.end() && found->second.state == OrderState::kSent &&
-      (report.state == AdapterOrderState::kAccepted ||
-       report.state == AdapterOrderState::kRejected)) {
-    found->second.state = report.state == AdapterOrderState::kAccepted
-                              ? OrderState::kAccepted : OrderState::kRejected;
+  if (found != orders_.end()) {
+    auto& order = found->second;
+    if (report.state == AdapterOrderState::kRejected &&
+        report.filled_quantity == 0 && order.state == OrderState::kSent) {
+      order.state = OrderState::kRejected;
+    } else if (report.state == AdapterOrderState::kAccepted &&
+               report.filled_quantity >= 0 &&
+               report.filled_quantity <= order.order.quantity &&
+               order.state != OrderState::kRejected) {
+      order.filled_quantity = std::max(order.filled_quantity,
+                                       report.filled_quantity);
+      const auto state = order.state == OrderState::kSent
+                             ? OrderState::kAccepted : order.state;
+      order.state = internal::StateAfterFill(
+          state, order.filled_quantity, order.order.quantity);
+    }
   }
   if (callback_ != nullptr) {
     callback_->OnOrderReport(report);
@@ -107,8 +118,7 @@ void SimulatedTradingAdapter::Emit(const AdapterOrderReport& report) {
 void SimulatedTradingAdapter::EmitCancel(const AdapterCancelReport& report) {
   const auto found = orders_.find(report.order_id);
   if (found != orders_.end() && report.result == CancelResult::kCanceled &&
-      (found->second.state == OrderState::kSent ||
-       found->second.state == OrderState::kAccepted)) {
+      internal::IsActiveOrder(found->second.state)) {
     found->second.state = OrderState::kCanceled;
   }
   if (callback_ != nullptr) {

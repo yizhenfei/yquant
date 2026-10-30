@@ -21,6 +21,10 @@ class TradingClient {
   // lifetime follow SubmitOrder; counter results arrive through OnCancelReport.
   virtual RequestResult CancelOrder(const CancelOrderRequest& request,
                                     TradingListener& listener) = 0;
+  // Returns the current snapshot for a matching order, account and strategy.
+  // Returns false and leaves snapshot unchanged if no matching state is ready.
+  virtual bool QueryOrder(const QueryOrderRequest& query,
+                          OrderSnapshot& snapshot) const = 0;
 };
 
 }  // namespace yquant::trading

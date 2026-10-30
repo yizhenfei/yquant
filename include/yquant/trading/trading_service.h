@@ -34,6 +34,13 @@ struct CancelOrderRequest {
   std::uint64_t cancel_request_id = 0;
 };
 
+// Selects an order and the account and strategy that must own it.
+struct QueryOrderRequest {
+  OrderId order_id;
+  std::uint64_t account_id = 0;
+  std::uint64_t strategy_id = 0;
+};
+
 enum class RequestResult { kDelivered, kIdExhausted };
 enum class FailureReason {
   kUnknownAccount,
@@ -94,6 +101,9 @@ class TradingService final : public container::Service {
   RequestResult CancelOrder(const CancelOrderRequest& request,
                             TradingListener& listener,
                             internal::CallContext call);
+  // Copies the current snapshot and returns true for an existing, owned order.
+  // Returns false without changing snapshot if the ID or ownership mismatches.
+  bool QueryOrder(const QueryOrderRequest& query, OrderSnapshot& snapshot) const;
 
   // container::Service implementation.
   // Delivers a bounded notification batch, then advances each account once.
@@ -121,7 +131,7 @@ class TradingService final : public container::Service {
     TradingListener* listener;
     internal::CallContext call;
     OrderState state = OrderState::kSubmitting;
-    std::int32_t filled_quantity = 0;
+    std::int32_t reported_filled_quantity = 0;
     std::uint64_t version = 1;
     std::size_t pending = 0;
     std::unordered_set<std::uint64_t> cancel_ids{};
@@ -155,8 +165,10 @@ class TradingService final : public container::Service {
   void ApplyCancel(std::uint64_t account_id, const AdapterCancelReport& report);
   // Copies the current order record into an independent value for reporting.
   static OrderSnapshot MakeSnapshot(const OrderRecord& order);
-  // Validates the source account and applies one accepted/rejected event.
+  // Validates the source account, state and cumulative quantity before applying.
   void Apply(std::uint64_t account_id, const AdapterOrderReport& report);
+  // Writes the account and complete order identity for an invalid event.
+  static void Diagnose(const char* message, std::uint64_t account_id, OrderId id);
   // Saves a request failure. A record adds its snapshot and associates the
   // notification with that order's pending events. Use null for validation
   // failures.

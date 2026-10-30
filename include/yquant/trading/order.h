@@ -41,7 +41,7 @@ struct OrderInfo {
   bool operator==(const OrderInfo&) const = default;
 };
 
-// Tracks submission and counter acceptance for an established order.
+// Tracks transmission, counter decisions and fills for an established order.
 // Request validation failures do not create a new order.
 //
 // Transitions:
@@ -51,8 +51,10 @@ struct OrderInfo {
 //   on a valid counter report. A report after kSendFailed emits a diagnostic.
 // - Duplicate reports leave state unchanged. Conflicting acceptance/rejection
 //   reports and invalid reports are diagnosed and ignored.
-// - kSent or kAccepted -> kCanceled on a successful cancellation report.
-//   Later acceptance/rejection reports cannot restore a canceled order.
+// - A valid positive cumulative fill produces kPartiallyFilled or kFilled.
+//   Quantities never decrease; a full fill takes precedence over cancellation.
+// - An active order -> kCanceled on a successful cancellation report.
+//   Late partial fills update quantity without restoring an active state.
 enum class OrderState {
   // Initial state: the service saved the request and listener and is awaiting
   // the adapter's send result.
@@ -69,6 +71,10 @@ enum class OrderState {
   kSendFailed,
   // The counter confirmed cancellation; filled_quantity remains unchanged.
   kCanceled,
+  // Some quantity filled; the unfilled remainder is still active.
+  kPartiallyFilled,
+  // The entire original quantity filled. Later reports cannot undo this fact.
+  kFilled,
 };
 
 // Owns the original order information and its state at one particular version.

@@ -12,6 +12,7 @@
 #include <variant>
 
 #include "yquant/trading/internal/call_context.h"
+#include "yquant/trading/internal/order_state.h"
 #include "yquant/trading/order.h"
 #include "yquant/trading/trading_adapter.h"
 #include "yquant/trading/trading_listener.h"
@@ -30,14 +31,27 @@ bool Valid(const OrderInfo& order) {
           order.offset == Offset::kCloseYesterday);
 }
 
-// Writes an event diagnostic with the account and original order identity.
-void Diagnose(const char* message, std::uint64_t account_id, OrderId id) {
+// Checks a counter report before applying it to an established order.
+bool ValidReport(OrderState current, std::int32_t total,
+                 const AdapterOrderReport& report) {
+  if (report.state == AdapterOrderState::kRejected) {
+    return report.filled_quantity == 0 &&
+           (current == OrderState::kSent || current == OrderState::kSendFailed ||
+            current == OrderState::kRejected);
+  }
+  return report.state == AdapterOrderState::kAccepted &&
+         report.filled_quantity >= 0 && report.filled_quantity <= total &&
+         current != OrderState::kRejected;
+}
+
+}  // namespace
+
+void TradingService::Diagnose(const char* message, std::uint64_t account_id,
+                              OrderId id) {
   std::fprintf(stderr, "trading %s account=%" PRIu64 " caller=%" PRIu64
                        " sequence=%" PRIu64 "\n",
                message, account_id, id.caller_service_id, id.sequence);
 }
-
-}  // namespace
 
 TradingService::TradingService() {
   orders_.reserve(256);
@@ -103,8 +117,20 @@ void TradingService::ProcessSubmitOrder(const SubmitOrderRequest& request,
   }
 }
 
+bool TradingService::QueryOrder(const QueryOrderRequest& query,
+                                OrderSnapshot& snapshot) const {
+  const auto found = orders_.find(query.order_id);
+  if (found == orders_.end() ||
+      found->second.order.account_id != query.account_id ||
+      found->second.order.strategy_id != query.strategy_id) {
+    return false;
+  }
+  snapshot = MakeSnapshot(found->second);
+  return true;
+}
+
 OrderSnapshot TradingService::MakeSnapshot(const OrderRecord& order) {
-  return {order.order, order.state, order.filled_quantity, order.version};
+  return {order.order, order.state, order.reported_filled_quantity, order.version};
 }
 
 void TradingService::AccountContext::OnOrderReport(
@@ -115,29 +141,31 @@ void TradingService::AccountContext::OnOrderReport(
 void TradingService::Apply(std::uint64_t account_id,
                             const AdapterOrderReport& report) {
   const auto found = orders_.find(report.order_id);
-  const bool valid_state = report.state == AdapterOrderState::kAccepted ||
-                           report.state == AdapterOrderState::kRejected;
-  if (found == orders_.end() ||
-      found->second.order.account_id != account_id || !valid_state) {
+  if (found == orders_.end() || found->second.order.account_id != account_id) {
     Diagnose("invalid_report", account_id, report.order_id);
     return;
   }
   auto& order = found->second;
-  const auto next = report.state == AdapterOrderState::kAccepted
-                        ? OrderState::kAccepted : OrderState::kRejected;
-  if (order.state == next) {
+  if (!ValidReport(order.state, order.order.quantity, report)) {
+    Diagnose("invalid_report", account_id, report.order_id);
     return;
   }
-  if (order.state == OrderState::kAccepted ||
-      order.state == OrderState::kRejected ||
-      order.state == OrderState::kCanceled) {
-    Diagnose("contradictory_report", account_id, report.order_id);
+  const auto filled = std::max(order.reported_filled_quantity,
+                               report.filled_quantity);
+  auto next = order.state;
+  if (next == OrderState::kSent || next == OrderState::kSendFailed) {
+    next = report.state == AdapterOrderState::kAccepted
+               ? OrderState::kAccepted : OrderState::kRejected;
+  }
+  next = internal::StateAfterFill(next, filled, order.order.quantity);
+  if (order.state == next && order.reported_filled_quantity == filled) {
     return;
   }
   if (order.state == OrderState::kSendFailed) {
     Diagnose("report_after_send_failure", account_id, report.order_id);
   }
   order.state = next;
+  order.reported_filled_quantity = filled;
   ++order.version;
   Notify({order.listener, OrderReport{MakeSnapshot(order)}, &order,
           order.call});

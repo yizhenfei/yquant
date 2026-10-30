@@ -6,6 +6,7 @@
 #include <limits>
 
 #include "yquant/trading/internal/call_context.h"
+#include "yquant/trading/internal/order_state.h"
 #include "yquant/trading/order.h"
 #include "yquant/trading/trading_adapter.h"
 #include "yquant/trading/trading_listener.h"
@@ -51,8 +52,7 @@ void TradingService::ProcessCancelOrder(const CancelOrderRequest& request,
     fail(FailureReason::kOwnershipMismatch);
     return;
   }
-  if (order.state != OrderState::kSent &&
-      order.state != OrderState::kAccepted) {
+  if (!internal::IsActiveOrder(order.state)) {
     fail(FailureReason::kOrderInactive);
     return;
   }
@@ -105,9 +105,9 @@ void TradingService::ApplyCancel(std::uint64_t account_id,
   }
   auto& order = *cancel.order;
   if (report.result == CancelResult::kCanceled &&
-      order.state != OrderState::kSent &&
-      order.state != OrderState::kAccepted &&
-      order.state != OrderState::kCanceled) {
+      !internal::IsActiveOrder(order.state) &&
+      order.state != OrderState::kCanceled &&
+      order.state != OrderState::kFilled) {
     DiagnoseCancel("inactive_order_cancel_report", account_id, report);
     return;
   }
@@ -116,7 +116,7 @@ void TradingService::ApplyCancel(std::uint64_t account_id,
   }
   cancel.result = report.result;
   const bool changed = report.result == CancelResult::kCanceled &&
-                       order.state != OrderState::kCanceled;
+                       internal::IsActiveOrder(order.state);
   if (changed) {
     order.state = OrderState::kCanceled;
     ++order.version;

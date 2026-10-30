@@ -31,6 +31,7 @@ target_link_libraries(yquant_strategy PUBLIC yquant_market)
 add_library(yquant_trading
   src/trading/local_trading_client.cc
   src/trading/order_id_generator.cc
+  src/trading/order_state.cc
   src/trading/simulated_trading_adapter.cc
   src/trading/trading_cancel.cc
   src/trading/trading_client_factory.cc
@@ -81,6 +82,14 @@ if(BUILD_TESTING)
     COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_cancel_output_test.cmake)
   set_tests_properties(v1_02_cancel v1_02_cancel_monod
+    PROPERTIES TIMEOUT 5 LABELS v1_02_order)
+
+  add_executable(trading_query_test
+    tests/trading_query_test.cc tests/trading_cumulative_test.cc)
+  target_link_libraries(trading_query_test PRIVATE
+    yquant_trading GTest::gtest_main)
+  add_test(NAME v1_02_fill_query COMMAND trading_query_test)
+  set_tests_properties(v1_02_fill_query
     PROPERTIES TIMEOUT 5 LABELS v1_02_order)
 
   add_executable(single_quote_test tests/single_quote_test.cc)

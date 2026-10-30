@@ -41,4 +41,9 @@ RequestResult LocalTradingClient::CancelOrder(
                               {instance_id_, ++last_call_id_});
 }
 
+bool LocalTradingClient::QueryOrder(const QueryOrderRequest& query,
+                                   OrderSnapshot& snapshot) const {
+  return service_.QueryOrder(query, snapshot);
+}
+
 }  // namespace yquant::trading

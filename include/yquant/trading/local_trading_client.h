@@ -23,6 +23,8 @@ class LocalTradingClient final : public TradingClient {
                             TradingListener& listener) override;
   RequestResult CancelOrder(const CancelOrderRequest& request,
                             TradingListener& listener) override;
+  bool QueryOrder(const QueryOrderRequest& query,
+                  OrderSnapshot& snapshot) const override;
 
  private:
   TradingService& service_;
