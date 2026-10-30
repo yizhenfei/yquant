@@ -16,6 +16,9 @@ namespace {
 class CumulativeResults final : public TradingListener {
  public:
   // TradingListener implementation.
+  void OnTradeReport(const TradeReport&) override {
+    ADD_FAILURE() << "Unexpected trade report";
+  }
   void OnRequestFailure(const RequestFailure& failure) override {
     failures.push_back(failure);
   }
@@ -68,7 +71,8 @@ class CumulativeTest : public ::testing::Test {
   std::unique_ptr<TradingClient> client;
 };
 
-TEST_F(CumulativeTest, MonotonicCumulativeQuantityProducesPartialAndFullStates) {
+TEST_F(CumulativeTest,
+       MonotonicCumulativeQuantityProducesPartialAndFullStates) {
   const auto accepted = Snapshot();
   adapter.Emit({{100, 1}, AdapterOrderState::kAccepted, 2});
   EXPECT_EQ(Snapshot().state, OrderState::kPartiallyFilled);
@@ -126,7 +130,8 @@ TEST_F(CumulativeTest, FullFillWhileCancelPendingCannotBeRolledBack) {
   EXPECT_EQ(results.failures[0].reason, FailureReason::kOrderInactive);
 }
 
-TEST_F(CumulativeTest, FillBeforeAcceptanceEstablishesStateAndRejectsBadReports) {
+TEST_F(CumulativeTest,
+       FillBeforeAcceptanceEstablishesStateAndRejectsBadReports) {
   adapter.SetNextSubmit({SendResult::kSent, std::nullopt});
   ASSERT_EQ(client->SubmitOrder(
       {{{100, 2}, 7, 2, 42, Side::kBuy, Offset::kOpen, 100, 5}}, results),
@@ -142,7 +147,8 @@ TEST_F(CumulativeTest, FillBeforeAcceptanceEstablishesStateAndRejectsBadReports)
   EXPECT_EQ(snapshot.filled_quantity, 2);
 }
 
-TEST_F(CumulativeTest, RejectionCannotAcquireFillsAndSendFailureRemainsQueryable) {
+TEST_F(CumulativeTest,
+       RejectionCannotAcquireFillsAndSendFailureRemainsQueryable) {
   adapter.SetNextSubmit({SendResult::kSent, AdapterOrderState::kRejected});
   ASSERT_EQ(client->SubmitOrder(
       {{{100, 2}, 7, 2, 42, Side::kBuy, Offset::kOpen, 100, 5}}, results),

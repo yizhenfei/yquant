@@ -12,7 +12,6 @@
 #include <variant>
 
 #include "yquant/trading/internal/call_context.h"
-#include "yquant/trading/internal/order_state.h"
 #include "yquant/trading/order.h"
 #include "yquant/trading/trading_adapter.h"
 #include "yquant/trading/trading_listener.h"
@@ -36,7 +35,8 @@ bool ValidReport(OrderState current, std::int32_t total,
                  const AdapterOrderReport& report) {
   if (report.state == AdapterOrderState::kRejected) {
     return report.filled_quantity == 0 &&
-           (current == OrderState::kSent || current == OrderState::kSendFailed ||
+           (current == OrderState::kSent ||
+            current == OrderState::kSendFailed ||
             current == OrderState::kRejected);
   }
   return report.state == AdapterOrderState::kAccepted &&
@@ -73,6 +73,7 @@ bool TradingService::BindAccount(std::uint64_t account_id,
   auto account = std::make_unique<AccountContext>(*this, account_id, adapter);
   account_index_.emplace(account_id, account.get());
   accounts_.push_back(std::move(account));
+  account_index_.at(account_id)->trades.reserve(256);
   adapter.SetCallback(*accounts_.back());
   return true;
 }
@@ -130,7 +131,9 @@ bool TradingService::QueryOrder(const QueryOrderRequest& query,
 }
 
 OrderSnapshot TradingService::MakeSnapshot(const OrderRecord& order) {
-  return {order.order, order.state, order.reported_filled_quantity, order.version};
+  const auto filled = std::max(order.reported_filled_quantity,
+                               order.detailed_filled_quantity);
+  return {order.order, order.state, filled, order.version};
 }
 
 void TradingService::AccountContext::OnOrderReport(
@@ -140,33 +143,29 @@ void TradingService::AccountContext::OnOrderReport(
 
 void TradingService::Apply(std::uint64_t account_id,
                             const AdapterOrderReport& report) {
-  const auto found = orders_.find(report.order_id);
-  if (found == orders_.end() || found->second.order.account_id != account_id) {
-    Diagnose("invalid_report", account_id, report.order_id);
+  auto* record = FindReportedOrder(account_id, report.order_id);
+  if (record == nullptr) {
     return;
   }
-  auto& order = found->second;
+  auto& order = *record;
   if (!ValidReport(order.state, order.order.quantity, report)) {
     Diagnose("invalid_report", account_id, report.order_id);
     return;
   }
-  const auto filled = std::max(order.reported_filled_quantity,
-                               report.filled_quantity);
   auto next = order.state;
   if (next == OrderState::kSent || next == OrderState::kSendFailed) {
     next = report.state == AdapterOrderState::kAccepted
                ? OrderState::kAccepted : OrderState::kRejected;
   }
-  next = internal::StateAfterFill(next, filled, order.order.quantity);
-  if (order.state == next && order.reported_filled_quantity == filled) {
+  const bool send_failed = order.state == OrderState::kSendFailed;
+  const auto reported = std::max(order.reported_filled_quantity,
+                                report.filled_quantity);
+  if (!UpdateFill(order, next, reported, order.detailed_filled_quantity)) {
     return;
   }
-  if (order.state == OrderState::kSendFailed) {
+  if (send_failed) {
     Diagnose("report_after_send_failure", account_id, report.order_id);
   }
-  order.state = next;
-  order.reported_filled_quantity = filled;
-  ++order.version;
   Notify({order.listener, OrderReport{MakeSnapshot(order)}, &order,
           order.call});
 }
@@ -211,9 +210,12 @@ void TradingService::Dispatch(const Notification& notification) {
   } else if (const auto* report =
                  std::get_if<OrderReport>(&notification.event)) {
     notification.listener->OnOrderReport(*report);
+  } else if (const auto* report =
+                 std::get_if<CancelReport>(&notification.event)) {
+    notification.listener->OnCancelReport(*report);
   } else {
-    notification.listener->OnCancelReport(
-        std::get<CancelReport>(notification.event));
+    notification.listener->OnTradeReport(
+        std::get<TradeReport>(notification.event));
   }
   --callback_depth_;
 }

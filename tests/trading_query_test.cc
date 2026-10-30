@@ -18,6 +18,9 @@ namespace {
 class QueryResults final : public TradingListener {
  public:
   // TradingListener implementation.
+  void OnTradeReport(const TradeReport&) override {
+    ADD_FAILURE() << "Unexpected trade report";
+  }
   void OnRequestFailure(const RequestFailure&) override {
     ADD_FAILURE() << "Unexpected request failure";
   }

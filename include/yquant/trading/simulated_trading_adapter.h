@@ -4,9 +4,12 @@
 #include <cstddef>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
+#include <variant>
 #include <vector>
 
 #include "yquant/trading/order.h"
+#include "yquant/trading/trade.h"
 #include "yquant/trading/trading_adapter.h"
 
 namespace yquant::trading {
@@ -49,6 +52,13 @@ class SimulatedTradingAdapter final : public ITradingAdapter {
   void Emit(const AdapterOrderReport& report);
   // Injects a cancellation event after the request call has returned.
   void EmitCancel(const AdapterCancelReport& report);
+  // Saves one new native fill for an active order and queues its report.
+  // Returns false for invalid, duplicate or excessive fills without changes.
+  // Copies retained data; invokes no callback until a subsequent Run.
+  bool Fill(const TradeInfo& trade);
+  // Injects an event directly, including malformed and late reports, without
+  // updating the simulated book. Call only after a request method returns.
+  void EmitTrade(const TradeInfo& trade);
   // Returns the saved order, or nullptr if absent. The pointer remains valid
   // until this adapter is destroyed; later submissions do not invalidate it.
   const OrderInfo* FindOrder(const OrderId& id) const;
@@ -60,14 +70,16 @@ class SimulatedTradingAdapter final : public ITradingAdapter {
     OrderState state = OrderState::kSent;
     std::int32_t filled_quantity = 0;
   };
+  // Validates native activity when a queued cancellation reaches the counter.
+  void DeliverCancel(AdapterCancelReport report);
   ITradingAdapterCallback* callback_ = nullptr;
   SimulatedSubmit next_;
   SimulatedCancel next_cancel_;
   std::unordered_map<OrderId, SimulatedOrder, OrderIdHash> orders_;
-  std::vector<AdapterOrderReport> pending_;
-  std::vector<AdapterCancelReport> pending_cancels_;
+  std::unordered_set<TradeId, TradeIdHash> trades_;
+  std::vector<std::variant<AdapterOrderReport, AdapterCancelReport, TradeInfo>>
+      pending_;
   std::size_t head_ = 0;
-  std::size_t cancel_head_ = 0;
   bool running_ = false;
 };
 

@@ -10,6 +10,8 @@
 #include "yquant/trading/order.h"
 #include "yquant/trading/order_id_generator.h"
 #include "yquant/trading/simulated_trading_adapter.h"
+#include "yquant/trading/trade.h"
+#include "yquant/trading/trading_client.h"
 #include "yquant/trading/trading_client_factory.h"
 #include "yquant/trading/trading_listener.h"
 #include "yquant/trading/trading_service.h"
@@ -33,6 +35,10 @@ const char* StateName(trading::OrderState state) {
   switch (state) {
     case trading::OrderState::kAccepted:
       return "accepted";
+    case trading::OrderState::kPartiallyFilled:
+      return "partially_filled";
+    case trading::OrderState::kFilled:
+      return "filled";
     case trading::OrderState::kCanceled:
       return "canceled";
     case trading::OrderState::kRejected:
@@ -70,16 +76,59 @@ class PrintTradingEvents final : public trading::TradingListener {
     ++cancels;
     canceled += report.result == trading::CancelResult::kCanceled;
   }
+  void OnTradeReport(const trading::TradeReport& report) override {
+    const auto& trade = report.trade;
+    std::printf("trade sequence=%" PRIu64 " id=%s/%s/%s price=%g quantity=%d"
+                " state=%s filled=%d\n", trade.order_id.sequence,
+                trade.trade_id.venue.c_str(), trade.trade_id.session.c_str(),
+                trade.trade_id.value.c_str(), trade.price, trade.quantity,
+                StateName(report.snapshot.state),
+                report.snapshot.filled_quantity);
+    ++trades;
+  }
 
+  int trades = 0;
   int reports = 0;
   int failures = 0;
   int cancels = 0;
   int canceled = 0;
 };
 
+// Drives two accounts through partial and full fills, then queries both orders.
+bool RunFills(trading::TradingClient& client, container::Container& container,
+              trading::SimulatedTradingAdapter& first,
+              trading::SimulatedTradingAdapter& second,
+              trading::TradingService& service, PrintTradingEvents& output) {
+  if (!first.Fill({{100, 1}, {"sim", "day-1", "1"}, 100.25, 1}) ||
+      !second.Fill({{100, 4}, {"sim", "day-1", "1"}, 100.5, 3}) ||
+      !container.Register(service) ||
+      !container.Run([&output] { return output.trades == 2; }) ||
+      !first.Fill({{100, 1}, {"sim", "day-1", "2"}, 100.5, 2}) ||
+      !container.Register(service) ||
+      !container.Run([&output] { return output.trades == 3; })) {
+    return false;
+  }
+  for (const auto& query : {trading::QueryOrderRequest{{100, 1}, 7, 2},
+                           trading::QueryOrderRequest{{100, 4}, 8, 2}}) {
+    trading::OrderSnapshot snapshot;
+    if (!client.QueryOrder(query, snapshot) ||
+        snapshot.state != trading::OrderState::kFilled ||
+        snapshot.filled_quantity != 3) {
+      return false;
+    }
+    std::printf("query sequence=%" PRIu64 " account=%" PRIu64
+                " state=%s filled=%d\n", query.order_id.sequence,
+                query.account_id, StateName(snapshot.state),
+                snapshot.filled_quantity);
+  }
+  std::printf("fill_summary trades=%d\n", output.trades);
+  return true;
+}
+
 }  // namespace
 
-int RunTradingDemo(bool cancel_orders) {
+int RunTradingDemo(TradingScenario scenario) {
+  const bool cancel_orders = scenario == TradingScenario::kCancel;
   trading::SimulatedTradingAdapter first;
   trading::SimulatedTradingAdapter second;
   PrintTradingEvents output;
@@ -138,6 +187,11 @@ int RunTradingDemo(bool cancel_orders) {
     }
     std::printf("cancel_summary reports=%d canceled=%d\n",
                 output.cancels, output.canceled);
+  }
+  if (scenario == TradingScenario::kFill &&
+      !RunFills(*client, container, first, second, service, output)) {
+    std::fprintf(stderr, "Failed to run fill and query scenario\n");
+    return 1;
   }
   std::printf("trading_summary reports=%d failures=%d\n",
               output.reports, output.failures);

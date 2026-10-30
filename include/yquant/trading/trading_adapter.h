@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "yquant/trading/order.h"
+#include "yquant/trading/trade.h"
 
 namespace yquant::trading {
 
@@ -36,12 +37,13 @@ struct AdapterCancelReport {
 };
 
 // Receives reports on the service's business thread.
-// Copy report data needed after OnOrderReport or OnCancelReport returns.
+// Copy report data needed after a callback returns.
 class ITradingAdapterCallback {
  public:
   virtual ~ITradingAdapterCallback() = default;
   virtual void OnOrderReport(const AdapterOrderReport& report) = 0;
   virtual void OnCancelReport(const AdapterCancelReport& report) = 0;
+  virtual void OnTradeReport(const TradeInfo& trade) = 0;
 };
 
 // Connects one account to its counter. All methods use the business thread.

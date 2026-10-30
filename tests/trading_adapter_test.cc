@@ -20,6 +20,9 @@ namespace {
 class AdapterListener final : public ITradingAdapterCallback {
  public:
   // ITradingAdapterCallback implementation.
+  void OnTradeReport(const TradeInfo&) override {
+    ADD_FAILURE() << "Unexpected trade report";
+  }
   void OnOrderReport(const AdapterOrderReport& report) override {
     EXPECT_EQ(std::this_thread::get_id(), thread);
     reports.push_back(report);

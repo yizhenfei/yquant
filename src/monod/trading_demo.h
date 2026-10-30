@@ -3,8 +3,10 @@
 
 namespace yquant::monod {
 
-// Runs submission and optional cancellation scenarios; returns 0 on success.
-int RunTradingDemo(bool cancel_orders = false);
+enum class TradingScenario { kSubmit, kCancel, kFill };
+
+// Runs a controlled trading scenario; returns 0 when its results are correct.
+int RunTradingDemo(TradingScenario scenario = TradingScenario::kSubmit);
 
 }  // namespace yquant::monod
 

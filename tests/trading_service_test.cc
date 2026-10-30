@@ -22,6 +22,9 @@ namespace {
 class Listener final : public TradingListener {
  public:
   // TradingListener implementation.
+  void OnTradeReport(const TradeReport&) override {
+    ADD_FAILURE() << "Unexpected trade report";
+  }
   void OnRequestFailure(const RequestFailure& failure) override {
     EXPECT_FALSE(in_request);
     EXPECT_EQ(thread, std::this_thread::get_id());

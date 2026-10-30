@@ -33,6 +33,8 @@ add_library(yquant_trading
   src/trading/order_id_generator.cc
   src/trading/order_state.cc
   src/trading/simulated_trading_adapter.cc
+  src/trading/trade.cc
+  src/trading/trading_trade.cc
   src/trading/trading_cancel.cc
   src/trading/trading_client_factory.cc
   src/trading/trading_service_registry.cc
@@ -90,6 +92,16 @@ if(BUILD_TESTING)
     yquant_trading GTest::gtest_main)
   add_test(NAME v1_02_fill_query COMMAND trading_query_test)
   set_tests_properties(v1_02_fill_query
+    PROPERTIES TIMEOUT 5 LABELS v1_02_order)
+
+  add_executable(trading_trade_test tests/trading_trade_test.cc)
+  target_link_libraries(trading_trade_test PRIVATE
+    yquant_trading GTest::gtest_main)
+  add_test(NAME v1_02_trade_details COMMAND trading_trade_test)
+  add_test(NAME v1_02_trade_details_monod
+    COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_fill_output_test.cmake)
+  set_tests_properties(v1_02_trade_details v1_02_trade_details_monod
     PROPERTIES TIMEOUT 5 LABELS v1_02_order)
 
   add_executable(single_quote_test tests/single_quote_test.cc)

@@ -35,14 +35,18 @@ int main(int argc, char* argv[]) {
     return yquant::monod::RunTradingDemo();
   }
   if (argc == 2 && std::string_view(argv[1]) == "--cancel") {
-    return yquant::monod::RunTradingDemo(true);
+    return yquant::monod::RunTradingDemo(
+        yquant::monod::TradingScenario::kCancel);
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--fills") {
+    return yquant::monod::RunTradingDemo(yquant::monod::TradingScenario::kFill);
   }
   if (argc == 2 && std::string_view(argv[1]) == "--help") {
-    std::printf("Usage: monod [--orders|--cancel]\n");
+    std::printf("Usage: monod [--orders|--cancel|--fills]\n");
     return 0;
   }
   if (argc != 1) {
-    std::fprintf(stderr, "Usage: monod [--orders|--cancel]\n");
+    std::fprintf(stderr, "Usage: monod [--orders|--cancel|--fills]\n");
     return 2;
   }
   constexpr std::uint64_t kMarketServiceId = 1;
