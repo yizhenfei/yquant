@@ -23,6 +23,43 @@ void SimulatedTradingAdapter::SetCallback(ITradingAdapterCallback& callback) {
   callback_ = &callback;
 }
 
+void SimulatedTradingAdapter::SetInitialState(
+    const FundsInfo& funds, std::span<const PositionInfo> positions) {
+  initial_funds_ = funds;
+  initial_positions_.assign(positions.begin(), positions.end());
+}
+
+bool SimulatedTradingAdapter::StartAccountSync(std::uint64_t sync_id) {
+  if (callback_ == nullptr || sync_id == 0) {
+    return false;
+  }
+  ++sync_requests_;
+  if (!initial_funds_) {
+    return true;
+  }
+  bool unresolved = initial_funds_->frozen_margin != 0;
+  for (const auto& [id, order] : orders_) {
+    unresolved |= internal::IsActiveOrder(order.state);
+  }
+  QueueFunds({sync_id, FundsRefreshStarted{}});
+  QueueFunds({sync_id, *initial_funds_});
+  QueuePositions({sync_id, PositionsRefreshStarted{}});
+  for (const auto& position : initial_positions_) {
+    unresolved |= position.today_frozen != 0 || position.yesterday_frozen != 0;
+    QueuePositions({sync_id, position});
+  }
+  QueuePositions(
+      {sync_id, PositionsRefreshCompleted{initial_positions_.size()}});
+  QueueAccountSync({sync_id, unresolved ? AccountSyncResult::kUnresolvedOrders
+                                       : AccountSyncResult::kComplete});
+  return true;
+}
+
+void SimulatedTradingAdapter::QueueAccountSync(
+    const AdapterAccountSyncReport& report) {
+  pending_.emplace_back(report);
+}
+
 SendResult SimulatedTradingAdapter::SubmitOrder(
     const SubmitOrderRequest& request) {
   const auto& order = request.order;
@@ -76,8 +113,11 @@ void SimulatedTradingAdapter::Run() {
       EmitTrade(*trade);
     } else if (const auto* report = std::get_if<AdapterFundsReport>(&event)) {
       callback_->OnFundsReport(*report);
+    } else if (const auto* report =
+                   std::get_if<AdapterPositionsReport>(&event)) {
+      callback_->OnPositionsReport(*report);
     } else {
-      callback_->OnPositionsReport(std::get<AdapterPositionsReport>(event));
+      callback_->OnAccountSyncReport(std::get<AdapterAccountSyncReport>(event));
     }
   }
   if (head_ == pending_.size()) {

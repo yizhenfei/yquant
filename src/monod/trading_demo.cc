@@ -112,11 +112,9 @@ bool PrepareFunds(trading::TradingService& service,
     return false;
   }
   for (auto* adapter : {&first, &second}) {
-    adapter->QueueFunds({1, trading::FundsRefreshStarted{}});
-    adapter->QueueFunds({1, trading::FundsInfo{
-        terms.currency, 10000, 10000, 0, 0}});
-    adapter->Run();
+    adapter->SetInitialState({terms.currency, 10000, 10000, 0, 0}, {});
   }
+  service.Run();
   return true;
 }
 

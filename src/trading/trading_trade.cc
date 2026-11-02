@@ -10,7 +10,9 @@
 namespace yquant::trading {
 
 void TradingService::AccountContext::OnTradeReport(const TradeInfo& trade) {
-  owner.ApplyTrade(*this, trade);
+  if (sync_state == SyncState::kReady) {
+    owner.ApplyTrade(*this, trade);
+  }
 }
 
 void TradingService::ApplyTrade(AccountContext& account,

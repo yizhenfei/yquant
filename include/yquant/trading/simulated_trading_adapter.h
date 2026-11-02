@@ -2,13 +2,17 @@
 #define YQUANT_TRADING_SIMULATED_TRADING_ADAPTER_H_
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
+#include <span>
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
 #include <vector>
 
+#include "yquant/trading/funds.h"
 #include "yquant/trading/order.h"
+#include "yquant/trading/position.h"
 #include "yquant/trading/trade.h"
 #include "yquant/trading/trading_adapter.h"
 
@@ -38,10 +42,20 @@ class SimulatedTradingAdapter final : public ITradingAdapter {
 
   // ITradingAdapter implementation.
   void SetCallback(ITradingAdapterCallback& callback) override;
+  bool StartAccountSync(std::uint64_t sync_id) override;
   SendResult SubmitOrder(const SubmitOrderRequest& request) override;
   SendResult CancelOrder(const AdapterCancelOrderRequest& request) override;
   void Run() override;
 
+  // Copies a complete, already reconciled simulated startup baseline. It must
+  // include all historical events queued before StartAccountSync. With no
+  // configured baseline, tests explicitly queue the requested response events.
+  // Active native orders or nonzero freezes prevent successful completion.
+  void SetInitialState(const FundsInfo& funds,
+                       std::span<const PositionInfo> positions);
+  // Queues an initialization outcome; supports failed and malformed responses.
+  void QueueAccountSync(const AdapterAccountSyncReport& report);
+  std::size_t sync_requests() const { return sync_requests_; }
   // Applies behavior to the next submission only, then restores the default.
   void SetNextSubmit(const SimulatedSubmit& behavior) { next_ = behavior; }
   // Applies behavior to the next cancellation only, then restores the default.
@@ -78,13 +92,17 @@ class SimulatedTradingAdapter final : public ITradingAdapter {
   };
   // Validates native activity when a queued cancellation reaches the counter.
   void DeliverCancel(AdapterCancelReport report);
+  std::optional<FundsInfo> initial_funds_;
+  std::vector<PositionInfo> initial_positions_;
+  std::size_t sync_requests_ = 0;
   ITradingAdapterCallback* callback_ = nullptr;
   SimulatedSubmit next_;
   SimulatedCancel next_cancel_;
   std::unordered_map<OrderId, SimulatedOrder, OrderIdHash> orders_;
   std::unordered_set<TradeId, TradeIdHash> trades_;
   std::vector<std::variant<AdapterOrderReport, AdapterCancelReport, TradeInfo,
-                           AdapterFundsReport, AdapterPositionsReport>>
+                           AdapterFundsReport, AdapterPositionsReport,
+                           AdapterAccountSyncReport>>
       pending_;
   std::size_t head_ = 0;
   bool running_ = false;

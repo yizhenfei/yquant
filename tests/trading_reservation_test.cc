@@ -53,6 +53,9 @@ class ReservationAdapter final : public ITradingAdapter {
   void SetCallback(ITradingAdapterCallback& callback) override {
     counter.SetCallback(callback);
   }
+  bool StartAccountSync(std::uint64_t id) override {
+    return counter.StartAccountSync(id);
+  }
   SendResult SubmitOrder(const SubmitOrderRequest& request) override {
     ++submits;
     if (inspect) {
@@ -97,7 +100,10 @@ class ReservationTest : public ::testing::Test {
                model::Currency currency = model::Currency("CNY")) {
     adapter.counter.QueueFunds({id, FundsRefreshStarted{}});
     adapter.counter.QueueFunds({id, FundsInfo{currency, amount, amount, 0, 0}});
-    adapter.counter.Run();
+    adapter.counter.QueuePositions({id, PositionsRefreshStarted{}});
+    adapter.counter.QueuePositions({id, PositionsRefreshCompleted{0}});
+    adapter.counter.QueueAccountSync({id, AccountSyncResult::kComplete});
+    service.Run();
   }
   SubmitOrderRequest Request(std::uint64_t sequence = 1) {
     return {{{100, sequence}, 7, 2, 42, Side::kBuy, Offset::kOpen, 100, 1}};
@@ -164,7 +170,7 @@ TEST_F(ReservationTest, ExactFundsSufficeAndZeroFundsRejectPositiveCost) {
 TEST_F(ReservationTest, MissingFundsNeverSendsOrCreatesAnOrder) {
   ASSERT_TRUE(service.ConfigureFundsTerms(7, 42, Side::kBuy, terms));
   Submit(Request());
-  ExpectFailure(FailureReason::kFundsUnavailable);
+  ExpectFailure(FailureReason::kAccountNotReady);
   OrderSnapshot snapshot;
   EXPECT_FALSE(client->QueryOrder({{100, 1}, 7, 2}, snapshot));
   Publish(first, 1, 100);
@@ -293,14 +299,16 @@ TEST_F(ReservationTest,
 }
 
 TEST_F(ReservationTest,
-       NewCounterSnapshotCannotSilentlyEraseUnreconciledCosts) {
+       LateSnapshotCannotReplaceLocalReservationState) {
   Ready();
   Submit(Request());
   Publish(first, 2, 30);
   FundsSnapshot output;
-  EXPECT_FALSE(client->QueryFunds({7}, output));
+  ASSERT_TRUE(client->QueryFunds({7}, output));
+  EXPECT_DOUBLE_EQ(output.funds.available, 100);
+  EXPECT_DOUBLE_EQ(output.reserved, 70);
   Submit(Request(2));
-  ExpectFailure(FailureReason::kFundsUnavailable, 1);
+  ExpectFailure(FailureReason::kInsufficientFunds, 1);
 }
 
 TEST_F(ReservationTest,
@@ -349,11 +357,18 @@ TEST_F(ReservationTest, RejectsInvalidTermsAndUnrepresentableCalculations) {
   EXPECT_DOUBLE_EQ(Funds().reserved, 0);
 }
 
-TEST_F(ReservationTest, ZeroAndNegativeCashCannotFundPositiveRequirements) {
+TEST_F(ReservationTest, ZeroCashCannotFundPositiveRequirements) {
   Ready(0);
   Submit(Request());
   ExpectFailure(FailureReason::kInsufficientFunds);
-  Publish(first, 2, -10);
+  EXPECT_FALSE(service.RetryAccountSync(7));
+  Submit(Request());
+  ExpectFailure(FailureReason::kInsufficientFunds);
+  EXPECT_DOUBLE_EQ(Funds().reserved, 0);
+}
+
+TEST_F(ReservationTest, NegativeCashCannotFundPositiveRequirements) {
+  Ready(-10);
   Submit(Request());
   ExpectFailure(FailureReason::kInsufficientFunds);
   EXPECT_DOUBLE_EQ(Funds().reserved, 0);

@@ -37,7 +37,11 @@ inline void PrepareTradingAccount(TradingService& service, std::uint64_t id,
   adapter.QueueFunds({1, FundsRefreshStarted{}});
   adapter.QueueFunds(
       {1, FundsInfo{model::Currency("CNY"), 1000000, 1000000, 0, 0}});
-  adapter.Run();
+  adapter.QueuePositions({1, PositionsRefreshStarted{}});
+  adapter.QueuePositions({1, PositionsRefreshCompleted{0}});
+  adapter.QueueAccountSync({1, AccountSyncResult::kComplete});
+  service.Run();
+  EXPECT_TRUE(service.IsAccountReady(id));
 }
 
 }  // namespace yquant::trading::test

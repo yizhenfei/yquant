@@ -32,7 +32,8 @@ void DiagnoseFunds(const char* reason, std::uint64_t account_id,
 bool TradingService::QueryFunds(const QueryFundsRequest& query,
                                 FundsSnapshot& snapshot) const {
   const auto found = account_index_.find(query.account_id);
-  if (found == account_index_.end() || !found->second->funds_available) {
+  if (found == account_index_.end() ||
+      found->second->sync_state != SyncState::kReady) {
     return false;
   }
   snapshot = found->second->funds;
@@ -55,6 +56,10 @@ void TradingService::ApplyFunds(AccountContext& account,
     DiagnoseFunds("invalid_funds_refresh", account.id, report.refresh_id);
     return;
   }
+  if (account.sync_state != SyncState::kPending ||
+      report.refresh_id != account.sync_id) {
+    return;
+  }
   if (std::holds_alternative<FundsRefreshStarted>(report.event)) {
     if (report.refresh_id > account.funds_refresh_id) {
       account.funds_refresh_id = report.refresh_id;
@@ -69,17 +74,12 @@ void TradingService::ApplyFunds(AccountContext& account,
   account.funds_refresh_pending = false;
   const auto* funds = std::get_if<FundsInfo>(&report.event);
   if (funds == nullptr || !ValidFunds(*funds)) {
-    account.funds_available = false;
-    DiagnoseFunds(funds == nullptr ? "funds_refresh_failed" : "invalid_funds",
-                   account.id, report.refresh_id);
+    FailAccountSync(account, funds == nullptr ? "funds_refresh_failed"
+                                             : "invalid_funds");
     return;
   }
   account.funds = {*funds, report.refresh_id};
-  account.funds_available = account.reserved_funds == 0;
-  if (!account.funds_available) {
-    DiagnoseFunds("funds_reconciliation_required", account.id,
-                   report.refresh_id);
-  }
+  account.funds_available = true;
 }
 
 }  // namespace yquant::trading

@@ -73,6 +73,21 @@ struct AdapterPositionsReport {
                PositionsRefreshFailed> event;
 };
 
+// Describes the outcome of an initialization attempt. Unresolved orders keep
+// the account unavailable until a later attempt can establish a safe baseline.
+enum class AccountSyncResult { kComplete, kFailed, kUnresolvedOrders };
+
+// Ends one requested initialization attempt. kComplete certifies that the
+// funds and positions delivered with sync_id share a consistent boundary:
+// all preceding historical reports are included, and no pre-start order can
+// still change the account. Deliver subsequent live events after this report.
+// An adapter unable to prove this boundary must report failure or unresolved
+// orders, never infer completion from the arrival order of query responses.
+struct AdapterAccountSyncReport {
+  std::uint64_t sync_id = 0;
+  AccountSyncResult result = AccountSyncResult::kFailed;
+};
+
 // Receives reports on the service's business thread.
 // Copy report data needed after a callback returns.
 class ITradingAdapterCallback {
@@ -81,6 +96,7 @@ class ITradingAdapterCallback {
   virtual void OnOrderReport(const AdapterOrderReport& report) = 0;
   virtual void OnCancelReport(const AdapterCancelReport& report) = 0;
   virtual void OnTradeReport(const TradeInfo& trade) = 0;
+  virtual void OnAccountSyncReport(const AdapterAccountSyncReport& report) = 0;
   virtual void OnFundsReport(const AdapterFundsReport& report) = 0;
   virtual void OnPositionsReport(const AdapterPositionsReport& report) = 0;
 };
@@ -92,6 +108,12 @@ class ITradingAdapter {
   virtual ~ITradingAdapter() = default;
   // Borrows callback for all subsequent deliveries; register before submitting.
   virtual void SetCallback(ITradingAdapterCallback& callback) = 0;
+  // Requests a complete startup baseline using sync_id for both snapshot
+  // streams and their final AccountSync report. Returns true when accepted,
+  // false when no request was sent. Must not invoke callbacks during this call;
+  // deliver all results through Run. Failed attempts may be retried with a new
+  // ID; a successful account is not synchronized again during this runtime.
+  virtual bool StartAccountSync(std::uint64_t sync_id) = 0;
   // Copies parameters needed after return. Must not invoke any registered
   // Callback during this call. Buffer reports produced by the counter and
   // deliver them after SubmitOrder returns, through Run on the business thread.

@@ -82,7 +82,9 @@ void TradingService::ProcessCancelOrder(const CancelOrderRequest& request,
 
 void TradingService::AccountContext::OnCancelReport(
     const AdapterCancelReport& report) {
-  owner.ApplyCancel(id, report);
+  if (sync_state == SyncState::kReady) {
+    owner.ApplyCancel(id, report);
+  }
 }
 
 void TradingService::ApplyCancel(std::uint64_t account_id,

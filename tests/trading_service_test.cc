@@ -313,6 +313,7 @@ class ReentrantAdapter final : public ITradingAdapter {
   void SetCallback(ITradingAdapterCallback& value) override {
     callback = &value;
   }
+  bool StartAccountSync(std::uint64_t) override { return true; }
   SendResult SubmitOrder(const SubmitOrderRequest& request) override {
     service.Run();
     pending_order = request.order.order_id;
@@ -344,9 +345,14 @@ TEST(TradingServiceReentryTest, RunDuringSubmissionReturnsImmediately) {
   Listener listener;
   ASSERT_TRUE(service.BindAccount(7, adapter));
   test::ConfigureZeroCostTerms(service, 7);
+  service.Run();
+  adapter.runs = 0;
   adapter.callback->OnFundsReport({1, FundsRefreshStarted{}});
   adapter.callback->OnFundsReport(
       {1, FundsInfo{model::Currency("CNY"), 1000000, 1000000, 0, 0}});
+  adapter.callback->OnPositionsReport({1, PositionsRefreshStarted{}});
+  adapter.callback->OnPositionsReport({1, PositionsRefreshCompleted{0}});
+  adapter.callback->OnAccountSyncReport({1, AccountSyncResult::kComplete});
   listener.in_request = true;
   EXPECT_EQ(service.SubmitOrder({{{100, 1}, 7, 2, 42, Side::kBuy,
                                   Offset::kOpen, 100, 1}}, listener, {10, 1}),

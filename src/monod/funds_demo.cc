@@ -69,30 +69,20 @@ int RunFundsDemo() {
     }
     std::printf("funds account=%" PRIu64 " ready=false\n", account_id);
   }
-  const std::array<trading::FundsInfo, 2> first_values{{
-      {model::Currency("CNY"), 1000, 700, 200, 100},
-      {model::Currency("CNY"), 900, 650, 150, 100},
-  }};
-  const std::array<trading::FundsInfo, 2> second_values{{
-      {model::Currency("USD"), 0, 0, 0, 0},
-      {model::Currency("USD"), 2000, 1500, 400, 100},
-  }};
+  const trading::FundsInfo first_value{
+      model::Currency("CNY"), 1000, 800, 200, 0};
+  const trading::FundsInfo second_value{model::Currency("USD"), 0, 0, 0, 0};
+  first.SetInitialState(first_value, {});
+  second.SetInitialState(second_value, {});
   container::Container container;
-  for (std::size_t index = 0; index < first_values.size(); ++index) {
-    const std::uint64_t id = index + 1;
-    first.QueueFunds({id, trading::FundsRefreshStarted{}});
-    second.QueueFunds({id, trading::FundsRefreshStarted{}});
-    first.QueueFunds({id, first_values[index]});
-    second.QueueFunds({id, second_values[index]});
-    if (!container.Register(service) ||
-        !container.Run([&] { return HasRefresh(*client, id); }) ||
-        !PrintFunds(*client, 7, {first_values[index], id}) ||
-        !PrintFunds(*client, 8, {second_values[index], id})) {
-      std::fprintf(stderr, "Failed to verify complete account funds\n");
-      return 1;
-    }
+  if (!container.Register(service) ||
+      !container.Run([&] { return HasRefresh(*client, 1); }) ||
+      !PrintFunds(*client, 7, {first_value, 1}) ||
+      !PrintFunds(*client, 8, {second_value, 1})) {
+    std::fprintf(stderr, "Failed to verify initial account funds\n");
+    return 1;
   }
-  std::printf("funds_summary accounts=2 refreshes=2\n");
+  std::printf("funds_summary accounts=2 initial_syncs=1\n");
   return 0;
 }
 

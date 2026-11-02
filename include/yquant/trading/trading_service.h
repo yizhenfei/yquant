@@ -63,6 +63,7 @@ struct QueryPositionRequest {
 enum class RequestResult { kDelivered, kIdExhausted };
 enum class FailureReason {
   kUnknownAccount,
+  kAccountNotReady,
   kDuplicateOrder,
   kInvalidRequest,
   kSendFailed,
@@ -122,6 +123,13 @@ class TradingService final : public container::Service {
   // Binds during initialization. Duplicate accounts or adapter instances fail
   // without replacing the existing binding. Borrows adapter until shutdown.
   bool BindAccount(std::uint64_t account_id, ITradingAdapter& adapter);
+  // Returns true only after both snapshots and the adapter's boundary
+  // confirmation have completed. Unknown accounts return false.
+  bool IsAccountReady(std::uint64_t account_id) const;
+  // Schedules another attempt after a failed initialization. Returns false
+  // for unknown, pending or ready accounts, or from requests/Run/callbacks.
+  // The next Run sends the request; this call does not invoke the adapter.
+  bool RetryAccountSync(std::uint64_t account_id);
   // Copies supplied rates during assembly and returns true.
   // Returns false without changing terms for invalid input, an unknown account,
   // or calls during Run, requests, callbacks or after any order is established.
@@ -147,8 +155,8 @@ class TradingService final : public container::Service {
 
   // Copies the latest available complete funds snapshot and returns true.
   // Returns false if the account is unknown or its funds are unavailable.
-  // Leaves snapshot unchanged on false. During refresh the last available
-  // value remains readable.
+  // Leaves snapshot unchanged on false. Values become available only after
+  // account initialization completes; late startup results cannot replace them.
   bool QueryFunds(const QueryFundsRequest& query,
                   FundsSnapshot& snapshot) const;
 
@@ -165,6 +173,7 @@ class TradingService final : public container::Service {
 
   // container::Service implementation.
   // Delivers a bounded notification batch, then advances each account once.
+  // Starts account initialization on its first Run and after an explicit retry.
   // Returns immediately during a request, a callback or an existing Run.
   void Run() override;
 
@@ -174,6 +183,7 @@ class TradingService final : public container::Service {
     std::vector<PositionInfo> rows;
     std::unordered_map<PositionKey, std::size_t, PositionKeyHash> index;
   };
+  enum class SyncState { kNotStarted, kPending, kReady, kFailed };
   // Carries the bound account into every callback without a downcast or lookup.
   struct AccountContext final : ITradingAdapterCallback {
     AccountContext(TradingService& owner, std::uint64_t id,
@@ -184,6 +194,7 @@ class TradingService final : public container::Service {
     void OnOrderReport(const AdapterOrderReport& report) override;
     void OnCancelReport(const AdapterCancelReport& report) override;
     void OnTradeReport(const TradeInfo& trade) override;
+    void OnAccountSyncReport(const AdapterAccountSyncReport& report) override;
     void OnFundsReport(const AdapterFundsReport& report) override;
     void OnPositionsReport(const AdapterPositionsReport& report) override;
 
@@ -191,6 +202,8 @@ class TradingService final : public container::Service {
     std::uint64_t id;
     ITradingAdapter& adapter;
     std::unordered_map<TradeId, TradeInfo, TradeIdHash> trades;
+    SyncState sync_state = SyncState::kNotStarted;
+    std::uint64_t sync_id = 0;
     FundsSnapshot funds;
     std::unordered_map<std::uint64_t, FundsTerms> funds_terms;
     long double reserved_funds = 0;
@@ -257,6 +270,10 @@ class TradingService final : public container::Service {
                          std::int32_t reported, std::int32_t detailed);
   // Finds an account-owned order or diagnoses an unassociated report.
   OrderRecord* FindReportedOrder(std::uint64_t account_id, OrderId id);
+  // Starts a queued initialization attempt and resets its partial results.
+  void StartAccountSync(AccountContext& account);
+  // Closes an attempt and keeps new orders blocked; logs the failure reason.
+  void FailAccountSync(AccountContext& account, const char* reason);
   // Publishes complete funds for the active refresh or marks funds unavailable.
   // Retains the last complete value and ignores superseded or closed rounds.
   void ApplyFunds(AccountContext& account, const AdapterFundsReport& report);

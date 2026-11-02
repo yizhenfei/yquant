@@ -35,7 +35,8 @@ bool ValidPosition(const PositionInfo& value) {
 bool TradingService::QueryPositions(const QueryPositionsRequest& query,
                                     PositionsSnapshot& snapshot) const {
   const auto found = account_index_.find(query.account_id);
-  if (found == account_index_.end() || !found->second->positions_available) {
+  if (found == account_index_.end() ||
+      found->second->sync_state != SyncState::kReady) {
     return false;
   }
   const auto& account = *found->second;
@@ -46,7 +47,8 @@ bool TradingService::QueryPositions(const QueryPositionsRequest& query,
 bool TradingService::QueryPosition(const QueryPositionRequest& query,
                                    PositionInfo& position) const {
   const auto found = account_index_.find(query.account_id);
-  if (found == account_index_.end() || !found->second->positions_available ||
+  if (found == account_index_.end() ||
+      found->second->sync_state != SyncState::kReady ||
       !ValidKey(query.key)) {
     return false;
   }
@@ -66,8 +68,7 @@ void TradingService::FailPositions(AccountContext& account,
                                    const char* reason) {
   account.positions_refresh_pending = false;
   account.positions_available = false;
-  std::fprintf(stderr, "trading %s account=%" PRIu64 " refresh=%" PRIu64 "\n",
-               reason, account.id, account.positions_refresh_id);
+  account.owner.FailAccountSync(account, reason);
 }
 
 void TradingService::StagePosition(AccountContext& account,
@@ -105,6 +106,10 @@ void TradingService::ApplyPositions(AccountContext& account,
   if (report.refresh_id == 0) {
     std::fprintf(stderr, "trading invalid_positions_refresh account=%" PRIu64
                          " refresh=0\n", account.id);
+    return;
+  }
+  if (account.sync_state != SyncState::kPending ||
+      report.refresh_id != account.sync_id) {
     return;
   }
   if (std::holds_alternative<PositionsRefreshStarted>(report.event)) {

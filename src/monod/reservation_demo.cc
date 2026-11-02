@@ -87,8 +87,7 @@ int RunReservationDemo() {
     std::fprintf(stderr, "Failed to create reservation clients\n");
     return 1;
   }
-  adapter.QueueFunds({1, trading::FundsRefreshStarted{}});
-  adapter.QueueFunds({1, trading::FundsInfo{terms.currency, 100, 100, 0, 0}});
+  adapter.SetInitialState({terms.currency, 100, 100, 0, 0}, {});
   service.Run();
   trading::SubmitOrderRequest request{{{100, 1}, 7, 2, 42,
       trading::Side::kBuy, trading::Offset::kOpen, 100, 1}};

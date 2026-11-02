@@ -23,6 +23,7 @@ class AdapterListener final : public ITradingAdapterCallback {
   void OnPositionsReport(const AdapterPositionsReport&) override {
     ADD_FAILURE() << "Unexpected positions report";
   }
+  void OnAccountSyncReport(const AdapterAccountSyncReport&) override {}
   void OnFundsReport(const AdapterFundsReport&) override {
     ADD_FAILURE() << "Unexpected funds report";
   }

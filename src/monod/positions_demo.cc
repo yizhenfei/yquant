@@ -9,6 +9,8 @@
 #include <span>
 
 #include "yquant/container/container.h"
+#include "yquant/model/currency.h"
+#include "yquant/trading/funds.h"
 #include "yquant/trading/position.h"
 #include "yquant/trading/simulated_trading_adapter.h"
 #include "yquant/trading/trading_adapter.h"
@@ -99,46 +101,29 @@ int RunPositionsDemo() {
   const trading::PositionKey key{
       42, trading::PositionSide::kLong, trading::HedgeFlag::kSpeculation};
   const std::array<trading::PositionInfo, 2> initial{{
-      {key, 3, 7, 1, 2},
+      {key, 3, 7, 0, 0},
       {{81, trading::PositionSide::kShort, trading::HedgeFlag::kArbitrage},
-       2, 0, 1, 0},
+       2, 0, 0, 0},
   }};
-  const std::array<trading::PositionInfo, 2> updated{{
-      {key, 5, 2, 2, 1},
-      {{42, trading::PositionSide::kLong, trading::HedgeFlag::kHedge},
-       1, 1, 0, 0},
-  }};
-  const std::array<trading::PositionInfo, 1> other{{{key, 20, 30, 4, 5}}};
-  const std::array<std::span<const trading::PositionInfo>, 3> phases{
-      initial, updated, std::span<const trading::PositionInfo>{}};
-  second.QueuePositions({1, trading::PositionsRefreshStarted{}});
-  second.QueuePositions({1, other[0]});
-  second.QueuePositions({1, trading::PositionsRefreshCompleted{1}});
+  const trading::FundsInfo funds{model::Currency("CNY"), 1000, 800, 200, 0};
+  first.SetInitialState(funds, initial);
+  second.SetInitialState(funds, {});
   container::Container container;
-  for (std::size_t phase = 0; phase < phases.size(); ++phase) {
-    const std::uint64_t id = phase + 1;
-    first.QueuePositions({id, trading::PositionsRefreshStarted{}});
-    for (const auto& row : phases[phase]) {
-      first.QueuePositions({id, row});
-    }
-    first.QueuePositions({id,
-        trading::PositionsRefreshCompleted{phases[phase].size()}});
-    if (!container.Register(service) ||
-        !container.Run([&] { return HasRefresh(*client, id); }) ||
-        !PrintPositions(*client, 7, id, phases[phase]) ||
-        !PrintPositions(*client, 8, 1, other)) {
-      std::fprintf(stderr, "Failed to verify complete account positions\n");
-      return 1;
-    }
+  if (!container.Register(service) ||
+      !container.Run([&] { return HasRefresh(*client, 1); }) ||
+      !PrintPositions(*client, 7, 1, initial) ||
+      !PrintPositions(*client, 8, 1, {})) {
+    std::fprintf(stderr, "Failed to verify initial positions\n");
+    return 1;
   }
   trading::PositionInfo zero;
-  if (!client->QueryPosition({7, key}, zero) ||
+  if (!client->QueryPosition({8, key}, zero) ||
       zero != trading::PositionInfo{key}) {
     std::fprintf(stderr, "Failed to verify empty account positions\n");
     return 1;
   }
-  std::printf("zero_position account=7 instrument=42 today=0 yesterday=0\n"
-              "positions_summary accounts=2 refreshes=3\n");
+  std::printf("zero_position account=8 instrument=42 today=0 yesterday=0\n"
+              "positions_summary accounts=2 initial_syncs=1\n");
   return 0;
 }
 

@@ -111,6 +111,10 @@ void TradingService::ProcessSubmitOrder(const SubmitOrderRequest& request,
     return;
   }
 
+  if (account->second->sync_state != SyncState::kReady) {
+    Fail(info.order_id, listener, call, FailureReason::kAccountNotReady);
+    return;
+  }
   double required = 0;
   if (const auto failure = CheckFunds(*account->second, info, required)) {
     Fail(info.order_id, listener, call, *failure);
@@ -155,7 +159,9 @@ OrderSnapshot TradingService::MakeSnapshot(const OrderRecord& order) {
 
 void TradingService::AccountContext::OnOrderReport(
     const AdapterOrderReport& report) {
-  owner.Apply(id, report);
+  if (sync_state == SyncState::kReady) {
+    owner.Apply(id, report);
+  }
 }
 
 void TradingService::Apply(std::uint64_t account_id,
@@ -257,6 +263,9 @@ void TradingService::Run() {
     head_ = 0;
   }
   for (const auto& account : accounts_) {
+    if (account->sync_state == SyncState::kNotStarted) {
+      StartAccountSync(*account);
+    }
     account->adapter.Run();
   }
   running_ = false;

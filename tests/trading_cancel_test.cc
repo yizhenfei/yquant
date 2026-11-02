@@ -71,6 +71,9 @@ class RecordedAdapter final : public ITradingAdapter {
   void SetCallback(ITradingAdapterCallback& callback) override {
     counter.SetCallback(callback);
   }
+  bool StartAccountSync(std::uint64_t id) override {
+    return counter.StartAccountSync(id);
+  }
   SendResult SubmitOrder(const SubmitOrderRequest& request) override {
     return counter.SubmitOrder(request);
   }
@@ -436,6 +439,7 @@ class CounterResults final : public ITradingAdapterCallback {
   void OnPositionsReport(const AdapterPositionsReport&) override {
     ADD_FAILURE() << "Unexpected positions report";
   }
+  void OnAccountSyncReport(const AdapterAccountSyncReport&) override {}
   void OnFundsReport(const AdapterFundsReport&) override {
     ADD_FAILURE() << "Unexpected funds report";
   }
