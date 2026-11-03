@@ -19,7 +19,7 @@ std::string_view Env(const char* key) {
 }
 }  // namespace
 
-int RunTraderLogin(int argc, const char* const* argv,
+int RunTraderLogin(int argc, const char* const* argv, bool collect_snapshot,
                    decltype(&trading::SimNowTradingAdapter::Connect) connect) {
   int seconds = 30;
   if (argc == 2) {
@@ -29,7 +29,7 @@ int RunTraderLogin(int argc, const char* const* argv,
     if (ec != std::errc{} || ptr != end) seconds = 0;
   }
   if (argc < 1 || argc > 2 || seconds <= 0 || seconds > 3600) {
-    std::fputs("Usage: monod --simnow-trader-login FRONT [SECONDS]\n", stderr);
+    std::fputs("Usage: monod --simnow-trader-login|--simnow-startup-snapshot FRONT [SECONDS]\n", stderr);
     return 2;
   }
   trading::SimNowTraderConfig config{
@@ -53,10 +53,34 @@ int RunTraderLogin(int argc, const char* const* argv,
     return 1;
   }
   auto previous = trading::LoginPhase::kConnecting;
+  bool started = false;
   for (;;) {
     adapter->Run();
     const auto& s = adapter->login_status();
-    if (s.phase == trading::LoginPhase::kLoggedIn) {
+    if (collect_snapshot && s.phase == trading::LoginPhase::kLoggedIn &&
+        !started) {
+      started = adapter->StartSnapshot();
+      if (!started) {
+        std::fputs("Could not start account snapshot query\n", stderr);
+        return 1;
+      }
+    }
+    if (started) {
+      const auto query = adapter->snapshot_status();
+      if (query.phase == trading::SnapshotPhase::kFailed) {
+        std::fprintf(stderr, "startup_snapshot_failed reason=%s code=%d\n",
+                     query.reason, query.code);
+        return 1;
+      }
+      if (const auto* snapshot = adapter->snapshot()) {
+        std::printf("startup_snapshot trading_day=%s currencies=%zu "
+                    "position_rows=%zu account_ready=false\n",
+                    snapshot->trading_day.c_str(), snapshot->balances.size(),
+                    snapshot->positions.size());
+        std::fflush(stdout);
+        return 0;
+      }
+    } else if (s.phase == trading::LoginPhase::kLoggedIn) {
       const bool ready = service.IsAccountReady(1);
       std::printf("trader_logged_in trading_day=%s account_ready=%s\n",
                   s.trading_day.c_str(), ready ? "true" : "false");

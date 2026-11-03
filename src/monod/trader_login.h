@@ -5,9 +5,10 @@
 
 namespace yquant::monod {
 
-// Runs a login-only probe for FRONT and optional timeout seconds. Returns 0
-// after login, 1 on session failure, or 2 for invalid command-line input.
-int RunTraderLogin(int argc, const char* const* argv,
+// Runs a read-only probe for FRONT and optional timeout seconds. With
+// collect_snapshot, success requires complete funds and positions responses.
+// Returns 0 on success, 1 on session/query failure, or 2 for invalid arguments.
+int RunTraderLogin(int argc, const char* const* argv, bool collect_snapshot,
     decltype(&trading::SimNowTradingAdapter::Connect) connect =
         trading::SimNowTradingAdapter::Connect);
 

@@ -26,7 +26,7 @@ ctest --test-dir build --output-on-failure
 
 运行 `ctest --test-dir build -L v1_04_simnow_market --output-on-failure` 验证可控行情接入。使用有效 SimNow 行情前置和账户时，按[真实连接验收说明](docs/design/simnow-market.md#验收)运行 `scripts/verify_simnow_market`，逐条比较接收的买卖价与策略输出。
 
-个人 SimNow 交易账户的登录入口是 `monod --simnow-trader-login FRONT [SECONDS]`。参数与验收方式见[交易前置登录](docs/design/trading.md#交易前置登录)。
+个人 SimNow 交易账户的登录入口是 `monod --simnow-trader-login FRONT [SECONDS]`。查询启动资金和持仓使用 `monod --simnow-startup-snapshot FRONT [SECONDS]`。两者复用同一组登录参数，见[交易前置登录](docs/design/trading.md#交易前置登录)。
 
 运行交易报单验证场景：
 
@@ -58,7 +58,7 @@ ctest --test-dir build -L v1_02_order --output-on-failure
 
 `--reserve` 验证共享账户的资金检查与下单预占：余额 100 时两笔各需 70 的订单只发送一笔；确定未发送的请求释放预占，后续订单可以使用释放的资金。
 
-`--startup` 验证初始化失败、显式重试、资金与持仓共同就绪，以及迟到快照不覆盖本地数据。当前启动前活动订单或未关联冻结仍会阻止就绪；[N5.2](docs/plans/v1.md#n52启动同步与交易就绪) 优先修正这一限制，从柜台重建挂单及冻结关联。
+`--startup` 验证初始化失败、显式重试、资金与持仓共同就绪，以及迟到快照不覆盖本地数据。当前启动前活动订单或未关联冻结仍会阻止就绪；[N5.2 至 N5.6](docs/plans/v1.md#n52启动资金与持仓快照) 优先修正这一限制，从柜台重建挂单及冻结关联。
 
 `--funds-lifecycle` 验证部分成交记账、撤单释放剩余预占及平仓盈利，输出保证金、手续费、已实现盈亏和可用资金。初始非空持仓须提供今昨仓成本及保证金；本地按不含浮动盈亏的账面资金口径记账。
 

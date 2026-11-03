@@ -5,7 +5,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${trader_header}
 file(STRINGS "${trader_header}" declarations REGEX "^[ \t]*virtual .*=[ \t]*0[ \t]*;")
 set(stubs "")
 foreach(decl IN LISTS declarations)
-  if(decl MATCHES "(RegisterSpi|RegisterFront|SubscribePrivateTopic|SubscribePublicTopic|Release|Init|ReqAuthenticate|ReqUserLogin)\\(")
+  if(decl MATCHES "(RegisterSpi|RegisterFront|SubscribePrivateTopic|SubscribePublicTopic|Release|Init|ReqAuthenticate|ReqUserLogin|ReqQryTradingAccount|ReqQryInvestorPosition)\\(")
     continue()
   endif()
   string(REGEX REPLACE "^[ \t]*virtual (.*)[ \t]*=[ \t]*0[ \t]*;.*$" "\\1" signature "${decl}")

@@ -3,10 +3,14 @@
 #include <ThostFtdcTraderApi.h>
 
 #include <algorithm>
-#include <array>
+#include <cmath>
+#include <deque>
 #include <functional>
 #include <limits>
 #include <mutex>
+#include <tuple>
+#include <utility>
+#include <variant>
 
 #include "simnow_trader_session.h"
 
@@ -28,7 +32,13 @@ std::string_view Field(const char (&value)[N]) {
                      std::find(value, value + N, '\0') - value)};
 }
 
-enum class Kind { kConnect, kDisconnect, kAuth, kLogin, kError };
+enum class Kind {
+  kConnect, kDisconnect, kAuth, kLogin, kError, kFunds, kPositions
+};
+
+bool IsControlEvent(Kind kind) {
+  return kind != Kind::kFunds && kind != Kind::kPositions;
+}
 
 // Copies just the callback data needed by Run, never SDK pointers or passwords.
 struct Event {
@@ -39,9 +49,22 @@ struct Event {
   TThostFtdcDateType day{};
   TThostFtdcOrderRefType ref{};
   std::uint64_t generation = 0;
+  std::variant<std::monostate, SimNowBalance, SimNowPosition> row{};
 };
 
-// Serializes SDK control events onto the business thread. Each Run handles
+// CTP uses the largest double as an unset value.
+bool Amount(double value) {
+  return std::isfinite(value) && value != std::numeric_limits<double>::max();
+}
+
+bool Nonnegative(double value) { return Amount(value) && value >= 0; }
+
+auto PositionIdentity(const SimNowPosition& row) {
+  return std::tie(row.exchange, row.symbol, row.invest_unit, row.direction,
+                  row.hedge, row.date);
+}
+
+// Serializes login events and startup query responses onto the business thread. Each Run handles
 // one event so observers can see a disconnect before a reconnect is processed.
 class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
  public:
@@ -84,6 +107,23 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
   // SimNowTradingAdapter implementation.
   const TraderLoginStatus& login_status() const override { return status_; }
 
+  bool StartSnapshot() override {
+    if (status_.phase != LoginPhase::kLoggedIn ||
+        (query_.phase != SnapshotPhase::kIdle &&
+         query_.phase != SnapshotPhase::kFailed)) return false;
+    snapshot_ = {};
+    snapshot_.trading_day = status_.trading_day;
+    query_ = {SnapshotPhase::kFunds};
+    query_sent_ = false;
+    next_query_ = Clock::now();
+    query_deadline_ = next_query_ + timeout_;
+    return true;
+  }
+  SnapshotStatus snapshot_status() const override { return query_; }
+  const SimNowStartupSnapshot* snapshot() const override {
+    return query_.phase == SnapshotPhase::kComplete ? &snapshot_ : nullptr;
+  }
+
   // ITradingAdapter implementation. Login cannot certify an account snapshot
   // or transmit orders.
   void SetCallback(ITradingAdapterCallback&) override {}
@@ -102,6 +142,9 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
            phase == LoginPhase::kLoggingIn ? "login_timeout" : "connection_timeout", 0);
       return;
     }
+    if (Collecting() && Clock::now() >= query_deadline_) {
+      FailSnapshot("snapshot_timeout", 0);
+    }
     Event event{};
     {
       std::unique_lock lock(mutex_, std::try_to_lock);
@@ -110,15 +153,24 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
         Fail("callback_overflow", 0);
         return;
       }
-      if (!size_) return;
-      event = queue_[head_];
-      head_ = (head_ + 1) % queue_.size();
-      --size_;
+      if (queue_.empty()) {
+        lock.unlock();
+        if (Collecting() && !query_sent_ && Clock::now() >= next_query_) {
+          SendQuery();
+        }
+        return;
+      }
+      event = std::move(queue_.front());
+      queue_.pop_front();
+      if (IsControlEvent(event.kind)) --control_events_;
       if (event.kind != Kind::kDisconnect &&
           event.generation != generation_) return;
     }
     if (event.kind == Kind::kDisconnect) {
       status_ = {};
+      if (query_.phase != SnapshotPhase::kIdle) {
+        FailSnapshot("snapshot_disconnected", event.code);
+      }
       status_.phase = LoginPhase::kDisconnected;
       status_.code = event.code;
       deadline_ = Clock::now() + timeout_;
@@ -130,6 +182,8 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
       status_.phase = LoginPhase::kAuthenticating;
       const int rc = api_->ReqAuthenticate(&auth_, id_);
       if (rc) Fail("auth_request", rc);
+    } else if (Collecting()) {
+      SnapshotResponse(std::move(event));
     } else {
       Response(event);
     }
@@ -166,16 +220,139 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
     Push({Kind::kError, id, e ? e->ErrorID : -1, false, last});
   }
 
+  void OnRspQryTradingAccount(CThostFtdcTradingAccountField* r,
+                              CThostFtdcRspInfoField* error, int id,
+                              bool last) override {
+    Event e{Kind::kFunds, id, error ? error->ErrorID : 0, true, last};
+    if (r) {
+      SimNowBalance row{model::Currency(Field(r->CurrencyID)), r->Balance,
+          r->Available, r->PositionProfit, r->CurrMargin, r->FrozenMargin,
+          r->FrozenCash, r->FrozenCommission};
+      e.valid = Field(r->BrokerID) == broker_ && Field(r->AccountID) == user_ &&
+          row.currency.valid() && Amount(row.balance) && Amount(row.available) &&
+          Amount(row.position_profit) && Nonnegative(row.margin) &&
+          Nonnegative(row.frozen_margin) && Nonnegative(row.frozen_cash) &&
+          Nonnegative(row.frozen_commission);
+      std::copy_n(r->TradingDay, sizeof(e.day), e.day);
+      e.row = row;
+    }
+    Push(std::move(e));
+  }
+  void OnRspQryInvestorPosition(CThostFtdcInvestorPositionField* r,
+                                CThostFtdcRspInfoField* error, int id,
+                                bool last) override {
+    Event e{Kind::kPositions, id, error ? error->ErrorID : 0, true, last};
+    if (r) {
+      SimNowPosition row{std::string(Field(r->ExchangeID)),
+          std::string(Field(r->InstrumentID)), std::string(Field(r->InvestUnitID)),
+          r->PosiDirection, r->HedgeFlag, r->PositionDate, r->Position,
+          r->TodayPosition, r->YdPosition, r->LongFrozen, r->ShortFrozen,
+          r->PositionCost, r->OpenCost, r->UseMargin, r->PreSettlementPrice};
+      e.valid = Field(r->BrokerID) == broker_ && Field(r->InvestorID) == user_ &&
+          !row.exchange.empty() && !row.symbol.empty() &&
+          (row.direction == THOST_FTDC_PD_Long ||
+           row.direction == THOST_FTDC_PD_Short ||
+           row.direction == THOST_FTDC_PD_Net) &&
+          (row.date == THOST_FTDC_PSD_Today || row.date == THOST_FTDC_PSD_History) &&
+          row.hedge != 0 && row.today >= 0 && row.today <= row.quantity &&
+          row.previous_day_quantity >= 0 && row.long_frozen >= 0 &&
+          row.short_frozen >= 0 && Amount(row.position_cost) &&
+          Amount(row.open_cost) && Nonnegative(row.margin) &&
+          Amount(row.previous_settlement);
+      std::copy_n(r->TradingDay, sizeof(e.day), e.day);
+      e.row = std::move(row);
+    }
+    Push(std::move(e));
+  }
+
+  bool Collecting() const {
+    return query_.phase == SnapshotPhase::kFunds ||
+           query_.phase == SnapshotPhase::kPositions;
+  }
+  void FailSnapshot(const char* reason, int code) {
+    query_ = {SnapshotPhase::kFailed, reason, code};
+    snapshot_ = {};
+  }
+  void SendQuery() {
+    if (!NextRequest()) return;
+    const bool funds = query_.phase == SnapshotPhase::kFunds;
+    int rc;
+    if (funds) {
+      CThostFtdcQryTradingAccountField r{};
+      Copy(r.BrokerID, broker_);
+      Copy(r.InvestorID, user_);
+      rc = api_->ReqQryTradingAccount(&r, id_);
+    } else {
+      CThostFtdcQryInvestorPositionField r{};
+      Copy(r.BrokerID, broker_);
+      Copy(r.InvestorID, user_);
+      rc = api_->ReqQryInvestorPosition(&r, id_);
+    }
+    if (rc == -2 || rc == -3) {
+      next_query_ = Clock::now() + std::chrono::seconds(1);
+    } else if (rc != 0) {
+      FailSnapshot(funds ? "funds_request" : "positions_request", rc);
+    } else {
+      query_sent_ = true;
+    }
+  }
+  void SnapshotResponse(Event e) {
+    const bool funds = query_.phase == SnapshotPhase::kFunds;
+    if (!query_sent_ || e.id != id_ ||
+        (e.kind != (funds ? Kind::kFunds : Kind::kPositions) &&
+         e.kind != Kind::kError)) return;
+    const bool empty = std::holds_alternative<std::monostate>(e.row);
+    if (e.kind == Kind::kError || e.code || !e.valid ||
+        (!empty && Field(e.day) != snapshot_.trading_day) ||
+        (empty && !e.last)) {
+      FailSnapshot(funds ? "funds_response" : "positions_response", e.code);
+      return;
+    }
+    if (auto* row = std::get_if<SimNowBalance>(&e.row)) {
+      for (const auto& previous : snapshot_.balances) {
+        if (previous.currency == row->currency) {
+          FailSnapshot("duplicate_currency", 0);
+          return;
+        }
+      }
+      snapshot_.balances.push_back(*row);
+    } else if (auto* row = std::get_if<SimNowPosition>(&e.row)) {
+      snapshot_.positions.push_back(std::move(*row));
+    }
+    if (!e.last) return;
+    if (funds) {
+      if (snapshot_.balances.empty()) {
+        FailSnapshot("missing_funds", 0);
+        return;
+      }
+      query_.phase = SnapshotPhase::kPositions;
+      query_sent_ = false;
+      return;
+    }
+    auto& rows = snapshot_.positions;
+    std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) {
+      return PositionIdentity(a) < PositionIdentity(b);
+    });
+    if (std::adjacent_find(rows.begin(), rows.end(), [](const auto& a, const auto& b) {
+          return PositionIdentity(a) == PositionIdentity(b);
+        }) != rows.end()) {
+      FailSnapshot("duplicate_position", 0);
+      return;
+    }
+    query_.phase = SnapshotPhase::kComplete;
+  }
+
   // A disconnect invalidates earlier events still waiting in the queue.
-  void Push(const Event& e) {
+  void Push(Event e) {
     std::lock_guard lock(mutex_);
-    if (size_ == queue_.size()) {
+    if (overflow_) return;
+    if (IsControlEvent(e.kind) && control_events_ >= 32) {
       overflow_ = true;
     } else {
       if (e.kind == Kind::kDisconnect) ++generation_;
-      auto& event = queue_[(head_ + size_++) % queue_.size()];
-      event = e;
-      event.generation = generation_;
+      if (IsControlEvent(e.kind)) ++control_events_;
+      e.generation = generation_;
+      queue_.push_back(std::move(e));
     }
   }
   bool NextRequest() {
@@ -189,6 +366,7 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
   void Fail(const char* reason, int code) {
     status_ = {};
     status_.phase = LoginPhase::kFailed;
+    if (query_.phase != SnapshotPhase::kIdle) FailSnapshot(reason, code);
     status_.reason = reason;
     status_.code = code;
   }
@@ -240,8 +418,12 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
   CThostFtdcReqUserLoginField login_{};
   int id_ = 0;
   std::mutex mutex_;
-  std::array<Event, 32> queue_{};
-  std::size_t head_ = 0, size_ = 0;
+  std::deque<Event> queue_;
+  std::size_t control_events_ = 0;
+  SnapshotStatus query_;
+  SimNowStartupSnapshot snapshot_;
+  bool query_sent_ = false;
+  Clock::time_point next_query_, query_deadline_;
   std::uint64_t generation_ = 0;
   bool overflow_ = false;
 };

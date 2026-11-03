@@ -61,7 +61,41 @@ class Probe final : public CThostFtdcTraderApi {
     if (automatic) LoginReply(id);
     return login_rc;
   }
+  int ReqQryTradingAccount(CThostFtdcQryTradingAccountField* r, int id) override {
+    EXPECT_STREQ(r->BrokerID, "test");
+    EXPECT_STREQ(r->InvestorID, "test");
+    funds_ids.push_back(id);
+    if (automatic) {
+      auto row = Balance();
+      spi->OnRspQryTradingAccount(&row, nullptr, id, true);
+    }
+    return funds_rc;
+  }
+  int ReqQryInvestorPosition(CThostFtdcQryInvestorPositionField* r, int id) override {
+    EXPECT_STREQ(r->InvestorID, "test");
+    EXPECT_STREQ(r->BrokerID, "test");
+    EXPECT_STREQ(r->InstrumentID, "");
+    position_ids.push_back(id);
+    if (automatic) spi->OnRspQryInvestorPosition(nullptr, nullptr, id, true);
+    return 0;
+  }
 #include <unused_trader_calls.inc>
+
+  static CThostFtdcTradingAccountField Balance() {
+    CThostFtdcTradingAccountField r{};
+    std::snprintf(r.AccountID, sizeof(r.AccountID), "test");
+    std::snprintf(r.BrokerID, sizeof(r.BrokerID), "test");
+    std::snprintf(r.CurrencyID, sizeof(r.CurrencyID), "CNY");
+    std::snprintf(r.TradingDay, sizeof(r.TradingDay), "20261103");
+    r.Balance = 105;
+    r.Available = 59;
+    r.FrozenMargin = 20;
+    r.FrozenCommission = 1;
+    r.CurrMargin = 25;
+    return r;
+  }
+  std::vector<int> funds_ids, position_ids;
+  int funds_rc = 0;
 
   void AuthReply(int id, int code = 0, bool last = true) {
     CThostFtdcRspAuthenticateField r{};
@@ -352,6 +386,187 @@ TEST_F(TraderLoginTest, AuthenticatedAccountStillRejectsOrdersBeforeSending) {
   EXPECT_FALSE(client->QueryOrder({{3, 1}, 7, 4}, order));
 }
 
+// Starts each snapshot test with an authenticated native SDK session.
+class StartupSnapshotTest : public TraderLoginTest {
+ protected:
+  void SetUp() override {
+    TraderLoginTest::SetUp();
+    EXPECT_FALSE(session->StartSnapshot());
+    Authenticate();
+    probe->LoginReply(probe->login_id);
+    session->Run();
+  }
+  void Start() {
+    ASSERT_TRUE(session->StartSnapshot());
+    ASSERT_FALSE(session->StartSnapshot());
+    session->Run();
+    ASSERT_FALSE(probe->funds_ids.empty());
+  }
+  void BeginPositions() {
+    Start();
+    auto funds = Probe::Balance();
+    probe->spi->OnRspQryTradingAccount(&funds, nullptr, probe->funds_ids.back(), true);
+    session->Run();
+    ASSERT_EQ(session->snapshot_status().phase, SnapshotPhase::kPositions);
+    EXPECT_EQ(session->snapshot(), nullptr);
+    session->Run();
+    ASSERT_EQ(probe->position_ids.size(), 1);
+  }
+  CThostFtdcInvestorPositionField Position(int i) {
+    CThostFtdcInvestorPositionField r{};
+    std::snprintf(r.BrokerID, sizeof(r.BrokerID), "test");
+    std::snprintf(r.InvestorID, sizeof(r.InvestorID), "test");
+    std::snprintf(r.TradingDay, sizeof(r.TradingDay), "20261103");
+    std::snprintf(r.InstrumentID, sizeof(r.InstrumentID), "test%02d", i);
+    std::snprintf(r.ExchangeID, sizeof(r.ExchangeID), "SHFE");
+    r.PositionDate = THOST_FTDC_PSD_Today;
+    r.HedgeFlag = THOST_FTDC_HF_Speculation;
+    r.PosiDirection = THOST_FTDC_PD_Long;
+    r.TodayPosition = r.Position = 4;
+    r.ShortFrozen = 2;
+    r.PositionCost = 400;
+    r.UseMargin = 40;
+    return r;
+  }
+};
+
+TEST_F(StartupSnapshotTest, PublishesAllRowsAfterFinalResponseOnce) {
+  BeginPositions();
+  for (int i = 39; i >= 0; --i) {
+    auto r = Position(i);
+    probe->spi->OnRspQryInvestorPosition(&r, nullptr, probe->position_ids.back(), false);
+  }
+  for (int i = 0; i < 40; ++i) session->Run();
+  EXPECT_FALSE(session->snapshot());
+  probe->spi->OnRspQryInvestorPosition(nullptr, nullptr, probe->position_ids.back(), true);
+  session->Run();
+  auto* snapshot = session->snapshot();
+  ASSERT_NE(snapshot, nullptr);
+  ASSERT_EQ(snapshot->positions.size(), 40);
+  const auto& r = snapshot->positions.front();
+  EXPECT_EQ(r.symbol, "test00");
+  EXPECT_EQ(r.quantity, 4);
+  EXPECT_EQ(r.today, 4);
+  EXPECT_EQ(r.short_frozen, 2);
+  EXPECT_EQ(r.margin, 40);
+  EXPECT_EQ(r.position_cost, 400);
+  ASSERT_EQ(snapshot->balances.size(), 1);
+  const auto& b = snapshot->balances.front();
+  EXPECT_EQ(b.currency.code(), "CNY");
+  EXPECT_EQ(b.available, 59);
+  EXPECT_EQ(b.frozen_margin, 20);
+  EXPECT_EQ(b.frozen_commission, 1);
+  EXPECT_EQ(b.margin, 25);
+  EXPECT_FALSE(session->StartSnapshot());
+  probe->spi->OnRspQryInvestorPosition(nullptr, nullptr, probe->position_ids.back(), true);
+  session->Run();
+  EXPECT_EQ(probe->position_ids.size(), 1);
+  probe->spi->OnFrontDisconnected(12);
+  session->Run();
+  EXPECT_FALSE(session->snapshot());
+}
+
+TEST_F(StartupSnapshotTest, EmptyFundsFailsAndRetryIgnoresOldRequestId) {
+  Start();
+  int old = probe->funds_ids.back();
+  probe->spi->OnRspQryTradingAccount(nullptr, nullptr, old, true);
+  session->Run();
+  EXPECT_STREQ(session->snapshot_status().reason, "missing_funds");
+  BeginPositions();
+  probe->spi->OnRspError(nullptr, old, true);
+  session->Run();
+  EXPECT_EQ(session->snapshot_status().phase, SnapshotPhase::kPositions);
+  probe->spi->OnRspQryInvestorPosition(nullptr, nullptr, probe->position_ids.back(), true);
+  session->Run();
+  ASSERT_TRUE(session->snapshot());
+  EXPECT_TRUE(session->snapshot()->positions.empty());
+}
+
+TEST_F(StartupSnapshotTest, RejectsWrongAccountOrTradingDay) {
+  for (bool change_day : {false, true}) {
+    Start();
+    auto r = Probe::Balance();
+    (change_day ? r.TradingDay : r.AccountID)[0] = '9';
+    probe->spi->OnRspQryTradingAccount(&r, nullptr, probe->funds_ids.back(), true);
+    session->Run();
+    EXPECT_STREQ(session->snapshot_status().reason, "funds_response");
+    EXPECT_FALSE(session->snapshot());
+    EXPECT_TRUE(probe->position_ids.empty());
+  }
+}
+
+TEST_F(StartupSnapshotTest, DuplicateHoldingFailsEntireSnapshot) {
+  BeginPositions();
+  auto r = Position(1);
+  for (bool last : {false, true}) {
+    probe->spi->OnRspQryInvestorPosition(&r, nullptr, probe->position_ids.back(), last);
+    session->Run();
+  }
+  EXPECT_FALSE(session->snapshot());
+  EXPECT_STREQ(session->snapshot_status().reason, "duplicate_position");
+}
+
+TEST_F(StartupSnapshotTest, DisconnectInvalidatesQueuedFinalRow) {
+  BeginPositions();
+  probe->spi->OnRspQryInvestorPosition(nullptr, nullptr, probe->position_ids.back(), true);
+  probe->spi->OnFrontDisconnected(3);
+  session->Run();
+  session->Run();
+  EXPECT_FALSE(session->snapshot());
+  EXPECT_STREQ(session->snapshot_status().reason, "snapshot_disconnected");
+}
+
+TEST_F(StartupSnapshotTest, RateLimitDelaysRetryAndUsesFreshId) {
+  probe->funds_rc = -3;
+  Start();
+  probe->funds_rc = 0;
+  session->Run();
+  EXPECT_EQ(probe->funds_ids.size(), 1);
+  std::this_thread::sleep_for(1010ms);
+  session->Run();
+  ASSERT_EQ(probe->funds_ids.size(), 2);
+  EXPECT_GT(probe->funds_ids.back(), probe->funds_ids.front());
+}
+
+TEST(StartupSnapshot, MissingFinalResponseTimesOut) {
+  auto config = kConfig;
+  config.timeout = 50ms;
+  Probe* probe = nullptr;
+  auto session = OpenProbe(config, probe);
+  probe->spi->OnFrontConnected();
+  session->Run();
+  probe->AuthReply(probe->auth_id);
+  session->Run();
+  probe->LoginReply(probe->login_id);
+  session->Run();
+  ASSERT_TRUE(session->StartSnapshot());
+  session->Run();
+  auto r = Probe::Balance();
+  probe->spi->OnRspQryTradingAccount(&r, nullptr, probe->funds_ids.back(), false);
+  session->Run();
+  std::this_thread::sleep_for(60ms);
+  session->Run();
+  EXPECT_STREQ(session->snapshot_status().reason, "snapshot_timeout");
+  EXPECT_FALSE(session->snapshot());
+}
+
+TEST(StartupSnapshot, MonodPublishesOnlyTheCompletedSummary) {
+  const char* args[] = {"tcp://fixture:1", "2"};
+  auto connect = [](const SimNowTraderConfig& config) {
+    return internal::StartTraderSession(config, [] {
+      auto* probe = new Probe;
+      probe->automatic = true;
+      return probe;
+    });
+  };
+  ::testing::internal::CaptureStdout();
+  const int result = monod::RunTraderLogin(2, args, true, connect);
+  const auto out = ::testing::internal::GetCapturedStdout();
+  EXPECT_EQ(result, 0);
+  EXPECT_EQ(out, "startup_snapshot trading_day=20261103 currencies=1 "
+                 "position_rows=0 account_ready=false\n");
+}
+
 TEST(TraderLogin, MonodProbeShowsLoginWithoutTradingReadiness) {
   const char* args[] = {"tcp://fixture:1", "2"};
   auto connect = [](const SimNowTraderConfig& config) {
@@ -362,7 +577,7 @@ TEST(TraderLogin, MonodProbeShowsLoginWithoutTradingReadiness) {
     });
   };
   ::testing::internal::CaptureStdout();
-  const int result = monod::RunTraderLogin(2, args, connect);
+  const int result = monod::RunTraderLogin(2, args, false, connect);
   const auto out = ::testing::internal::GetCapturedStdout();
   EXPECT_EQ(result, 0);
   EXPECT_NE(out.find("trader_logged_in trading_day=20261103 account_ready=false"),

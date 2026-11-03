@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 
+#include "yquant/trading/simnow_startup_snapshot.h"
 #include "yquant/trading/trading_adapter.h"
 
 namespace yquant::trading {
@@ -40,6 +41,14 @@ class SimNowTradingAdapter : public ITradingAdapter {
       const SimNowTraderConfig& config);
   // Borrowed until the next Run or destruction. Read on the business thread.
   virtual const TraderLoginStatus& login_status() const = 0;
+  // Starts the read-only queries after login, including a retry after failure.
+  // Returns false while logged out or once collection is active or complete.
+  virtual bool StartSnapshot() = 0;
+  // Drive Run to advance the queries. Both accessors use the business thread.
+  virtual SnapshotStatus snapshot_status() const = 0;
+  // Returns nullptr until both queries complete. A disconnect invalidates the
+  // borrowed snapshot when Run processes it.
+  virtual const SimNowStartupSnapshot* snapshot() const = 0;
 };
 
 }  // namespace yquant::trading

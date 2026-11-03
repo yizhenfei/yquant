@@ -40,8 +40,10 @@ class PrintIntent final : public yquant::examples::QuoteIntentListener {
 }  // namespace
 
 int main(int argc, char* argv[]) {
-  if (argc >= 2 && std::string_view(argv[1]) == "--simnow-trader-login") {
-    return yquant::monod::RunTraderLogin(argc - 2, argv + 2);
+  if (argc >= 2 && (std::string_view(argv[1]) == "--simnow-trader-login" ||
+                    std::string_view(argv[1]) == "--simnow-startup-snapshot")) {
+    return yquant::monod::RunTraderLogin(argc - 2, argv + 2,
+        std::string_view(argv[1]) == "--simnow-startup-snapshot");
   }
   if (argc >= 2 && std::string_view(argv[1]) == "--simnow-market") {
     return yquant::monod::RunSimNowMarket(argc - 2, argv + 2);
@@ -82,7 +84,7 @@ int main(int argc, char* argv[]) {
                 "[--maker|--orders|--cancel|--fills|--funds|"
                 "--positions|--reserve|--startup|"
                 "--funds-lifecycle|--positions-lifecycle]\n       monod --simnow-market [--anonymous] FRONT SYMBOL [COUNT [TIMEOUT_SECONDS]]\n"
-                "       monod --simnow-trader-login FRONT [SECONDS]\n");
+                "       monod --simnow-trader-login|--simnow-startup-snapshot FRONT [SECONDS]\n");
     return 0;
   }
   if (argc != 1) {
@@ -90,7 +92,7 @@ int main(int argc, char* argv[]) {
                          "[--maker|--orders|--cancel|--fills|--funds|"
                          "--positions|--reserve|--startup|"
                          "--funds-lifecycle|--positions-lifecycle]\n       monod --simnow-market [--anonymous] FRONT SYMBOL [COUNT [TIMEOUT_SECONDS]]\n"
-                "       monod --simnow-trader-login FRONT [SECONDS]\n");
+                "       monod --simnow-trader-login|--simnow-startup-snapshot FRONT [SECONDS]\n");
     return 2;
   }
   constexpr std::uint64_t kMarketServiceId = 1;
