@@ -82,10 +82,40 @@ class Probe final : public CThostFtdcTraderApi {
     EXPECT_STREQ(r->BrokerID, "test");
     EXPECT_STREQ(r->InstrumentID, "");
     position_ids.push_back(id);
-    if (automatic) spi->OnRspQryInvestorPosition(nullptr, nullptr, id, true);
+    if (automatic) {
+      for (auto& row : position_rows) {
+        spi->OnRspQryInvestorPosition(&row, nullptr, id, false);
+      }
+      spi->OnRspQryInvestorPosition(nullptr, nullptr, id, true);
+    }
+    return 0;
+  }
+  int ReqQryInvestorPositionDetail(CThostFtdcQryInvestorPositionDetailField* r,
+                                   int id) override {
+    EXPECT_STREQ(r->BrokerID, "test");
+    EXPECT_STREQ(r->InvestorID, "test");
+    detail_queries.emplace_back(r->InstrumentID);
+    for (auto& row : details) {
+      if (std::strcmp(r->InstrumentID, row.InstrumentID) == 0 &&
+          std::strcmp(r->ExchangeID, row.ExchangeID) == 0) {
+        spi->OnRspQryInvestorPositionDetail(&row, nullptr, id, false);
+      }
+    }
+    spi->OnRspQryInvestorPositionDetail(nullptr, nullptr, id, true);
     return 0;
   }
   int ReqQryInstrument(CThostFtdcQryInstrumentField* r, int id) override {
+    if (r->ExchangeID[0]) {
+      position_contract_queries.emplace_back(r->InstrumentID);
+      CThostFtdcInstrumentField instrument{};
+      std::strcpy(instrument.InstrumentID, r->InstrumentID);
+      std::strcpy(instrument.ExchangeID, r->ExchangeID);
+      instrument.ProductClass = THOST_FTDC_PC_Futures;
+      instrument.VolumeMultiple = multiplier;
+      spi->OnRspQryInstrument(&instrument, nullptr, id, false);
+      spi->OnRspQryInstrument(nullptr, nullptr, id, true);
+      return 0;
+    }
     EXPECT_STREQ(r->InstrumentID, "TF2612");
     CThostFtdcInstrumentField row{};
     std::snprintf(row.InstrumentID, sizeof(row.InstrumentID), "TF2612");
@@ -181,6 +211,10 @@ class Probe final : public CThostFtdcTraderApi {
     return 0;
   }
 #include <unused_trader_calls.inc>
+  int multiplier = 10;
+  std::vector<std::string> position_contract_queries, detail_queries;
+  std::vector<CThostFtdcInvestorPositionField> position_rows;
+  std::vector<CThostFtdcInvestorPositionDetailField> details;
   int order_queries = 0, trade_queries = 0;
   std::vector<CThostFtdcOrderField> history_orders;
   std::vector<CThostFtdcTradeField> history_trades;
@@ -867,6 +901,135 @@ TEST_F(OrderHistoryTest, FailsAtomicallyOnConflictingIdsOrUnmatchedExecutions) {
   Query();
   ASSERT_TRUE(session->snapshot());
   EXPECT_EQ(session->snapshot()->history.fills().size(), 1);
+}
+
+// Exercises position verification through the session's native SDK callbacks.
+class PositionCostsTest : public StartupSnapshotTest {
+ protected:
+  void Query() {
+    probe->automatic = true;
+    ASSERT_TRUE(session->StartSnapshot());
+    for (int i = 0; i < 100; ++i) session->Run();
+  }
+  CThostFtdcInvestorPositionDetailField Detail(
+      const CThostFtdcInvestorPositionField& source, const char* date,
+      const char* trade, int volume, double open, double settlement, double margin) {
+    CThostFtdcInvestorPositionDetailField row{};
+    std::strcpy(row.BrokerID, source.BrokerID);
+    std::strcpy(row.InvestorID, source.InvestorID);
+    std::strcpy(row.InstrumentID, source.InstrumentID);
+    std::strcpy(row.ExchangeID, source.ExchangeID);
+    std::strcpy(row.TradingDay, source.TradingDay);
+    std::strcpy(row.InvestUnitID, source.InvestUnitID);
+    std::strcpy(row.OpenDate, date);
+    std::strcpy(row.TradeID, trade);
+    row.HedgeFlag = source.HedgeFlag;
+    row.Direction = source.PosiDirection == THOST_FTDC_PD_Long
+                        ? THOST_FTDC_D_Buy : THOST_FTDC_D_Sell;
+    row.Volume = volume;
+    row.OpenPrice = open;
+    row.LastSettlementPrice = settlement;
+    row.Margin = margin;
+    return row;
+  }
+  void Mixed(int symbol, bool short_side = false) {
+    auto r = Position(symbol);
+    std::strcpy(r.ExchangeID, "DCE");
+    r.Position = 5;
+    r.TodayPosition = 2;
+    r.YdPosition = 6;  // Some prior-day lots have already been closed.
+    r.PositionCost = 5150;
+    r.UseMargin = 41;
+    if (short_side) r.PosiDirection = THOST_FTDC_PD_Short;
+    probe->position_rows.push_back(r);
+    probe->details.push_back(Detail(r, "20261103", "a", 1, 100, 90, 10));
+    probe->details.push_back(Detail(r, "20261103", "b", 1, 115, 90, 11));
+    probe->details.push_back(Detail(r, "20261029", "a", 3, 80, 100, 20));
+  }
+};
+
+TEST_F(PositionCostsTest, SingleDateRowsUseReportedAmountsWithoutDetailQueries) {
+  auto today = Position(1);
+  auto prior = today;
+  prior.PositionDate = THOST_FTDC_PSD_History;
+  prior.TodayPosition = 0;
+  prior.YdPosition = 6;
+  prior.PositionCost = 650;
+  prior.UseMargin = 21;
+  probe->position_rows = {today, prior};
+  Query();
+  ASSERT_TRUE(session->snapshot());
+  ASSERT_EQ(session->snapshot()->positions.size(), 2);
+  for (const auto& r : session->snapshot()->positions) {
+    if (r.today) {
+      EXPECT_EQ(r.today_cost, (PositionCost{400, 40}));
+      EXPECT_EQ(r.yesterday_cost, PositionCost{});
+    } else {
+      EXPECT_EQ(r.yesterday_quantity(), 4);
+      EXPECT_EQ(r.yesterday_cost, (PositionCost{650, 21}));
+      EXPECT_EQ(r.today_cost, PositionCost{});
+    }
+  }
+  EXPECT_TRUE(probe->detail_queries.empty());
+  EXPECT_TRUE(probe->position_contract_queries.empty());
+}
+
+TEST_F(PositionCostsTest, MixedRowsRecoverCostsPerContractAndSide) {
+  Mixed(1);
+  Mixed(1, true);
+  Mixed(2);
+  Query();
+  ASSERT_TRUE(session->snapshot());
+  EXPECT_EQ(probe->detail_queries.size(), 2);
+  EXPECT_EQ(probe->position_contract_queries, probe->detail_queries);
+  ASSERT_EQ(session->snapshot()->positions.size(), 3);
+  for (const auto& r : session->snapshot()->positions) {
+    EXPECT_EQ(r.today, 2);
+    EXPECT_EQ(r.yesterday_quantity(), 3);
+    EXPECT_EQ(r.today_cost, (PositionCost{2150, 21}));
+    EXPECT_EQ(r.yesterday_cost, (PositionCost{3000, 20}));
+  }
+}
+
+TEST_F(PositionCostsTest, FailedDetailAttemptIsDiscardedBeforeRetry) {
+  Mixed(1);
+  auto& lot = probe->details.back();
+  lot.Volume -= 1;
+  Query();
+  EXPECT_FALSE(session->snapshot());
+  EXPECT_STREQ(session->snapshot_status().reason, "position_detail_quantity_mismatch");
+  lot.Volume += 1;
+  lot.LastSettlementPrice += 1;
+  Query();
+  EXPECT_FALSE(session->snapshot());
+  EXPECT_STREQ(session->snapshot_status().reason, "position_detail_cost_mismatch");
+  lot.LastSettlementPrice -= 1;
+  lot.Margin += 1;
+  Query();
+  EXPECT_FALSE(session->snapshot());
+  EXPECT_STREQ(session->snapshot_status().reason, "position_detail_margin_mismatch");
+  lot.Margin -= 1;
+  Query();
+  ASSERT_TRUE(session->snapshot());
+  EXPECT_EQ(session->snapshot()->positions[0].yesterday_cost.margin, 20);
+}
+
+TEST_F(PositionCostsTest, RejectsInvalidMultiplierDuplicateAndForeignDetails) {
+  Mixed(1);
+  probe->multiplier = 0;
+  Query();
+  EXPECT_FALSE(session->snapshot());
+  EXPECT_STREQ(session->snapshot_status().reason, "invalid_position_multiplier");
+  probe->multiplier = 10;
+  probe->details.push_back(probe->details.back());
+  Query();
+  EXPECT_FALSE(session->snapshot());
+  EXPECT_STREQ(session->snapshot_status().reason, "duplicate_position_detail");
+  probe->details.pop_back();
+  std::strcpy(probe->details[0].InvestorID, "foreign");
+  Query();
+  EXPECT_FALSE(session->snapshot());
+  EXPECT_STREQ(session->snapshot_status().reason, "position_details_response");
 }
 
 TEST(StartupSnapshot, MonodPublishesOnlyTheCompletedSummary) {

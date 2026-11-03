@@ -7,6 +7,7 @@
 
 #include "yquant/model/currency.h"
 #include "yquant/trading/funds_terms.h"
+#include "yquant/trading/position.h"
 #include "yquant/trading/simnow_order_history.h"
 
 namespace yquant::trading {
@@ -24,8 +25,8 @@ struct SimNowBalance {
   double frozen_commission = 0;
 };
 
-// One counter row. Date, direction and hedge retain their CTP codes. On
-// exchanges that combine dates, cost and margin cover the entire row.
+// One counter row with verified today and prior-day costs. Date, direction
+// and hedge retain their CTP codes; position_cost and margin are row totals.
 struct SimNowPosition {
   std::string exchange, symbol, invest_unit;
   char direction = 0, hedge = 0, date = 0;
@@ -36,6 +37,10 @@ struct SimNowPosition {
   int long_frozen = 0, short_frozen = 0;
   double position_cost = 0, open_cost = 0;
   double margin = 0, previous_settlement = 0;
+  // Each bucket holds total cost and occupied margin in account currency.
+  // Empty buckets have zero amounts.
+  PositionCost today_cost, yesterday_cost;
+  int yesterday_quantity() const { return quantity - today; }
 };
 
 // Holds the two opening margin schedules and offset-specific fees for one
@@ -55,7 +60,7 @@ struct SimNowStartupSnapshot {
   std::optional<SimNowContractTerms> terms;
 };
 
-enum class SnapshotPhase { kIdle, kFunds, kPositions, kOrders, kTrades, kContractTerms, kComplete, kFailed };
+enum class SnapshotPhase { kIdle, kFunds, kPositions, kPositionMultiplier, kPositionDetails, kOrders, kTrades, kContractTerms, kComplete, kFailed };
 
 // A failed query identifies the operation or validation error and SDK code.
 struct SnapshotStatus {
