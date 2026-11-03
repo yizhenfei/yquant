@@ -95,7 +95,8 @@ endif()
 add_library(yquant_ctp_td SHARED IMPORTED)
 set_target_properties(yquant_ctp_td PROPERTIES IMPORTED_LOCATION "${td_library}"
   INTERFACE_INCLUDE_DIRECTORIES "${td_headers}")
-add_library(yquant_simnow_trading src/trading/simnow_trading_adapter.cc)
+add_library(yquant_simnow_trading src/trading/simnow_trading_adapter.cc
+  src/trading/simnow_contract_query.cc)
 target_link_libraries(yquant_simnow_trading PUBLIC yquant_trading
   PRIVATE yquant_ctp_td Threads::Threads)
 if(APPLE)
@@ -142,10 +143,13 @@ if(BUILD_TESTING)
   target_link_libraries(simnow_trader_login_test PRIVATE yquant_simnow_trading
     yquant_ctp_td GTest::gtest_main Threads::Threads)
   add_test(NAME v1_05_trader_login COMMAND simnow_trader_login_test
-    --gtest_filter=-StartupSnapshot*)
+    --gtest_filter=-StartupSnapshot*:ContractTerms*)
   add_test(NAME v1_05_startup_snapshot COMMAND simnow_trader_login_test
     --gtest_filter=StartupSnapshot*)
-  set_tests_properties(v1_05_trader_login v1_05_startup_snapshot PROPERTIES TIMEOUT 10
+  add_test(NAME v1_05_contract_terms COMMAND simnow_trader_login_test
+    --gtest_filter=ContractTerms*)
+  set_tests_properties(v1_05_trader_login v1_05_startup_snapshot
+    v1_05_contract_terms PROPERTIES TIMEOUT 10
     LABELS v1_05_simnow_trading ENVIRONMENT
     "YQUANT_CTP_BROKER_ID=test;YQUANT_CTP_USER_ID=test;YQUANT_CTP_PASSWORD=test;YQUANT_CTP_APP_ID=test;YQUANT_CTP_AUTH_CODE=test")
 

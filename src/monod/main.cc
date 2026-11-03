@@ -84,7 +84,8 @@ int main(int argc, char* argv[]) {
                 "[--maker|--orders|--cancel|--fills|--funds|"
                 "--positions|--reserve|--startup|"
                 "--funds-lifecycle|--positions-lifecycle]\n       monod --simnow-market [--anonymous] FRONT SYMBOL [COUNT [TIMEOUT_SECONDS]]\n"
-                "       monod --simnow-trader-login|--simnow-startup-snapshot FRONT [SECONDS]\n");
+                "       monod --simnow-trader-login FRONT [SECONDS]\n"
+                "       monod --simnow-startup-snapshot FRONT [SECONDS [SYMBOL]]\n");
     return 0;
   }
   if (argc != 1) {
@@ -92,7 +93,8 @@ int main(int argc, char* argv[]) {
                          "[--maker|--orders|--cancel|--fills|--funds|"
                          "--positions|--reserve|--startup|"
                          "--funds-lifecycle|--positions-lifecycle]\n       monod --simnow-market [--anonymous] FRONT SYMBOL [COUNT [TIMEOUT_SECONDS]]\n"
-                "       monod --simnow-trader-login|--simnow-startup-snapshot FRONT [SECONDS]\n");
+                "       monod --simnow-trader-login FRONT [SECONDS]\n"
+                "       monod --simnow-startup-snapshot FRONT [SECONDS [SYMBOL]]\n");
     return 2;
   }
   constexpr std::uint64_t kMarketServiceId = 1;

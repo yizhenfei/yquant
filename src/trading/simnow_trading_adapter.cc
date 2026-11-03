@@ -12,6 +12,8 @@
 #include <utility>
 #include <variant>
 
+#include "simnow_contract_query.h"
+#include "simnow_fields.h"
 #include "simnow_trader_session.h"
 
 namespace yquant::trading {
@@ -19,25 +21,15 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-template <std::size_t N>
-bool Copy(char (&out)[N], std::string_view in) {
-  if (in.empty() || in.size() >= N || in.find('\0') != in.npos) return false;
-  std::copy(in.begin(), in.end(), out);
-  return true;  // Request structures are zero-initialized.
-}
-
-template <std::size_t N>
-std::string_view Field(const char (&value)[N]) {
-  return {value, static_cast<std::size_t>(
-                     std::find(value, value + N, '\0') - value)};
-}
+using internal::Copy;
+using internal::Field;
 
 enum class Kind {
-  kConnect, kDisconnect, kAuth, kLogin, kError, kFunds, kPositions
+  kConnect, kDisconnect, kAuth, kLogin, kError, kFunds, kPositions, kTerms
 };
 
 bool IsControlEvent(Kind kind) {
-  return kind != Kind::kFunds && kind != Kind::kPositions;
+  return kind != Kind::kFunds && kind != Kind::kPositions && kind != Kind::kTerms;
 }
 
 // Copies just the callback data needed by Run, never SDK pointers or passwords.
@@ -49,6 +41,8 @@ struct Event {
   TThostFtdcDateType day{};
   TThostFtdcOrderRefType ref{};
   std::uint64_t generation = 0;
+  internal::TermsField field = internal::TermsField::kInstrument;
+  std::unique_ptr<internal::TermsRow> terms_row{};
   std::variant<std::monostate, SimNowBalance, SimNowPosition> row{};
 };
 
@@ -107,10 +101,14 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
   // SimNowTradingAdapter implementation.
   const TraderLoginStatus& login_status() const override { return status_; }
 
-  bool StartSnapshot() override {
+  bool StartSnapshot(std::string_view symbol) override {
     if (status_.phase != LoginPhase::kLoggedIn ||
         (query_.phase != SnapshotPhase::kIdle &&
          query_.phase != SnapshotPhase::kFailed)) return false;
+    if (symbol.size() >= sizeof(TThostFtdcInstrumentIDType) ||
+        symbol.find('\0') != symbol.npos) return false;
+    contract_.reset();
+    if (!symbol.empty()) contract_.emplace(symbol);
     snapshot_ = {};
     snapshot_.trading_day = status_.trading_day;
     query_ = {SnapshotPhase::kFunds};
@@ -143,7 +141,8 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
       return;
     }
     if (Collecting() && Clock::now() >= query_deadline_) {
-      FailSnapshot("snapshot_timeout", 0);
+      FailSnapshot(query_.phase == SnapshotPhase::kContractTerms
+                       ? contract_->field_name() : "snapshot_timeout", 0);
     }
     Event event{};
     {
@@ -214,7 +213,7 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
       std::copy_n(r->TradingDay, sizeof(e.day), e.day);
       std::copy_n(r->MaxOrderRef, sizeof(e.ref), e.ref);
     }
-    Push(e);
+    Push(std::move(e));
   }
   void OnRspError(CThostFtdcRspInfoField* e, int id, bool last) override {
     Push({Kind::kError, id, e ? e->ErrorID : -1, false, last});
@@ -265,9 +264,54 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
     Push(std::move(e));
   }
 
+  void OnRspQryInstrument(CThostFtdcInstrumentField* r,
+                          CThostFtdcRspInfoField* error, int id, bool last) override {
+    PushTerms(internal::TermsField::kInstrument, r, error, id, last);
+  }
+  void OnRspQryProduct(CThostFtdcProductField* r, CThostFtdcRspInfoField* error,
+                       int id, bool last) override {
+    PushTerms(internal::TermsField::kProduct, r, error, id, last);
+  }
+  void OnRspQryInstrumentMarginRate(CThostFtdcInstrumentMarginRateField* r,
+      CThostFtdcRspInfoField* error, int id, bool last) override {
+    PushTerms(internal::TermsField::kMargin, r, error, id, last,
+              !r || MatchesInvestor(*r));
+  }
+  void OnRspQryExchangeMarginRate(CThostFtdcExchangeMarginRateField* r,
+      CThostFtdcRspInfoField* error, int id, bool last) override {
+    PushTerms(internal::TermsField::kExchangeMargin, r, error, id, last,
+              !r || Field(r->BrokerID) == broker_);
+  }
+  void OnRspQryInstrumentCommissionRate(CThostFtdcInstrumentCommissionRateField* r,
+      CThostFtdcRspInfoField* error, int id, bool last) override {
+    PushTerms(internal::TermsField::kFees, r, error, id, last,
+              !r || MatchesInvestor(*r));
+  }
+
+  template <typename Row>
+  bool MatchesInvestor(const Row& row) const {
+    if (Field(row.BrokerID) != broker_ || !Field(row.InvestUnitID).empty()) {
+      return false;
+    }
+    return (row.InvestorRange == THOST_FTDC_IR_Single &&
+            Field(row.InvestorID) == user_) ||
+           (row.InvestorRange == THOST_FTDC_IR_All &&
+            (Field(row.InvestorID).empty() || Field(row.InvestorID) == user_));
+  }
+  template <typename Row>
+  void PushTerms(internal::TermsField field, const Row* row,
+                 CThostFtdcRspInfoField* error, int id, bool last,
+                 bool valid = true) {
+    Event e{Kind::kTerms, id, error ? error->ErrorID : 0, valid, last};
+    e.field = field;
+    if (row) e.terms_row = std::make_unique<internal::TermsRow>(*row);
+    Push(std::move(e));
+  }
+
   bool Collecting() const {
     return query_.phase == SnapshotPhase::kFunds ||
-           query_.phase == SnapshotPhase::kPositions;
+           query_.phase == SnapshotPhase::kPositions ||
+           query_.phase == SnapshotPhase::kContractTerms;
   }
   void FailSnapshot(const char* reason, int code) {
     query_ = {SnapshotPhase::kFailed, reason, code};
@@ -277,7 +321,10 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
     if (!NextRequest()) return;
     const bool funds = query_.phase == SnapshotPhase::kFunds;
     int rc;
-    if (funds) {
+    const bool terms = query_.phase == SnapshotPhase::kContractTerms;
+    if (terms) {
+      rc = contract_->Send(*api_, broker_, user_, id_);
+    } else if (funds) {
       CThostFtdcQryTradingAccountField r{};
       Copy(r.BrokerID, broker_);
       Copy(r.InvestorID, user_);
@@ -291,16 +338,31 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
     if (rc == -2 || rc == -3) {
       next_query_ = Clock::now() + std::chrono::seconds(1);
     } else if (rc != 0) {
-      FailSnapshot(funds ? "funds_request" : "positions_request", rc);
+      FailSnapshot(terms ? contract_->field_name() :
+                   (funds ? "funds_request" : "positions_request"), rc);
     } else {
       query_sent_ = true;
     }
   }
   void SnapshotResponse(Event e) {
+    if (!query_sent_ || e.id != id_) return;
+    if (query_.phase == SnapshotPhase::kContractTerms) {
+      if (e.kind != Kind::kError &&
+          (e.kind != Kind::kTerms || e.field != contract_->field)) return;
+      if (e.kind == Kind::kError || e.code || !e.valid ||
+          !contract_->Receive(e.terms_row.get(), e.last)) {
+        FailSnapshot(contract_->field_name(), e.code);
+      } else if (contract_->complete) {
+        snapshot_.terms = std::move(contract_->terms);
+        query_.phase = SnapshotPhase::kComplete;
+      } else if (e.last) {
+        query_sent_ = false;
+      }
+      return;
+    }
     const bool funds = query_.phase == SnapshotPhase::kFunds;
-    if (!query_sent_ || e.id != id_ ||
-        (e.kind != (funds ? Kind::kFunds : Kind::kPositions) &&
-         e.kind != Kind::kError)) return;
+    if (e.kind != (funds ? Kind::kFunds : Kind::kPositions) &&
+        e.kind != Kind::kError) return;
     const bool empty = std::holds_alternative<std::monostate>(e.row);
     if (e.kind == Kind::kError || e.code || !e.valid ||
         (!empty && Field(e.day) != snapshot_.trading_day) ||
@@ -339,7 +401,9 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
       FailSnapshot("duplicate_position", 0);
       return;
     }
-    query_.phase = SnapshotPhase::kComplete;
+    query_.phase = contract_ ? SnapshotPhase::kContractTerms
+                             : SnapshotPhase::kComplete;
+    query_sent_ = false;
   }
 
   // A disconnect invalidates earlier events still waiting in the queue.
@@ -421,6 +485,7 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
   std::deque<Event> queue_;
   std::size_t control_events_ = 0;
   SnapshotStatus query_;
+  std::optional<internal::SimNowContractQuery> contract_;
   SimNowStartupSnapshot snapshot_;
   bool query_sent_ = false;
   Clock::time_point next_query_, query_deadline_;

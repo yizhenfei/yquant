@@ -5,6 +5,7 @@
 #include <optional>
 
 #include "yquant/model/currency.h"
+#include "yquant/trading/order.h"
 
 namespace yquant::trading {
 
@@ -25,6 +26,11 @@ struct FundsTerms {
   // Applies only to Offset::kClose. Explicit today/yesterday offsets take
   // priority. Set this to match the counter's generic-close allocation rule.
   bool close_today_first = false;
+  // Fixed opening margin per lot, charged in addition to margin_rate.
+  double margin_per_quantity = 0;
+  // Account defaults apply to every hedge category unless a rate query
+  // identifies a specific category.
+  std::optional<HedgeFlag> hedge = std::nullopt;
 };
 
 }  // namespace yquant::trading

@@ -8,6 +8,8 @@
 
 #include "gtest/gtest.h"
 #include "simnow_trader_session.h"
+#include "yquant/trading/internal/funds_calculation.h"
+#include "yquant/trading/simulated_trading_adapter.h"
 #include "trader_login.h"
 #include "yquant/trading/trading_client_factory.h"
 #include "yquant/trading/trading_service_registry.h"
@@ -79,7 +81,86 @@ class Probe final : public CThostFtdcTraderApi {
     if (automatic) spi->OnRspQryInvestorPosition(nullptr, nullptr, id, true);
     return 0;
   }
+  int ReqQryInstrument(CThostFtdcQryInstrumentField* r, int id) override {
+    EXPECT_STREQ(r->InstrumentID, "TF2612");
+    CThostFtdcInstrumentField row{};
+    std::snprintf(row.InstrumentID, sizeof(row.InstrumentID), "TF2612");
+    std::snprintf(row.ProductID, sizeof(row.ProductID), "TF");
+    std::snprintf(row.ExchangeID, sizeof(row.ExchangeID), "CFFEX");
+    row.VolumeMultiple = 10;
+    row.ProductClass = THOST_FTDC_PC_Futures;
+    spi->OnRspQryInstrument(&row, nullptr, id, false);
+    spi->OnRspQryInstrument(nullptr, nullptr, id, true);
+    return 0;
+  }
+  int ReqQryProduct(CThostFtdcQryProductField* r, int id) override {
+    EXPECT_STREQ(r->ProductID, "TF");
+    EXPECT_STREQ(r->ExchangeID, "CFFEX");
+    CThostFtdcProductField row{};
+    std::snprintf(row.ProductID, sizeof(row.ProductID), "TF");
+    std::snprintf(row.ExchangeID, sizeof(row.ExchangeID), "CFFEX");
+    std::snprintf(row.TradeCurrencyID, sizeof(row.TradeCurrencyID), "CNY");
+    spi->OnRspQryProduct(&row, nullptr, id, true);
+    return 0;
+  }
+  int ReqQryInstrumentMarginRate(CThostFtdcQryInstrumentMarginRateField* r,
+                                 int id) override {
+    EXPECT_STREQ(r->InstrumentID, "TF2612");
+    EXPECT_STREQ(r->ExchangeID, "CFFEX");
+    EXPECT_STREQ(r->InvestorID, "test");
+    EXPECT_STREQ(r->BrokerID, "test");
+    EXPECT_EQ(r->HedgeFlag, THOST_FTDC_HF_Speculation);
+    CThostFtdcInstrumentMarginRateField row{};
+    std::snprintf(row.InstrumentID, sizeof(row.InstrumentID), "TF");
+    std::snprintf(row.InvestorID, sizeof(row.InvestorID), "test");
+    std::snprintf(row.BrokerID, sizeof(row.BrokerID), "test");
+    row.HedgeFlag = r->HedgeFlag;
+    row.InvestorRange = THOST_FTDC_IR_Single;
+    row.IsRelative = relative_margin;
+    row.LongMarginRatioByMoney = 0.1;
+    row.ShortMarginRatioByMoney = 0.2;
+    row.LongMarginRatioByVolume = 4;
+    row.ShortMarginRatioByVolume = 8;
+    spi->OnRspQryInstrumentMarginRate(&row, nullptr, id, true);
+    return 0;
+  }
+  int ReqQryExchangeMarginRate(CThostFtdcQryExchangeMarginRateField* r,
+                               int id) override {
+    EXPECT_TRUE(relative_margin);
+    EXPECT_STREQ(r->InstrumentID, "TF2612");
+    EXPECT_STREQ(r->ExchangeID, "CFFEX");
+    CThostFtdcExchangeMarginRateField row{};
+    std::snprintf(row.InstrumentID, sizeof(row.InstrumentID), "TF2612");
+    std::snprintf(row.BrokerID, sizeof(row.BrokerID), "test");
+    row.HedgeFlag = r->HedgeFlag;
+    row.LongMarginRatioByMoney = 0.025;
+    row.ShortMarginRatioByVolume = 1;
+    spi->OnRspQryExchangeMarginRate(&row, nullptr, id, true);
+    return 0;
+  }
+  int ReqQryInstrumentCommissionRate(CThostFtdcQryInstrumentCommissionRateField* r,
+                                     int id) override {
+    EXPECT_STREQ(r->InstrumentID, "TF2612");
+    EXPECT_STREQ(r->InvestorID, "test");
+    EXPECT_STREQ(r->BrokerID, "test");
+    CThostFtdcInstrumentCommissionRateField row{};
+    std::snprintf(row.BrokerID, sizeof(row.BrokerID), "test");
+    std::snprintf(row.InstrumentID, sizeof(row.InstrumentID), "%s", fee_symbol);
+    row.InvestorRange = THOST_FTDC_IR_All;
+    row.OpenRatioByMoney = 0.001;
+    row.OpenRatioByVolume = 3;
+    row.CloseRatioByVolume = 2;
+    if (wrong_investor) {
+      row.InvestorRange = THOST_FTDC_IR_Single;
+      std::snprintf(row.InvestorID, sizeof(row.InvestorID), "other");
+    }
+    spi->OnRspQryInstrumentCommissionRate(missing_fees ? nullptr : &row,
+                                          nullptr, id, true);
+    return 0;
+  }
 #include <unused_trader_calls.inc>
+  bool relative_margin = false, missing_fees = false, wrong_investor = false;
+  const char* fee_symbol = "TF2612";
 
   static CThostFtdcTradingAccountField Balance() {
     CThostFtdcTradingAccountField r{};
@@ -548,6 +629,82 @@ TEST(StartupSnapshot, MissingFinalResponseTimesOut) {
   session->Run();
   EXPECT_STREQ(session->snapshot_status().reason, "snapshot_timeout");
   EXPECT_FALSE(session->snapshot());
+}
+
+// Exercises the native SDK request sequence and the local accounting consumer.
+class ContractTermsTest : public StartupSnapshotTest {
+ protected:
+  void Query() {
+    probe->automatic = true;
+    ASSERT_TRUE(session->StartSnapshot("TF2612"));
+    for (int i = 0; i < 30; ++i) session->Run();
+  }
+};
+
+TEST_F(ContractTermsTest, AppliesDirectionalTermsToAnActualReservation) {
+  Query();
+  ASSERT_TRUE(session->snapshot() && session->snapshot()->terms);
+  const auto& terms = *session->snapshot()->terms;
+  EXPECT_EQ(terms.symbol, "TF2612");
+  EXPECT_EQ(terms.buy.currency.code(), "CNY");
+  EXPECT_EQ(terms.buy.contract_multiplier, 10);
+  EXPECT_DOUBLE_EQ(*terms.sell.margin_rate, 0.2);
+  EXPECT_DOUBLE_EQ(terms.sell.margin_per_quantity, 8);
+  SimulatedTradingAdapter counter;
+  counter.SetInitialState({model::Currency("CNY"), 1000, 1000, 0, 0}, {});
+  Outcomes listener;
+  TradingService service;
+  ASSERT_TRUE(service.BindAccount(7, counter));
+  ASSERT_TRUE(service.ConfigureFundsTerms(7, 42, Side::kBuy, terms.buy));
+  TradingServiceRegistry registry;
+  ASSERT_TRUE(registry.Register(3, service));
+  auto client = TradingClientFactory(registry).Create(3);
+  service.Run();
+  SubmitOrderRequest order{{{3, 1}, 7, 4, 42, Side::kBuy, Offset::kOpen, 100, 2}};
+  ASSERT_EQ(client->SubmitOrder(order, listener), RequestResult::kDelivered);
+  FundsSnapshot funds;
+  ASSERT_TRUE(client->QueryFunds({7}, funds));
+  // 2 * 100 * 10 * 0.1 + 2 * 4 margin, plus 2000 * 0.001 + 2 * 3 fees.
+  EXPECT_DOUBLE_EQ(funds.reserved, 216);
+  EXPECT_DOUBLE_EQ(funds.available_for_orders(), 784);
+  const auto close_cost = [&](Offset offset) {
+    order.order.offset = offset;
+    return internal::CalculateOrderCost(order.order, terms.sell, 100, 2);
+  };
+  for (auto offset : {Offset::kClose, Offset::kCloseYesterday}) {
+    ASSERT_TRUE(close_cost(offset));
+    EXPECT_EQ(close_cost(offset)->total(), 4);
+  }
+  ASSERT_TRUE(close_cost(Offset::kCloseToday));
+  EXPECT_EQ(close_cost(Offset::kCloseToday)->total(), 0);
+  order.order.hedge = HedgeFlag::kHedge;
+  EXPECT_FALSE(close_cost(Offset::kOpen));
+}
+
+TEST_F(ContractTermsTest, RelativeMarginIncludesTheExchangeBase) {
+  probe->relative_margin = true;
+  Query();
+  ASSERT_TRUE(session->snapshot() && session->snapshot()->terms);
+  EXPECT_DOUBLE_EQ(*session->snapshot()->terms->buy.margin_rate, 0.125);
+  EXPECT_DOUBLE_EQ(session->snapshot()->terms->sell.margin_per_quantity, 9);
+}
+
+TEST_F(ContractTermsTest, MissingOrUnrelatedRateNeverPublishesPartialTerms) {
+  probe->missing_fees = true;
+  Query();
+  EXPECT_FALSE(session->snapshot());
+  EXPECT_STREQ(session->snapshot_status().reason, "commission");
+  probe->missing_fees = false;
+  probe->wrong_investor = true;
+  Query();
+  EXPECT_FALSE(session->snapshot());
+  probe->wrong_investor = false;
+  probe->fee_symbol = "OTHER";
+  Query();
+  EXPECT_FALSE(session->snapshot());
+  probe->fee_symbol = "TF";
+  Query();
+  ASSERT_TRUE(session->snapshot() && session->snapshot()->terms);
 }
 
 TEST(StartupSnapshot, MonodPublishesOnlyTheCompletedSummary) {

@@ -26,7 +26,7 @@ bool ValidTerms(const FundsTerms& terms) {
     return std::isfinite(value) && value >= 0;
   };
   return terms.currency.valid() && std::isfinite(terms.contract_multiplier) &&
-         terms.contract_multiplier > 0 &&
+         terms.contract_multiplier > 0 && valid(terms.margin_per_quantity) &&
          (!terms.margin_rate || valid(*terms.margin_rate)) &&
          std::all_of(terms.fees.begin(), terms.fees.end(),
                      [&](const auto& fee) {
@@ -36,9 +36,10 @@ bool ValidTerms(const FundsTerms& terms) {
 }
 
 // Distinguishes missing rates from explicitly configured zero costs.
-bool HasRequiredRates(const FundsTerms& terms, Offset offset) {
-  return terms.fees[static_cast<std::size_t>(offset)].has_value() &&
-         (offset != Offset::kOpen || terms.margin_rate.has_value());
+bool HasRequiredRates(const FundsTerms& terms, const OrderInfo& order) {
+  return (!terms.hedge || *terms.hedge == order.hedge) &&
+         terms.fees[static_cast<std::size_t>(order.offset)].has_value() &&
+         (order.offset != Offset::kOpen || terms.margin_rate.has_value());
 }
 
 // Positive proportional costs must not disappear through arithmetic underflow.
@@ -65,16 +66,21 @@ std::optional<internal::OrderCost> internal::CalculateOrderCost(
     const OrderInfo& order, const FundsTerms& terms, double price,
     std::int32_t quantity) {
   if (quantity <= 0 || !std::isfinite(price) || price <= 0 ||
-      !HasRequiredRates(terms, order.offset)) return std::nullopt;
+      !HasRequiredRates(terms, order)) return std::nullopt;
   const auto& fee = *terms.fees[static_cast<std::size_t>(order.offset)];
   const double notional = price * terms.contract_multiplier * quantity;
   if (!std::isfinite(notional) || notional <= 0) return std::nullopt;
   const double margin_rate =
       order.offset == Offset::kOpen ? *terms.margin_rate : 0;
-  const double margin = notional * margin_rate;
+  const double proportional_margin = notional * margin_rate;
+  const double fixed_margin =
+      order.offset == Offset::kOpen ? terms.margin_per_quantity * quantity : 0;
+  const double margin = proportional_margin + fixed_margin;
   const double proportional_fee = fee.per_notional * notional;
   const double charge = fee.per_quantity * quantity + proportional_fee;
-  if (!ProductRepresented(margin_rate, margin) ||
+  if ((fixed_margin > 0 && proportional_margin > 0 &&
+       (margin == fixed_margin || margin == proportional_margin)) ||
+      !ProductRepresented(margin_rate, proportional_margin) ||
       !ProductRepresented(fee.per_notional, proportional_fee) ||
       !std::isfinite(margin + charge) ||
       (charge > 0 && margin + charge == margin) ||
@@ -110,7 +116,7 @@ std::optional<FailureReason> TradingService::CheckFunds(
     return FailureReason::kFundsParametersUnavailable;
   }
   const auto& terms = *configured;
-  if (!HasRequiredRates(terms, order.offset)) {
+  if (!HasRequiredRates(terms, order)) {
     return FailureReason::kFundsParametersUnavailable;
   }
   if (terms.currency != account.funds.funds.currency) {

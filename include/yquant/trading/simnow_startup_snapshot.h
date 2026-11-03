@@ -1,10 +1,12 @@
 #ifndef YQUANT_TRADING_SIMNOW_STARTUP_SNAPSHOT_H_
 #define YQUANT_TRADING_SIMNOW_STARTUP_SNAPSHOT_H_
 
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "yquant/model/currency.h"
+#include "yquant/trading/funds_terms.h"
 
 namespace yquant::trading {
 
@@ -35,15 +37,23 @@ struct SimNowPosition {
   double margin = 0, previous_settlement = 0;
 };
 
-// Owns both completed query results for the logged-in account and trading day.
+// Holds the two opening margin schedules and offset-specific fees for one
+// futures contract and the hedge category used for the query.
+struct SimNowContractTerms {
+  std::string symbol;
+  FundsTerms buy, sell;
+};
+
+// Owns completed query results for the logged-in account and trading day.
 // Funds and positions were sampled by separate requests.
 struct SimNowStartupSnapshot {
   std::string trading_day;
   std::vector<SimNowBalance> balances;
   std::vector<SimNowPosition> positions;
+  std::optional<SimNowContractTerms> terms;
 };
 
-enum class SnapshotPhase { kIdle, kFunds, kPositions, kComplete, kFailed };
+enum class SnapshotPhase { kIdle, kFunds, kPositions, kContractTerms, kComplete, kFailed };
 
 // A failed query identifies the operation or validation error and SDK code.
 struct SnapshotStatus {

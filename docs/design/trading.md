@@ -104,7 +104,7 @@ adapter 接收报单时即取得 `OrderId`，并建立与柜台请求及 `Counte
 - `model::Currency` 统一表示币种，负责三个大写字母代码的构造、校验、比较和读取；默认值及非法输入产生未指定币种。
 - `FundsInfo` 使用 `model::Currency` 表达币种，保存该币种下的不含浮动盈亏的账面权益 `balance`、扣除已占保证金但尚未扣除本地委托预占的 `available`、占用保证金 `margin` 和委托预占中的保证金部分 `frozen_margin`。币种须有效，金额须有限；adapter 将初始柜台数据转换为该记账口径。
 - `FundsSnapshot` 保存本地 `FundsInfo`、初始基准轮次 `refresh_id`、委托预占合计 `reserved`，以及初始化以来已入账手续费 `commission` 和已实现盈亏 `realized_pnl`；`available_for_orders()` 返回 `available - reserved`，不再额外扣除已包含在预占中的 `frozen_margin`。
-- `FundsTerms` 保存一个账户、合约和下单方向的币种、合约乘数、开仓保证金率及各开平类型的费率；`FeeRate` 包含按数量费用与按名义金额费率。缺少费率与明确零费率分别表达。
+- `FundsTerms` 保存一个账户、合约和下单方向的币种、合约乘数、按金额和按手数计收的开仓保证金及各开平类型的费率；`FeeRate` 包含按数量费用与按名义金额费率。缺少费率与明确零费率分别表达。
 - `PositionKey` 由合约标识、持仓方向 `PositionSide` 和套保类别 `HedgeFlag` 组成；区分多仓与空仓，以及投机、套利和套保持仓。
 - `PositionInfo` 保存持仓键、今仓与昨仓数量、冻结数量，以及各自的可选 `PositionCost`。`PositionCost` 保存以账户币种计价、已含合约乘数的总成本与占用保证金。非空持仓必须提供有限正成本及有限非负保证金；空仓可省略成本，提供时两项必须为零。
 - `PositionsSnapshot` 通过只读连续视图借用完整账户持仓，携带已发布轮次 `refresh_id`；有效空快照的行数为零。行数据有效至下一次持仓更新或所属 service/cache 销毁，需要长期保留时复制。
@@ -341,7 +341,7 @@ virtual void OnPositionsReport(const AdapterPositionsReport& report) = 0;
 ```text
 名义金额 = 委托价 × 数量 × 合约乘数
 预计手续费 = 按数量费用 × 数量 + 按名义金额费率 × 名义金额
-开仓预占 = 名义金额 × 保证金率 + 预计手续费
+开仓预占 = 名义金额 × 保证金率 + 数量 × 每手保证金 + 预计手续费
 平仓预占 = 预计手续费
 ```
 
@@ -355,7 +355,7 @@ virtual void OnPositionsReport(const AdapterPositionsReport& report) = 0;
 
 ```text
 成交金额 = 成交价 × 合约乘数 × 成交数量
-开仓：保证金变化 = 成交金额 × 保证金率，已实现盈亏 = 0
+开仓：保证金变化 = 成交金额 × 保证金率 + 成交数量 × 每手保证金，已实现盈亏 = 0
 平仓：分摊成本 = 桶总成本 × 平仓数量 / 桶数量
       保证金变化 = -桶保证金 × 平仓数量 / 桶数量
       多仓盈亏 = 成交金额 - 分摊成本，空仓盈亏取反
@@ -458,7 +458,13 @@ flow_dir=$(mktemp -d)
 
 `StartSnapshot()` 启动一次只读采集。持续调用 `Run()`，直到 `snapshot()` 返回完整结果，或 `snapshot_status()` 报告失败原因。柜台限流时隔一秒重试，整个采集受同一个超时约束。失败后可重新采集，断连后需先重新登录。快照保留柜台口径的可用资金和冻结，以及各持仓行的持仓日期、数量、成本和占用保证金。两次查询间的交易变动由后续启动回报核对处理，交易就绪条件见[账户资金](#账户资金)。
 
-`ctest --test-dir build -L v1_05_simnow_trading --output-on-failure` 通过可控 SDK 运行登录与启动快照用例。
+#### 合约乘数与计费参数
+
+在启动快照命令的超时参数后指定期货合约，例如 `--simnow-startup-snapshot FRONT 30 TF2612`。adapter 在收到完整持仓后查询合约乘数、品种交易币种、账户投机保证金率和手续费。如果账户保证金是相对费率，继续查询同一合约的交易所保证金作为基准。查询缺行、结果有歧义或费率无效时，命令报告合约及出错项。
+
+快照中的 `terms.buy` 和 `terms.sell` 可分别传给 `ConfigureFundsTerms`。两者使用各自方向的开仓保证金，并限定于投机订单。开仓、平仓和平今手续费分别取对应柜台字段，显式平昨使用平仓手续费。已知零费率保留为零。品种级费率必须匹配合约查询返回的品种代码。
+
+`ctest --test-dir build -L v1_05_simnow_trading --output-on-failure` 通过可控 SDK 运行登录、启动快照和合约计费用例。
 
 ### 跨进程调用
 

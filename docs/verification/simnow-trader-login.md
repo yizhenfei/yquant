@@ -19,3 +19,15 @@ trader_logged_in trading_day=20261103 account_ready=false
 ```text
 startup_snapshot trading_day=20261103 currencies=1 position_rows=0 account_ready=false
 ```
+
+### 合约计费参数
+
+运行 `monod --simnow-startup-snapshot tcp://182.254.243.31:30001 30 TF2612`，进程退出码为 0。交易日为 20261103，个人模拟账户的投机费率查询结果如下。
+
+| 参数 | 柜台返回值 |
+| --- | --- |
+| 合约乘数 | 10000 |
+| 多头、空头按金额保证金率 | 各 0.022 |
+| 多头、空头每手保证金 | 各 0 |
+| 每手开仓、平仓、平今手续费 | 3、3、0 |
+| 按金额开仓、平仓、平今手续费率 | 均为 0 |
