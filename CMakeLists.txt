@@ -25,6 +25,35 @@ add_library(yquant_market
   src/market/market_service_registry.cc)
 target_link_libraries(yquant_market PUBLIC yquant_model yquant_container)
 
+# Both supported platforms use the native CTP market library.
+set(YQUANT_CTP_SDK_ROOT "${PROJECT_SOURCE_DIR}/vendor/ctp" CACHE PATH
+    "Directory containing the matching CTP headers and market dynamic library")
+if(APPLE)
+  set(ctp_framework "${YQUANT_CTP_SDK_ROOT}/thostmduserapi_se.framework")
+  set(ctp_headers "${ctp_framework}/Headers")
+  set(ctp_library "${ctp_framework}/thostmduserapi_se")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  unset(ctp_headers CACHE)
+  unset(ctp_library CACHE)
+  find_path(ctp_headers ThostFtdcMdApi.h PATHS "${YQUANT_CTP_SDK_ROOT}"
+    PATH_SUFFIXES include/ctp include NO_DEFAULT_PATH)
+  find_file(ctp_library NAMES libthostmduserapi_se.so thostmduserapi_se.so
+    PATHS "${YQUANT_CTP_SDK_ROOT}" PATH_SUFFIXES lib NO_DEFAULT_PATH)
+else()
+  message(FATAL_ERROR "The SimNow market SDK requires Linux or macOS")
+endif()
+if(NOT EXISTS "${ctp_headers}/ThostFtdcMdApi.h" OR NOT EXISTS "${ctp_library}"
+   OR NOT EXISTS "${ctp_headers}/ThostFtdcUserApiDataType.h"
+   OR NOT EXISTS "${ctp_headers}/ThostFtdcUserApiStruct.h")
+  message(FATAL_ERROR
+    "CTP market SDK missing. Set YQUANT_CTP_SDK_ROOT to the platform SDK; see README.")
+endif()
+add_library(yquant_ctp_md SHARED IMPORTED)
+set_target_properties(yquant_ctp_md PROPERTIES IMPORTED_LOCATION "${ctp_library}"
+  INTERFACE_INCLUDE_DIRECTORIES "${ctp_headers}")
+find_package(Threads REQUIRED)
+add_library(yquant_simnow_market src/market/simnow_quote_source.cc)
+target_link_libraries(yquant_simnow_market PUBLIC yquant_market PRIVATE yquant_ctp_md Threads::Threads)
 add_library(yquant_strategy
   src/strategy/market_maker.cc src/strategy/strategy_service.cc)
 target_link_libraries(yquant_strategy PUBLIC yquant_market yquant_trading)
@@ -48,13 +77,23 @@ add_library(yquant_trading
   src/trading/trading_service.cc)
 target_link_libraries(yquant_trading PUBLIC yquant_model yquant_container)
 
+add_library(monod_simnow OBJECT src/monod/simnow_market_demo.cc)
+target_include_directories(monod_simnow PRIVATE examples)
+target_link_libraries(monod_simnow PRIVATE yquant_simnow_market yquant_strategy)
+
 add_executable(monod
+  $<TARGET_OBJECTS:monod_simnow>
   src/monod/main.cc src/monod/trading_demo.cc src/monod/funds_demo.cc
   src/monod/positions_demo.cc src/monod/reservation_demo.cc
   src/monod/startup_demo.cc src/monod/funds_lifecycle_demo.cc
   src/monod/position_holds_demo.cc src/monod/maker_demo.cc)
 target_include_directories(monod PRIVATE examples)
-target_link_libraries(monod PRIVATE yquant_strategy yquant_trading)
+target_link_libraries(monod PRIVATE yquant_strategy yquant_trading
+  yquant_simnow_market)
+add_custom_target(verify_simnow_market
+  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify_simnow_market
+    --monod $<TARGET_FILE:monod>
+  DEPENDS monod USES_TERMINAL VERBATIM)
 
 include(CTest)
 if(BUILD_TESTING)
@@ -65,6 +104,29 @@ if(BUILD_TESTING)
     GIT_REPOSITORY https://github.com/google/googletest.git
     GIT_TAG 6910c9d9165801d8827d628cb72eb7ea9dd538c5)
   FetchContent_MakeAvailable(googletest)
+
+  add_executable(simnow_market_test tests/simnow_market_test.cc)
+  target_include_directories(simnow_market_test PRIVATE src/market examples)
+  target_link_libraries(simnow_market_test PRIVATE yquant_simnow_market yquant_ctp_md
+    yquant_strategy GTest::gtest_main Threads::Threads)
+  add_test(NAME v1_04_simnow_market COMMAND simnow_market_test)
+  add_executable(simnow_market_fixture tests/simnow_market_fixture.cc
+    $<TARGET_OBJECTS:monod_simnow>)
+  target_include_directories(simnow_market_fixture PRIVATE src/market src/monod)
+  target_link_libraries(simnow_market_fixture PRIVATE yquant_simnow_market
+    yquant_ctp_md yquant_strategy Threads::Threads)
+  add_test(NAME v1_04_simnow_market_monod COMMAND
+    ${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify_simnow_market
+    --monod $<TARGET_FILE:simnow_market_fixture> --front tcp://fixture:1
+    --symbol IFtest --count 2 --timeout 2)
+  add_test(NAME v1_04_simnow_market_cli COMMAND ${CMAKE_COMMAND}
+    -DFIXTURE=$<TARGET_FILE:simnow_market_fixture> -DMONOD=$<TARGET_FILE:monod>
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/simnow_market_cli_test.cmake)
+  set_tests_properties(v1_04_simnow_market_monod v1_04_simnow_market_cli
+    PROPERTIES ENVIRONMENT
+    "YQUANT_CTP_BROKER_ID=test;YQUANT_CTP_USER_ID=test;YQUANT_CTP_PASSWORD=test")
+  set_tests_properties(v1_04_simnow_market v1_04_simnow_market_monod v1_04_simnow_market_cli
+    PROPERTIES TIMEOUT 10 LABELS v1_04_simnow_market)
 
   add_executable(market_maker_test tests/market_maker_test.cc)
   target_link_libraries(market_maker_test PRIVATE yquant_strategy GTest::gtest_main)

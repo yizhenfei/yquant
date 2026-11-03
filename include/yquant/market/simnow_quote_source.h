@@ -1,0 +1,34 @@
+#ifndef YQUANT_MARKET_SIMNOW_QUOTE_SOURCE_H_
+#define YQUANT_MARKET_SIMNOW_QUOTE_SOURCE_H_
+
+#include <cstdint>
+#include <memory>
+#include <string_view>
+
+#include "yquant/market/quote_source.h"
+
+namespace yquant::market {
+
+// One front and one CTP contract, mapped to the application's instrument ID.
+// Connect copies all strings before returning; supply a matching market SDK.
+struct SimNowMarketConfig {
+  std::string_view front, symbol, broker, user, password;
+  std::uint32_t instrument_id = 0;
+  // An explicit anonymous login sends empty broker, user and password fields.
+  bool anonymous = false;
+};
+
+// Receives one SimNow market subscription. Call Connect, Read and destroy it
+// on the business thread. Read advances login and subscription without waiting
+// for a reply. A failed session returns idle and must be destroyed to restart.
+class SimNowQuoteSource : public QuoteSource {
+ public:
+  // Starts the SDK connection. Invalid parameters or API creation failure
+  // return nullptr; asynchronous errors are reported through failed().
+  static std::unique_ptr<SimNowQuoteSource> Connect(const SimNowMarketConfig&);
+  virtual bool failed() const = 0;
+};
+
+}  // namespace yquant::market
+
+#endif  // YQUANT_MARKET_SIMNOW_QUOTE_SOURCE_H_

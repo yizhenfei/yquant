@@ -13,7 +13,7 @@ Linux 执行正式构建、功能及并发验收；macOS 支持本机构建、�
 
 ## 构建与验证
 
-使用支持 C++20 的编译器及 CMake 3.20 或更高版本：
+使用支持 C++20 的编译器、CMake 3.20 或更高版本，以及与目标平台匹配的 CTP 行情 SDK。Linux 和 macOS 的默认构建都链接厂商动态库。先按[行情 SDK 安装说明](docs/design/simnow-market.md#构建依赖)准备 `vendor/ctp/`，或在配置时指定 `-DYQUANT_CTP_SDK_ROOT=/path/to/sdk`：
 
 ```sh
 cmake -S . -B build
@@ -23,6 +23,8 @@ ctest --test-dir build --output-on-failure
 ```
 
 `monod` 在 `main` 中将行情 service 按 ID 注册到本地实例表，再把实例表注入 factory，取得行情 client。container 调度行情 service，由 service 内部接收两个品种交错的五条固定行情，只为订阅品种输出报价意图。`main` 向 container 提供退出条件，固定行情处理完成后结束运行，随后退订并退出。固定行情源位于 `examples/market/`，验证策略位于 `examples/strategies/`。
+
+运行 `ctest --test-dir build -L v1_04_simnow_market --output-on-failure` 验证可控行情接入。使用有效 SimNow 行情前置和账户时，按[真实连接验收说明](docs/design/simnow-market.md#验收)运行 `scripts/verify_simnow_market`，逐条比较接收的买卖价与策略输出。
 
 运行交易报单验证场景：
 
