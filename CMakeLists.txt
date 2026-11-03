@@ -25,8 +25,9 @@ add_library(yquant_market
   src/market/market_service_registry.cc)
 target_link_libraries(yquant_market PUBLIC yquant_model yquant_container)
 
-add_library(yquant_strategy src/strategy/strategy_service.cc)
-target_link_libraries(yquant_strategy PUBLIC yquant_market)
+add_library(yquant_strategy
+  src/strategy/market_maker.cc src/strategy/strategy_service.cc)
+target_link_libraries(yquant_strategy PUBLIC yquant_market yquant_trading)
 
 add_library(yquant_trading
   src/trading/account_startup.cc
@@ -51,7 +52,7 @@ add_executable(monod
   src/monod/main.cc src/monod/trading_demo.cc src/monod/funds_demo.cc
   src/monod/positions_demo.cc src/monod/reservation_demo.cc
   src/monod/startup_demo.cc src/monod/funds_lifecycle_demo.cc
-  src/monod/position_holds_demo.cc)
+  src/monod/position_holds_demo.cc src/monod/maker_demo.cc)
 target_include_directories(monod PRIVATE examples)
 target_link_libraries(monod PRIVATE yquant_strategy yquant_trading)
 
@@ -64,6 +65,15 @@ if(BUILD_TESTING)
     GIT_REPOSITORY https://github.com/google/googletest.git
     GIT_TAG 6910c9d9165801d8827d628cb72eb7ea9dd538c5)
   FetchContent_MakeAvailable(googletest)
+
+  add_executable(market_maker_test tests/market_maker_test.cc)
+  target_link_libraries(market_maker_test PRIVATE yquant_strategy GTest::gtest_main)
+  add_test(NAME v1_03_maker COMMAND market_maker_test)
+  add_test(NAME v1_03_maker_monod
+    COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_maker_test.cmake)
+  set_tests_properties(v1_03_maker v1_03_maker_monod
+    PROPERTIES TIMEOUT 10 LABELS v1_03_maker)
 
   add_executable(trading_adapter_test tests/trading_adapter_test.cc)
   target_link_libraries(trading_adapter_test PRIVATE

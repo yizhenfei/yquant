@@ -6,6 +6,7 @@
 
 #include "funds_demo.h"
 #include "funds_lifecycle_demo.h"
+#include "maker_demo.h"
 #include "market/fixed_quote_source.h"
 #include "position_holds_demo.h"
 #include "positions_demo.h"
@@ -37,6 +38,9 @@ class PrintIntent final : public yquant::examples::QuoteIntentListener {
 }  // namespace
 
 int main(int argc, char* argv[]) {
+  if (argc == 2 && std::string_view(argv[1]) == "--maker") {
+    return yquant::monod::RunMakerDemo();
+  }
   if (argc == 2 && std::string_view(argv[1]) == "--orders") {
     return yquant::monod::RunTradingDemo();
   }
@@ -67,14 +71,14 @@ int main(int argc, char* argv[]) {
   }
   if (argc == 2 && std::string_view(argv[1]) == "--help") {
     std::printf("Usage: monod "
-                "[--orders|--cancel|--fills|--funds|"
+                "[--maker|--orders|--cancel|--fills|--funds|"
                 "--positions|--reserve|--startup|"
                 "--funds-lifecycle|--positions-lifecycle]\n");
     return 0;
   }
   if (argc != 1) {
     std::fprintf(stderr, "Usage: monod "
-                         "[--orders|--cancel|--fills|--funds|"
+                         "[--maker|--orders|--cancel|--fills|--funds|"
                          "--positions|--reserve|--startup|"
                          "--funds-lifecycle|--positions-lifecycle]\n");
     return 2;

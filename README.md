@@ -27,6 +27,7 @@ ctest --test-dir build --output-on-failure
 运行交易报单验证场景：
 
 ```sh
+./build/monod --maker
 ./build/monod --orders
 ./build/monod --cancel
 ./build/monod --fills
@@ -38,6 +39,8 @@ ctest --test-dir build --output-on-failure
 ./build/monod --positions-lifecycle
 ctest --test-dir build -L v1_02_order --output-on-failure
 ```
+
+`--maker` 在单进程中运行[简单做市策略](docs/design/strategy.md)，输出双边报单、改价撤单、最终挂单及[延迟分位数](docs/benchmarks/maker.md)。
 
 交易场景通过本地 factory 创建 client，向两个模拟账户报单，验证委托接受、柜台拒绝和确定未发送，并验证发送失败后迟到的有效回报能够更新订单状态。委托回报与汇总写入 `stdout`，发送失败及迟到回报诊断写入 `stderr`。
 
