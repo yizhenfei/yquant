@@ -184,7 +184,7 @@ class TradingService final : public container::Service {
   // Keeps row order contiguous and locates a holding by its complete identity.
   struct PositionsBook {
     std::vector<PositionInfo> rows;
-    std::unordered_map<PositionKey, std::size_t, PositionKeyHash> index;
+    std::unordered_map<PositionKey, std::size_t, PositionKey::Hash> index;
   };
   enum class SyncState { kNotStarted, kPending, kReady, kFailed };
   // Carries the bound account into every callback without a downcast or lookup.

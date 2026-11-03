@@ -27,24 +27,28 @@ struct PositionKey {
             order.hedge};
   }
   bool operator==(const PositionKey&) const = default;
+
+  // Hashes the instrument, position side and hedge category for map lookup.
+  struct Hash {
+    std::size_t operator()(const PositionKey& key) const {
+      return (std::hash<std::uint32_t>{}(key.instrument_id) << 3) ^
+             (static_cast<std::size_t>(key.side) << 2) ^
+             static_cast<std::size_t>(key.hedge);
+    }
+  };
 };
 
-// Combines all identity fields; equality compares the complete key.
-struct PositionKeyHash {
-  std::size_t operator()(const PositionKey& key) const {
-    return (std::hash<std::uint32_t>{}(key.instrument_id) << 3) ^
-           (static_cast<std::size_t>(key.side) << 2) ^
-           static_cast<std::size_t>(key.hedge);
-  }
-};
-
-// Holds the bucket's total cost and occupied margin in the account currency.
-// cost includes the contract multiplier. Yesterday's cost uses the settlement
-// basis already reflected in startup book equity; today's cost uses fills.
-// Partial closes allocate both totals in proportion to the quantity closed.
+// Stores the cost basis and occupied margin for today's or yesterday's position.
+// Both amounts are expressed in the account currency.
 struct PositionCost {
+  // Total cost basis: price basis * contract multiplier * position quantity.
+  // Uses the weighted-average opening price for today's position,
+  // or the previous trading day's settlement price for yesterday's position.
   double cost = 0;
+
+  // Margin occupied by this position.
   double margin = 0;
+
   bool operator==(const PositionCost&) const = default;
 };
 

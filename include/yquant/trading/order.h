@@ -81,8 +81,9 @@ enum class OrderState {
   kFilled,
 };
 
-// Owns the original order information and its state at one particular version.
-// Copy the snapshot to retain it after a report callback returns.
+// Represents an order at a specific version. order contains the parameters
+// submitted by the caller; filled_quantity is the total filled at that version.
+// Copy the snapshot if you need it after the callback returns.
 struct OrderSnapshot {
   OrderInfo order;
   OrderState state = OrderState::kSubmitting;
