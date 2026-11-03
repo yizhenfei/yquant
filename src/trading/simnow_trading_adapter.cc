@@ -18,7 +18,9 @@
 #include "simnow_order_holds.h"
 #include "simnow_order_tag.h"
 #include "simnow_position_costs.h"
+#include "simnow_submissions.h"
 #include "simnow_trader_session.h"
+#include "yquant/trading/trading_service.h"
 
 namespace yquant::trading {
 namespace {
@@ -39,7 +41,7 @@ std::string NativeId(const char (&raw)[N]) {
 
 enum class Kind {
   kConnect, kDisconnect, kAuth, kLogin, kError, kFunds, kPositions, kDetails, kOrders, kTrades, kTerms,
-  kLiveOrder, kLiveTrade
+  kLiveOrder, kLiveTrade, kInsertError
 };
 
 bool IsControlEvent(Kind kind) {
@@ -56,6 +58,13 @@ struct HistoryFill {
   int quantity;
 };
 
+// Retains identity from an insert error before the exchange assigns an ID.
+struct InsertError {
+  std::string ref, exchange, symbol;
+  std::optional<SimNowOrderOwner> owner;
+  int input_id;
+};
+
 // Copies just the callback data needed by Run, never SDK pointers or passwords.
 struct Event {
   Kind kind;
@@ -69,7 +78,7 @@ struct Event {
   internal::TermsField field = internal::TermsField::kInstrument;
   std::unique_ptr<internal::TermsRow> terms_row{};
   std::variant<std::monostate, SimNowBalance, SimNowPosition,
-               SimNowOrder, HistoryFill> row{};
+               SimNowOrder, HistoryFill, InsertError> row{};
 };
 
 // CTP uses the largest double as an unset value.
@@ -89,7 +98,7 @@ auto PositionIdentity(const SimNowPosition& row) {
 class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
  public:
   explicit Session(const SimNowTraderConfig& c)
-      : front_(c.front), broker_(c.broker), user_(c.user), timeout_(c.timeout), instruments_(c.instruments) {}
+      : front_(c.front), broker_(c.broker), user_(c.user), timeout_(c.timeout), instruments_(c.instruments), submissions_(instruments_) {}
   ~Session() override {
     if (api_) {
       api_->RegisterSpi(nullptr);
@@ -156,8 +165,7 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
     return query_.phase == SnapshotPhase::kComplete ? &snapshot_ : nullptr;
   }
 
-  // ITradingAdapter implementation. Login cannot certify an account snapshot
-  // or transmit orders.
+  // ITradingAdapter implementation.
   void SetCallback(ITradingAdapterCallback& callback) override { callback_ = &callback; }
   bool StartAccountSync(std::uint64_t id) override {
     if (!callback_ || !id || id <= sync_id_ || status_.phase == LoginPhase::kFailed) {
@@ -168,7 +176,21 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
     staged_ = false;
     return true;
   }
-  SendResult SubmitOrder(const SubmitOrderRequest&) override {
+  SendResult SubmitOrder(const SubmitOrderRequest& request) override {
+    if (!staged_ || status_.phase != LoginPhase::kLoggedIn) return SendResult::kNotSent;
+    {
+      std::lock_guard lock(mutex_);
+      if (overflow_ || generation_ != login_generation_) return SendResult::kNotSent;
+    }
+    if (!NextRequest()) return SendResult::kNotSent;
+    CThostFtdcInputOrderField row{};
+    Copy(row.BrokerID, broker_);
+    Copy(row.InvestorID, user_);
+    Copy(row.UserID, user_);
+    if (!submissions_.Prepare(request.order, id_, row)) return SendResult::kNotSent;
+    const int rc = api_->ReqOrderInsert(&row, id_);
+    if (rc == 0) return SendResult::kSent;
+    std::fprintf(stderr, "simnow insert_not_sent request=%d code=%d\n", id_, rc);
     return SendResult::kNotSent;
   }
   SendResult CancelOrder(const AdapterCancelOrderRequest&) override {
@@ -231,6 +253,8 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
           binding.close_priority == SimNowClosePriority::kTodayFirst;
       baseline.order_terms.emplace(binding.instrument_id, std::pair{buy, sell});
     }
+    submissions_.Start(status_.front_id, status_.session_id,
+                       status_.max_order_ref, snapshot_.history);
     staged_ = true;
     callback_->OnAccountRecovery(sync_id_, std::move(baseline));
     callback_->OnAccountSyncReport({sync_id_, AccountSyncResult::kComplete});
@@ -340,8 +364,11 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
       status_.phase = LoginPhase::kAuthenticating;
       const int rc = api_->ReqAuthenticate(&auth_, id_);
       if (rc) Fail("auth_request", rc);
+    } else if (staged_ && (event.kind == Kind::kInsertError ||
+               (event.kind == Kind::kError && submissions_.ByRequest(event.id)))) {
+      DeliverInsertError(event);
     } else if (event.kind == Kind::kLiveTrade || event.kind == Kind::kLiveOrder) {
-      if (sync_id_ && staged_) DeliverRecovered(event);
+      if (sync_id_ && staged_) DeliverLive(event);
       else if (sync_id_ && sync_started_) {
         dirty_window_ = true;
         observed_.push_back(std::move(event));
@@ -380,7 +407,7 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
     Push(std::move(e));
   }
   void OnRspError(CThostFtdcRspInfoField* e, int id, bool last) override {
-    Push({Kind::kError, id, e ? e->ErrorID : -1, false, last});
+    Push({Kind::kError, id, e ? e->ErrorID : -1, e != nullptr, last});
   }
 
   void OnRspQryTradingAccount(CThostFtdcTradingAccountField* r,
@@ -445,6 +472,14 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
                      int id, bool last) override {
     PushFill({Kind::kTrades, id, error ? error->ErrorID : 0, true, last}, r);
   }
+  void OnRspOrderInsert(CThostFtdcInputOrderField* row, CThostFtdcRspInfoField* error,
+                        int id, bool last) override {
+    PushInsertError(row, error, id, last);
+  }
+  void OnErrRtnOrderInsert(CThostFtdcInputOrderField* row,
+                           CThostFtdcRspInfoField* error) override {
+    PushInsertError(row, error, 0, true);
+  }
   void OnRtnTrade(CThostFtdcTradeField* row) override {
     PushFill({Kind::kLiveTrade}, row);
   }
@@ -474,6 +509,37 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
       CThostFtdcRspInfoField* error, int id, bool last) override {
     PushTerms(internal::TermsField::kFees, r, error, id, last,
               !r || MatchesInvestor(*r));
+  }
+
+  void PushInsertError(const CThostFtdcInputOrderField* row,
+                       const CThostFtdcRspInfoField* error, int id, bool last) {
+    if (!error || !error->ErrorID) return;
+    Event e{Kind::kInsertError, id, error->ErrorID, true, last};
+    if (row) {
+      e.valid = Field(row->BrokerID) == broker_ && Field(row->InvestorID) == user_;
+      e.row = InsertError{NativeId(row->OrderRef), std::string(Field(row->ExchangeID)),
+          std::string(Field(row->InstrumentID)), internal::ReadOrderTag(*row), row->RequestID};
+    }
+    Push(std::move(e));
+  }
+
+  void DeliverInsertError(const Event& e) {
+    if (!e.code || !e.valid) return;
+    const auto* entry = submissions_.ByRequest(e.id);
+    if (const auto* error = std::get_if<InsertError>(&e.row)) {
+      const auto* by_ref = submissions_.ByReference(error->ref);
+      if (e.id == 0 && error->owner) entry = by_ref;
+      if (!entry || (!error->ref.empty() && entry != by_ref) ||
+          (error->input_id && error->input_id != entry->request_id) ||
+          (!error->symbol.empty() &&
+           !submissions_.MatchesInstrument(*entry, error->exchange, error->symbol)) ||
+          (error->owner && (error->owner->order_id != entry->order.order_id ||
+                            error->owner->strategy_id != entry->order.strategy_id))) {
+        std::fprintf(stderr, "simnow unassociated_insert_error request=%d code=%d\n", e.id, e.code);
+        return;
+      }
+    }
+    if (entry) callback_->OnOrderReport({entry->order.order_id, AdapterOrderState::kRejected});
   }
 
   void PushOrder(Event e, CThostFtdcOrderField* r) {
@@ -533,18 +599,66 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
     }
     return original;
   }
-  void DeliverRecovered(const Event& e) {
-    if (!e.valid || Field(e.day) != snapshot_.trading_day) return;
+  bool DeliverSubmittedOrder(const SimNowOrder& update) {
+    bool conflict = false;
+    const auto* entry = submissions_.Match(update,
+        FindSystemOrder(update.exchange, update.system_id) != nullptr, conflict);
+    if (!entry) {
+      if (conflict) callback_->OnRecoveredEvent(RecoveryRoutingFailure{});
+      return conflict;
+    }
+    AdapterOrderState state;
+    if (update.submit_status == THOST_FTDC_OSS_InsertRejected) {
+      state = AdapterOrderState::kRejected;
+    } else {
+      switch (update.status) {
+        case THOST_FTDC_OST_Canceled:
+        case THOST_FTDC_OST_NoTradeNotQueueing:
+        case THOST_FTDC_OST_PartTradedNotQueueing:
+          state = AdapterOrderState::kCanceled;
+          break;
+        case THOST_FTDC_OST_NoTradeQueueing:
+        case THOST_FTDC_OST_PartTradedQueueing:
+        case THOST_FTDC_OST_AllTraded:
+          state = AdapterOrderState::kAccepted;
+          break;
+        default: return true;  // Still waiting for a definitive order state.
+      }
+    }
+    callback_->OnOrderReport({entry->order.order_id, state, update.traded});
+    return true;
+  }
+
+  void DeliverLive(const Event& e) {
+    if (!e.valid) return;
+    if (Field(e.day) != snapshot_.trading_day) {
+      const auto* order = std::get_if<SimNowOrder>(&e.row);
+      if (Field(e.day).empty() && order && order->submit_status == THOST_FTDC_OSS_InsertRejected &&
+          order->front == status_.front_id && order->session == status_.session_id) {
+        DeliverSubmittedOrder(*order);
+      }
+      return;
+    }
     const auto& history = snapshot_.history;
     const auto* fill = std::get_if<HistoryFill>(&e.row);
     const auto* update = std::get_if<SimNowOrder>(&e.row);
     const SimNowOrder* original = nullptr;
     if (fill) {
+      if (const auto* entry = submissions_.ByExchange(fill->id.venue, fill->system_id)) {
+        if (submissions_.MatchesInstrument(*entry, fill->id.venue, fill->symbol) &&
+            submissions_.MatchesTrade(*entry, fill->direction, fill->offset, fill->hedge)) {
+          callback_->OnTradeReport({entry->order.order_id, fill->id, fill->price, fill->quantity});
+        } else {
+          callback_->OnRecoveredEvent(RecoveryRoutingFailure{});
+        }
+        return;
+      }
       original = FindSystemOrder(fill->id.venue, fill->system_id);
       if (original && (original->symbol != fill->symbol ||
           original->direction != fill->direction || original->hedge != fill->hedge ||
           original->offset != fill->offset)) original = nullptr;
     } else if (update) {
+      if (DeliverSubmittedOrder(*update)) return;
       original = ResolveOrder(*update);
     }
     if (!original) {
@@ -947,6 +1061,7 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
       if (rc) Fail("login_request", rc);
     } else {
       status_.phase = LoginPhase::kLoggedIn;
+      login_generation_ = e.generation;
       status_.front_id = e.front;
       status_.session_id = e.session;
       status_.trading_day = Field(e.day);
@@ -971,6 +1086,8 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
   std::deque<Event> queue_;
   std::size_t control_events_ = 0;
   const SimNowInstruments instruments_;
+  internal::SimNowSubmissions submissions_;
+  std::uint64_t login_generation_ = 0;
   std::map<std::pair<std::string, std::string>, std::size_t> late_system_ids_;
   std::unordered_map<std::size_t, std::string> late_refs_;
   ITradingAdapterCallback* callback_ = nullptr;

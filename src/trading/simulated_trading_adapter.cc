@@ -134,6 +134,12 @@ void SimulatedTradingAdapter::Emit(const AdapterOrderReport& report) {
     if (report.state == AdapterOrderState::kRejected &&
         report.filled_quantity == 0 && order.state == OrderState::kSent) {
       order.state = OrderState::kRejected;
+    } else if (report.state == AdapterOrderState::kCanceled &&
+               internal::IsActiveOrder(order.state) &&
+               report.filled_quantity >= 0 && report.filled_quantity <= order.order.quantity) {
+      order.filled_quantity = std::max(order.filled_quantity, report.filled_quantity);
+      order.state = internal::StateAfterFill(OrderState::kCanceled, order.filled_quantity,
+                                             order.order.quantity);
     } else if (report.state == AdapterOrderState::kAccepted &&
                report.filled_quantity >= 0 &&
                report.filled_quantity <= order.order.quantity &&

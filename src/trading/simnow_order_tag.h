@@ -13,6 +13,8 @@ bool WriteOrderTag(const SimNowOrderOwner& owner, CThostFtdcInputOrderField& row
 // Returns no owner for an absent, incomplete or unrecognized tag.
 std::optional<SimNowOrderOwner> ReadOrderTag(const CThostFtdcOrderField& row);
 
+std::optional<SimNowOrderOwner> ReadOrderTag(const CThostFtdcInputOrderField& row);
+
 }  // namespace yquant::trading::internal
 
 #endif  // YQUANT_SRC_TRADING_SIMNOW_ORDER_TAG_H_

@@ -17,14 +17,14 @@ struct SubmitOrderRequest;
 
 // Records transmission status independently of the counter's decision.
 enum class SendResult { kSent, kNotSent };
-enum class AdapterOrderState { kAccepted, kRejected };
+enum class AdapterOrderState { kAccepted, kRejected, kCanceled };
 
 // Carries the original ID even before the counter assigns its own order ID.
 struct AdapterOrderReport {
   OrderId order_id;
   AdapterOrderState state = AdapterOrderState::kAccepted;
   // Total filled quantity reported by the counter, not this event's increment.
-  // Rejection requires zero; acceptance permits values from zero to order size.
+  // Rejection requires zero. Cancellation includes the final cumulative fill.
   std::int32_t filled_quantity = 0;
 };
 

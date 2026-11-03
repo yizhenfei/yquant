@@ -12,6 +12,7 @@
 #include "gtest/gtest.h"
 #include "yquant/strategy/market_maker.h"
 #include "simnow_order_tag.h"
+#include "simnow_submissions.h"
 #include "simnow_trader_session.h"
 #include "yquant/trading/order_id_generator.h"
 #include "yquant/trading/internal/funds_calculation.h"
@@ -215,12 +216,20 @@ class Probe final : public CThostFtdcTraderApi {
     spi->OnRspQryTrade(nullptr, nullptr, id, true);
     return 0;
   }
+  int ReqOrderInsert(CThostFtdcInputOrderField* r, int id) override {
+    EXPECT_EQ(r->RequestID, id);
+    inserts.push_back(*r);
+    if (on_insert) on_insert(*r);
+    return insert_rc;
+  }
 #include <unused_trader_calls.inc>
   int multiplier = 10;
   std::vector<std::string> position_contract_queries, detail_queries;
   std::vector<CThostFtdcInvestorPositionField> position_rows;
   std::vector<CThostFtdcInvestorPositionDetailField> details;
-  int order_queries = 0, trade_queries = 0;
+  int order_queries = 0, trade_queries = 0, insert_rc = 0;
+  std::vector<CThostFtdcInputOrderField> inserts;
+  std::function<void(CThostFtdcInputOrderField&)> on_insert;
   std::function<void()> on_funds_query;
   std::vector<CThostFtdcOrderField> history_orders;
   std::vector<CThostFtdcTradeField> history_trades;
@@ -1526,6 +1535,271 @@ TEST(AccountBoundaryTimeout, UnstableWindowsShareOneDeadline) {
   for (int i = 0; i < 150; ++i) service.Run();
   EXPECT_FALSE(service.IsAccountReady(1));  // The orphan fill remains unaccounted for.
 }
+// Collects the exact business outcomes seen by a single submitting strategy.
+class SubmitResults final : public TradingListener {
+ public:
+  // TradingListener implementation.
+  void OnRequestFailure(const RequestFailure& r) override { failures.push_back(r.reason); }
+  void OnOrderReport(const OrderReport& r) override { reports.push_back(r.snapshot); }
+  void OnTradeReport(const TradeReport& r) override { trades.push_back(r.trade); }
+  void OnCancelReport(const CancelReport&) override { ADD_FAILURE(); }
+  std::vector<FailureReason> failures;
+  std::vector<OrderSnapshot> reports;
+  std::vector<TradeInfo> trades;
+};
+
+class SimNowSubmitTest : public StartupSnapshotTest {
+ protected:
+  void SetUp() override {
+    StartupSnapshotTest::SetUp();
+    probe->automatic = true;
+    probe->account_balance.FrozenMargin = probe->account_balance.FrozenCommission = 0;
+    probe->account_balance.Available = 10000;
+    ASSERT_TRUE(service.BindAccount(7, *session));
+    TradingServiceRegistry registry;
+    ASSERT_TRUE(registry.Register(3, service));
+    client = TradingClientFactory(registry).Create(3);
+    for (int i = 0; i < 100; ++i) service.Run();
+    ASSERT_TRUE(service.IsAccountReady(7));
+  }
+  FundsSnapshot Funds() {
+    FundsSnapshot f;
+    EXPECT_TRUE(client->QueryFunds({7}, f));
+    return f;
+  }
+  static CThostFtdcOrderField Accepted(const CThostFtdcInputOrderField& input) {
+    CThostFtdcOrderField row{};
+    std::strcpy(row.BrokerID, input.BrokerID);
+    std::strcpy(row.InvestorID, input.InvestorID);
+    std::strcpy(row.InstrumentID, input.InstrumentID);
+    std::strcpy(row.ExchangeID, input.ExchangeID);
+    std::strcpy(row.TradingDay, "20261103");
+    std::strcpy(row.OrderSysID, "123");
+    std::strcpy(row.OrderRef, input.OrderRef);
+    row.FrontID = 3;
+    row.SessionID = 7;
+    row.Direction = input.Direction;
+    row.CombOffsetFlag[0] = input.CombOffsetFlag[0];
+    row.CombHedgeFlag[0] = input.CombHedgeFlag[0];
+    row.LimitPrice = input.LimitPrice;
+    row.VolumeTotalOriginal = row.VolumeTotal = input.VolumeTotalOriginal;
+    row.OrderPriceType = input.OrderPriceType;
+    row.OrderStatus = THOST_FTDC_OST_NoTradeQueueing;
+    row.OrderSubmitStatus = THOST_FTDC_OSS_Accepted;
+    return row;
+  }
+  SubmitOrderRequest bid{{{5, 1}, 7, 11, 42, Side::kBuy, Offset::kOpen, 100, 2}};
+  SubmitResults first, second;
+  TradingService service;
+  std::unique_ptr<TradingClient> client;
+};
+
+TEST_F(SimNowSubmitTest, NativeLimitRequestAndDeferredAcceptanceKeepOriginalOwner) {
+  probe->on_insert = [&](auto& input) {
+    auto row = Accepted(input);
+    probe->spi->OnRtnOrder(&row);
+    probe->spi->OnRtnOrder(&row);
+    EXPECT_TRUE(first.reports.empty());
+  };
+  ASSERT_EQ(client->SubmitOrder(bid, first), RequestResult::kDelivered);
+  ASSERT_EQ(probe->inserts.size(), 1);
+  const auto& r = probe->inserts.front();
+  EXPECT_STREQ(r.BrokerID, "test");
+  EXPECT_STREQ(r.InvestorID, "test");
+  EXPECT_STREQ(r.UserID, "test");
+  EXPECT_STREQ(r.InstrumentID, "TF2612");
+  EXPECT_STREQ(r.ExchangeID, "CFFEX");
+  EXPECT_STREQ(r.OrderRef, "124");
+  EXPECT_EQ(r.OrderPriceType, THOST_FTDC_OPT_LimitPrice);
+  EXPECT_EQ(r.Direction, THOST_FTDC_D_Buy);
+  EXPECT_EQ(r.CombOffsetFlag[0], THOST_FTDC_OF_Open);
+  EXPECT_EQ(r.CombHedgeFlag[0], THOST_FTDC_HF_Speculation);
+  EXPECT_EQ(r.VolumeTotalOriginal, 2);
+  EXPECT_EQ(r.LimitPrice, 100);
+  EXPECT_EQ(r.TimeCondition, THOST_FTDC_TC_GFD);
+  EXPECT_EQ(r.VolumeCondition, THOST_FTDC_VC_AV);
+  EXPECT_EQ(r.MinVolume, 1);
+  EXPECT_EQ(r.ContingentCondition, THOST_FTDC_CC_Immediately);
+  EXPECT_EQ(r.ForceCloseReason, THOST_FTDC_FCC_NotForceClose);
+  EXPECT_EQ(internal::ReadOrderTag(r), (SimNowOrderOwner{{5,1},11}));
+  OrderSnapshot snapshot;
+  ASSERT_TRUE(client->QueryOrder({{5,1},7,11}, snapshot));
+  EXPECT_EQ(snapshot.state, OrderState::kSent);
+  EXPECT_DOUBLE_EQ(Funds().reserved, 216);
+  service.Run();
+  service.Run();
+  ASSERT_EQ(first.reports.size(), 1);
+  EXPECT_EQ(first.reports[0].order, bid.order);
+  EXPECT_EQ(first.reports[0].state, OrderState::kAccepted);
+}
+
+TEST_F(SimNowSubmitTest, BothEarlyErrorPathsReleaseOnlyTheRejectedOrdersHold) {
+  auto ask = bid;
+  ask.order.order_id = {8, 1};
+  ask.order.strategy_id = 12;
+  ask.order.side = Side::kSell;
+  client->SubmitOrder(bid, first);
+  client->SubmitOrder(ask, second);
+  ASSERT_EQ(probe->inserts.size(), 2);
+  auto& a = probe->inserts[0];
+  auto& b = probe->inserts[1];
+  EXPECT_NE(a.RequestID, b.RequestID);
+  EXPECT_STREQ(b.OrderRef, "125");
+  EXPECT_EQ(b.Direction, THOST_FTDC_D_Sell);
+  CThostFtdcRspInfoField error{};
+  error.ErrorID = 31;
+  probe->spi->OnRspOrderInsert(&a, &error, b.RequestID, true);  // Conflicting IDs.
+  service.Run();
+  EXPECT_TRUE(first.reports.empty());
+  EXPECT_TRUE(second.reports.empty());
+  probe->spi->OnErrRtnOrderInsert(&b, &error);
+  probe->spi->OnRspOrderInsert(&b, &error, b.RequestID, true);
+  service.Run();
+  service.Run();
+  ASSERT_EQ(second.reports.size(), 1);
+  EXPECT_EQ(second.reports[0].state, OrderState::kRejected);
+  EXPECT_EQ(second.reports[0].order.order_id, ask.order.order_id);
+  EXPECT_DOUBLE_EQ(Funds().reserved, 216);
+  EXPECT_TRUE(first.reports.empty());
+  probe->spi->OnRspOrderInsert(nullptr, &error, a.RequestID, true);
+  service.Run();
+  ASSERT_EQ(first.reports.size(), 1);
+  EXPECT_EQ(first.reports[0].state, OrderState::kRejected);
+  EXPECT_EQ(Funds().reserved, 0);
+}
+
+TEST_F(SimNowSubmitTest, NativeNonzeroReturnAndFundsCheckNeverRetry) {
+  probe->insert_rc = -3;
+  client->SubmitOrder(bid, first);
+  ASSERT_EQ(probe->inserts.size(), 1);
+  EXPECT_EQ(Funds().reserved, 0);
+  EXPECT_TRUE(first.failures.empty());
+  service.Run();
+  EXPECT_EQ(first.failures, std::vector{FailureReason::kSendFailed});
+  OrderSnapshot snapshot;
+  ASSERT_TRUE(client->QueryOrder({{5,1},7,11}, snapshot));
+  EXPECT_EQ(snapshot.state, OrderState::kSendFailed);
+  bid.order.order_id.sequence++;
+  bid.order.quantity = 100000;
+  client->SubmitOrder(bid, second);
+  service.Run();
+  EXPECT_EQ(second.failures, std::vector{FailureReason::kInsufficientFunds});
+  EXPECT_EQ(probe->inserts.size(), 1);
+}
+
+TEST_F(SimNowSubmitTest, ExchangeIdentityRoutesLaterUpdatesAndFill) {
+  client->SubmitOrder(bid, first);
+  auto row = Accepted(probe->inserts.at(0));
+  probe->spi->OnRtnOrder(&row);
+  service.Run();
+  row.FrontID = row.SessionID = 0;
+  row.OrderRef[0] = 0;
+  row.VolumeTraded = 1;
+  row.OrderStatus = THOST_FTDC_OST_PartTradedQueueing;
+  probe->spi->OnRtnOrder(&row);
+  service.Run();
+  FundsSnapshot pending;
+  EXPECT_FALSE(client->QueryFunds({7}, pending));
+  CThostFtdcTradeField fill{};
+  std::strcpy(fill.BrokerID, row.BrokerID);
+  std::strcpy(fill.InvestorID, row.InvestorID);
+  std::strcpy(fill.TradingDay, row.TradingDay);
+  std::strcpy(fill.ExchangeID, row.ExchangeID);
+  std::strcpy(fill.InstrumentID, row.InstrumentID);
+  std::strcpy(fill.OrderSysID, row.OrderSysID);
+  std::strcpy(fill.TradeID, "trade");
+  fill.Direction = row.Direction;
+  fill.OffsetFlag = row.CombOffsetFlag[0];
+  fill.HedgeFlag = row.CombHedgeFlag[0];
+  fill.Price = 100;
+  fill.Volume = 1;
+  probe->spi->OnRtnTrade(&fill);
+  service.Run();
+  ASSERT_EQ(first.trades.size(), 1);
+  EXPECT_EQ(first.trades[0].order_id, bid.order.order_id);
+  EXPECT_EQ(Funds().reserved, 108);
+  row.OrderStatus = THOST_FTDC_OST_Canceled;
+  probe->spi->OnRtnOrder(&row);
+  service.Run();
+  EXPECT_EQ(Funds().reserved, 0);
+  EXPECT_EQ(first.reports.back().state, OrderState::kCanceled);
+}
+
+TEST_F(SimNowSubmitTest, InsertRejectedOrderNotificationWithoutSystemIdIsARejection) {
+  client->SubmitOrder(bid, first);
+  auto row = Accepted(probe->inserts.at(0));
+  row.OrderSysID[0] = row.TradingDay[0] = 0;
+  row.OrderSubmitStatus = THOST_FTDC_OSS_InsertRejected;
+  row.OrderStatus = THOST_FTDC_OST_Canceled;
+  probe->spi->OnRtnOrder(&row);
+  service.Run();
+  ASSERT_EQ(first.reports.size(), 1);
+  EXPECT_EQ(first.reports[0].state, OrderState::kRejected);
+  EXPECT_EQ(Funds().reserved, 0);
+}
+
+TEST_F(SimNowSubmitTest, GenericFrontErrorOnlyRejectsItsOwnRequestId) {
+  client->SubmitOrder(bid, first);
+  ASSERT_EQ(probe->inserts.size(), 1);
+  CThostFtdcRspInfoField error{};
+  error.ErrorID = 7;
+  const int id = probe->inserts.front().RequestID;
+  probe->spi->OnRspError(&error, id + 1, true);
+  service.Run();
+  EXPECT_TRUE(first.reports.empty());
+  probe->spi->OnRspError(&error, id, true);
+  service.Run();
+  ASSERT_EQ(first.reports.size(), 1);
+  EXPECT_EQ(first.reports[0].state, OrderState::kRejected);
+  EXPECT_EQ(Funds().reserved, 0);
+}
+
+TEST_F(SimNowSubmitTest, PendingDisconnectStopsInsertBeforeSdkCall) {
+  probe->spi->OnFrontDisconnected(4097);
+  client->SubmitOrder(bid, first);
+  EXPECT_TRUE(probe->inserts.empty());
+  EXPECT_EQ(Funds().reserved, 0);
+  service.Run();
+  EXPECT_EQ(first.failures, std::vector{FailureReason::kSendFailed});
+}
+
+TEST(SimNowSubmitFields, CloseOffsetsHedgeAndReferenceLimits) {
+  internal::SimNowSubmissions submissions(kConfig.instruments);
+  SimNowOrderHistory history;
+  SimNowOrder old{};
+  old.front = 1;
+  old.session = 2;
+  old.ref = "  420";
+  old.symbol = "TF2612";
+  old.quantity = old.remaining = 1;
+  ASSERT_TRUE(history.AddOrder(old));
+  submissions.Start(1, 2, "5", history);
+  OrderInfo o{{6,1},7,12,42,Side::kSell,Offset::kClose,100,1,HedgeFlag::kHedge};
+  CThostFtdcInputOrderField r{};
+  ASSERT_TRUE(submissions.Prepare(o, 7, r));
+  EXPECT_STREQ(r.OrderRef, "421");
+  EXPECT_EQ(r.CombOffsetFlag[0], THOST_FTDC_OF_Close);
+  EXPECT_EQ(r.CombHedgeFlag[0], THOST_FTDC_HF_Hedge);
+  for (const auto& [offset, code] : {std::pair{Offset::kCloseToday, THOST_FTDC_OF_CloseToday},
+                                     std::pair{Offset::kCloseYesterday, THOST_FTDC_OF_CloseYesterday}}) {
+    r = {};
+    ++o.order_id.sequence;
+    o.offset = offset;
+    o.hedge = HedgeFlag::kArbitrage;
+    ASSERT_TRUE(submissions.Prepare(o, static_cast<int>(o.order_id.sequence + 7), r));
+    EXPECT_EQ(r.CombOffsetFlag[0], code);
+    EXPECT_EQ(r.CombHedgeFlag[0], THOST_FTDC_HF_Arbitrage);
+  }
+  submissions.Start(1, 2, "999999999998", history);
+  r = {};
+  ASSERT_TRUE(submissions.Prepare(o, 11, r));
+  EXPECT_STREQ(r.OrderRef, "999999999999");
+  ++o.order_id.sequence;
+  EXPECT_FALSE(submissions.Prepare(o, 12, r));
+  submissions.Start(1, 2, "bad", history);
+  EXPECT_FALSE(submissions.Prepare(o, 13, r));
+}
+
 TEST(StartupSnapshot, MonodPublishesOnlyTheCompletedSummary) {
   const char* args[] = {"tcp://fixture:1", "2"};
   auto connect = [](const SimNowTraderConfig& config) {

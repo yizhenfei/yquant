@@ -468,7 +468,7 @@ flow_dir=$(mktemp -d)
 
 YQuant 使用带版本的归属标记。编码器将 caller service ID、订单序号和策略 ID 的 192 位原值分成六个 32 位字，按高位在前编码为 30 个 Base85 字符，再加上 `Y1` 前缀。前 20 个字符写入 `BusinessUnit`，后 12 个写入 `OrderMemo`。收到完整且可解码的标记后，恢复原 `OrderId` 和策略归属，并可按 `OrderId` 查询。缺少标记、格式无效或版本未知的订单保留为未归属，仍可通过柜台标识查询。
 
-分配新订单前，caller 取各账户快照中本 caller 的 `LastSequence` 最大值，用它初始化共享的 `OrderIdGenerator`。这覆盖柜台本次返回的历史订单。跨交易日和已离开柜台查询范围的序号由 N13 持久化恢复。N5.9 将归属标记写入实际报单。
+分配新订单前，caller 取各账户快照中本 caller 的 `LastSequence` 最大值，用它初始化共享的 `OrderIdGenerator`。这覆盖柜台本次返回的历史订单。跨交易日和已离开柜台查询范围的序号由 N13 持久化恢复。发出限价单时将归属标记写入柜台请求。
 
 #### 合约乘数与计费参数
 
@@ -502,7 +502,15 @@ SimNow adapter 用配置中的交易所、合约和本地合约 ID 将已核实�
 
 可控验收运行 `ctest --test-dir build -R '^v1_05_account_startup$' --output-on-failure`。真实前置只读验收使用独立测试程序 `verify_simnow_account_startup FRONT [EXCHANGE SYMBOL]...`，复用交易登录环境变量，在独立流文件目录运行；只有账户就绪且资金、持仓查询成功时才返回 0。
 
-`ctest --test-dir build -L v1_05_simnow_trading --output-on-failure` 通过可控 SDK 运行 SimNow 交易接入的可控 SDK 用例。
+#### 限价报单与委托回报
+
+账户就绪后，交易服务先校验并预占资金及持仓。SimNow adapter 按配置将本地合约 ID 转为交易所和合约代码，向绑定的账户发送当日有效、允许部分成交的限价单。交易方向、开平、投保属性、限价与手数取自原请求。
+
+每次发送前，adapter 将原始 `OrderId` 与 SDK 请求编号、当前会话报单引用关联，并写入归属标记。报单引用从登录返回的 `MaxOrderRef` 与启动快照中本会话已用数值的较大值之后递增。确定未发送也消耗该引用，达到 12 位上限后返回发送失败。SDK 返回零时订单进入已发送状态，非零返回按发送失败释放占用。
+
+SDK 回调复制报单结果，由业务线程在后续 `Run()` 中交付。前置拒单按请求编号关联，未分配交易所订单号的异步错误使用报单引用和归属标记核对。委托回报先按前置号、会话号和报单引用找到本单，再绑定交易所及柜台订单号。重复拒单只释放一次占用；未确认的委托状态继续等待柜台回报。[厂商 Trader API 报单与回调说明](https://www.simnow.com.cn/DocumentDown/api_3/5_2_4/SFIT%2BCTP%2BMini%2BAPI-V1.7.0.pdf)
+
+`ctest --test-dir build -L v1_05_simnow_trading --output-on-failure` 运行全部 SimNow 交易接入可控用例。
 
 ### 跨进程调用
 

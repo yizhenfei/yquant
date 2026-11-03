@@ -42,8 +42,7 @@ bool WriteOrderTag(const SimNowOrderOwner& owner, CThostFtdcInputOrderField& row
   return true;
 }
 
-std::optional<SimNowOrderOwner> ReadOrderTag(const CThostFtdcOrderField& row) {
-  const auto head = Field(row.BusinessUnit), tail = Field(row.OrderMemo);
+static std::optional<SimNowOrderOwner> Decode(std::string_view head, std::string_view tail) {
   if (head.size() != 20 || !head.starts_with("Y1") || tail.size() != 12) {
     return std::nullopt;
   }
@@ -63,6 +62,14 @@ std::optional<SimNowOrderOwner> ReadOrderTag(const CThostFtdcOrderField& row) {
   }
   if (!values[1]) return std::nullopt;
   return SimNowOrderOwner{{values[0], values[1]}, values[2]};
+}
+
+std::optional<SimNowOrderOwner> ReadOrderTag(const CThostFtdcOrderField& row) {
+  return Decode(Field(row.BusinessUnit), Field(row.OrderMemo));
+}
+
+std::optional<SimNowOrderOwner> ReadOrderTag(const CThostFtdcInputOrderField& row) {
+  return Decode(Field(row.BusinessUnit), Field(row.OrderMemo));
 }
 
 }  // namespace yquant::trading::internal

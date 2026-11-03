@@ -239,6 +239,14 @@ void TradingService::Apply(std::uint64_t account_id,
     return;
   }
   auto& order = *record;
+  if (report.state == AdapterOrderState::kCanceled) {
+    if (order.state == OrderState::kRejected) {
+      Diagnose("invalid_report", account_id, report.order_id);
+    } else if (ConfirmCancellation(*account_index_.at(account_id), order, report.filled_quantity)) {
+      Notify({order.listener, OrderReport{MakeSnapshot(order)}, &order, order.call});
+    }
+    return;
+  }
   if (!ValidReport(order.state, order.order.quantity, report)) {
     Diagnose("invalid_report", account_id, report.order_id);
     return;
