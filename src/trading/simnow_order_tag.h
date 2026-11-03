@@ -1,0 +1,18 @@
+#ifndef YQUANT_SRC_TRADING_SIMNOW_ORDER_TAG_H_
+#define YQUANT_SRC_TRADING_SIMNOW_ORDER_TAG_H_
+
+#include <ThostFtdcTraderApi.h>
+
+#include "yquant/trading/simnow_order_history.h"
+
+namespace yquant::trading::internal {
+
+// Writes the caller, sequence and strategy to BusinessUnit and OrderMemo.
+// A zero sequence is invalid; failure leaves both SDK fields unchanged.
+bool WriteOrderTag(const SimNowOrderOwner& owner, CThostFtdcInputOrderField& row);
+// Returns no owner for an absent, incomplete or unrecognized tag.
+std::optional<SimNowOrderOwner> ReadOrderTag(const CThostFtdcOrderField& row);
+
+}  // namespace yquant::trading::internal
+
+#endif  // YQUANT_SRC_TRADING_SIMNOW_ORDER_TAG_H_

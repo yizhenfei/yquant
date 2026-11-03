@@ -96,9 +96,10 @@ int RunTraderLogin(int argc, const char* const* argv, bool collect_snapshot,
           }
         }
         std::printf("startup_snapshot trading_day=%s currencies=%zu "
-                    "position_rows=%zu account_ready=false\n",
+                    "position_rows=%zu orders=%zu fills=%zu account_ready=false\n",
                     snapshot->trading_day.c_str(), snapshot->balances.size(),
-                    snapshot->positions.size());
+                    snapshot->positions.size(), snapshot->history.orders().size(),
+                    snapshot->history.fills().size());
         std::fflush(stdout);
         return 0;
       }

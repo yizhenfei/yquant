@@ -7,6 +7,7 @@
 
 #include "yquant/model/currency.h"
 #include "yquant/trading/funds_terms.h"
+#include "yquant/trading/simnow_order_history.h"
 
 namespace yquant::trading {
 
@@ -50,10 +51,11 @@ struct SimNowStartupSnapshot {
   std::string trading_day;
   std::vector<SimNowBalance> balances;
   std::vector<SimNowPosition> positions;
+  SimNowOrderHistory history;
   std::optional<SimNowContractTerms> terms;
 };
 
-enum class SnapshotPhase { kIdle, kFunds, kPositions, kContractTerms, kComplete, kFailed };
+enum class SnapshotPhase { kIdle, kFunds, kPositions, kOrders, kTrades, kContractTerms, kComplete, kFailed };
 
 // A failed query identifies the operation or validation error and SDK code.
 struct SnapshotStatus {

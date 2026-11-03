@@ -2,12 +2,16 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstring>
+#include <limits>
 #include <memory>
 #include <thread>
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "simnow_order_tag.h"
 #include "simnow_trader_session.h"
+#include "yquant/trading/order_id_generator.h"
 #include "yquant/trading/internal/funds_calculation.h"
 #include "yquant/trading/simulated_trading_adapter.h"
 #include "trader_login.h"
@@ -158,7 +162,28 @@ class Probe final : public CThostFtdcTraderApi {
                                           nullptr, id, true);
     return 0;
   }
+  int ReqQryOrder(CThostFtdcQryOrderField* r, int id) override {
+    EXPECT_STREQ(r->BrokerID, "test");
+    EXPECT_STREQ(r->InvestorID, "test");
+    EXPECT_STREQ(r->InstrumentID, "");
+    ++order_queries;
+    for (auto& order : history_orders) spi->OnRspQryOrder(&order, nullptr, id, false);
+    spi->OnRspQryOrder(nullptr, nullptr, id, true);
+    return 0;
+  }
+  int ReqQryTrade(CThostFtdcQryTradeField* r, int id) override {
+    EXPECT_STREQ(r->BrokerID, "test");
+    EXPECT_STREQ(r->InvestorID, "test");
+    EXPECT_STREQ(r->InstrumentID, "");
+    ++trade_queries;
+    for (auto& trade : history_trades) spi->OnRspQryTrade(&trade, nullptr, id, false);
+    spi->OnRspQryTrade(nullptr, nullptr, id, true);
+    return 0;
+  }
 #include <unused_trader_calls.inc>
+  int order_queries = 0, trade_queries = 0;
+  std::vector<CThostFtdcOrderField> history_orders;
+  std::vector<CThostFtdcTradeField> history_trades;
   bool relative_margin = false, missing_fees = false, wrong_investor = false;
   const char* fee_symbol = "TF2612";
 
@@ -521,6 +546,7 @@ TEST_F(StartupSnapshotTest, PublishesAllRowsAfterFinalResponseOnce) {
   EXPECT_FALSE(session->snapshot());
   probe->spi->OnRspQryInvestorPosition(nullptr, nullptr, probe->position_ids.back(), true);
   session->Run();
+  for (int i = 0; i < 4; ++i) session->Run();
   auto* snapshot = session->snapshot();
   ASSERT_NE(snapshot, nullptr);
   ASSERT_EQ(snapshot->positions.size(), 40);
@@ -559,6 +585,7 @@ TEST_F(StartupSnapshotTest, EmptyFundsFailsAndRetryIgnoresOldRequestId) {
   EXPECT_EQ(session->snapshot_status().phase, SnapshotPhase::kPositions);
   probe->spi->OnRspQryInvestorPosition(nullptr, nullptr, probe->position_ids.back(), true);
   session->Run();
+  for (int i = 0; i < 4; ++i) session->Run();
   ASSERT_TRUE(session->snapshot());
   EXPECT_TRUE(session->snapshot()->positions.empty());
 }
@@ -707,6 +734,141 @@ TEST_F(ContractTermsTest, MissingOrUnrelatedRateNeverPublishesPartialTerms) {
   ASSERT_TRUE(session->snapshot() && session->snapshot()->terms);
 }
 
+// Replays cabinet query rows through the registered SPI with no local book.
+class OrderHistoryTest : public StartupSnapshotTest {
+ protected:
+  CThostFtdcOrderField Order(int session_id, int system,
+                            std::optional<SimNowOrderOwner> owner) {
+    CThostFtdcOrderField row{};
+    std::strcpy(row.TradingDay, "20261103");
+    std::strcpy(row.ExchangeID, "SHFE");
+    std::strcpy(row.BrokerID, "test");
+    std::strcpy(row.InvestorID, "test");
+    std::strcpy(row.OrderRef, "1");
+    if (system) std::snprintf(row.OrderSysID, sizeof(row.OrderSysID), "%d", system);
+    std::strcpy(row.InstrumentID, "al2612");
+    row.FrontID = 2;
+    row.SessionID = session_id;
+    row.LimitPrice = 100;
+    row.VolumeTotalOriginal = row.VolumeTotal = 3;
+    row.Direction = THOST_FTDC_D_Buy;
+    row.CombOffsetFlag[0] = THOST_FTDC_OF_Open;
+    row.CombHedgeFlag[0] = THOST_FTDC_HF_Speculation;
+    row.OrderStatus = THOST_FTDC_OST_NoTradeQueueing;
+    row.OrderSubmitStatus = THOST_FTDC_OSS_Accepted;
+    row.OrderPriceType = THOST_FTDC_OPT_LimitPrice;
+    if (owner) {
+      CThostFtdcInputOrderField sent{};
+      EXPECT_TRUE(internal::WriteOrderTag(*owner, sent));
+      std::strcpy(row.BusinessUnit, sent.BusinessUnit);
+      std::strcpy(row.OrderMemo, sent.OrderMemo);
+    }
+    return row;
+  }
+  CThostFtdcTradeField Fill(const CThostFtdcOrderField& source) {
+    CThostFtdcTradeField row{};
+    std::strcpy(row.TradingDay, source.TradingDay);
+    std::strcpy(row.TradeID, "fill-1");
+    std::strcpy(row.ExchangeID, source.ExchangeID);
+    std::strcpy(row.BrokerID, source.BrokerID);
+    std::strcpy(row.InvestorID, source.InvestorID);
+    std::strcpy(row.OrderSysID, source.OrderSysID);
+    std::strcpy(row.InstrumentID, source.InstrumentID);
+    row.OffsetFlag = source.CombOffsetFlag[0];
+    row.HedgeFlag = source.CombHedgeFlag[0];
+    row.Direction = source.Direction;
+    row.Price = 99;
+    row.Volume = 1;
+    return row;
+  }
+  void Query() {
+    probe->automatic = true;
+    ASSERT_TRUE(session->StartSnapshot());
+    for (int i = 0; i < 60; ++i) session->Run();
+  }
+};
+
+TEST_F(OrderHistoryTest, RestoresOwnersAndAssociatesTradesWithoutRefCollisions) {
+  SimNowOrderOwner first{{5, 11}, 31}, second{{5, 18}, 32};
+  auto a = Order(10, 21, first), b = Order(11, 22, second);
+  a.VolumeTraded = 1;
+  a.VolumeTotal = 2;
+  a.OrderStatus = THOST_FTDC_OST_PartTradedQueueing;
+  auto unowned = Order(12, 0, std::nullopt);
+  probe->history_orders = {a, b, unowned, a};
+  auto fill = Fill(a);
+  std::strcpy(fill.OrderSysID, "    21");
+  probe->history_trades = {fill, fill};
+  Query();
+  ASSERT_TRUE(session->snapshot());
+  auto history = session->snapshot()->history;
+  ASSERT_EQ(history.orders().size(), 3);
+  ASSERT_EQ(history.fills().size(), 1);
+  EXPECT_EQ(history.orders()[history.fills().begin()->second.order_index].owner, first);
+  ASSERT_NE(history.Find(2, 12, "1"), nullptr);
+  EXPECT_FALSE(history.Find(2, 12, "1")->owner);
+  EXPECT_EQ(history.Find("SHFE", "22"), history.Find(second.order_id));
+  EXPECT_EQ(history.Find(2, 10, "1"), history.Find(first.order_id));
+
+  OrderIdGenerator generator(5, history.LastSequence(5));
+  auto next = generator.Next();
+  ASSERT_TRUE(next);
+  EXPECT_EQ(next->sequence, 19);
+  auto fresh = history.orders().front();
+  fresh.session = 13;
+  fresh.system_id = "23";
+  fresh.owner = SimNowOrderOwner{*next, 31};
+  ASSERT_TRUE(history.AddOrder(fresh));
+  EXPECT_EQ(history.Find(2, 13, "1"), history.Find(*next));
+  EXPECT_EQ(history.Find("SHFE", "21"), history.Find(first.order_id));
+  TradeId subsequent{"SHFE", "20261103/0", "fill-2"};
+  ASSERT_TRUE(history.AddFill(subsequent, "23", fresh.symbol, fresh.direction,
+                              fresh.offset, fresh.hedge, 101, 1));
+  const auto& later = history.fills().at(subsequent);
+  EXPECT_EQ(history.orders()[later.order_index].owner->order_id, *next);
+  EXPECT_EQ(probe->order_queries, 1);
+  EXPECT_EQ(probe->trade_queries, 1);
+}
+
+TEST_F(OrderHistoryTest, TagPreservesFullWidthAndRejectsDamagedOrForeignTags) {
+  auto max = std::numeric_limits<std::uint64_t>::max();
+  SimNowOrderOwner owner{{max, max - 1}, max - 2};
+  auto order = Order(1, 1, owner);
+  EXPECT_EQ(internal::ReadOrderTag(order), owner);
+  order.OrderMemo[11] = 0;
+  EXPECT_FALSE(internal::ReadOrderTag(order));
+  order = Order(1, 1, owner);
+  order.BusinessUnit[0] = 'X';
+  EXPECT_FALSE(internal::ReadOrderTag(order));
+  order = Order(1, 1, owner);
+  order.OrderMemo[5] = ' ';
+  EXPECT_FALSE(internal::ReadOrderTag(order));
+}
+
+TEST_F(OrderHistoryTest, FailsAtomicallyOnConflictingIdsOrUnmatchedExecutions) {
+  auto a = Order(1, 1, SimNowOrderOwner{{3, 4}, 5});
+  auto b = Order(2, 2, SimNowOrderOwner{{3, 4}, 6});
+  probe->history_orders = {a, b};
+  Query();
+  EXPECT_FALSE(session->snapshot());
+  EXPECT_STREQ(session->snapshot_status().reason, "invalid_order_history");
+  probe->history_orders = {a};
+  probe->history_trades = {Fill(b)};
+  Query();
+  EXPECT_FALSE(session->snapshot());
+  auto t = Fill(a);
+  auto conflicting = t;
+  conflicting.Price++;
+  probe->history_trades = {t, conflicting};
+  Query();
+  EXPECT_FALSE(session->snapshot());
+  EXPECT_STREQ(session->snapshot_status().reason, "invalid_trade_history");
+  probe->history_trades = {t};
+  Query();
+  ASSERT_TRUE(session->snapshot());
+  EXPECT_EQ(session->snapshot()->history.fills().size(), 1);
+}
+
 TEST(StartupSnapshot, MonodPublishesOnlyTheCompletedSummary) {
   const char* args[] = {"tcp://fixture:1", "2"};
   auto connect = [](const SimNowTraderConfig& config) {
@@ -721,7 +883,7 @@ TEST(StartupSnapshot, MonodPublishesOnlyTheCompletedSummary) {
   const auto out = ::testing::internal::GetCapturedStdout();
   EXPECT_EQ(result, 0);
   EXPECT_EQ(out, "startup_snapshot trading_day=20261103 currencies=1 "
-                 "position_rows=0 account_ready=false\n");
+                 "position_rows=0 orders=0 fills=0 account_ready=false\n");
 }
 
 TEST(TraderLogin, MonodProbeShowsLoginWithoutTradingReadiness) {

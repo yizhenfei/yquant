@@ -26,7 +26,7 @@ ctest --test-dir build --output-on-failure
 
 运行 `ctest --test-dir build -L v1_04_simnow_market --output-on-failure` 验证可控行情接入。使用有效 SimNow 行情前置和账户时，按[真实连接验收说明](docs/design/simnow-market.md#验收)运行 `scripts/verify_simnow_market`，逐条比较接收的买卖价与策略输出。
 
-个人 SimNow 交易账户的登录入口是 `monod --simnow-trader-login FRONT [SECONDS]`。查询启动资金和持仓使用 `monod --simnow-startup-snapshot FRONT [SECONDS [SYMBOL]]`。指定合约后也返回合约乘数和费率。两者复用同一组登录参数，见[交易前置登录](docs/design/trading.md#交易前置登录)。
+个人 SimNow 交易账户的登录入口是 `monod --simnow-trader-login FRONT [SECONDS]`。查询启动资金、持仓和当日订单与成交使用 `monod --simnow-startup-snapshot FRONT [SECONDS [SYMBOL]]`。指定合约后也返回合约乘数和费率。两者复用同一组登录参数，见[交易前置登录](docs/design/trading.md#交易前置登录)。
 
 运行交易报单验证场景：
 
