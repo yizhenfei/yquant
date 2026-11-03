@@ -32,13 +32,15 @@ inline void ConfigureZeroCostTerms(TradingService& service, std::uint64_t id) {
 
 // Publishes real available funds before a test starts submitting orders.
 inline void PrepareTradingAccount(TradingService& service, std::uint64_t id,
-                                  SimulatedTradingAdapter& adapter) {
+                                  SimulatedTradingAdapter& adapter,
+                                  std::initializer_list<PositionInfo> rows = {}) {
   ConfigureZeroCostTerms(service, id);
   adapter.QueueFunds({1, FundsRefreshStarted{}});
   adapter.QueueFunds(
       {1, FundsInfo{model::Currency("CNY"), 1000000, 1000000, 0, 0}});
   adapter.QueuePositions({1, PositionsRefreshStarted{}});
-  adapter.QueuePositions({1, PositionsRefreshCompleted{0}});
+  for (const auto& row : rows) adapter.QueuePositions({1, row});
+  adapter.QueuePositions({1, PositionsRefreshCompleted{rows.size()}});
   adapter.QueueAccountSync({1, AccountSyncResult::kComplete});
   service.Run();
   EXPECT_TRUE(service.IsAccountReady(id));

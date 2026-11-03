@@ -135,7 +135,9 @@ void TradingService::ApplyCancel(std::uint64_t account_id,
                          std::max(order.reported_filled_quantity,
                                   report.filled_quantity),
                          order.detailed_filled_quantity);
-    UpdateReservation(*account_index_.at(account_id), order);
+    auto& account = *account_index_.at(account_id);
+    UpdateCloseHold(account, order);
+    UpdateReservation(account, order);
   }
   const auto snapshot = MakeSnapshot(order);
   if (changed) {

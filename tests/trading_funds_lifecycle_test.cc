@@ -243,10 +243,10 @@ TEST_F(FundsLifecycleTest, ReusedTradeIdWithDifferentDataCannotChangeLedger) {
 
 TEST_F(FundsLifecycleTest,
        InvalidAccountingPreservesTradeFactAndBlocksNewFundsUse) {
-  request.order.offset = Offset::kCloseToday;
   Submit();
   service.Run();
-  adapter.EmitTrade({request.order.order_id, {"sim", "day", "close"}, 100, 10});
+  adapter.EmitTrade({request.order.order_id, {"sim", "day", "overflow"},
+                     std::numeric_limits<double>::max(), 10});
   FundsSnapshot cash;
   EXPECT_FALSE(service.QueryFunds({7}, cash));
   OrderSnapshot order;

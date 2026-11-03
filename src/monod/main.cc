@@ -7,6 +7,7 @@
 #include "funds_demo.h"
 #include "funds_lifecycle_demo.h"
 #include "market/fixed_quote_source.h"
+#include "position_holds_demo.h"
 #include "positions_demo.h"
 #include "reservation_demo.h"
 #include "strategies/quote_strategy.h"
@@ -58,6 +59,9 @@ int main(int argc, char* argv[]) {
   if (argc == 2 && std::string_view(argv[1]) == "--startup") {
     return yquant::monod::RunStartupDemo();
   }
+  if (argc == 2 && std::string_view(argv[1]) == "--positions-lifecycle") {
+    return yquant::monod::RunPositionHoldsDemo();
+  }
   if (argc == 2 && std::string_view(argv[1]) == "--funds-lifecycle") {
     return yquant::monod::RunFundsLifecycleDemo();
   }
@@ -65,14 +69,14 @@ int main(int argc, char* argv[]) {
     std::printf("Usage: monod "
                 "[--orders|--cancel|--fills|--funds|"
                 "--positions|--reserve|--startup|"
-                         "--funds-lifecycle]\n");
+                "--funds-lifecycle|--positions-lifecycle]\n");
     return 0;
   }
   if (argc != 1) {
     std::fprintf(stderr, "Usage: monod "
                          "[--orders|--cancel|--fills|--funds|"
                          "--positions|--reserve|--startup|"
-                         "--funds-lifecycle]\n");
+                         "--funds-lifecycle|--positions-lifecycle]\n");
     return 2;
   }
   constexpr std::uint64_t kMarketServiceId = 1;

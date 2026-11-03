@@ -31,11 +31,11 @@ bool AddAmount(double& value, long double delta) {
 
 // Allocates weighted cost and margin; a final close takes the whole remainder.
 bool CloseBucket(std::int32_t& quantity, std::optional<PositionCost>& cost,
-                 std::int32_t& remaining, long double unit_value,
-                 PositionSide side, TradeAccounting& result) {
-  const auto closed = std::min(quantity, remaining);
+                 std::int32_t& frozen, std::int32_t closed,
+                 long double unit_value, PositionSide side,
+                 TradeAccounting& result) {
   if (closed == 0) return true;
-  if (!cost) return false;
+  if (!cost || closed > quantity || closed > frozen) return false;
   const long double fraction = static_cast<long double>(closed) / quantity;
   const long double allocated_cost = cost->cost * fraction;
   const long double released_margin = cost->margin * fraction;
@@ -43,7 +43,7 @@ bool CloseBucket(std::int32_t& quantity, std::optional<PositionCost>& cost,
                    (side == PositionSide::kLong ? 1 : -1);
   result.margin_change -= released_margin;
   quantity -= closed;
-  remaining -= closed;
+  frozen -= closed;
   if (quantity == 0) {
     cost.reset();
   } else if (!AddAmount(cost->cost, -allocated_cost) ||
@@ -54,10 +54,10 @@ bool CloseBucket(std::int32_t& quantity, std::optional<PositionCost>& cost,
   return true;
 }
 
-// Uses explicit today/yesterday offsets or the configured generic-close rule.
+// Charges the same buckets that were frozen when the close was submitted.
 std::optional<TradeAccounting> CalculateTrade(
     const OrderInfo& order, const TradeInfo& trade, const FundsTerms& terms,
-    const PositionInfo& current) {
+    const PositionInfo& current, std::int32_t today_fill) {
   const auto costs = internal::CalculateOrderCost(
       order, terms, trade.price, trade.quantity);
   if (!costs) return std::nullopt;
@@ -79,36 +79,15 @@ std::optional<TradeAccounting> CalculateTrade(
     result.margin_change = costs->margin;
     return result;
   }
-  auto remaining = trade.quantity;
-  const auto close_today = [&] {
-    return CloseBucket(position.today_quantity, position.today_cost, remaining,
-                       unit_value, position.key.side, result);
-  };
-  const auto close_yesterday = [&] {
-    return CloseBucket(position.yesterday_quantity, position.yesterday_cost,
-                       remaining, unit_value, position.key.side, result);
-  };
-  bool valid = false;
-  if (order.offset == Offset::kCloseToday) {
-    valid = close_today();
-  } else if (order.offset == Offset::kCloseYesterday) {
-    valid = close_yesterday();
-  } else if (terms.close_today_first) {
-    valid = close_today() && close_yesterday();
-  } else {
-    valid = close_yesterday() && close_today();
+  if (!CloseBucket(position.today_quantity, position.today_cost,
+                   position.today_frozen, today_fill, unit_value,
+                   position.key.side, result) ||
+      !CloseBucket(position.yesterday_quantity, position.yesterday_cost,
+                   position.yesterday_frozen, trade.quantity - today_fill,
+                   unit_value, position.key.side, result)) {
+    return std::nullopt;
   }
-  if (!valid || remaining != 0) return std::nullopt;
   return result;
-}
-
-// Selects the holding direction and hedge category affected by an order.
-PositionKey HoldingKey(const OrderInfo& order) {
-  const bool long_position = (order.side == Side::kBuy) ==
-                            (order.offset == Offset::kOpen);
-  return {order.instrument_id,
-          long_position ? PositionSide::kLong : PositionSide::kShort,
-          order.hedge};
 }
 
 // Removes a negative residue only when it is within one floating-point step.
@@ -140,13 +119,25 @@ bool ApplyCash(FundsSnapshot& funds, const TradeAccounting& trade) {
 void TradingService::BookTrade(AccountContext& account, OrderRecord& order,
                                const TradeInfo& trade) {
   if (!account.funds_available) return;
-  const auto key = HoldingKey(order.order);
-  const auto row = account.positions.index.find(key);
-  const auto position = row == account.positions.index.end()
-      ? PositionInfo{key} : account.positions.rows[row->second];
+  const auto key = PositionKey::ForOrder(order.order);
+  auto index = order.close.row;
+  std::int32_t today_fill = 0;
+  if (order.order.offset == Offset::kOpen) {
+    const auto row = account.positions.index.find(key);
+    index = row == account.positions.index.end() ? account.positions.rows.size()
+                                                 : row->second;
+  } else {
+    UpdateCloseHold(account, order);
+    if (!account.funds_available) return;
+    today_fill = order.close.TodayPrefix(order.booked_quantity + trade.quantity)
+                 - order.close.TodayPrefix(order.booked_quantity);
+  }
+  const bool new_position = index == account.positions.rows.size();
+  const auto position = new_position ? PositionInfo{key}
+                                     : account.positions.rows[index];
   const auto* terms = FindFundsTerms(account, order.order);
   const auto calculated = terms == nullptr ? std::nullopt
-      : CalculateTrade(order.order, trade, *terms, position);
+      : CalculateTrade(order.order, trade, *terms, position, today_fill);
   auto funds = account.funds;
   if (!calculated || !ApplyCash(funds, *calculated)) {
     // Keep the order/trade fact, but do not publish a partly updated ledger.
@@ -154,11 +145,11 @@ void TradingService::BookTrade(AccountContext& account, OrderRecord& order,
     Diagnose("funds_accounting_unresolved", account.id, order.order.order_id);
     return;
   }
-  if (row == account.positions.index.end()) {
+  if (new_position) {
     account.positions.index.emplace(key, account.positions.rows.size());
     account.positions.rows.push_back(calculated->position);
   } else {
-    account.positions.rows[row->second] = calculated->position;
+    account.positions.rows[index] = calculated->position;
   }
   account.funds = funds;
   order.booked_quantity += trade.quantity;

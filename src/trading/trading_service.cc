@@ -123,10 +123,16 @@ void TradingService::ProcessSubmitOrder(const SubmitOrderRequest& request,
     Fail(info.order_id, listener, call, *failure);
     return;
   }
+  CloseHold close;
+  if (!FreezeClose(*account->second, info, close)) {
+    Fail(info.order_id, listener, call, FailureReason::kInsufficientPosition);
+    return;
+  }
   const double required = cost.total();
   const auto inserted = orders_.emplace(
       info.order_id, OrderRecord{info, &listener, call});
   auto& order = inserted.first->second;
+  order.close = close;
   order.initial_reservation = required;
   order.initial_margin = cost.margin;
   order.reserved_margin = cost.margin;
@@ -148,6 +154,7 @@ void TradingService::ProcessSubmitOrder(const SubmitOrderRequest& request,
     if (required > 0) --account->second->reservation_count;
     order.reserved_funds = 0;
     order.reserved_margin = 0;
+    UpdateCloseHold(*account->second, order);
     Fail(info.order_id, listener, call, FailureReason::kSendFailed, &order);
   }
 }
@@ -199,7 +206,9 @@ void TradingService::Apply(std::uint64_t account_id,
   if (!UpdateFill(order, next, reported, order.detailed_filled_quantity)) {
     return;
   }
-  UpdateReservation(*account_index_.at(account_id), order);
+  auto& account = *account_index_.at(account_id);
+  UpdateCloseHold(account, order);
+  UpdateReservation(account, order);
   if (send_failed) {
     Diagnose("report_after_send_failure", account_id, report.order_id);
   }

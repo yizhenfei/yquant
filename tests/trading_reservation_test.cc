@@ -212,7 +212,17 @@ TEST_F(ReservationTest, CloseOffsetsReserveOnlyTheirConfiguredFees) {
   terms.fees[1] = FeeRate{3, 0.01};
   terms.fees[2] = FeeRate{7, 0.02};
   terms.fees[3] = FeeRate{11, 0.03};
-  Ready(1000);
+  const PositionInfo initial{{42, PositionSide::kShort}, 2, 4, 0, 0,
+                             PositionCost{200, 0}, PositionCost{400, 0}};
+  first.counter.SetInitialState({terms.currency, 1000, 1000, 0, 0},
+                               {&initial, 1});
+  ASSERT_TRUE(service.ConfigureFundsTerms(7, 42, Side::kBuy, terms));
+  service.Run();
+  first.inspect = [&] {
+    PositionInfo row;
+    ASSERT_TRUE(client->QueryPosition({7, {42, PositionSide::kShort}}, row));
+    EXPECT_EQ(row.available_quantity(), 6 - 2 * first.submits);
+  };
   double expected = 0;
   std::uint64_t sequence = 0;
   for (auto offset : {Offset::kClose, Offset::kCloseToday,

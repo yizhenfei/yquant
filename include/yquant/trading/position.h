@@ -18,6 +18,14 @@ struct PositionKey {
   std::uint32_t instrument_id = 0;
   PositionSide side = PositionSide::kLong;
   HedgeFlag hedge = HedgeFlag::kSpeculation;
+  // Selects the holding opened or closed by this order.
+  static PositionKey ForOrder(const OrderInfo& order) {
+    const auto long_side =
+        order.offset == Offset::kOpen ? Side::kBuy : Side::kSell;
+    return {order.instrument_id,
+            order.side == long_side ? PositionSide::kLong : PositionSide::kShort,
+            order.hedge};
+  }
   bool operator==(const PositionKey&) const = default;
 };
 
@@ -52,6 +60,14 @@ struct PositionInfo {
   // Nonempty buckets require costs; an empty bucket may omit them.
   std::optional<PositionCost> today_cost = std::nullopt;
   std::optional<PositionCost> yesterday_cost = std::nullopt;
+  std::int32_t today_available() const { return today_quantity - today_frozen; }
+  std::int32_t yesterday_available() const {
+    return yesterday_quantity - yesterday_frozen;
+  }
+  // Returns the quantity available for a generic close across both buckets.
+  std::int64_t available_quantity() const {
+    return static_cast<std::int64_t>(today_available()) + yesterday_available();
+  }
   bool operator==(const PositionInfo&) const = default;
 };
 

@@ -62,7 +62,8 @@ TEST(TradingClientTest, ClientAndReportsOutliveFactoryRegistryAndClient) {
   ClientListener listener;
   TradingService service;
   ASSERT_TRUE(service.BindAccount(7, adapter));
-  test::PrepareTradingAccount(service, 7, adapter);
+  test::PrepareTradingAccount(service, 7, adapter,
+                              {{{42}, 5, 0, 0, 0, PositionCost{500, 0}}});
   std::unique_ptr<TradingClient> client;
   {
     TradingServiceRegistry registry;
@@ -98,7 +99,8 @@ TEST(TradingClientTest, SharedGeneratorCoversStrategiesAccountsAndTargets) {
   ASSERT_TRUE(first.BindAccount(8, account_b));
   ASSERT_TRUE(second.BindAccount(7, second_target_account));
   test::PrepareTradingAccount(first, 7, account_a);
-  test::PrepareTradingAccount(first, 8, account_b);
+  test::PrepareTradingAccount(first, 8, account_b,
+                              {{{81}, 2, 0, 0, 0, PositionCost{400, 0}}});
   test::PrepareTradingAccount(second, 7, second_target_account);
   TradingServiceRegistry registry;
   ASSERT_TRUE(registry.Register(1, first));

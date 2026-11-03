@@ -35,6 +35,7 @@ ctest --test-dir build --output-on-failure
 ./build/monod --reserve
 ./build/monod --startup
 ./build/monod --funds-lifecycle
+./build/monod --positions-lifecycle
 ctest --test-dir build -L v1_02_order --output-on-failure
 ```
 
@@ -53,6 +54,8 @@ ctest --test-dir build -L v1_02_order --output-on-failure
 `--startup` 验证初始化失败、显式重试、资金与持仓共同就绪，以及迟到快照不覆盖本地数据。启动前活动订单或未关联冻结会阻止就绪并输出原因。
 
 `--funds-lifecycle` 验证部分成交记账、撤单释放剩余预占及平仓盈利，输出保证金、手续费、已实现盈亏和可用资金。初始非空持仓须提供今昨仓成本及保证金；本地按不含浮动盈亏的账面资金口径记账。
+
+`--positions-lifecycle` 验证两个策略向同一账户各申请平仓 7 手，10 手持仓只允许发送一笔；部分成交后撤单，剩余可平量可再次使用。
 
 测试构建获取固定版本的 GoogleTest；离线构建可通过 `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/path/to/googletest` 指定已有源码。
 

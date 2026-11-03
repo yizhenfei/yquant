@@ -78,6 +78,7 @@ enum class FailureReason {
   kCurrencyMismatch,
   kInsufficientFunds,
   kInvalidFundsRequirement,
+  kInsufficientPosition,
 };
 
 // Reports a processing or transmission error for order_id.
@@ -222,6 +223,18 @@ class TradingService final : public container::Service {
     bool positions_refresh_pending = false;
     bool positions_available = false;
   };
+  // Pins a close order to its original today/yesterday allocation. Row indices
+  // stay valid when the position book grows because it never removes rows.
+  struct CloseHold {
+    std::size_t row = 0;
+    bool today_first = false;
+    std::int32_t first_quantity = 0;
+    // Contracts already booked plus contracts still frozen for this order.
+    // Cancellation reduces this count to the confirmed fill quantity.
+    std::int32_t held_end = 0;
+    // Counts today's contracts in the first n contracts of this order.
+    std::int32_t TodayPrefix(std::int32_t n) const;
+  };
   // Stores state once for both notifications and subsequent queries.
   struct OrderRecord {
     OrderInfo order;
@@ -239,6 +252,7 @@ class TradingService final : public container::Service {
     double reserved_margin = 0;
     std::int32_t booked_quantity = 0;
     bool funds_pending = false;
+    CloseHold close{};
     std::unordered_set<std::uint64_t> cancel_ids{};
   };
   // Keeps each attempt independent of other cancellations for the same order.
@@ -275,6 +289,13 @@ class TradingService final : public container::Service {
   // cost changes together. On failure, retains balances and blocks cash use.
   void BookTrade(AccountContext& account, OrderRecord& order,
                  const TradeInfo& trade);
+  // After funds validation, freezes the available contracts needed for a close.
+  // Returns false without changing either bucket if the holding is insufficient.
+  bool FreezeClose(AccountContext& account, const OrderInfo& order,
+                   CloseHold& hold);
+  // Releases or restores this order's own allocation after a state change.
+  // If a late report needs contracts since used elsewhere, blocks account use.
+  void UpdateCloseHold(AccountContext& account, OrderRecord& order);
   // Updates the account reservation from this order's latest confirmed state.
   // Canceled filled quantities retain their estimate until priced by a trade.
   void UpdateReservation(AccountContext& account, OrderRecord& order);

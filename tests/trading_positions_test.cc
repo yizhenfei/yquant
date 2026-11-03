@@ -183,6 +183,7 @@ TEST_F(PositionsTest, RejectsInvalidKeysQuantitiesAndFrozenBuckets) {
   PositionInfo position;
   ASSERT_TRUE(client->QueryPosition({7, kInitial.key}, position));
   EXPECT_EQ(position.today_quantity, kMax);
+  EXPECT_EQ(position.available_quantity(), 2LL * kMax);
 }
 
 TEST_F(PositionsTest, LargeSnapshotIsBoundedAndLateSnapshotsDoNotOverwriteIt) {
