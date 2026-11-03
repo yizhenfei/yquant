@@ -45,6 +45,7 @@ void TradingService::UpdateCloseHold(AccountContext& account,
     end = std::max(order.reported_filled_quantity,
                    order.detailed_filled_quantity);
   }
+  end -= order.baseline_booked;
   auto& hold = order.close;
   if (end == hold.held_end) return;
   auto& position = account.positions.rows[hold.row];

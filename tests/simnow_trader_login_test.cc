@@ -23,7 +23,8 @@ namespace {
 using namespace std::chrono_literals;
 
 const SimNowTraderConfig kConfig{
-    "tcp://fixture:1", "test", "test", "test", "test", "test"};
+    "tcp://fixture:1", "test", "test", "test", "test", "test", {}, 30s,
+    {{{"CFFEX", "TF2612"}, {42, SimNowClosePriority::kYesterdayFirst}}}};
 
 // Records native request fields and injects responses through the real SPI.
 class Probe final : public CThostFtdcTraderApi {
@@ -1168,6 +1169,190 @@ TEST_F(OrderHoldsTest, UnmatchedPositionFreezeAndMissingRatesAreDiagnosed) {
   EXPECT_NE(session->snapshot()->holds_error.find("missing_order_rates TF2612 commission"),
             std::string::npos);
   EXPECT_TRUE(session->snapshot()->holds.empty());
+}
+
+// Uses the real SimNow session for startup. Tests control the synchronization
+// boundary and later events independently of the native query responses.
+class RecoveryReplay final : public ITradingAdapter {
+ public:
+  explicit RecoveryReplay(SimNowTradingAdapter& session) : session(session) {}
+  // ITradingAdapter implementation.
+  void SetCallback(ITradingAdapterCallback& c) override {
+    sink = &c;
+    session.SetCallback(c);
+  }
+  bool StartAccountSync(std::uint64_t id) override {
+    attempt = id;
+    return session.StartAccountSync(id);
+  }
+  SendResult SubmitOrder(const SubmitOrderRequest&) override {
+    ADD_FAILURE() << "Recovery sent an order";
+    return SendResult::kNotSent;
+  }
+  SendResult CancelOrder(const AdapterCancelOrderRequest&) override {
+    return SendResult::kSent;
+  }
+  void Run() override { session.Run(); }
+  SimNowTradingAdapter& session;
+  ITradingAdapterCallback* sink = nullptr;
+  std::uint64_t attempt = 0;
+};
+
+class RecoveredAccountingTest : public OrderHoldsTest {
+ protected:
+  void SetUp() override {
+    OrderHoldsTest::SetUp();
+    probe->automatic = true;
+    probe->account_balance.Balance = 361;
+    probe->account_balance.CurrMargin = 80;  // Four today and four prior lots.
+    adapter = std::make_unique<RecoveryReplay>(*session);
+    ASSERT_TRUE(service.BindAccount(7, *adapter));
+    TradingServiceRegistry registry;
+    ASSERT_TRUE(registry.Register(3, service));
+    client = TradingClientFactory(registry).Create(3);
+    ASSERT_TRUE(client);
+  }
+  void Stage() {
+    for (int i = 0; i < 100; ++i) service.Run();
+    ASSERT_TRUE(session->snapshot());
+    EXPECT_FALSE(service.IsAccountReady(7));
+  }
+  void Commit() {
+    adapter->sink->OnAccountSyncReport({adapter->attempt, AccountSyncResult::kComplete});
+    ASSERT_TRUE(service.IsAccountReady(7));
+  }
+  FundsSnapshot Funds() {
+    FundsSnapshot funds;
+    EXPECT_TRUE(client->QueryFunds({7}, funds));
+    return funds;
+  }
+  PositionInfo PositionBook() {
+    PositionInfo p;
+    EXPECT_TRUE(client->QueryPosition({7, {42, PositionSide::kLong}}, p));
+    return p;
+  }
+  std::unique_ptr<RecoveryReplay> adapter;
+  TradingService service;
+  std::unique_ptr<TradingClient> client;
+};
+
+TEST_F(RecoveredAccountingTest, TaggedAndUnownedOrdersBookAgainstExistingHolds) {
+  auto& external = probe->history_orders[1];
+  external.OrderStatus = THOST_FTDC_OST_PartTradedQueueing;
+  external.VolumeTraded = 1;
+  external.VolumeTotalOriginal = 4;
+  probe->history_trades.push_back(Fill(external));
+  Stage();
+  FundsSnapshot unavailable;
+  EXPECT_FALSE(client->QueryFunds({7}, unavailable));
+  adapter->sink->OnAccountSyncReport({adapter->attempt + 1, AccountSyncResult::kComplete});
+  EXPECT_FALSE(service.IsAccountReady(7));
+  Commit();
+  OrderSnapshot order;
+  EXPECT_TRUE(client->QueryOrder({{5, 11}, 7, 31}, order));
+  EXPECT_EQ(order.filled_quantity, 1);
+  EXPECT_FALSE(client->QueryOrder({{}, 7, 0}, order));
+  EXPECT_EQ(Funds().reserved, 222);
+  EXPECT_EQ(Funds().available_for_orders(), 59);
+  EXPECT_EQ(PositionBook().available_quantity(), 5);
+  probe->spi->OnRtnTrade(&probe->history_trades[0]);
+  service.Run();
+  EXPECT_EQ(Funds().commission, 0);
+
+  // Unowned sell-close fills one prior-day lot: release 10 margin and book
+  // (11 * 10 - 100) profit less 2 commission. Release two lots on cancel.
+  auto next = Fill(probe->history_orders[1]);
+  std::strcpy(next.TradeID, "later");
+  next.Price = 11;
+  probe->spi->OnRtnTrade(&next);
+  probe->spi->OnRtnTrade(&next);
+  service.Run();
+  service.Run();
+  auto p = PositionBook();
+  EXPECT_EQ(p.yesterday_quantity, 3);
+  EXPECT_EQ(p.yesterday_cost, (PositionCost{300, 30}));
+  EXPECT_EQ(p.today_frozen, 1);
+  EXPECT_EQ(p.yesterday_frozen, 1);
+  EXPECT_EQ(Funds().reserved, 220);
+  EXPECT_EQ(Funds().available_for_orders(), 79);
+  auto cancel = probe->history_orders[1];
+  cancel.OrderStatus = THOST_FTDC_OST_Canceled;
+  cancel.VolumeTraded = 2;
+  probe->spi->OnRtnOrder(&cancel);
+  probe->spi->OnRtnOrder(&cancel);
+  service.Run();
+  service.Run();
+  EXPECT_EQ(PositionBook().available_quantity(), 7);
+  EXPECT_EQ(Funds().reserved, 216);
+  EXPECT_EQ(Funds().available_for_orders(), 83);
+
+  // Final counter quantity includes one new, as yet unpriced opening fill.
+  cancel = probe->history_orders[0];
+  cancel.OrderStatus = THOST_FTDC_OST_Canceled;
+  cancel.VolumeTraded = 2;
+  probe->spi->OnRtnOrder(&cancel);
+  service.Run();
+  EXPECT_FALSE(client->QueryFunds({7}, unavailable));
+  next = Fill(cancel);
+  std::strcpy(next.TradeID, "new");
+  next.Price = 100;
+  probe->spi->OnRtnTrade(&next);
+  service.Run();
+  EXPECT_EQ(Funds().reserved, 0);
+  EXPECT_EQ(Funds().commission, 6);
+  EXPECT_EQ(Funds().realized_pnl, 10);
+  EXPECT_EQ(Funds().funds.margin, 174);
+  EXPECT_EQ(Funds().available_for_orders(), 191);
+  EXPECT_EQ(PositionBook().today_cost, (PositionCost{1400, 144}));
+  ASSERT_TRUE(client->QueryOrder({{5, 11}, 7, 31}, order));
+  EXPECT_EQ(order.state, OrderState::kCanceled);
+  EXPECT_EQ(order.filled_quantity, 2);
+}
+
+TEST_F(RecoveredAccountingTest, UnownedOrderCanAcquireItsExchangeIdAfterStartup) {
+  probe->history_orders[1].OrderSysID[0] = 0;
+  Stage();
+  Commit();
+  auto update = probe->history_orders[1];
+  std::strcpy(update.OrderSysID, "late-id");
+  probe->spi->OnRtnOrder(&update);
+  auto fill = Fill(update);
+  fill.Price = 11;
+  probe->spi->OnRtnTrade(&fill);
+  service.Run();
+  service.Run();
+  EXPECT_EQ(PositionBook().yesterday_quantity, 3);
+  EXPECT_EQ(Funds().reserved, 220);
+  update.OrderStatus = THOST_FTDC_OST_Canceled;
+  update.VolumeTraded = 1;
+  probe->spi->OnRtnOrder(&update);
+  service.Run();
+  EXPECT_EQ(PositionBook().available_quantity(), 7);
+  EXPECT_EQ(Funds().reserved, 216);
+}
+
+TEST_F(RecoveredAccountingTest, MixedCloseRequiresAnExplicitFillPriority) {
+  Query();
+  ASSERT_TRUE(session->snapshot());
+  AccountRecovery baseline;
+  const SimNowInstruments unspecified{{{"CFFEX", "TF2612"}, {42}}};
+  EXPECT_EQ(BuildAccountRecovery(*session->snapshot(), unspecified, baseline),
+            "missing_close_priority TF2612");
+  EXPECT_TRUE(baseline.orders.empty());
+}
+
+TEST_F(RecoveredAccountingTest, MissingHistoricalFillCannotPartiallyInstallOrders) {
+  probe->history_trades.clear();
+  Stage();
+  adapter->sink->OnAccountSyncReport({1, AccountSyncResult::kComplete});
+  EXPECT_FALSE(service.IsAccountReady(7));
+  OrderSnapshot order;
+  EXPECT_FALSE(client->QueryOrder({{5, 11}, 7, 31}, order));
+  ASSERT_TRUE(service.RetryAccountSync(7));
+  probe->history_trades.push_back(Fill(probe->history_orders[0]));
+  Stage();
+  Commit();
+  EXPECT_EQ(Funds().reserved, 222);
 }
 
 TEST(StartupSnapshot, MonodPublishesOnlyTheCompletedSummary) {

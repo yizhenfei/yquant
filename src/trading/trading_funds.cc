@@ -63,6 +63,10 @@ void TradingService::ApplyFunds(AccountContext& account,
       report.refresh_id != account.sync_id) {
     return;
   }
+  if (account.recovery) {
+    FailAccountSync(account, "conflicting_recovery_baseline");
+    return;
+  }
   if (std::holds_alternative<FundsRefreshStarted>(report.event)) {
     if (report.refresh_id > account.funds_refresh_id) {
       account.funds_refresh_id = report.refresh_id;

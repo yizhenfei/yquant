@@ -1,11 +1,13 @@
 #ifndef YQUANT_TRADING_SIMNOW_STARTUP_SNAPSHOT_H_
 #define YQUANT_TRADING_SIMNOW_STARTUP_SNAPSHOT_H_
 
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "yquant/model/currency.h"
+#include "yquant/trading/account_recovery.h"
 #include "yquant/trading/funds_terms.h"
 #include "yquant/trading/position.h"
 #include "yquant/trading/simnow_order_history.h"
@@ -58,6 +60,7 @@ struct SimNowOrderHold {
   model::Currency currency;
   double margin = 0, commission = 0;
   int today = 0, yesterday = 0;
+  FundsTerms terms;
 };
 
 // Owns completed query results for the logged-in account and trading day.
@@ -73,6 +76,23 @@ struct SimNowStartupSnapshot {
   std::vector<SimNowOrderHold> holds;
   std::string holds_error;
 };
+
+// A generic close spanning both dates needs the counter's actual fill priority.
+// Single-bucket holds can be booked without configuring a priority.
+enum class SimNowClosePriority { kUnspecified, kYesterdayFirst, kTodayFirst };
+struct SimNowInstrumentBinding {
+  std::uint32_t instrument_id;
+  SimNowClosePriority close_priority = SimNowClosePriority::kUnspecified;
+};
+using SimNowInstruments =
+    std::map<std::pair<std::string, std::string>, SimNowInstrumentBinding>;
+
+// Converts a verified snapshot to the trading book's accounting basis.
+// Returns a diagnostic on failure and leaves output unchanged. A successful
+// conversion still requires separate confirmation of the live-event boundary.
+std::string BuildAccountRecovery(const SimNowStartupSnapshot& snapshot,
+                                 const SimNowInstruments& instruments,
+                                 AccountRecovery& output);
 
 enum class SnapshotPhase { kIdle, kFunds, kPositions, kPositionMultiplier, kPositionDetails, kOrders, kTrades, kContractTerms, kComplete, kFailed };
 

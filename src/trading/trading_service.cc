@@ -229,6 +229,7 @@ void TradingService::Fail(OrderId order_id, TradingListener& listener,
 }
 
 void TradingService::Notify(Notification notification) {
+  if (!notification.listener) return;  // Recovered orders await strategy binding.
   if (request_depth_ != 0 ||
       (notification.order != nullptr && notification.order->pending != 0)) {
     if (notification.order != nullptr) {

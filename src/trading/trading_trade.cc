@@ -11,44 +11,43 @@ namespace yquant::trading {
 
 void TradingService::AccountContext::OnTradeReport(const TradeInfo& trade) {
   if (sync_state == SyncState::kReady) {
-    owner.ApplyTrade(*this, trade);
+    if (auto* order = owner.FindReportedOrder(id, trade.order_id)) {
+      owner.ApplyTrade(*this, *order, trade);
+    }
   }
 }
 
 void TradingService::ApplyTrade(AccountContext& account,
-                                const TradeInfo& trade) {
-  auto* order = FindReportedOrder(account.id, trade.order_id);
-  if (order == nullptr) {
-    return;
-  }
-  if (!internal::ValidTrade(trade) || order->state == OrderState::kRejected) {
+                                OrderRecord& order, const TradeInfo& trade) {
+  if (!internal::ValidTrade(trade) || order.state == OrderState::kRejected) {
     Diagnose("invalid_trade", account.id, trade.order_id);
     return;
   }
   const auto found = account.trades.find(trade.trade_id);
   if (found != account.trades.end()) {
-    if (found->second != trade) {
+    if (found->second.order != &order || found->second.price != trade.price ||
+        found->second.quantity != trade.quantity) {
       Diagnose("conflicting_trade", account.id, trade.order_id);
     }
     return;
   }
   // Subtract before addition so an excessive quantity cannot overflow.
   const auto remaining =
-      order->order.quantity - order->detailed_filled_quantity;
+      order.order.quantity - order.detailed_filled_quantity;
   if (trade.quantity > remaining) {
     Diagnose("trade_overfill", account.id, trade.order_id);
     return;
   }
-  if (order->state == OrderState::kSendFailed) {
+  if (order.state == OrderState::kSendFailed) {
     Diagnose("report_after_send_failure", account.id, trade.order_id);
   }
-  account.trades.emplace(trade.trade_id, trade);
-  UpdateFill(*order, order->state, order->reported_filled_quantity,
-             order->detailed_filled_quantity + trade.quantity);
-  BookTrade(account, *order, trade);
-  UpdateReservation(account, *order);
-  Notify({order->listener, TradeReport{trade, MakeSnapshot(*order)}, order,
-          order->call});
+  account.trades.emplace(trade.trade_id, RecordedFill{&order, trade.price, trade.quantity});
+  UpdateFill(order, order.state, order.reported_filled_quantity,
+             order.detailed_filled_quantity + trade.quantity);
+  BookTrade(account, order, trade);
+  UpdateReservation(account, order);
+  Notify({order.listener, TradeReport{trade, MakeSnapshot(order)}, &order,
+          order.call});
 }
 
 bool TradingService::UpdateFill(OrderRecord& order, OrderState state,

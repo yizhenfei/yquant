@@ -129,23 +129,31 @@ void TradingService::ApplyCancel(std::uint64_t account_id,
   }
   cancel.result = report.result;
   cancel.final_filled_quantity = report.filled_quantity;
-  bool changed = false;
-  if (report.result == CancelResult::kCanceled) {
-    changed = UpdateFill(order, OrderState::kCanceled,
-                         std::max(order.reported_filled_quantity,
-                                  report.filled_quantity),
-                         order.detailed_filled_quantity);
-    auto& account = *account_index_.at(account_id);
-    UpdateCloseHold(account, order);
-    UpdateReservation(account, order);
-  }
+  const bool changed = report.result == CancelResult::kCanceled &&
+      ConfirmCancellation(*account_index_.at(account_id), order, report.filled_quantity);
   const auto snapshot = MakeSnapshot(order);
-  if (changed) {
-    Notify({order.listener, OrderReport{snapshot}, &order, order.call});
-  }
+  if (changed) Notify({order.listener, OrderReport{snapshot}, &order, order.call});
   Notify({cancel.listener,
           CancelReport{report.order_id, cancel.request.cancel_request_id,
                        report.result, snapshot}, &order, cancel.call});
+}
+
+bool TradingService::ConfirmCancellation(AccountContext& account, OrderRecord& order,
+                                         int filled) {
+  if (filled < 0 || filled > order.order.quantity ||
+      (order.recovered_terms && filled < std::max(order.reported_filled_quantity,
+                                                  order.detailed_filled_quantity)) ||
+      (order.canceled_quantity && *order.canceled_quantity != filled)) {
+    account.funds_available = false;
+    Diagnose("conflicting_cancel_fill", account.id, order.order.order_id);
+    return false;
+  }
+  order.canceled_quantity = filled;
+  const bool changed = UpdateFill(order, OrderState::kCanceled,
+      std::max(order.reported_filled_quantity, filled), order.detailed_filled_quantity);
+  UpdateCloseHold(account, order);
+  UpdateReservation(account, order);
+  return changed;
 }
 
 }  // namespace yquant::trading

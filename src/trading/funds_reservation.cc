@@ -20,21 +20,6 @@ std::uint64_t TermsKey(std::uint32_t instrument, Side side) {
          static_cast<std::uint64_t>(side == Side::kSell);
 }
 
-// Accepts supplied finite, nonnegative rates; absent values stay unknown.
-bool ValidTerms(const FundsTerms& terms) {
-  const auto valid = [](double value) {
-    return std::isfinite(value) && value >= 0;
-  };
-  return terms.currency.valid() && std::isfinite(terms.contract_multiplier) &&
-         terms.contract_multiplier > 0 && valid(terms.margin_per_quantity) &&
-         (!terms.margin_rate || valid(*terms.margin_rate)) &&
-         std::all_of(terms.fees.begin(), terms.fees.end(),
-                     [&](const auto& fee) {
-                       return !fee || (valid(fee->per_quantity) &&
-                                       valid(fee->per_notional));
-                     });
-}
-
 // Distinguishes missing rates from explicitly configured zero costs.
 bool HasRequiredRates(const FundsTerms& terms, const OrderInfo& order) {
   return (!terms.hedge || *terms.hedge == order.hedge) &&
@@ -86,6 +71,21 @@ std::optional<internal::OrderCost> internal::CalculateOrderCost(
       (charge > 0 && margin + charge == margin) ||
       (margin > 0 && margin + charge == charge)) return std::nullopt;
   return OrderCost{margin, charge};
+}
+
+// Accepts supplied finite, nonnegative rates; absent values stay unknown.
+bool TradingService::ValidTerms(const FundsTerms& terms) {
+  const auto valid = [](double value) {
+    return std::isfinite(value) && value >= 0;
+  };
+  return terms.currency.valid() && std::isfinite(terms.contract_multiplier) &&
+         terms.contract_multiplier > 0 && valid(terms.margin_per_quantity) &&
+         (!terms.margin_rate || valid(*terms.margin_rate)) &&
+         std::all_of(terms.fees.begin(), terms.fees.end(),
+                     [&](const auto& fee) {
+                       return !fee || (valid(fee->per_quantity) &&
+                                       valid(fee->per_notional));
+                     });
 }
 
 bool TradingService::ConfigureFundsTerms(std::uint64_t account_id,
@@ -163,7 +163,8 @@ void TradingService::UpdateReservation(AccountContext& account,
   } else if (order.state == OrderState::kCanceled) {
     held = filled - order.booked_quantity;
   }
-  const double ratio = static_cast<double>(held) / order.order.quantity;
+  const double ratio = static_cast<double>(held) /
+      (order.order.quantity - order.baseline_booked);
   const double required = order.initial_reservation * ratio;
   const double margin = order.initial_margin * ratio;
   auto count = account.reservation_count;

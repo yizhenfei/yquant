@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <variant>
 
+#include "yquant/trading/account_recovery.h"
 #include "yquant/trading/funds.h"
 #include "yquant/trading/order.h"
 #include "yquant/trading/position.h"
@@ -82,8 +83,8 @@ enum class AccountSyncResult { kComplete, kFailed, kUnresolvedOrders };
 
 // Ends one requested initialization attempt. kComplete certifies that the
 // funds and positions delivered with sync_id share a consistent boundary:
-// all preceding historical reports are included, and no pre-start order can
-// still change the account. Deliver subsequent live events after this report.
+// all preceding historical reports are included, and every pre-start order
+// that can still affect the account has been recovered. Deliver subsequent live events after this report.
 // An adapter unable to prove this boundary must report failure or unresolved
 // orders, never infer completion from the arrival order of query responses.
 struct AdapterAccountSyncReport {
@@ -101,6 +102,11 @@ class ITradingAdapterCallback {
   // Preserve source order for distinct fills; duplicate and delayed reports
   // may repeat an existing trade ID without applying its cash impact again.
   virtual void OnTradeReport(const TradeInfo& trade) = 0;
+  // Stages a complete baseline instead of the separate funds/positions streams.
+  // Only kComplete for the same sync_id may publish it.
+  virtual void OnAccountRecovery(std::uint64_t sync_id, AccountRecovery baseline) = 0;
+  // Delivers a post-boundary fill or unsolicited cancellation for a recovered order.
+  virtual void OnRecoveredEvent(const RecoveredEvent& event) = 0;
   virtual void OnAccountSyncReport(const AdapterAccountSyncReport& report) = 0;
   virtual void OnFundsReport(const AdapterFundsReport& report) = 0;
   virtual void OnPositionsReport(const AdapterPositionsReport& report) = 0;

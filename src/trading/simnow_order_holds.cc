@@ -142,7 +142,7 @@ std::string Associate(const SimNowStartupSnapshot& snapshot, const OrderRates& r
     if (total == funds.end()) return "missing_hold_currency " + order.symbol;
     total->second.margin += cost->margin;
     total->second.commission += cost->fee;
-    holds.push_back({i, order.remaining, terms.currency, cost->margin, cost->fee});
+    holds.push_back({i, order.remaining, terms.currency, cost->margin, cost->fee, 0, 0, terms});
     if (info.offset != Offset::kOpen) AddClose(order, holds, positions);
   }
   for (const auto& b : snapshot.balances) {

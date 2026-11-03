@@ -28,6 +28,7 @@ bool TradingService::RetryAccountSync(std::uint64_t account_id) {
 }
 
 void TradingService::StartAccountSync(AccountContext& account) {
+  account.recovery.reset();
   ++account.sync_id;
   account.sync_state = SyncState::kPending;
   account.funds_available = false;
@@ -43,6 +44,7 @@ void TradingService::StartAccountSync(AccountContext& account) {
 
 void TradingService::FailAccountSync(AccountContext& account,
                                      const char* reason) {
+  account.recovery.reset();
   account.sync_state = SyncState::kFailed;
   account.funds_available = false;
   account.positions_available = false;
@@ -59,6 +61,15 @@ void TradingService::AccountContext::OnAccountSyncReport(
     owner.FailAccountSync(*this,
         report.result == AccountSyncResult::kUnresolvedOrders
             ? "initial_orders_unresolved" : "initial_sync_failed");
+    return;
+  }
+  if (recovery) {
+    if (const char* error = owner.InstallRecovery(*this, *recovery)) {
+      owner.FailAccountSync(*this, error);
+      return;
+    }
+    recovery.reset();
+    sync_state = SyncState::kReady;
     return;
   }
   if (!funds_available || !positions_available) {

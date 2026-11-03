@@ -129,13 +129,15 @@ void TradingService::BookTrade(AccountContext& account, OrderRecord& order,
   } else {
     UpdateCloseHold(account, order);
     if (!account.funds_available) return;
-    today_fill = order.close.TodayPrefix(order.booked_quantity + trade.quantity)
-                 - order.close.TodayPrefix(order.booked_quantity);
+    const auto since_start = order.booked_quantity - order.baseline_booked;
+    today_fill = order.close.TodayPrefix(since_start + trade.quantity)
+                 - order.close.TodayPrefix(since_start);
   }
   const bool new_position = index == account.positions.rows.size();
   const auto position = new_position ? PositionInfo{key}
                                      : account.positions.rows[index];
-  const auto* terms = FindFundsTerms(account, order.order);
+  const auto* terms = order.recovered_terms ? order.recovered_terms.get()
+                                            : FindFundsTerms(account, order.order);
   const auto calculated = terms == nullptr ? std::nullopt
       : CalculateTrade(order.order, trade, *terms, position, today_fill);
   auto funds = account.funds;

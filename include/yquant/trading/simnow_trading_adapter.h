@@ -17,6 +17,7 @@ struct SimNowTraderConfig {
   std::string_view front, broker, user, password, app_id, auth_code;
   std::string_view system_info{};
   std::chrono::milliseconds timeout{30000};
+  SimNowInstruments instruments{};
 };
 
 enum class LoginPhase {

@@ -31,8 +31,10 @@ bool ValidCost(std::int32_t quantity, const std::optional<PositionCost>& cost) {
              ? cost->cost == 0 && cost->margin == 0 : cost->cost > 0);
 }
 
+}  // namespace
+
 // Checks each quantity before saving it in the pending account snapshot.
-bool ValidPosition(const PositionInfo& value) {
+bool TradingService::ValidPosition(const PositionInfo& value) {
   return ValidCost(value.today_quantity, value.today_cost) &&
          ValidCost(value.yesterday_quantity, value.yesterday_cost) &&
          ValidKey(value.key) && value.today_quantity >= 0 &&
@@ -41,8 +43,6 @@ bool ValidPosition(const PositionInfo& value) {
          value.yesterday_frozen >= 0 &&
          value.yesterday_frozen <= value.yesterday_quantity;
 }
-
-}  // namespace
 
 bool TradingService::QueryPositions(const QueryPositionsRequest& query,
                                     PositionsSnapshot& snapshot) const {
@@ -124,6 +124,10 @@ void TradingService::ApplyPositions(AccountContext& account,
   }
   if (account.sync_state != SyncState::kPending ||
       report.refresh_id != account.sync_id) {
+    return;
+  }
+  if (account.recovery) {
+    FailAccountSync(account, "conflicting_recovery_baseline");
     return;
   }
   if (std::holds_alternative<PositionsRefreshStarted>(report.event)) {

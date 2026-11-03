@@ -186,6 +186,13 @@ class TradingService final : public container::Service {
     std::vector<PositionInfo> rows;
     std::unordered_map<PositionKey, std::size_t, PositionKey::Hash> index;
   };
+  struct OrderRecord;
+  // Retains the exact accounting record for deduplication, including external orders.
+  struct RecordedFill {
+    OrderRecord* order;
+    double price;
+    int quantity;
+  };
   enum class SyncState { kNotStarted, kPending, kReady, kFailed };
   // Carries the bound account into every callback without a downcast or lookup.
   struct AccountContext final : ITradingAdapterCallback {
@@ -197,6 +204,8 @@ class TradingService final : public container::Service {
     void OnOrderReport(const AdapterOrderReport& report) override;
     void OnCancelReport(const AdapterCancelReport& report) override;
     void OnTradeReport(const TradeInfo& trade) override;
+    void OnAccountRecovery(std::uint64_t sync_id, AccountRecovery baseline) override;
+    void OnRecoveredEvent(const RecoveredEvent& event) override;
     void OnAccountSyncReport(const AdapterAccountSyncReport& report) override;
     void OnFundsReport(const AdapterFundsReport& report) override;
     void OnPositionsReport(const AdapterPositionsReport& report) override;
@@ -204,7 +213,10 @@ class TradingService final : public container::Service {
     TradingService& owner;
     std::uint64_t id;
     ITradingAdapter& adapter;
-    std::unordered_map<TradeId, TradeInfo, TradeIdHash> trades;
+    std::unordered_map<TradeId, RecordedFill, TradeIdHash> trades;
+    std::optional<AccountRecovery> recovery;
+    std::unordered_map<std::size_t, OrderRecord*> recovered_orders;
+    std::vector<std::unique_ptr<OrderRecord>> unowned_orders;
     SyncState sync_state = SyncState::kNotStarted;
     std::uint64_t sync_id = 0;
     FundsSnapshot funds;
@@ -254,6 +266,10 @@ class TradingService final : public container::Service {
     bool funds_pending = false;
     CloseHold close{};
     std::unordered_set<std::uint64_t> cancel_ids{};
+    // The initial hold covers only the quantity left after this booked prefix.
+    int baseline_booked = 0;
+    std::unique_ptr<FundsTerms> recovered_terms{};
+    std::optional<int> canceled_quantity{};
   };
   // Keeps each attempt independent of other cancellations for the same order.
   struct CancelRecord {
@@ -306,7 +322,11 @@ class TradingService final : public container::Service {
   // Applies a counter result to its attempt and updates the order on success.
   void ApplyCancel(std::uint64_t account_id, const AdapterCancelReport& report);
   // Validates a detail and deduplicates it within its bound account.
-  void ApplyTrade(AccountContext& account, const TradeInfo& trade);
+  void ApplyTrade(AccountContext& account, OrderRecord& order, const TradeInfo& trade);
+  bool ConfirmCancellation(AccountContext& account, OrderRecord& order, int filled);
+  const char* InstallRecovery(AccountContext& account, const AccountRecovery& baseline);
+  static bool ValidPosition(const PositionInfo& position);
+  static bool ValidTerms(const FundsTerms& terms);
   // Saves counter and detail totals. Returns true and increments the version
   // only if the order state or total filled quantity changes.
   static bool UpdateFill(OrderRecord& order, OrderState state,
