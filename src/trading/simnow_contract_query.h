@@ -22,7 +22,10 @@ using TermsRow = std::variant<CThostFtdcInstrumentField, CThostFtdcProductField,
 // to Receive. Publish terms only after complete becomes true.
 class SimNowContractQuery {
  public:
-  explicit SimNowContractQuery(std::string_view symbol);
+  explicit SimNowContractQuery(std::string_view symbol, std::string exchange = {},
+                               std::string unit = {},
+                               char hedge = THOST_FTDC_HF_Speculation);
+  const std::string& exchange() const { return exchange_; }
   int Send(CThostFtdcTraderApi& api, const std::string& broker,
            const std::string& user, int id) const;
   // Returns false for missing, ambiguous or invalid data. field continues
@@ -42,7 +45,8 @@ class SimNowContractQuery {
   bool Apply(const CThostFtdcInstrumentCommissionRateField& row);
   bool MatchesRate(std::string_view instrument, std::string_view exchange) const;
 
-  std::string exchange_, product_;
+  std::string exchange_, product_, unit_;
+  char hedge_;
   bool received_ = false, relative_ = false;
 };
 

@@ -50,6 +50,16 @@ struct SimNowContractTerms {
   FundsTerms buy, sell;
 };
 
+// Links the unfilled part of a working order to its existing counter holds.
+// order_index addresses history.orders() in this snapshot, even without an owner.
+struct SimNowOrderHold {
+  std::size_t order_index;
+  int remaining;
+  model::Currency currency;
+  double margin = 0, commission = 0;
+  int today = 0, yesterday = 0;
+};
+
 // Owns completed query results for the logged-in account and trading day.
 // Funds and positions were sampled by separate requests.
 struct SimNowStartupSnapshot {
@@ -58,6 +68,10 @@ struct SimNowStartupSnapshot {
   std::vector<SimNowPosition> positions;
   SimNowOrderHistory history;
   std::optional<SimNowContractTerms> terms;
+  // On success contains all working orders (including orders with zero cost).
+  // On failure holds stays empty and holds_error identifies the discrepancy.
+  std::vector<SimNowOrderHold> holds;
+  std::string holds_error;
 };
 
 enum class SnapshotPhase { kIdle, kFunds, kPositions, kPositionMultiplier, kPositionDetails, kOrders, kTrades, kContractTerms, kComplete, kFailed };

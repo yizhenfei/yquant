@@ -41,15 +41,15 @@ class SimNowTradingAdapter : public ITradingAdapter {
       const SimNowTraderConfig& config);
   // Borrowed until the next Run or destruction. Read on the business thread.
   virtual const TraderLoginStatus& login_status() const = 0;
-  // Starts the read-only queries after login, including a retry after failure.
-  // Returns false while logged out or once collection is active or complete.
+  // Starts read-only queries after login. Retry after a failed query or an
+  // unresolved hold. A verified snapshot needs no further collection.
   // A nonempty symbol also requests that futures contract's speculative
   // margin and fees. The adapter copies the symbol before returning.
   virtual bool StartSnapshot(std::string_view symbol = {}) = 0;
   // Drive Run to advance the queries. Both accessors use the business thread.
   virtual SnapshotStatus snapshot_status() const = 0;
-  // Returns nullptr until all requested queries complete. A disconnect invalidates the
-  // borrowed snapshot when Run processes it.
+  // Returns a borrowed raw snapshot once collected. Check holds_error before
+  // using holds. A retry or a processed disconnect invalidates the snapshot.
   virtual const SimNowStartupSnapshot* snapshot() const = 0;
 };
 

@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "yquant/model/currency.h"
 #include "yquant/trading/order.h"
 #include "yquant/trading/trade.h"
 
@@ -30,6 +31,9 @@ struct SimNowOrder {
   double price = 0;
   int quantity = 0, traded = 0, remaining = 0;
   std::optional<SimNowOrderOwner> owner;
+  std::string invest_unit;
+  bool multi_leg = false;
+  std::optional<model::Currency> currency;
   bool operator==(const SimNowOrder&) const = default;
 };
 

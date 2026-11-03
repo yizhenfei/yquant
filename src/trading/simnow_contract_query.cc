@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <limits>
+#include <utility>
 
 #include "simnow_fields.h"
 
@@ -14,9 +15,13 @@ bool ValidRate(double value) {
 
 }  // namespace
 
-SimNowContractQuery::SimNowContractQuery(std::string_view symbol) {
+SimNowContractQuery::SimNowContractQuery(std::string_view symbol, std::string exchange,
+                                         std::string unit, char hedge)
+    : exchange_(std::move(exchange)), unit_(std::move(unit)), hedge_(hedge) {
   terms.symbol = symbol;
-  terms.buy.hedge = terms.sell.hedge = HedgeFlag::kSpeculation;
+  terms.buy.hedge = terms.sell.hedge =
+      hedge == THOST_FTDC_HF_Hedge ? HedgeFlag::kHedge :
+      hedge == THOST_FTDC_HF_Arbitrage ? HedgeFlag::kArbitrage : HedgeFlag::kSpeculation;
 }
 
 const char* SimNowContractQuery::field_name() const {
@@ -37,6 +42,7 @@ int SimNowContractQuery::Send(CThostFtdcTraderApi& api,
     case TermsField::kInstrument: {
       CThostFtdcQryInstrumentField r{};
       Copy(r.InstrumentID, terms.symbol);
+      Copy(r.ExchangeID, exchange_);
       return api.ReqQryInstrument(&r, id);
     }
     case TermsField::kProduct: {
@@ -51,7 +57,8 @@ int SimNowContractQuery::Send(CThostFtdcTraderApi& api,
       Copy(r.ExchangeID, exchange_);
       Copy(r.BrokerID, broker);
       Copy(r.InvestorID, user);
-      r.HedgeFlag = THOST_FTDC_HF_Speculation;
+      Copy(r.InvestUnitID, unit_);
+      r.HedgeFlag = hedge_;
       return api.ReqQryInstrumentMarginRate(&r, id);
     }
     case TermsField::kExchangeMargin: {
@@ -59,7 +66,7 @@ int SimNowContractQuery::Send(CThostFtdcTraderApi& api,
       Copy(r.InstrumentID, terms.symbol);
       Copy(r.ExchangeID, exchange_);
       Copy(r.BrokerID, broker);
-      r.HedgeFlag = THOST_FTDC_HF_Speculation;
+      r.HedgeFlag = hedge_;
       return api.ReqQryExchangeMarginRate(&r, id);
     }
     case TermsField::kFees: {
@@ -68,6 +75,7 @@ int SimNowContractQuery::Send(CThostFtdcTraderApi& api,
       Copy(r.ExchangeID, exchange_);
       Copy(r.BrokerID, broker);
       Copy(r.InvestorID, user);
+      Copy(r.InvestUnitID, unit_);
       return api.ReqQryInstrumentCommissionRate(&r, id);
     }
   }
@@ -97,7 +105,8 @@ bool SimNowContractQuery::Receive(const TermsRow* row, bool last) {
 
 bool SimNowContractQuery::Apply(const CThostFtdcInstrumentField& r) {
   if (Field(r.InstrumentID) != terms.symbol || r.VolumeMultiple <= 0 ||
-      r.ProductClass != THOST_FTDC_PC_Futures) return false;
+      r.ProductClass != THOST_FTDC_PC_Futures ||
+      (!exchange_.empty() && exchange_ != Field(r.ExchangeID))) return false;
   product_ = Field(r.ProductID);
   exchange_ = Field(r.ExchangeID);
   terms.buy.contract_multiplier = terms.sell.contract_multiplier = r.VolumeMultiple;
@@ -124,7 +133,8 @@ bool SimNowContractQuery::Apply(const CThostFtdcInstrumentMarginRateField& r) {
     return r.IsRelative ? ValidRate(std::abs(rate)) : ValidRate(rate);
   };
   if (!MatchesRate(Field(r.InstrumentID), Field(r.ExchangeID)) ||
-      r.HedgeFlag != THOST_FTDC_HF_Speculation ||
+      r.HedgeFlag != hedge_ ||
+      (!Field(r.InvestUnitID).empty() && Field(r.InvestUnitID) != unit_) ||
       (r.IsRelative != 0 && r.IsRelative != 1) ||
       !valid(r.LongMarginRatioByMoney) || !valid(r.ShortMarginRatioByMoney) ||
       !valid(r.LongMarginRatioByVolume) || !valid(r.ShortMarginRatioByVolume)) {
@@ -140,7 +150,7 @@ bool SimNowContractQuery::Apply(const CThostFtdcInstrumentMarginRateField& r) {
 
 bool SimNowContractQuery::Apply(const CThostFtdcExchangeMarginRateField& r) {
   if (!MatchesRate(Field(r.InstrumentID), Field(r.ExchangeID)) ||
-      r.HedgeFlag != THOST_FTDC_HF_Speculation) return false;
+      r.HedgeFlag != hedge_) return false;
   auto add = [](double& base, double rate) {
     if (!ValidRate(rate) || !ValidRate(base + rate)) return false;
     base += rate;
@@ -154,6 +164,7 @@ bool SimNowContractQuery::Apply(const CThostFtdcExchangeMarginRateField& r) {
 
 bool SimNowContractQuery::Apply(const CThostFtdcInstrumentCommissionRateField& r) {
   if (!MatchesRate(Field(r.InstrumentID), Field(r.ExchangeID)) ||
+      (!Field(r.InvestUnitID).empty() && Field(r.InvestUnitID) != unit_) ||
       (r.BizType && r.BizType != THOST_FTDC_BZTP_Future)) return false;
   const FeeRate open{r.OpenRatioByVolume, r.OpenRatioByMoney};
   const FeeRate close{r.CloseRatioByVolume, r.CloseRatioByMoney};

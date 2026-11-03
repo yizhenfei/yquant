@@ -72,7 +72,7 @@ class Probe final : public CThostFtdcTraderApi {
     EXPECT_STREQ(r->InvestorID, "test");
     funds_ids.push_back(id);
     if (automatic) {
-      auto row = Balance();
+      auto row = account_balance;
       spi->OnRspQryTradingAccount(&row, nullptr, id, true);
     }
     return funds_rc;
@@ -110,6 +110,7 @@ class Probe final : public CThostFtdcTraderApi {
       CThostFtdcInstrumentField instrument{};
       std::strcpy(instrument.InstrumentID, r->InstrumentID);
       std::strcpy(instrument.ExchangeID, r->ExchangeID);
+      if (std::strcmp(r->InstrumentID, "TF2612") == 0) std::strcpy(instrument.ProductID, "TF");
       instrument.ProductClass = THOST_FTDC_PC_Futures;
       instrument.VolumeMultiple = multiplier;
       spi->OnRspQryInstrument(&instrument, nullptr, id, false);
@@ -234,6 +235,7 @@ class Probe final : public CThostFtdcTraderApi {
     r.CurrMargin = 25;
     return r;
   }
+  CThostFtdcTradingAccountField account_balance = Balance();
   std::vector<int> funds_ids, position_ids;
   int funds_rc = 0;
 
@@ -598,7 +600,7 @@ TEST_F(StartupSnapshotTest, PublishesAllRowsAfterFinalResponseOnce) {
   EXPECT_EQ(b.frozen_margin, 20);
   EXPECT_EQ(b.frozen_commission, 1);
   EXPECT_EQ(b.margin, 25);
-  EXPECT_FALSE(session->StartSnapshot());
+  EXPECT_FALSE(snapshot->holds_error.empty());
   probe->spi->OnRspQryInvestorPosition(nullptr, nullptr, probe->position_ids.back(), true);
   session->Run();
   EXPECT_EQ(probe->position_ids.size(), 1);
@@ -1032,12 +1034,149 @@ TEST_F(PositionCostsTest, RejectsInvalidMultiplierDuplicateAndForeignDetails) {
   EXPECT_STREQ(session->snapshot_status().reason, "position_details_response");
 }
 
+class OrderHoldsTest : public OrderHistoryTest {
+ protected:
+  void SetUp() override {
+    OrderHistoryTest::SetUp();
+    auto open = Order(1, 1, SimNowOrderOwner{{5, 11}, 31});
+    std::strcpy(open.InstrumentID, "TF2612");
+    std::strcpy(open.ExchangeID, "CFFEX");
+    open.VolumeTraded = 1;
+    open.VolumeTotal = 2;
+    open.OrderStatus = THOST_FTDC_OST_PartTradedQueueing;
+    auto close = Order(2, 2, std::nullopt);
+    std::strcpy(close.InstrumentID, "TF2612");
+    std::strcpy(close.ExchangeID, "CFFEX");
+    close.Direction = THOST_FTDC_D_Sell;
+    close.CombOffsetFlag[0] = THOST_FTDC_OF_Close;
+    auto canceled = Order(3, 3, std::nullopt);
+    canceled.OrderStatus = THOST_FTDC_OST_Canceled;
+    probe->history_orders = {open, close, canceled};
+    probe->history_trades = {Fill(open)};
+    auto today = Position(1);
+    std::strcpy(today.InstrumentID, "TF2612");
+    std::strcpy(today.ExchangeID, "CFFEX");
+    today.ShortFrozen = 1;
+    auto prior = today;
+    prior.PositionDate = THOST_FTDC_PSD_History;
+    prior.TodayPosition = 0;
+    prior.ShortFrozen = 2;
+    probe->position_rows = {today, prior};
+    // Two remaining opening lots, each with 104 margin and 4 commission.
+    // Three remaining closing lots carry 2 commission per lot.
+    probe->account_balance.FrozenMargin = 208;
+    probe->account_balance.FrozenCommission = 14;
+  }
+};
+
+TEST_F(OrderHoldsTest, PublishesOnlyRemainingHoldsAndPreservesCounterTotals) {
+  Query();
+  const auto* s = session->snapshot();
+  ASSERT_TRUE(s);
+  ASSERT_TRUE(s->holds_error.empty()) << s->holds_error;
+  ASSERT_EQ(s->holds.size(), 2);
+  const auto& open = s->holds[0];
+  EXPECT_EQ(open.order_index, 0);
+  EXPECT_EQ(open.remaining, 2);
+  EXPECT_EQ(open.margin, 208);
+  EXPECT_EQ(open.commission, 8);
+  EXPECT_EQ(open.today + open.yesterday, 0);
+  const auto& close = s->holds[1];
+  EXPECT_FALSE(s->history.orders()[close.order_index].owner);
+  EXPECT_EQ(close.margin, 0);
+  EXPECT_EQ(close.commission, 6);
+  EXPECT_EQ(close.today, 1);
+  EXPECT_EQ(close.yesterday, 2);
+  EXPECT_EQ(s->balances[0].frozen_margin, 208);
+  EXPECT_EQ(s->balances[0].frozen_commission, 14);
+  EXPECT_EQ(s->balances[0].available, 59);
+  EXPECT_EQ(probe->position_contract_queries.size(), 1);
+  EXPECT_FALSE(session->StartSnapshot());
+}
+
+TEST_F(OrderHoldsTest, RejectsOffsettingCashErrorsAndCanRetry) {
+  --probe->account_balance.FrozenMargin;
+  ++probe->account_balance.FrozenCommission;
+  Query();
+  ASSERT_TRUE(session->snapshot());
+  EXPECT_EQ(session->snapshot()->holds_error, "frozen_margin_mismatch CNY");
+  EXPECT_TRUE(session->snapshot()->holds.empty());
+  ++probe->account_balance.FrozenMargin;
+  Query();
+  EXPECT_EQ(session->snapshot()->holds_error, "frozen_commission_mismatch CNY");
+  --probe->account_balance.FrozenCommission;
+  Query();
+  EXPECT_EQ(session->snapshot()->holds.size(), 2);
+}
+
+TEST_F(OrderHoldsTest, AmbiguousPerOrderSplitNeverPublishesPartialResults) {
+  auto& close = probe->history_orders[1];
+  auto another = close;
+  another.SessionID = 4;
+  std::strcpy(another.OrderSysID, "4");
+  close.VolumeTotalOriginal = close.VolumeTotal = 2;
+  another.VolumeTotalOriginal = another.VolumeTotal = 1;
+  probe->history_orders.push_back(another);
+  Query();
+  ASSERT_TRUE(session->snapshot());
+  EXPECT_EQ(session->snapshot()->holds_error, "ambiguous_close_allocation TF2612");
+  EXPECT_TRUE(session->snapshot()->holds.empty());
+  probe->history_orders.back().CombOffsetFlag[0] = THOST_FTDC_OF_CloseToday;
+  probe->account_balance.FrozenCommission -= 2;  // Today's closing rate is zero.
+  Query();
+  ASSERT_EQ(session->snapshot()->holds.size(), 3);
+  EXPECT_EQ(session->snapshot()->holds[1].yesterday, 2);
+  EXPECT_EQ(session->snapshot()->holds[2].today, 1);
+}
+
+TEST_F(OrderHoldsTest, BuyCloseUsesOnlyTheShortHoldingInItsInvestmentUnit) {
+  auto& close = probe->history_orders[1];
+  close.Direction = THOST_FTDC_D_Buy;
+  std::strcpy(close.InvestUnitID, "desk2");
+  for (auto& row : probe->position_rows) {
+    row.PosiDirection = THOST_FTDC_PD_Short;
+    row.LongFrozen = row.ShortFrozen;
+    row.ShortFrozen = 0;
+  }
+  Query();
+  ASSERT_TRUE(session->snapshot());
+  EXPECT_EQ(session->snapshot()->holds_error, "position_freeze_mismatch TF2612");
+  for (auto& row : probe->position_rows) std::strcpy(row.InvestUnitID, "desk2");
+  Query();
+  ASSERT_EQ(session->snapshot()->holds.size(), 2);
+  EXPECT_EQ(session->snapshot()->holds[1].today, 1);
+  EXPECT_EQ(session->snapshot()->holds[1].yesterday, 2);
+}
+
+TEST_F(OrderHoldsTest, UnknownOrderStatePreventsVerificationEvenWhenTotalsAgree) {
+  probe->history_orders.back().OrderStatus = THOST_FTDC_OST_Unknown;
+  Query();
+  ASSERT_TRUE(session->snapshot());
+  EXPECT_EQ(session->snapshot()->holds_error, "unresolved_order_status al2612");
+  EXPECT_TRUE(session->snapshot()->holds.empty());
+}
+
+TEST_F(OrderHoldsTest, UnmatchedPositionFreezeAndMissingRatesAreDiagnosed) {
+  ++probe->position_rows.front().ShortFrozen;
+  Query();
+  ASSERT_TRUE(session->snapshot());
+  EXPECT_EQ(session->snapshot()->holds_error, "position_freeze_mismatch TF2612");
+  --probe->position_rows.front().ShortFrozen;
+  probe->missing_fees = true;
+  Query();
+  ASSERT_TRUE(session->snapshot());
+  EXPECT_NE(session->snapshot()->holds_error.find("missing_order_rates TF2612 commission"),
+            std::string::npos);
+  EXPECT_TRUE(session->snapshot()->holds.empty());
+}
+
 TEST(StartupSnapshot, MonodPublishesOnlyTheCompletedSummary) {
   const char* args[] = {"tcp://fixture:1", "2"};
   auto connect = [](const SimNowTraderConfig& config) {
     return internal::StartTraderSession(config, [] {
       auto* probe = new Probe;
       probe->automatic = true;
+      probe->account_balance.FrozenCommission = probe->account_balance.FrozenMargin = 0;
       return probe;
     });
   };
@@ -1045,7 +1184,7 @@ TEST(StartupSnapshot, MonodPublishesOnlyTheCompletedSummary) {
   const int result = monod::RunTraderLogin(2, args, true, connect);
   const auto out = ::testing::internal::GetCapturedStdout();
   EXPECT_EQ(result, 0);
-  EXPECT_EQ(out, "startup_snapshot trading_day=20261103 currencies=1 "
+  EXPECT_EQ(out, "startup_holds_verified orders=0\nstartup_snapshot trading_day=20261103 currencies=1 "
                  "position_rows=0 orders=0 fills=0 account_ready=false\n");
 }
 

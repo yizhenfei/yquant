@@ -14,6 +14,7 @@
 
 #include "simnow_contract_query.h"
 #include "simnow_fields.h"
+#include "simnow_order_holds.h"
 #include "simnow_order_tag.h"
 #include "simnow_position_costs.h"
 #include "simnow_trader_session.h"
@@ -127,9 +128,14 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
   bool StartSnapshot(std::string_view symbol) override {
     if (status_.phase != LoginPhase::kLoggedIn ||
         (query_.phase != SnapshotPhase::kIdle &&
-         query_.phase != SnapshotPhase::kFailed)) return false;
+         query_.phase != SnapshotPhase::kFailed &&
+         !(query_.phase == SnapshotPhase::kComplete && !snapshot_.holds_error.empty()))) {
+      return false;
+    }
     if (symbol.size() >= sizeof(TThostFtdcInstrumentIDType) ||
         symbol.find('\0') != symbol.npos) return false;
+    hold_rates_.clear();
+    fetching_hold_rate_ = false;
     contract_.reset();
     if (!symbol.empty()) contract_.emplace(symbol);
     position_costs_ = {};
@@ -165,8 +171,11 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
       return;
     }
     if (Collecting() && Clock::now() >= query_deadline_) {
-      FailSnapshot(query_.phase == SnapshotPhase::kContractTerms
-                       ? contract_->field_name() : "snapshot_timeout", 0);
+      if (query_.phase == SnapshotPhase::kContractTerms) {
+        FailRate(contract_->field_name(), 0);
+      } else {
+        FailSnapshot("snapshot_timeout", 0);
+      }
     }
     Event event{};
     {
@@ -307,7 +316,11 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
           std::string(Field(r->InstrumentID)), r->Direction, r->CombOffsetFlag[0],
           r->CombHedgeFlag[0], r->OrderStatus, r->OrderSubmitStatus,
           r->OrderPriceType, r->LimitPrice, r->VolumeTotalOriginal, r->VolumeTraded,
-          r->VolumeTotal, internal::ReadOrderTag(*r)};
+          r->VolumeTotal, internal::ReadOrderTag(*r), std::string(Field(r->InvestUnitID)),
+          r->IsSwapOrder != 0 || Field(r->CombOffsetFlag).size() > 1 ||
+              Field(r->CombHedgeFlag).size() > 1,
+          Field(r->CurrencyID).empty() ? std::nullopt :
+              std::optional{model::Currency(Field(r->CurrencyID))}};
     }
     Push(std::move(e));
   }
@@ -360,7 +373,7 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
 
   template <typename Row>
   bool MatchesInvestor(const Row& row) const {
-    if (Field(row.BrokerID) != broker_ || !Field(row.InvestUnitID).empty()) {
+    if (Field(row.BrokerID) != broker_) {
       return false;
     }
     return (row.InvestorRange == THOST_FTDC_IR_Single &&
@@ -445,7 +458,8 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
     if (rc == -2 || rc == -3) {
       next_query_ = Clock::now() + std::chrono::seconds(1);
     } else if (rc != 0) {
-      FailSnapshot(failure, rc);
+      if (terms) FailRate(failure, rc);
+      else FailSnapshot(failure, rc);
     } else {
       query_sent_ = true;
     }
@@ -473,10 +487,53 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
     if (e.kind == Kind::kOrders) {
       query_.phase = SnapshotPhase::kTrades;
     } else {
-      query_.phase = contract_ ? SnapshotPhase::kContractTerms
-                               : SnapshotPhase::kComplete;
+      snapshot_.holds_error = internal::CollectOrderRates(snapshot_.history, hold_rates_);
+      hold_rate_ = hold_rates_.begin();
+      if (contract_) query_.phase = SnapshotPhase::kContractTerms;
+      else NextHoldRate();
     }
     query_sent_ = false;
+  }
+
+  void NextHoldRate() {
+    if (snapshot_.holds_error.empty()) {
+      while (hold_rate_ != hold_rates_.end() && !hold_rate_->second.symbol.empty()) {
+        ++hold_rate_;
+      }
+      if (hold_rate_ != hold_rates_.end()) {
+        const auto& [exchange, symbol, unit, hedge] = hold_rate_->first;
+        contract_.emplace(symbol, exchange, unit, hedge);
+        fetching_hold_rate_ = true;
+        query_sent_ = false;
+        query_.phase = SnapshotPhase::kContractTerms;
+        return;
+      }
+      internal::ReconcileOrderHolds(snapshot_, hold_rates_);
+    }
+    fetching_hold_rate_ = false;
+    query_.phase = SnapshotPhase::kComplete;
+  }
+  void FailRate(const char* reason, int code) {
+    if (!fetching_hold_rate_) {
+      FailSnapshot(reason, code);
+      return;
+    }
+    snapshot_.holds_error = "missing_order_rates " + contract_->terms.symbol +
+                            " " + reason + " code=" + std::to_string(code);
+    fetching_hold_rate_ = false;
+    query_.phase = SnapshotPhase::kComplete;
+  }
+  void FinishRate() {
+    if (fetching_hold_rate_) {
+      hold_rate_->second = std::move(contract_->terms);
+      ++hold_rate_;
+    } else {
+      snapshot_.terms = std::move(contract_->terms);
+      const auto matching = hold_rates_.find({contract_->exchange(),
+          snapshot_.terms->symbol, "", THOST_FTDC_HF_Speculation});
+      if (matching != hold_rates_.end()) matching->second = *snapshot_.terms;
+    }
+    NextHoldRate();
   }
 
   void ReceivePositionCosts(const Event& e) {
@@ -540,10 +597,9 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
           (e.kind != Kind::kTerms || e.field != contract_->field)) return;
       if (e.kind == Kind::kError || e.code || !e.valid ||
           !contract_->Receive(e.terms_row.get(), e.last)) {
-        FailSnapshot(contract_->field_name(), e.code);
+        FailRate(contract_->field_name(), e.code);
       } else if (contract_->complete) {
-        snapshot_.terms = std::move(contract_->terms);
-        query_.phase = SnapshotPhase::kComplete;
+        FinishRate();
       } else if (e.last) {
         query_sent_ = false;
       }
@@ -688,6 +744,9 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
   SnapshotStatus query_;
   internal::SimNowPositionCosts position_costs_;
   std::optional<internal::SimNowContractQuery> contract_;
+  internal::OrderRates hold_rates_;
+  internal::OrderRates::iterator hold_rate_;
+  bool fetching_hold_rate_ = false;
   SimNowStartupSnapshot snapshot_;
   bool query_sent_ = false;
   Clock::time_point next_query_, query_deadline_;

@@ -95,13 +95,19 @@ int RunTraderLogin(int argc, const char* const* argv, bool collect_snapshot,
                         name, fee.per_quantity, fee.per_notional);
           }
         }
+        if (!snapshot->holds_error.empty()) {
+          std::fprintf(stderr, "startup_holds_unresolved reason=%s\n",
+                       snapshot->holds_error.c_str());
+        } else {
+          std::printf("startup_holds_verified orders=%zu\n", snapshot->holds.size());
+        }
         std::printf("startup_snapshot trading_day=%s currencies=%zu "
                     "position_rows=%zu orders=%zu fills=%zu account_ready=false\n",
                     snapshot->trading_day.c_str(), snapshot->balances.size(),
                     snapshot->positions.size(), snapshot->history.orders().size(),
                     snapshot->history.fills().size());
         std::fflush(stdout);
-        return 0;
+        return snapshot->holds_error.empty() ? 0 : 1;
       }
     } else if (s.phase == trading::LoginPhase::kLoggedIn) {
       const bool ready = service.IsAccountReady(1);
