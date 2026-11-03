@@ -85,7 +85,7 @@ bool SimNowSubmissions::Prepare(const OrderInfo& o, int request_id,
       !Copy(r.InstrumentID, instrument->second.second) ||
       !WriteOrderTag({o.order_id, o.strategy_id}, r)) return false;
   const auto ref = *last_ref_ + 1;
-  auto [it, added] = orders_.try_emplace(o.order_id, Entry{o, request_id, ref, {}});
+  auto [it, added] = orders_.try_emplace(o.order_id, Entry{o, request_id, ref, {}, {}});
   if (!added) return false;
   *last_ref_ = ref;
   std::to_chars(r.OrderRef, r.OrderRef + sizeof(r.OrderRef) - 1, ref);
@@ -102,6 +102,18 @@ bool SimNowSubmissions::Prepare(const OrderInfo& o, int request_id,
   requests_.emplace(request_id, &it->second);
   refs_.emplace(ref, &it->second);
   return true;
+}
+
+bool SimNowSubmissions::SetCancelTarget(OrderId id, CThostFtdcInputOrderActionField& r) const {
+  const auto it = orders_.find(id);
+  if (it == orders_.end()) return false;
+  const auto& entry = it->second;
+  const auto& contract = instruments_.at(entry.order.instrument_id);
+  r.FrontID = front_;
+  r.SessionID = session_;
+  std::to_chars(r.OrderRef, r.OrderRef + sizeof(r.OrderRef) - 1, entry.ref);
+  return Copy(r.InstrumentID, contract.second) && Copy(r.ExchangeID, contract.first) &&
+         (entry.system_id.empty() || Copy(r.OrderSysID, entry.wire_system_id));
 }
 
 const SimNowSubmissions::Entry* SimNowSubmissions::ByRequest(int id) const {
@@ -157,6 +169,7 @@ const SimNowSubmissions::Entry* SimNowSubmissions::Match(
   if (!u.system_id.empty() && !native) {
     auto& entry = orders_.at(o.order_id);
     entry.system_id = u.system_id;
+    entry.wire_system_id = u.wire_system_id;
     exchanges_[u.exchange].emplace(u.system_id, &entry);
   }
   return e;

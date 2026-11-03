@@ -148,6 +148,9 @@ bool TradingService::ConfirmCancellation(AccountContext& account, OrderRecord& o
     Diagnose("conflicting_cancel_fill", account.id, order.order.order_id);
     return false;
   }
+  // Several successful attempts can carry the same terminal order report.
+  // Each attempt still notifies its listener; the order ledger is updated once.
+  if (order.canceled_quantity) return false;
   order.canceled_quantity = filled;
   const bool changed = UpdateFill(order, OrderState::kCanceled,
       std::max(order.reported_filled_quantity, filled), order.detailed_filled_quantity);

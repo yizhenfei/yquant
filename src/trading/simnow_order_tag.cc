@@ -18,7 +18,23 @@ constexpr std::string_view kDigits =
 static_assert(kDigits.size() == 85 && sizeof(TThostFtdcBusinessUnitType) == 21 &&
               sizeof(TThostFtdcOrderMemoType) == 13);
 
+void EncodeWord(std::uint32_t word, char* out) {
+  for (int i = 4; i >= 0; --i) {
+    out[i] = kDigits[word % 85];
+    word /= 85;
+  }
+}
+
 }  // namespace
+
+std::string CancelSessionMemo(int front, int session) {
+  std::string memo(12, '0');
+  memo[0] = 'C';
+  memo[1] = '1';
+  EncodeWord(static_cast<std::uint32_t>(front), memo.data() + 2);
+  EncodeWord(static_cast<std::uint32_t>(session), memo.data() + 7);
+  return memo;
+}
 
 bool WriteOrderTag(const SimNowOrderOwner& owner, CThostFtdcInputOrderField& row) {
   if (!owner.order_id.sequence) return false;
@@ -27,11 +43,7 @@ bool WriteOrderTag(const SimNowOrderOwner& owner, CThostFtdcInputOrderField& row
   for (auto value : {owner.order_id.caller_service_id, owner.order_id.sequence,
                      owner.strategy_id}) {
     for (int shift : {32, 0}) {
-      auto word = static_cast<std::uint32_t>(value >> shift);
-      for (int i = 4; i >= 0; --i) {
-        tag[pos + i] = kDigits[word % 85];
-        word /= 85;
-      }
+      EncodeWord(static_cast<std::uint32_t>(value >> shift), tag.data() + pos);
       pos += 5;
     }
   }

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <string>
 #include <string_view>
 
 namespace yquant::trading::internal {
@@ -18,6 +19,15 @@ template <std::size_t N>
 std::string_view Field(const char (&value)[N]) {
   return {value, static_cast<std::size_t>(
                      std::find(value, value + N, '\0') - value)};
+}
+
+// CTP can space-pad native identifiers in its fixed-width character fields.
+template <std::size_t N>
+std::string NativeId(const char (&raw)[N]) {
+  const auto value = Field(raw);
+  const auto first = value.find_first_not_of(' ');
+  if (first == value.npos) return {};
+  return std::string(value.substr(first, value.find_last_not_of(' ') - first + 1));
 }
 
 }  // namespace yquant::trading::internal

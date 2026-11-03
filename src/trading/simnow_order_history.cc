@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <tuple>
 #include <utility>
 
 namespace yquant::trading {
@@ -15,6 +16,16 @@ std::uint64_t SessionKey(int front, int session) {
 }
 
 }  // namespace
+
+bool SimNowOrder::operator==(const SimNowOrder& other) const {
+  const auto fields = [](const SimNowOrder& o) {
+    return std::tie(o.front, o.session, o.ref, o.exchange, o.system_id, o.symbol,
+                    o.direction, o.offset, o.hedge, o.status, o.submit_status,
+                    o.price_type, o.price, o.quantity, o.traded, o.remaining,
+                    o.owner, o.invest_unit, o.multi_leg, o.currency);
+  };
+  return fields(*this) == fields(other);
+}
 
 const SimNowOrder* SimNowOrderHistory::Find(OrderId id) const {
   const auto it = owned_.find(id);

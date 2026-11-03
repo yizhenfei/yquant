@@ -7,6 +7,10 @@
 
 namespace yquant::trading::internal {
 
+// Identifies the session issuing an action, which can differ from the session
+// that originally submitted the order. Fits the SDK action's OrderMemo field.
+std::string CancelSessionMemo(int front, int session);
+
 // Writes the caller, sequence and strategy to BusinessUnit and OrderMemo.
 // A zero sequence is invalid; failure leaves both SDK fields unchanged.
 bool WriteOrderTag(const SimNowOrderOwner& owner, CThostFtdcInputOrderField& row);

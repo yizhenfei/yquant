@@ -34,7 +34,11 @@ struct SimNowOrder {
   std::string invest_unit;
   bool multi_leg = false;
   std::optional<model::Currency> currency;
-  bool operator==(const SimNowOrder&) const = default;
+  // Preserve SDK padding for outgoing cancel requests; ref and system_id
+  // above are the normalized values used for matching incoming reports.
+  std::string wire_ref, wire_system_id;
+  // Compares business fields and normalized identities across SDK queries.
+  bool operator==(const SimNowOrder& other) const;
 };
 
 // Identifies a fill's order by index in the same history, including unowned

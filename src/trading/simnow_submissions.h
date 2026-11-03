@@ -23,7 +23,7 @@ class SimNowSubmissions {
     OrderInfo order;
     int request_id;
     std::uint64_t ref;
-    std::string system_id;
+    std::string system_id, wire_system_id;
   };
 
   explicit SimNowSubmissions(const SimNowInstruments& instruments);
@@ -36,6 +36,8 @@ class SimNowSubmissions {
   // Writes the order fields into a zero-initialized request containing the
   // account fields. Installs all associations before the SDK sees the request.
   bool Prepare(const OrderInfo& order, int request_id, CThostFtdcInputOrderField& request);
+  // Fills the target of a delete action for an order sent by this session.
+  bool SetCancelTarget(OrderId id, CThostFtdcInputOrderActionField& action) const;
   const Entry* ByRequest(int request_id) const;
   const Entry* ByReference(std::string_view ref) const;
   const Entry* ByExchange(const std::string& exchange, const std::string& system_id) const;
