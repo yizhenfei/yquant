@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
@@ -37,6 +38,12 @@ struct CancelOrderRequest {
   std::uint64_t account_id = 0;
   std::uint64_t strategy_id = 0;
   std::uint64_t cancel_request_id = 0;
+};
+
+// Selects the working orders one strategy instance can take over.
+struct StrategyOrderScope {
+  std::uint64_t caller, account, strategy;
+  std::uint32_t instrument;
 };
 
 // Selects an order and the account and strategy that must own it.
@@ -125,6 +132,14 @@ class TradingService final : public container::Service {
   // Binds during initialization. Duplicate accounts or adapter instances fail
   // without replacing the existing binding. Borrows adapter until shutdown.
   bool BindAccount(std::uint64_t account_id, ITradingAdapter& adapter);
+  // On success copies all matching active orders and this caller's sequence
+  // high-water mark across the service's recovered accounts. Single business thread.
+  bool QueryWorkingOrders(StrategyOrderScope scope, std::vector<OrderSnapshot>& orders,
+                          std::uint64_t& last_sequence) const;
+  // Binds the entire matching set if its IDs and versions still match the
+  // query. A different listener cannot displace an existing binding.
+  bool AdoptWorkingOrders(StrategyOrderScope scope, std::span<const OrderSnapshot> orders,
+                          TradingListener& listener);
   // Reports startup completion; unknown accounts return false.
   // QueryFunds separately reports runtime accounting availability.
   bool IsAccountReady(std::uint64_t account_id) const;
@@ -215,6 +230,7 @@ class TradingService final : public container::Service {
     ITradingAdapter& adapter;
     std::unordered_map<TradeId, RecordedFill, TradeIdHash> trades;
     std::optional<AccountRecovery> recovery;
+    std::unordered_map<std::uint64_t, std::uint64_t> last_sequences;
     std::unordered_map<std::size_t, OrderRecord*> recovered_orders;
     std::vector<std::unique_ptr<OrderRecord>> unowned_orders;
     SyncState sync_state = SyncState::kNotStarted;
@@ -326,6 +342,7 @@ class TradingService final : public container::Service {
   bool ConfirmCancellation(AccountContext& account, OrderRecord& order, int filled);
   const char* InstallRecovery(AccountContext& account, const AccountRecovery& baseline);
   static bool ValidPosition(const PositionInfo& position);
+  static std::uint64_t TermsKey(std::uint32_t instrument, Side side);
   static bool ValidTerms(const FundsTerms& terms);
   // Saves counter and detail totals. Returns true and increments the version
   // only if the order state or total filled quantity changes.

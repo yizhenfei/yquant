@@ -13,6 +13,7 @@
 #include <variant>
 
 #include "yquant/trading/internal/call_context.h"
+#include "yquant/trading/internal/order_state.h"
 #include "yquant/trading/order.h"
 #include "yquant/trading/trading_adapter.h"
 #include "yquant/trading/trading_listener.h"
@@ -32,6 +33,12 @@ bool Valid(const OrderInfo& order) {
          (order.offset == Offset::kOpen || order.offset == Offset::kClose ||
           order.offset == Offset::kCloseToday ||
           order.offset == Offset::kCloseYesterday);
+}
+
+bool InScope(const OrderInfo& order, OrderState state, StrategyOrderScope scope) {
+  return order.order_id.caller_service_id == scope.caller &&
+         order.account_id == scope.account && order.strategy_id == scope.strategy &&
+         order.instrument_id == scope.instrument && internal::IsActiveOrder(state);
 }
 
 // Checks a counter report before applying it to an established order.
@@ -105,7 +112,9 @@ void TradingService::ProcessSubmitOrder(const SubmitOrderRequest& request,
     Fail(info.order_id, listener, call, FailureReason::kUnknownAccount);
     return;
   }
-  if (orders_.contains(info.order_id)) {
+  const auto issued = account->second->last_sequences.find(info.order_id.caller_service_id);
+  if (orders_.contains(info.order_id) ||
+      (issued != account->second->last_sequences.end() && info.order_id.sequence <= issued->second)) {
     Fail(info.order_id, listener, call, FailureReason::kDuplicateOrder);
     return;
   }
@@ -157,6 +166,45 @@ void TradingService::ProcessSubmitOrder(const SubmitOrderRequest& request,
     UpdateCloseHold(*account->second, order);
     Fail(info.order_id, listener, call, FailureReason::kSendFailed, &order);
   }
+}
+
+bool TradingService::QueryWorkingOrders(StrategyOrderScope scope,
+    std::vector<OrderSnapshot>& orders, std::uint64_t& last_sequence) const {
+  if (!IsAccountReady(scope.account)) return false;
+  orders.clear();
+  last_sequence = 0;
+  for (const auto& account : accounts_) {
+    const auto last = account->last_sequences.find(scope.caller);
+    if (last != account->last_sequences.end()) last_sequence = std::max(last_sequence, last->second);
+  }
+  for (const auto& [id, record] : orders_) {
+    if (id.caller_service_id != scope.caller) continue;
+    last_sequence = std::max(last_sequence, id.sequence);
+    if (InScope(record.order, record.state, scope)) {
+      orders.push_back(MakeSnapshot(record));
+    }
+  }
+  return true;
+}
+
+bool TradingService::AdoptWorkingOrders(StrategyOrderScope scope,
+    std::span<const OrderSnapshot> orders, TradingListener& listener) {
+  if (!IsAccountReady(scope.account)) return false;
+  const auto count = std::count_if(orders_.begin(), orders_.end(), [&](const auto& entry) {
+    return InScope(entry.second.order, entry.second.state, scope);
+  });
+  if (orders.size() != static_cast<std::size_t>(count)) return false;
+  std::unordered_set<OrderId, OrderIdHash> ids;
+  for (const auto& candidate : orders) {
+    const auto id = candidate.order.order_id;
+    auto it = orders_.find(id);
+    if (!ids.insert(id).second || it == orders_.end()) return false;
+    const auto& record = it->second;
+    if (!InScope(record.order, record.state, scope) || record.version != candidate.version ||
+        (record.listener && record.listener != &listener)) return false;
+  }
+  for (const auto& id : ids) orders_.at(id).listener = &listener;
+  return true;
 }
 
 bool TradingService::QueryOrder(const QueryOrderRequest& query,

@@ -84,6 +84,37 @@ bool SimNowOrderHistory::AddFill(TradeId id, const std::string& system_id,
   return true;
 }
 
+const SimNowOrder* SimNowOrderHistory::FindNative(const SimNowOrder& order) const {
+  const auto* ref = Find(order.front, order.session, order.ref);
+  const auto* system = Find(order.exchange, order.system_id);
+  if (ref && system && ref != system) return nullptr;
+  return ref ? ref : system;
+}
+
+bool SimNowOrderHistory::HasCompleteFills() const {
+  for (std::size_t i = 0; i < orders_.size(); ++i) {
+    if (orders_[i].traded != detailed_quantity_[i]) return false;
+  }
+  return true;
+}
+
+bool SimNowOrderHistory::Matches(const SimNowOrderHistory& other) const {
+  if (orders_.size() != other.orders_.size() || fills_.size() != other.fills_.size()) {
+    return false;
+  }
+  for (const auto& order : orders_) {
+    const auto* match = other.FindNative(order);
+    if (!match || *match != order) return false;
+  }
+  for (const auto& [id, fill] : fills_) {
+    const auto it = other.fills_.find(id);
+    if (it == other.fills_.end() || it->second.price != fill.price ||
+        it->second.quantity != fill.quantity ||
+        other.orders_[it->second.order_index] != orders_[fill.order_index]) return false;
+  }
+  return true;
+}
+
 std::uint64_t SimNowOrderHistory::LastSequence(std::uint64_t caller) const {
   std::uint64_t last = 0;
   for (const auto& [id, index] : owned_) {

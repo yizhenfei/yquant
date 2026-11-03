@@ -19,6 +19,12 @@ class LocalTradingClient final : public TradingClient {
   LocalTradingClient& operator=(const LocalTradingClient&) = delete;
 
   // TradingClient implementation.
+  // Reads one strategy's active orders and caller sequence floor after recovery.
+  bool QueryWorkingOrders(StrategyOrderScope scope, std::vector<OrderSnapshot>& orders,
+                          std::uint64_t& last_sequence) const override;
+  // Claims the previously read set together. Failure leaves all bindings intact.
+  bool AdoptWorkingOrders(StrategyOrderScope scope, std::span<const OrderSnapshot> orders,
+                          TradingListener& listener) override;
   RequestResult SubmitOrder(const SubmitOrderRequest& request,
                             TradingListener& listener) override;
   RequestResult CancelOrder(const CancelOrderRequest& request,

@@ -12,13 +12,13 @@
 #include "yquant/trading/order.h"
 
 namespace yquant::trading {
-namespace {
-
 // Uses the complete instrument ID and direction without allocating a key.
-std::uint64_t TermsKey(std::uint32_t instrument, Side side) {
+std::uint64_t TradingService::TermsKey(std::uint32_t instrument, Side side) {
   return (static_cast<std::uint64_t>(instrument) << 1) |
          static_cast<std::uint64_t>(side == Side::kSell);
 }
+
+namespace {
 
 // Distinguishes missing rates from explicitly configured zero costs.
 bool HasRequiredRates(const FundsTerms& terms, const OrderInfo& order) {

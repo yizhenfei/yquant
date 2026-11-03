@@ -20,6 +20,11 @@ class OrderIdGenerator {
   OrderIdGenerator(const OrderIdGenerator&) = delete;
   OrderIdGenerator& operator=(const OrderIdGenerator&) = delete;
 
+  std::uint64_t caller_service_id() const { return caller_service_id_; }
+  // Skips already issued sequences without rewinding a shared generator.
+  void AdvancePast(std::uint64_t sequence) {
+    if (sequence > sequence_) sequence_ = sequence;
+  }
   // Returns a new ID, or nullopt when the sequence is exhausted. Never wraps.
   std::optional<OrderId> Next();
 

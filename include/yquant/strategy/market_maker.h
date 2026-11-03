@@ -46,6 +46,9 @@ class MarketMaker final : public market::QuoteListener,
     bool terminal = false;
   };
 
+  // Restores at most one working quote per side before placing any new quote.
+  // An ambiguous set stays unbound and is reconsidered on the next quote.
+  bool AdoptWorkingOrders();
   // Acts on the latest prices, using at most one live order per side.
   void Requote();
   void Advance(Leg& leg, const Leg& opposite, trading::Side side);
@@ -61,6 +64,7 @@ class MarketMaker final : public market::QuoteListener,
   std::uint64_t strategy_;
   std::uint32_t instrument_;
   std::int32_t quantity_;
+  bool adopted_ = false;
   Leg bid_;
   Leg ask_;
 };

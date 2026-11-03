@@ -1,6 +1,7 @@
 #include "yquant/trading/simnow_trading_adapter.h"
 
 #include <chrono>
+#include <functional>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -9,6 +10,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "yquant/strategy/market_maker.h"
 #include "simnow_order_tag.h"
 #include "simnow_trader_session.h"
 #include "yquant/trading/order_id_generator.h"
@@ -72,6 +74,7 @@ class Probe final : public CThostFtdcTraderApi {
     EXPECT_STREQ(r->BrokerID, "test");
     EXPECT_STREQ(r->InvestorID, "test");
     funds_ids.push_back(id);
+    if (on_funds_query) on_funds_query();
     if (automatic) {
       auto row = account_balance;
       spi->OnRspQryTradingAccount(&row, nullptr, id, true);
@@ -218,6 +221,7 @@ class Probe final : public CThostFtdcTraderApi {
   std::vector<CThostFtdcInvestorPositionField> position_rows;
   std::vector<CThostFtdcInvestorPositionDetailField> details;
   int order_queries = 0, trade_queries = 0;
+  std::function<void()> on_funds_query;
   std::vector<CThostFtdcOrderField> history_orders;
   std::vector<CThostFtdcTradeField> history_trades;
   bool relative_margin = false, missing_fees = false, wrong_investor = false;
@@ -1171,8 +1175,7 @@ TEST_F(OrderHoldsTest, UnmatchedPositionFreezeAndMissingRatesAreDiagnosed) {
   EXPECT_TRUE(session->snapshot()->holds.empty());
 }
 
-// Uses the real SimNow session for startup. Tests control the synchronization
-// boundary and later events independently of the native query responses.
+// Uses the SimNow session for startup and captures subsequent strategy requests.
 class RecoveryReplay final : public ITradingAdapter {
  public:
   explicit RecoveryReplay(SimNowTradingAdapter& session) : session(session) {}
@@ -1185,14 +1188,17 @@ class RecoveryReplay final : public ITradingAdapter {
     attempt = id;
     return session.StartAccountSync(id);
   }
-  SendResult SubmitOrder(const SubmitOrderRequest&) override {
-    ADD_FAILURE() << "Recovery sent an order";
-    return SendResult::kNotSent;
+  SendResult SubmitOrder(const SubmitOrderRequest& r) override {
+    submits.push_back(r.order);
+    return SendResult::kSent;
   }
-  SendResult CancelOrder(const AdapterCancelOrderRequest&) override {
+  SendResult CancelOrder(const AdapterCancelOrderRequest& r) override {
+    cancels.push_back(r);
     return SendResult::kSent;
   }
   void Run() override { session.Run(); }
+  std::vector<OrderInfo> submits;
+  std::vector<AdapterCancelOrderRequest> cancels;
   SimNowTradingAdapter& session;
   ITradingAdapterCallback* sink = nullptr;
   std::uint64_t attempt = 0;
@@ -1212,14 +1218,8 @@ class RecoveredAccountingTest : public OrderHoldsTest {
     client = TradingClientFactory(registry).Create(3);
     ASSERT_TRUE(client);
   }
-  void Stage() {
-    for (int i = 0; i < 100; ++i) service.Run();
-    ASSERT_TRUE(session->snapshot());
-    EXPECT_FALSE(service.IsAccountReady(7));
-  }
-  void Commit() {
-    adapter->sink->OnAccountSyncReport({adapter->attempt, AccountSyncResult::kComplete});
-    ASSERT_TRUE(service.IsAccountReady(7));
+  void Drain() {
+    for (int i = 0; i < 150; ++i) service.Run();
   }
   FundsSnapshot Funds() {
     FundsSnapshot funds;
@@ -1242,12 +1242,10 @@ TEST_F(RecoveredAccountingTest, TaggedAndUnownedOrdersBookAgainstExistingHolds) 
   external.VolumeTraded = 1;
   external.VolumeTotalOriginal = 4;
   probe->history_trades.push_back(Fill(external));
-  Stage();
   FundsSnapshot unavailable;
   EXPECT_FALSE(client->QueryFunds({7}, unavailable));
-  adapter->sink->OnAccountSyncReport({adapter->attempt + 1, AccountSyncResult::kComplete});
-  EXPECT_FALSE(service.IsAccountReady(7));
-  Commit();
+  Drain();
+  ASSERT_TRUE(service.IsAccountReady(7));
   OrderSnapshot order;
   EXPECT_TRUE(client->QueryOrder({{5, 11}, 7, 31}, order));
   EXPECT_EQ(order.filled_quantity, 1);
@@ -1311,8 +1309,8 @@ TEST_F(RecoveredAccountingTest, TaggedAndUnownedOrdersBookAgainstExistingHolds) 
 
 TEST_F(RecoveredAccountingTest, UnownedOrderCanAcquireItsExchangeIdAfterStartup) {
   probe->history_orders[1].OrderSysID[0] = 0;
-  Stage();
-  Commit();
+  Drain();
+  ASSERT_TRUE(service.IsAccountReady(7));
   auto update = probe->history_orders[1];
   std::strcpy(update.OrderSysID, "late-id");
   probe->spi->OnRtnOrder(&update);
@@ -1343,18 +1341,191 @@ TEST_F(RecoveredAccountingTest, MixedCloseRequiresAnExplicitFillPriority) {
 
 TEST_F(RecoveredAccountingTest, MissingHistoricalFillCannotPartiallyInstallOrders) {
   probe->history_trades.clear();
-  Stage();
-  adapter->sink->OnAccountSyncReport({1, AccountSyncResult::kComplete});
+  Drain();
   EXPECT_FALSE(service.IsAccountReady(7));
   OrderSnapshot order;
   EXPECT_FALSE(client->QueryOrder({{5, 11}, 7, 31}, order));
   ASSERT_TRUE(service.RetryAccountSync(7));
   probe->history_trades.push_back(Fill(probe->history_orders[0]));
-  Stage();
-  Commit();
+  Drain();
+  ASSERT_TRUE(service.IsAccountReady(7));
   EXPECT_EQ(Funds().reserved, 222);
 }
 
+class AccountBoundaryTest : public RecoveredAccountingTest {};
+
+TEST_F(AccountBoundaryTest, FillBetweenReadsTriggersFreshAccountSnapshotExactlyOnce) {
+  bool injected = false;
+  probe->on_funds_query = [&] {
+    if (injected) return;
+    injected = true;
+    // Returned funds still represent the previous state. Subsequent queries
+    // already see the newly filled portion of the tagged opening order.
+    auto& open = probe->history_orders.front();
+    ++open.VolumeTraded;
+    --open.VolumeTotal;
+    auto fill = Fill(open);
+    std::strcpy(fill.TradeID, "at-boundary");
+    fill.Price = 100;
+    probe->history_trades.push_back(fill);
+    probe->spi->OnRtnTrade(&fill);
+    ++probe->position_rows.front().Position;
+    ++probe->position_rows.front().TodayPosition;
+    probe->position_rows.front().PositionCost += 1000;
+    probe->position_rows.front().UseMargin += 104;
+  };
+  for (int i = 0; !injected && i < 100; ++i) service.Run();
+  ASSERT_TRUE(injected);
+  ASSERT_FALSE(service.IsAccountReady(7));
+  probe->account_balance.FrozenMargin -= 104;
+  probe->account_balance.FrozenCommission -= 4;
+  probe->account_balance.CurrMargin += 104;
+  probe->account_balance.Balance -= 4;
+  Drain();
+  ASSERT_TRUE(service.IsAccountReady(7));
+  EXPECT_GE(probe->funds_ids.size(), 2);
+  OrderSnapshot snapshot;
+  ASSERT_TRUE(client->QueryOrder({{5, 11}, 7, 31}, snapshot));
+  EXPECT_EQ(snapshot.filled_quantity, 2);
+  EXPECT_EQ(PositionBook().today_quantity, 5);
+  EXPECT_EQ(Funds().reserved, 114);
+  EXPECT_EQ(Funds().commission, 0);
+  const auto count = probe->order_queries;
+  probe->spi->OnRtnTrade(&probe->history_trades.back());
+  probe->spi->OnRspQryOrder(nullptr, nullptr, 1, true);
+  Drain();
+  EXPECT_EQ(probe->order_queries, count);
+  EXPECT_EQ(Funds().commission, 0);
+  EXPECT_EQ(PositionBook().today_quantity, 5);
+}
+
+TEST_F(AccountBoundaryTest, DifferentHistoryRequiresRetryEvenWithoutPush) {
+  bool changed = false;
+  probe->on_funds_query = [&] {
+    if (changed) return;
+    changed = true;
+    auto terminal = Order(7, 7, std::nullopt);
+    terminal.OrderStatus = THOST_FTDC_OST_Canceled;
+    probe->history_orders.push_back(terminal);
+  };
+  Drain();
+  EXPECT_TRUE(service.IsAccountReady(7));
+  EXPECT_EQ(probe->funds_ids.size(), 2);
+  EXPECT_EQ(probe->order_queries, 4);
+}
+
+TEST_F(AccountBoundaryTest, TwoMakersAdoptOnlyTheirOwnLegAndContinueQuoting) {
+  auto ask = Order(8, 8, SimNowOrderOwner{{5, 12}, 32});
+  std::strcpy(ask.InstrumentID, "TF2612");
+  std::strcpy(ask.ExchangeID, "CFFEX");
+  ask.VolumeTotalOriginal = ask.VolumeTotal = 1;
+  ask.Direction = THOST_FTDC_D_Sell;
+  ask.LimitPrice = 102;
+  probe->history_orders.push_back(ask);
+  auto terminal = Order(9, 9, SimNowOrderOwner{{5, 99}, 31});
+  terminal.OrderStatus = THOST_FTDC_OST_Canceled;
+  probe->history_orders.push_back(terminal);
+  probe->account_balance.FrozenMargin += 212;
+  probe->account_balance.FrozenCommission += 4.02;
+  probe->account_balance.Available = 10000;
+  OrderIdGenerator ids(5);
+  strategy::MarketMaker first(*client, ids, 7, 31, 42, 1);
+  strategy::MarketMaker second(*client, ids, 7, 32, 42, 1);
+  model::Quote quote{42, 100, 102, 1, 1, 1};
+  first.OnQuote(quote);
+  EXPECT_TRUE(adapter->submits.empty());
+  Drain();
+  ASSERT_TRUE(service.IsAccountReady(7));
+  first.OnQuote(quote);
+  second.OnQuote(quote);
+  first.OnQuote(quote);
+  second.OnQuote(quote);
+  ASSERT_EQ(adapter->submits.size(), 2);
+  EXPECT_EQ(adapter->submits[0].strategy_id, 31);
+  EXPECT_EQ(adapter->submits[0].side, Side::kSell);
+  EXPECT_EQ(adapter->submits[0].order_id.sequence, 100);
+  EXPECT_EQ(adapter->submits[1].strategy_id, 32);
+  EXPECT_EQ(adapter->submits[1].side, Side::kBuy);
+  EXPECT_EQ(adapter->submits[1].order_id.sequence, 101);
+  auto cancel = ask;
+  cancel.OrderStatus = THOST_FTDC_OST_Canceled;
+  probe->spi->OnRtnOrder(&cancel);
+  service.Run();
+  ASSERT_EQ(adapter->submits.size(), 3);
+  EXPECT_EQ(adapter->submits.back().strategy_id, 32);
+  EXPECT_EQ(adapter->submits.back().side, Side::kSell);
+  // Unowned external cancellation releases its holds without invoking either maker.
+  cancel = probe->history_orders[1];
+  cancel.OrderStatus = THOST_FTDC_OST_Canceled;
+  probe->spi->OnRtnOrder(&cancel);
+  service.Run();
+  EXPECT_EQ(adapter->submits.size(), 3);
+}
+
+TEST_F(AccountBoundaryTest, NeitherAmbiguousLegsNorASecondListenerCanStealOrders) {
+  auto duplicate_bid = probe->history_orders.front();
+  duplicate_bid.SessionID = 19;
+  std::strcpy(duplicate_bid.OrderSysID, "19");
+  duplicate_bid.VolumeTotal = duplicate_bid.VolumeTotalOriginal = 1;
+  duplicate_bid.VolumeTraded = 0;
+  duplicate_bid.OrderStatus = THOST_FTDC_OST_NoTradeQueueing;
+  CThostFtdcInputOrderField tag{};
+  ASSERT_TRUE(internal::WriteOrderTag({{5, 19}, 31}, tag));
+  std::strcpy(duplicate_bid.BusinessUnit, tag.BusinessUnit);
+  std::strcpy(duplicate_bid.OrderMemo, tag.OrderMemo);
+  probe->history_orders.push_back(duplicate_bid);
+  probe->account_balance.FrozenMargin += 104;
+  probe->account_balance.FrozenCommission += 4;
+  Drain();
+  ASSERT_TRUE(service.IsAccountReady(7));
+  OrderIdGenerator ids(5);
+  strategy::MarketMaker maker(*client, ids, 7, 31, 42, 1);
+  maker.OnQuote({42, 100, 102, 1, 1, 1});
+  EXPECT_TRUE(adapter->submits.empty());
+  const StrategyOrderScope scope{5, 7, 31, 42};
+  std::vector<OrderSnapshot> active;
+  std::uint64_t last = 0;
+  ASSERT_TRUE(client->QueryWorkingOrders(scope, active, last));
+  ASSERT_EQ(active.size(), 2);
+  Outcomes a, b;
+  EXPECT_FALSE(client->AdoptWorkingOrders(scope, std::span(active).first(1), a));
+  EXPECT_TRUE(client->AdoptWorkingOrders(scope, active, b));
+  EXPECT_FALSE(client->AdoptWorkingOrders(scope, active, a));
+}
+
+TEST(AccountBoundaryTimeout, UnstableWindowsShareOneDeadline) {
+  auto config = kConfig;
+  config.timeout = 100ms;
+  Probe* probe = nullptr;
+  auto session = OpenProbe(config, probe);
+  ASSERT_TRUE(session);
+  probe->automatic = true;
+  probe->account_balance.FrozenMargin = probe->account_balance.FrozenCommission = 0;
+  TradingService service;
+  ASSERT_TRUE(service.BindAccount(1, *session));
+  probe->spi->OnFrontConnected();
+  probe->on_funds_query = [&] {
+    // Neither complete history contains this execution. The adapter may not
+    // infer coverage from two identical empty result sets.
+    CThostFtdcTradeField trade{};
+    std::strcpy(trade.BrokerID, "test");
+    std::strcpy(trade.InvestorID, "test");
+    std::strcpy(trade.TradingDay, "20261103");
+    trade.Direction = THOST_FTDC_D_Buy;
+    probe->spi->OnRtnTrade(&trade);
+  };
+  for (int i = 0; i < 100; ++i) service.Run();
+  EXPECT_GT(probe->funds_ids.size(), 1);
+  EXPECT_FALSE(service.IsAccountReady(1));
+  std::this_thread::sleep_for(120ms);
+  service.Run();
+  EXPECT_FALSE(service.IsAccountReady(1));
+  EXPECT_STREQ(session->snapshot_status().reason, "unstable_startup_boundary");
+  probe->on_funds_query = {};
+  ASSERT_TRUE(service.RetryAccountSync(1));
+  for (int i = 0; i < 150; ++i) service.Run();
+  EXPECT_FALSE(service.IsAccountReady(1));  // The orphan fill remains unaccounted for.
+}
 TEST(StartupSnapshot, MonodPublishesOnlyTheCompletedSummary) {
   const char* args[] = {"tcp://fixture:1", "2"};
   auto connect = [](const SimNowTraderConfig& config) {

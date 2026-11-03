@@ -60,6 +60,11 @@ class SimNowOrderHistory {
                char hedge, double price, int quantity);
   const std::vector<SimNowOrder>& orders() const { return orders_; }
   const auto& fills() const { return fills_; }
+  // Compares complete native identities, order states and fills. Query row
+  // order and the resulting local indexes may differ between reads.
+  bool Matches(const SimNowOrderHistory& other) const;
+  bool HasCompleteFills() const;
+  const SimNowOrder* FindNative(const SimNowOrder& order) const;
   // Returns the largest recovered sequence for use with OrderIdGenerator.
   // Take the maximum across this caller's accounts before allocating IDs.
   std::uint64_t LastSequence(std::uint64_t caller) const;

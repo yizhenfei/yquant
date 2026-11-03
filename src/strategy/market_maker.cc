@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <limits>
+#include <vector>
 
 namespace yquant::strategy {
 
@@ -21,11 +22,37 @@ void MarketMaker::OnQuote(const model::Quote& quote) {
       !std::isfinite(quote.bid_price) || !std::isfinite(quote.ask_price) ||
       quote.bid_price <= 0 || quote.bid_price >= quote.ask_price ||
       quote.bid_quantity <= 0 || quote.ask_quantity <= 0) return;
+  if (!adopted_ && !AdoptWorkingOrders()) return;
   if (bid_.target != quote.bid_price) bid_.failed_target = 0;
   if (ask_.target != quote.ask_price) ask_.failed_target = 0;
   bid_.target = quote.bid_price;
   ask_.target = quote.ask_price;
   Requote();
+}
+
+bool MarketMaker::AdoptWorkingOrders() {
+  const trading::StrategyOrderScope scope{ids_.caller_service_id(), account_, strategy_, instrument_};
+  std::vector<trading::OrderSnapshot> orders;
+  std::uint64_t last;
+  if (!client_.QueryWorkingOrders(scope, orders, last)) return false;
+  Leg bid, ask;
+  for (const auto& snapshot : orders) {
+    const auto& order = snapshot.order;
+    auto& leg = order.side == Side::kBuy ? bid : ask;
+    if (leg.phase != Phase::kIdle || order.offset != trading::Offset::kOpen ||
+        order.hedge != trading::HedgeFlag::kSpeculation ||
+        (snapshot.state != OrderState::kAccepted &&
+         snapshot.state != OrderState::kPartiallyFilled)) return false;
+    leg.id = order.order_id;
+    leg.phase = Phase::kWorking;
+    leg.price = order.price;
+  }
+  if (!client_.AdoptWorkingOrders(scope, orders, *this)) return false;
+  ids_.AdvancePast(last);
+  bid_ = bid;
+  ask_ = ask;
+  adopted_ = true;
+  return true;
 }
 
 void MarketMaker::Requote() {

@@ -187,18 +187,32 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
     }
     if (status_.phase != LoginPhase::kLoggedIn || staged_) return;
     if (!sync_started_) {
-      if (query_.phase == SnapshotPhase::kComplete) query_.phase = SnapshotPhase::kIdle;
-      if (!Collecting() && !StartSnapshot({})) {
-        FailAccountAttempt();
-        return;
+      if (observation_day_ != status_.trading_day) {
+        observation_day_ = status_.trading_day;
+        observed_.clear();
       }
+      sync_deadline_ = Clock::now() + timeout_;
+      BeginWindow();
       sync_started_ = true;
+    }
+    if (Clock::now() >= sync_deadline_) {
+      FailSnapshot("unstable_startup_boundary", 0);
     }
     if (query_.phase == SnapshotPhase::kFailed) {
       FailAccountAttempt();
       return;
     }
     if (query_.phase != SnapshotPhase::kComplete) return;
+    // Events still in the SDK handoff queue belong to this comparison. Once
+    // the queue is drained, later arrivals are handled against the installed book.
+    {
+      std::lock_guard lock(mutex_);
+      if (!queue_.empty() || overflow_) return;
+    }
+    if (!CoveredByHistory()) {
+      BeginWindow();
+      return;
+    }
     AccountRecovery baseline;
     const auto error = BuildAccountRecovery(snapshot_, instruments_, baseline);
     if (!error.empty()) {
@@ -206,12 +220,71 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
       FailAccountAttempt();
       return;
     }
+    for (const auto& [contract, binding] : instruments_) {
+      const auto it = hold_rates_.find({contract.first, contract.second, "", THOST_FTDC_HF_Speculation});
+      if (it == hold_rates_.end() || it->second.symbol.empty()) {
+        FailAccountAttempt();
+        return;
+      }
+      auto buy = it->second.buy, sell = it->second.sell;
+      buy.close_today_first = sell.close_today_first =
+          binding.close_priority == SimNowClosePriority::kTodayFirst;
+      baseline.order_terms.emplace(binding.instrument_id, std::pair{buy, sell});
+    }
     staged_ = true;
     callback_->OnAccountRecovery(sync_id_, std::move(baseline));
+    callback_->OnAccountSyncReport({sync_id_, AccountSyncResult::kComplete});
+    before_ = {};
+    observed_.clear();
+  }
+  void BeginWindow() {
+    query_.phase = SnapshotPhase::kIdle;
+    StartSnapshot({});
+    query_deadline_ = sync_deadline_;
+    query_.phase = SnapshotPhase::kOrders;
+    opening_history_ = true;
+    dirty_window_ = false;
+    before_ = {};
+  }
+
+  bool CoveredByHistory() const {
+    if (dirty_window_) return false;
+    for (const auto& e : observed_) {
+      if (!e.valid || Field(e.day) != snapshot_.trading_day) return false;
+      if (const auto* f = std::get_if<HistoryFill>(&e.row)) {
+        auto it = snapshot_.history.fills().find(f->id);
+        if (it == snapshot_.history.fills().end() || it->second.price != f->price ||
+            it->second.quantity != f->quantity) return false;
+        const auto& o = snapshot_.history.orders()[it->second.order_index];
+        if (o.system_id != f->system_id || o.symbol != f->symbol ||
+            o.direction != f->direction || o.offset != f->offset || o.hedge != f->hedge) {
+          return false;
+        }
+      } else if (const auto* o = std::get_if<SimNowOrder>(&e.row)) {
+        const auto* match = snapshot_.history.FindNative(*o);
+        if (!match || match->symbol != o->symbol || match->exchange != o->exchange ||
+            match->quantity != o->quantity || match->direction != o->direction ||
+            match->offset != o->offset || match->hedge != o->hedge ||
+            match->price != o->price || match->traded < o->traded ||
+            match->invest_unit != o->invest_unit || match->price_type != o->price_type ||
+            (!o->system_id.empty() && match->system_id != o->system_id) ||
+            (o->owner && match->owner != o->owner)) return false;
+        if (match->status != o->status &&
+            o->status != THOST_FTDC_OST_NoTradeQueueing &&
+            o->status != THOST_FTDC_OST_PartTradedQueueing &&
+            o->status != THOST_FTDC_OST_Unknown) return false;
+      } else {
+        return false;
+      }
+    }
+    return true;
   }
   void FailAccountAttempt() {
     if (Collecting()) FailSnapshot("account_sync_interrupted", 0);
+    if (staged_) callback_->OnRecoveredEvent(RecoveryRoutingFailure{});
     staged_ = false;
+    opening_history_ = false;
+    before_ = {};
     callback_->OnAccountSyncReport({std::exchange(sync_id_, 0), AccountSyncResult::kFailed});
   }
 
@@ -269,7 +342,10 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
       if (rc) Fail("auth_request", rc);
     } else if (event.kind == Kind::kLiveTrade || event.kind == Kind::kLiveOrder) {
       if (sync_id_ && staged_) DeliverRecovered(event);
-      else if (sync_id_ && sync_started_) FailAccountAttempt();
+      else if (sync_id_ && sync_started_) {
+        dirty_window_ = true;
+        observed_.push_back(std::move(event));
+      }
     } else if (Collecting()) {
       SnapshotResponse(std::move(event));
     } else {
@@ -476,7 +552,17 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
       return;
     }
     if (original->status != THOST_FTDC_OST_NoTradeQueueing &&
-        original->status != THOST_FTDC_OST_PartTradedQueueing) return;
+        original->status != THOST_FTDC_OST_PartTradedQueueing) {
+      if (fill) {
+        const auto old = history.fills().find(fill->id);
+        if (old == history.fills().end() || old->second.price != fill->price ||
+            old->second.quantity != fill->quantity ||
+            &history.orders()[old->second.order_index] != original) {
+          callback_->OnRecoveredEvent(RecoveryRoutingFailure{});
+        }
+      }
+      return;
+    }
     const auto key = static_cast<std::size_t>(original - history.orders().data());
     if (fill) {
       callback_->OnRecoveredEvent(RecoveredFill{key, fill->id, fill->price, fill->quantity});
@@ -484,6 +570,9 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
                update->status == THOST_FTDC_OST_PartTradedNotQueueing ||
                update->status == THOST_FTDC_OST_NoTradeNotQueueing) {
       callback_->OnRecoveredEvent(RecoveredCancellation{key, update->traded});
+    } else if (update->status == THOST_FTDC_OST_PartTradedQueueing ||
+               update->status == THOST_FTDC_OST_AllTraded) {
+      callback_->OnRecoveredEvent(RecoveredCumulative{key, update->traded});
     }
   }
 
@@ -593,24 +682,41 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
     return Field(e.day) == snapshot_.trading_day;
   }
   void ReceiveHistory(Event e) {
+    auto& history = opening_history_ ? before_ : snapshot_.history;
     if (auto* order = std::get_if<SimNowOrder>(&e.row)) {
-      if (!snapshot_.history.AddOrder(std::move(*order))) {
-        FailSnapshot("invalid_order_history", 0);
+      if (!history.AddOrder(std::move(*order))) {
+        if (sync_started_ && sync_id_) BeginWindow();
+        else FailSnapshot("invalid_order_history", 0);
         return;
       }
     } else if (auto* fill = std::get_if<HistoryFill>(&e.row)) {
-      if (!snapshot_.history.AddFill(std::move(fill->id), fill->system_id,
+      if (!history.AddFill(std::move(fill->id), fill->system_id,
               fill->symbol, fill->direction, fill->offset, fill->hedge,
               fill->price, fill->quantity)) {
-        FailSnapshot("invalid_trade_history", 0);
+        if (sync_started_ && sync_id_) BeginWindow();
+        else FailSnapshot("invalid_trade_history", 0);
         return;
       }
     }
     if (!e.last) return;
     if (e.kind == Kind::kOrders) {
       query_.phase = SnapshotPhase::kTrades;
+    } else if (opening_history_) {
+      opening_history_ = false;
+      query_.phase = SnapshotPhase::kFunds;
+    } else if (sync_id_ && sync_started_ &&
+               (dirty_window_ || !before_.Matches(history))) {
+      BeginWindow();
+    } else if (sync_id_ && sync_started_ && !history.HasCompleteFills()) {
+      FailSnapshot("incomplete_startup_trade_history", 0);
     } else {
       snapshot_.holds_error = internal::CollectOrderRates(snapshot_.history, hold_rates_);
+      if (sync_id_ && sync_started_) {
+        for (const auto& entry : instruments_) {
+          const auto& [exchange, symbol] = entry.first;
+          hold_rates_.try_emplace({exchange, symbol, "", THOST_FTDC_HF_Speculation});
+        }
+      }
       hold_rate_ = hold_rates_.begin();
       if (contract_) query_.phase = SnapshotPhase::kContractTerms;
       else NextHoldRate();
@@ -870,6 +976,11 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
   ITradingAdapterCallback* callback_ = nullptr;
   std::uint64_t sync_id_ = 0;
   bool sync_started_ = false, staged_ = false;
+  bool opening_history_ = false, dirty_window_ = false;
+  Clock::time_point sync_deadline_;
+  SimNowOrderHistory before_;
+  std::vector<Event> observed_;
+  std::string observation_day_;
   SnapshotStatus query_;
   internal::SimNowPositionCosts position_costs_;
   std::optional<internal::SimNowContractQuery> contract_;

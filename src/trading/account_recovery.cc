@@ -28,7 +28,9 @@ void TradingService::AccountContext::OnRecoveredEvent(const RecoveredEvent& even
     return;
   }
   const auto* fill = std::get_if<RecoveredFill>(&event);
-  const auto key = fill ? fill->key : std::get<RecoveredCancellation>(event).key;
+  const auto* cumulative = std::get_if<RecoveredCumulative>(&event);
+  const auto key = fill ? fill->key : cumulative ? cumulative->key :
+      std::get<RecoveredCancellation>(event).key;
   const auto found = recovered_orders.find(key);
   if (found == recovered_orders.end()) {
     funds_available = false;
@@ -39,6 +41,16 @@ void TradingService::AccountContext::OnRecoveredEvent(const RecoveredEvent& even
   if (fill) {
     owner.ApplyTrade(*this, order, {order.order.order_id, fill->trade_id,
                                     fill->price, fill->quantity});
+  } else if (cumulative) {
+    const auto filled = cumulative->filled_quantity;
+    if (filled < 0 || filled > order.order.quantity) {
+      funds_available = false;
+      owner.Diagnose("invalid_recovered_fill_quantity", id, order.order.order_id);
+    } else if (filled > order.reported_filled_quantity) {
+      const bool changed = UpdateFill(order, order.state, filled, order.detailed_filled_quantity);
+      owner.UpdateReservation(*this, order);
+      if (changed) owner.Notify({order.listener, OrderReport{MakeSnapshot(order)}, &order, order.call});
+    }
   } else {
     const int filled = std::get<RecoveredCancellation>(event).filled_quantity;
     if (owner.ConfirmCancellation(*this, order, filled)) {
@@ -148,6 +160,17 @@ const char* TradingService::InstallRecovery(AccountContext& account,
   if (reserved > std::numeric_limits<double>::max() ||
       (margin == 0) != (funds.frozen_margin == 0) ||
       std::abs(margin - funds.frozen_margin) >= 0.005L) return "recovery_funds_mismatch";
+  auto terms = account.funds_terms;
+  for (const auto& [instrument, rates] : baseline.order_terms) {
+    if (!instrument || !ValidTerms(rates.first) || !ValidTerms(rates.second) ||
+        rates.first.currency != funds.currency || rates.second.currency != funds.currency) {
+      return "invalid_startup_order_terms";
+    }
+    terms.insert_or_assign(TermsKey(instrument, Side::kBuy), rates.first);
+    terms.insert_or_assign(TermsKey(instrument, Side::kSell), rates.second);
+  }
+  account.funds_terms = std::move(terms);
+  account.last_sequences = baseline.last_sequences;
   orders_.merge(owned);
   account.unowned_orders = std::move(unowned);
   account.recovered_orders = std::move(native);

@@ -2,6 +2,7 @@
 
 #include <ThostFtdcTraderApi.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <unordered_map>
@@ -52,6 +53,12 @@ std::string BuildAccountRecovery(const SimNowStartupSnapshot& s,
     if (!id.instrument_id || !ids.insert(id.instrument_id).second) return "ambiguous_instrument_binding";
   }
   AccountRecovery result;
+  for (const auto& order : s.history.orders()) {
+    if (!order.owner) continue;
+    const auto id = order.owner->order_id;
+    auto& last = result.last_sequences[id.caller_service_id];
+    last = std::max(last, id.sequence);
+  }
   const auto& b = s.balances.front();
   result.funds = {b.currency, b.balance - b.position_profit, b.available,
                   b.margin, b.frozen_margin};

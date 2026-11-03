@@ -13,6 +13,12 @@ namespace yquant::trading {
 class TradingClient {
  public:
   virtual ~TradingClient() = default;
+  // Reads one strategy's active orders and caller sequence floor after recovery.
+  virtual bool QueryWorkingOrders(StrategyOrderScope scope, std::vector<OrderSnapshot>& orders,
+                          std::uint64_t& last_sequence) const = 0;
+  // Claims the previously read set together. Failure leaves all bindings intact.
+  virtual bool AdoptWorkingOrders(StrategyOrderScope scope, std::span<const OrderSnapshot> orders,
+                          TradingListener& listener) = 0;
   // kDelivered means the service received the request, including requests that
   // fail validation. Outcomes arrive after return through listener callbacks.
   // kIdExhausted means no delivery and no callback for this invocation.

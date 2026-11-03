@@ -3,6 +3,8 @@
 
 #include <cstddef>
 #include <optional>
+#include <unordered_map>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -48,9 +50,14 @@ struct RecoveredCancellation {
   std::size_t key;
   int filled_quantity;
 };
+// Counter cumulative quantity can lead the corresponding priced executions.
+struct RecoveredCumulative {
+  std::size_t key;
+  int filled_quantity;
+};
 // An account event could not be matched consistently to its native order.
 struct RecoveryRoutingFailure {};
-using RecoveredEvent = std::variant<RecoveredFill, RecoveredCancellation, RecoveryRoutingFailure>;
+using RecoveredEvent = std::variant<RecoveredFill, RecoveredCancellation, RecoveredCumulative, RecoveryRoutingFailure>;
 
 // Owns a single-currency accounting baseline. Funds use local book units,
 // positions already include all freezes and fills include the booked history
@@ -60,6 +67,10 @@ struct AccountRecovery {
   std::vector<PositionInfo> positions;
   std::vector<RecoveredOrder> orders;
   std::vector<RecoveredFill> fills;
+  // Default speculative terms for new orders on the configured instruments.
+  std::unordered_map<std::uint32_t, std::pair<FundsTerms, FundsTerms>> order_terms;
+  // Includes terminal orders returned by the counter for each caller.
+  std::unordered_map<std::uint64_t, std::uint64_t> last_sequences;
 };
 
 }  // namespace yquant::trading

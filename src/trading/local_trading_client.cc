@@ -43,6 +43,16 @@ RequestResult LocalTradingClient::CancelOrder(
                               {instance_id_, ++last_call_id_});
 }
 
+bool LocalTradingClient::QueryWorkingOrders(StrategyOrderScope scope,
+    std::vector<OrderSnapshot>& orders, std::uint64_t& last_sequence) const {
+  return service_.QueryWorkingOrders(scope, orders, last_sequence);
+}
+
+bool LocalTradingClient::AdoptWorkingOrders(StrategyOrderScope scope,
+    std::span<const OrderSnapshot> orders, TradingListener& listener) {
+  return service_.AdoptWorkingOrders(scope, orders, listener);
+}
+
 bool LocalTradingClient::QueryOrder(const QueryOrderRequest& query,
                                    OrderSnapshot& snapshot) const {
   return service_.QueryOrder(query, snapshot);
