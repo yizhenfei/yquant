@@ -13,7 +13,7 @@ Linux 执行正式构建、功能及并发验收；macOS 支持本机构建、�
 
 ## 构建与验证
 
-使用支持 C++20 的编译器、CMake 3.20 或更高版本，以及与目标平台匹配的 CTP 行情 SDK。Linux 和 macOS 的默认构建都链接厂商动态库。先按[行情 SDK 安装说明](docs/design/simnow-market.md#构建依赖)准备 `vendor/ctp/`，或在配置时指定 `-DYQUANT_CTP_SDK_ROOT=/path/to/sdk`：
+使用支持 C++20 的编译器、CMake 3.20 或更高版本，以及与目标平台匹配的 CTP 行情和交易 SDK。Linux 和 macOS 的默认构建都链接两套厂商动态库。先按[SDK 安装说明](docs/design/simnow-market.md#构建依赖)准备 `vendor/ctp/`，或在配置时指定 `-DYQUANT_CTP_SDK_ROOT=/path/to/sdk`：
 
 ```sh
 cmake -S . -B build
@@ -25,6 +25,8 @@ ctest --test-dir build --output-on-failure
 `monod` 在 `main` 中将行情 service 按 ID 注册到本地实例表，再把实例表注入 factory，取得行情 client。container 调度行情 service，由 service 内部接收两个品种交错的五条固定行情，只为订阅品种输出报价意图。`main` 向 container 提供退出条件，固定行情处理完成后结束运行，随后退订并退出。固定行情源位于 `examples/market/`，验证策略位于 `examples/strategies/`。
 
 运行 `ctest --test-dir build -L v1_04_simnow_market --output-on-failure` 验证可控行情接入。使用有效 SimNow 行情前置和账户时，按[真实连接验收说明](docs/design/simnow-market.md#验收)运行 `scripts/verify_simnow_market`，逐条比较接收的买卖价与策略输出。
+
+个人 SimNow 交易账户的登录入口是 `monod --simnow-trader-login FRONT [SECONDS]`。参数与验收方式见[交易前置登录](docs/design/trading.md#交易前置登录)。
 
 运行交易报单验证场景：
 
@@ -56,7 +58,7 @@ ctest --test-dir build -L v1_02_order --output-on-failure
 
 `--reserve` 验证共享账户的资金检查与下单预占：余额 100 时两笔各需 70 的订单只发送一笔；确定未发送的请求释放预占，后续订单可以使用释放的资金。
 
-`--startup` 验证初始化失败、显式重试、资金与持仓共同就绪，以及迟到快照不覆盖本地数据。启动前活动订单或未关联冻结会阻止就绪并输出原因。
+`--startup` 验证初始化失败、显式重试、资金与持仓共同就绪，以及迟到快照不覆盖本地数据。当前启动前活动订单或未关联冻结仍会阻止就绪；[N5.2](docs/plans/v1.md#n52启动同步与交易就绪) 优先修正这一限制，从柜台重建挂单及冻结关联。
 
 `--funds-lifecycle` 验证部分成交记账、撤单释放剩余预占及平仓盈利，输出保证金、手续费、已实现盈亏和可用资金。初始非空持仓须提供今昨仓成本及保证金；本地按不含浮动盈亏的账面资金口径记账。
 

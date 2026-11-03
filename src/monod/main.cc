@@ -14,6 +14,7 @@
 #include "strategies/quote_strategy.h"
 #include "simnow_market_demo.h"
 #include "startup_demo.h"
+#include "trader_login.h"
 #include "trading_demo.h"
 #include "yquant/container/container.h"
 #include "yquant/market/market_client_factory.h"
@@ -39,6 +40,9 @@ class PrintIntent final : public yquant::examples::QuoteIntentListener {
 }  // namespace
 
 int main(int argc, char* argv[]) {
+  if (argc >= 2 && std::string_view(argv[1]) == "--simnow-trader-login") {
+    return yquant::monod::RunTraderLogin(argc - 2, argv + 2);
+  }
   if (argc >= 2 && std::string_view(argv[1]) == "--simnow-market") {
     return yquant::monod::RunSimNowMarket(argc - 2, argv + 2);
   }
@@ -77,14 +81,16 @@ int main(int argc, char* argv[]) {
     std::printf("Usage: monod "
                 "[--maker|--orders|--cancel|--fills|--funds|"
                 "--positions|--reserve|--startup|"
-                "--funds-lifecycle|--positions-lifecycle]\n       monod --simnow-market [--anonymous] FRONT SYMBOL [COUNT [TIMEOUT_SECONDS]]\n");
+                "--funds-lifecycle|--positions-lifecycle]\n       monod --simnow-market [--anonymous] FRONT SYMBOL [COUNT [TIMEOUT_SECONDS]]\n"
+                "       monod --simnow-trader-login FRONT [SECONDS]\n");
     return 0;
   }
   if (argc != 1) {
     std::fprintf(stderr, "Usage: monod "
                          "[--maker|--orders|--cancel|--fills|--funds|"
                          "--positions|--reserve|--startup|"
-                         "--funds-lifecycle|--positions-lifecycle]\n       monod --simnow-market [--anonymous] FRONT SYMBOL [COUNT [TIMEOUT_SECONDS]]\n");
+                         "--funds-lifecycle|--positions-lifecycle]\n       monod --simnow-market [--anonymous] FRONT SYMBOL [COUNT [TIMEOUT_SECONDS]]\n"
+                "       monod --simnow-trader-login FRONT [SECONDS]\n");
     return 2;
   }
   constexpr std::uint64_t kMarketServiceId = 1;

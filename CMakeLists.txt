@@ -27,7 +27,7 @@ target_link_libraries(yquant_market PUBLIC yquant_model yquant_container)
 
 # Both supported platforms use the native CTP market library.
 set(YQUANT_CTP_SDK_ROOT "${PROJECT_SOURCE_DIR}/vendor/ctp" CACHE PATH
-    "Directory containing the matching CTP headers and market dynamic library")
+    "Directory containing the platform CTP market and trader SDKs")
 if(APPLE)
   set(ctp_framework "${YQUANT_CTP_SDK_ROOT}/thostmduserapi_se.framework")
   set(ctp_headers "${ctp_framework}/Headers")
@@ -77,18 +77,46 @@ add_library(yquant_trading
   src/trading/trading_service.cc)
 target_link_libraries(yquant_trading PUBLIC yquant_model yquant_container)
 
+if(APPLE)
+  set(td_framework "${YQUANT_CTP_SDK_ROOT}/thosttraderapi_se.framework")
+  set(td_headers "${td_framework}/Headers")
+  set(td_library "${td_framework}/thosttraderapi_se")
+else()
+  set(td_headers "${ctp_headers}")
+  unset(td_library CACHE)
+  find_file(td_library NAMES libthosttraderapi_se.so thosttraderapi_se.so
+    PATHS "${YQUANT_CTP_SDK_ROOT}" PATH_SUFFIXES lib NO_DEFAULT_PATH)
+endif()
+if(NOT EXISTS "${td_headers}/ThostFtdcTraderApi.h" OR NOT EXISTS "${td_library}"
+   OR NOT EXISTS "${td_headers}/ThostFtdcUserApiStruct.h"
+   OR NOT EXISTS "${td_headers}/ThostFtdcUserApiDataType.h")
+  message(FATAL_ERROR "CTP trader SDK missing under YQUANT_CTP_SDK_ROOT")
+endif()
+add_library(yquant_ctp_td SHARED IMPORTED)
+set_target_properties(yquant_ctp_td PROPERTIES IMPORTED_LOCATION "${td_library}"
+  INTERFACE_INCLUDE_DIRECTORIES "${td_headers}")
+add_library(yquant_simnow_trading src/trading/simnow_trading_adapter.cc)
+target_link_libraries(yquant_simnow_trading PUBLIC yquant_trading
+  PRIVATE yquant_ctp_td Threads::Threads)
+if(APPLE)
+  target_compile_definitions(yquant_ctp_td INTERFACE YQUANT_CTP_MAC_LOGIN)
+endif()
+
 add_library(monod_simnow OBJECT src/monod/simnow_market_demo.cc)
 target_include_directories(monod_simnow PRIVATE examples)
 target_link_libraries(monod_simnow PRIVATE yquant_simnow_market yquant_strategy)
 
+add_library(monod_trader_login OBJECT src/monod/trader_login.cc)
+target_link_libraries(monod_trader_login PRIVATE yquant_simnow_trading)
 add_executable(monod
+  $<TARGET_OBJECTS:monod_trader_login>
   $<TARGET_OBJECTS:monod_simnow>
   src/monod/main.cc src/monod/trading_demo.cc src/monod/funds_demo.cc
   src/monod/positions_demo.cc src/monod/reservation_demo.cc
   src/monod/startup_demo.cc src/monod/funds_lifecycle_demo.cc
   src/monod/position_holds_demo.cc src/monod/maker_demo.cc)
 target_include_directories(monod PRIVATE examples)
-target_link_libraries(monod PRIVATE yquant_strategy yquant_trading
+target_link_libraries(monod PRIVATE yquant_simnow_trading yquant_strategy
   yquant_simnow_market)
 add_custom_target(verify_simnow_market
   COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify_simnow_market
@@ -104,6 +132,19 @@ if(BUILD_TESTING)
     GIT_REPOSITORY https://github.com/google/googletest.git
     GIT_TAG 6910c9d9165801d8827d628cb72eb7ea9dd538c5)
   FetchContent_MakeAvailable(googletest)
+
+  include(tests/generate_trader_stubs.cmake)
+  add_executable(simnow_trader_login_test tests/simnow_trader_login_test.cc
+    $<TARGET_OBJECTS:monod_trader_login>)
+  target_include_directories(simnow_trader_login_test PRIVATE src/monod src/trading)
+  target_include_directories(simnow_trader_login_test SYSTEM PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/trader_test_sdk")
+  target_link_libraries(simnow_trader_login_test PRIVATE yquant_simnow_trading
+    yquant_ctp_td GTest::gtest_main Threads::Threads)
+  add_test(NAME v1_05_trader_login COMMAND simnow_trader_login_test)
+  set_tests_properties(v1_05_trader_login PROPERTIES TIMEOUT 10
+    LABELS v1_05_simnow_trading ENVIRONMENT
+    "YQUANT_CTP_BROKER_ID=test;YQUANT_CTP_USER_ID=test;YQUANT_CTP_PASSWORD=test;YQUANT_CTP_APP_ID=test;YQUANT_CTP_AUTH_CODE=test")
 
   add_executable(simnow_market_test tests/simnow_market_test.cc)
   target_include_directories(simnow_market_test PRIVATE src/market examples)

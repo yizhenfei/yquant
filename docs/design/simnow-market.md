@@ -4,14 +4,14 @@
 
 ## 构建依赖
 
-Linux x86_64 和 macOS 的默认构建均链接厂商行情动态库。头文件必须与该平台的二进制来自同一套 SDK；不要混用 Linux 和 macOS 的头文件。SDK 由构建环境提供，默认根目录为 `vendor/ctp/`，也可通过 `-DYQUANT_CTP_SDK_ROOT=/path/to/sdk` 指定。缺少行情头文件或动态库时，CMake 配置失败。
+Linux x86_64 和 macOS 的默认构建均链接厂商行情和交易动态库。头文件必须与该平台的二进制来自同一套 SDK；不要混用 Linux 和 macOS 的头文件。SDK 由构建环境提供，默认根目录为 `vendor/ctp/`，也可通过 `-DYQUANT_CTP_SDK_ROOT=/path/to/sdk` 指定。缺少任一 SDK 的头文件或动态库时，CMake 配置失败。
 
 | 平台 | SDK 根目录下的布局 |
 | --- | --- |
-| Linux x86_64 | 根目录或 `include/ctp/`、`include/` 下放置头文件；根目录或 `lib/` 下放置 `libthostmduserapi_se.so` 或 `thostmduserapi_se.so` |
-| macOS arm64 / x86_64 | 完整的 `thostmduserapi_se.framework/`，包括其中的 Headers、对应架构的二进制及符号链接 |
+| Linux x86_64 | 根目录或 `include/ctp/`、`include/` 下放置头文件；根目录或 `lib/` 下放置 `libthostmduserapi_se.so` 或 `thostmduserapi_se.so`，以及 `libthosttraderapi_se.so` 或 `thosttraderapi_se.so` |
+| macOS arm64 / x86_64 | 完整的 `thostmduserapi_se.framework/` 和 `thosttraderapi_se.framework/`，包括其中的 Headers、对应架构的二进制及符号链接 |
 
-头文件包括 `ThostFtdcMdApi.h`、`ThostFtdcUserApiStruct.h` 和 `ThostFtdcUserApiDataType.h`。可使用[SimNow 发布的 SDK](https://www.simnow.com.cn/static/apiDownload.action)；本项目可控验收使用 [vnpy_ctp 分发的固定版本](https://github.com/vnpy/vnpy_ctp/tree/1be9bfb5292208e5c258cc769c90be4abe83f9a9/vnpy_ctp/api)。使用该版本时，直接以检出的 `vnpy_ctp/api` 为 SDK 根目录：
+头文件包括 `ThostFtdcMdApi.h`、`ThostFtdcTraderApi.h`、`ThostFtdcUserApiStruct.h` 和 `ThostFtdcUserApiDataType.h`。可使用[SimNow 发布的 SDK](https://www.simnow.com.cn/static/apiDownload.action)；本项目可控验收使用 [vnpy_ctp 分发的固定版本](https://github.com/vnpy/vnpy_ctp/tree/1be9bfb5292208e5c258cc769c90be4abe83f9a9/vnpy_ctp/api)。使用该版本时，直接以检出的 `vnpy_ctp/api` 为 SDK 根目录：
 
 ```sh
 git init /tmp/yquant-ctp-sdk
