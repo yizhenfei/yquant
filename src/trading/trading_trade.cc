@@ -45,6 +45,8 @@ void TradingService::ApplyTrade(AccountContext& account,
   account.trades.emplace(trade.trade_id, trade);
   UpdateFill(*order, order->state, order->reported_filled_quantity,
              order->detailed_filled_quantity + trade.quantity);
+  BookTrade(account, *order, trade);
+  UpdateReservation(account, *order);
   Notify({order->listener, TradeReport{trade, MakeSnapshot(*order)}, order,
           order->call});
 }

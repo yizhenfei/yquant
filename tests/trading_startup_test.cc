@@ -2,6 +2,7 @@
 
 #include <array>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "trading_test_support.h"
@@ -115,7 +116,8 @@ TEST(AccountStartup, HistoricalFillIsAlreadyIncludedInInitialBaseline) {
   ASSERT_EQ(adapter.SubmitOrder(historical), SendResult::kSent);
   ASSERT_TRUE(adapter.Fill(
       {historical.order.order_id, {"exchange", "day", "trade1"}, 100, 1}));
-  const std::array<PositionInfo, 1> positions{{{{42}, 1, 0, 0, 0}}};
+  const std::array<PositionInfo, 1> positions{{
+      {{42}, 1, 0, 0, 0, PositionCost{100, 10}}}};
   const FundsInfo funds{model::Currency("CNY"), 98, 88, 10, 0};
   adapter.SetInitialState(funds, positions);
   service.Run();
@@ -161,10 +163,14 @@ TEST(AccountStartup, UnassociatedFrozenAmountsCannotBeDeclaredReady) {
                                    funds_frozen ? 10.0 : 0.0}});
     adapter.QueuePositions({1, PositionsRefreshStarted{}});
     adapter.QueuePositions({1, PositionInfo{{42}, 1, 0,
-                                           funds_frozen ? 0 : 1, 0}});
+                                           funds_frozen ? 0 : 1, 0,
+                                           PositionCost{100, 0}}});
     adapter.QueuePositions({1, PositionsRefreshCompleted{1}});
     adapter.QueueAccountSync({1, AccountSyncResult::kComplete});
+    ::testing::internal::CaptureStderr();
     service.Run();
+    const auto diagnostic = ::testing::internal::GetCapturedStderr();
+    EXPECT_NE(diagnostic.find("initial_orders_unresolved"), std::string::npos);
     EXPECT_FALSE(service.IsAccountReady(7));
   }
 }

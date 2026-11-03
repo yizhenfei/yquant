@@ -30,12 +30,13 @@ class TradingClient {
   // Returns false if the account is unknown or its funds are unavailable.
   // Leaves snapshot unchanged on false.
   // Both account snapshots and the initialization boundary must be complete.
+  // Unpriced fills or accounting errors make the account data unavailable.
   // Late initialization results cannot replace the running account state.
   virtual bool QueryFunds(const QueryFundsRequest& query,
                           FundsSnapshot& snapshot) const = 0;
   // Borrows complete account positions on true; the row range may be empty.
   // On false the account is unknown/unavailable and snapshot stays unchanged.
-  // Copy rows before the next successful refresh or service/cache destruction.
+  // Copy rows before the next position update or service/cache destruction.
   virtual bool QueryPositions(const QueryPositionsRequest& query,
                               PositionsSnapshot& snapshot) const = 0;
   // Copies one holding and returns true. An absent valid key produces zeros.

@@ -8,9 +8,11 @@
 namespace yquant::trading {
 
 // Contains a complete account balance in the stated currency.
-// Amounts use that currency's units. balance is account equity, available is
-// available funds, margin is occupied margin, and frozen_margin is reserved
-// margin. Finite signed amounts are preserved as reported by the counter.
+// Amounts use the stated currency's units. balance excludes unrealized PnL.
+// available is cash after occupied margin and before pending-order holds.
+// margin is the margin occupied by existing positions.
+// frozen_margin is the margin reserved for pending orders, excluding fees.
+// The adapter normalizes initial counter values to this book-accounting basis.
 struct FundsInfo {
   model::Currency currency;
   double balance = 0;
@@ -20,14 +22,17 @@ struct FundsInfo {
   bool operator==(const FundsInfo&) const = default;
 };
 
-// Owns the counter funds and local reservation total at one query time.
-// refresh_id identifies the counter snapshot in the bound account's runtime.
+// Owns the local funds value and pending-order reservation at query time.
+// refresh_id identifies the initial counter baseline for this runtime.
 struct FundsSnapshot {
   FundsInfo funds;
   std::uint64_t refresh_id = 0;
-  // Local order reservations, separate from the counter's raw funds fields.
+  // Includes the margin and estimated fees of orders not yet booked.
   double reserved = 0;
-  // Returns the counter's available funds less the local reservation total.
+  // Cumulative booked fees and realized PnL since account initialization.
+  double commission = 0;
+  double realized_pnl = 0;
+  // Returns funds remaining after pending-order reservations.
   double available_for_orders() const { return funds.available - reserved; }
   bool operator==(const FundsSnapshot&) const = default;
 };

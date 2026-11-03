@@ -4,9 +4,11 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 
 #include "yquant/trading/funds_terms.h"
+#include "yquant/trading/internal/funds_calculation.h"
 #include "yquant/trading/order.h"
 
 namespace yquant::trading {
@@ -57,30 +59,28 @@ std::optional<FailureReason> ReservationError(long double previous,
   return std::nullopt;
 }
 
-// Calculates from validated order parameters and known applicable rates.
-// Returns no amount if arithmetic cannot represent the required funds.
-std::optional<double> RequiredFunds(const OrderInfo& order,
-                                    const FundsTerms& terms) {
+}  // namespace
+
+std::optional<internal::OrderCost> internal::CalculateOrderCost(
+    const OrderInfo& order, const FundsTerms& terms, double price,
+    std::int32_t quantity) {
+  if (quantity <= 0 || !std::isfinite(price) || price <= 0 ||
+      !HasRequiredRates(terms, order.offset)) return std::nullopt;
   const auto& fee = *terms.fees[static_cast<std::size_t>(order.offset)];
-  const double notional =
-      order.price * terms.contract_multiplier * order.quantity;
-  if (!std::isfinite(notional) || notional <= 0) {
-    return std::nullopt;
-  }
+  const double notional = price * terms.contract_multiplier * quantity;
+  if (!std::isfinite(notional) || notional <= 0) return std::nullopt;
   const double margin_rate =
       order.offset == Offset::kOpen ? *terms.margin_rate : 0;
   const double margin = notional * margin_rate;
   const double proportional_fee = fee.per_notional * notional;
+  const double charge = fee.per_quantity * quantity + proportional_fee;
   if (!ProductRepresented(margin_rate, margin) ||
-      !ProductRepresented(fee.per_notional, proportional_fee)) {
-    return std::nullopt;
-  }
-  const double amount = margin + fee.per_quantity * order.quantity +
-                        proportional_fee;
-  return std::isfinite(amount) ? std::optional<double>(amount) : std::nullopt;
+      !ProductRepresented(fee.per_notional, proportional_fee) ||
+      !std::isfinite(margin + charge) ||
+      (charge > 0 && margin + charge == margin) ||
+      (margin > 0 && margin + charge == charge)) return std::nullopt;
+  return OrderCost{margin, charge};
 }
-
-}  // namespace
 
 bool TradingService::ConfigureFundsTerms(std::uint64_t account_id,
                                          std::uint32_t instrument_id, Side side,
@@ -101,32 +101,87 @@ bool TradingService::ConfigureFundsTerms(std::uint64_t account_id,
 
 std::optional<FailureReason> TradingService::CheckFunds(
     const AccountContext& account, const OrderInfo& order,
-    double& amount) const {
-  if (!account.funds_available) {
+    internal::OrderCost& cost) const {
+  if (!account.funds_available || account.unpriced_orders != 0) {
     return FailureReason::kFundsUnavailable;
   }
-  const auto found = account.funds_terms.find(TermsKey(order.instrument_id,
-                                                       order.side));
-  if (found == account.funds_terms.end()) {
+  const auto* configured = FindFundsTerms(account, order);
+  if (configured == nullptr) {
     return FailureReason::kFundsParametersUnavailable;
   }
-  const auto& terms = found->second;
+  const auto& terms = *configured;
   if (!HasRequiredRates(terms, order.offset)) {
     return FailureReason::kFundsParametersUnavailable;
   }
   if (terms.currency != account.funds.funds.currency) {
     return FailureReason::kCurrencyMismatch;
   }
-  const auto required = RequiredFunds(order, terms);
+  const auto required = internal::CalculateOrderCost(
+      order, terms, order.price, order.quantity);
   if (!required) {
     return FailureReason::kInvalidFundsRequirement;
   }
-  if (const auto failure = ReservationError(account.reserved_funds, *required,
-                                            account.funds.funds.available)) {
+  if (const auto failure = ReservationError(
+          account.reserved_funds, required->total(),
+          account.funds.funds.available)) {
     return failure;
   }
-  amount = *required;
+  cost = *required;
   return std::nullopt;
+}
+
+const FundsTerms* TradingService::FindFundsTerms(
+    const AccountContext& account, const OrderInfo& order) const {
+  const auto found = account.funds_terms.find(
+      TermsKey(order.instrument_id, order.side));
+  return found == account.funds_terms.end() ? nullptr : &found->second;
+}
+
+void TradingService::UpdateReservation(AccountContext& account,
+                                       OrderRecord& order) {
+  const auto filled = std::max(order.reported_filled_quantity,
+                                order.detailed_filled_quantity);
+  const bool pending = filled > order.booked_quantity;
+  if (pending != order.funds_pending) {
+    if (pending) {
+      ++account.unpriced_orders;
+    } else {
+      --account.unpriced_orders;
+    }
+    order.funds_pending = pending;
+  }
+  auto held = order.order.quantity - order.booked_quantity;
+  if (order.state == OrderState::kRejected ||
+      order.state == OrderState::kSendFailed) {
+    held = 0;
+  } else if (order.state == OrderState::kCanceled) {
+    held = filled - order.booked_quantity;
+  }
+  const double ratio = static_cast<double>(held) / order.order.quantity;
+  const double required = order.initial_reservation * ratio;
+  const double margin = order.initial_margin * ratio;
+  auto count = account.reservation_count;
+  if (order.reserved_funds == 0 && required > 0) ++count;
+  if (order.reserved_funds > 0 && required == 0) --count;
+  const auto total = count == 0 ? 0 : account.reserved_funds +
+      (static_cast<long double>(required) - order.reserved_funds);
+  const auto total_margin = count == 0 ? 0 : account.reserved_margin +
+      (static_cast<long double>(margin) - order.reserved_margin);
+  if (!std::isfinite(total) || !std::isfinite(total_margin) ||
+      total < 0 || total_margin < 0 ||
+      total > std::numeric_limits<double>::max() ||
+      total_margin > std::numeric_limits<double>::max() ||
+      (held > 0 && order.initial_reservation > 0 && required == 0) ||
+      (required > order.reserved_funds && total <= account.reserved_funds)) {
+    account.funds_available = false;
+    Diagnose("reservation_unrepresentable", account.id, order.order.order_id);
+    return;
+  }
+  account.reservation_count = count;
+  account.reserved_funds = total;
+  account.reserved_margin = total_margin;
+  order.reserved_funds = required;
+  order.reserved_margin = margin;
 }
 
 }  // namespace yquant::trading

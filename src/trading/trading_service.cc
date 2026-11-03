@@ -26,6 +26,9 @@ bool Valid(const OrderInfo& order) {
          std::isfinite(order.price) && order.price > 0 &&
          order.quantity > 0 &&
          (order.side == Side::kBuy || order.side == Side::kSell) &&
+         (order.hedge == HedgeFlag::kSpeculation ||
+          order.hedge == HedgeFlag::kArbitrage ||
+          order.hedge == HedgeFlag::kHedge) &&
          (order.offset == Offset::kOpen || order.offset == Offset::kClose ||
           order.offset == Offset::kCloseToday ||
           order.offset == Offset::kCloseYesterday);
@@ -115,17 +118,24 @@ void TradingService::ProcessSubmitOrder(const SubmitOrderRequest& request,
     Fail(info.order_id, listener, call, FailureReason::kAccountNotReady);
     return;
   }
-  double required = 0;
-  if (const auto failure = CheckFunds(*account->second, info, required)) {
+  internal::OrderCost cost;
+  if (const auto failure = CheckFunds(*account->second, info, cost)) {
     Fail(info.order_id, listener, call, *failure);
     return;
   }
+  const double required = cost.total();
   const auto inserted = orders_.emplace(
       info.order_id, OrderRecord{info, &listener, call});
   auto& order = inserted.first->second;
+  order.initial_reservation = required;
+  order.initial_margin = cost.margin;
+  order.reserved_margin = cost.margin;
   order.reserved_funds = required;
   const auto previous_reservation = account->second->reserved_funds;
+  const auto previous_margin = account->second->reserved_margin;
   account->second->reserved_funds += required;
+  account->second->reserved_margin += cost.margin;
+  if (required > 0) ++account->second->reservation_count;
   const auto result = account->second->adapter.SubmitOrder(request);
 
   order.state =
@@ -134,7 +144,10 @@ void TradingService::ProcessSubmitOrder(const SubmitOrderRequest& request,
   if (result == SendResult::kNotSent) {
     // No adapter callback can change the ledger during SubmitOrder.
     account->second->reserved_funds = previous_reservation;
+    account->second->reserved_margin = previous_margin;
+    if (required > 0) --account->second->reservation_count;
     order.reserved_funds = 0;
+    order.reserved_margin = 0;
     Fail(info.order_id, listener, call, FailureReason::kSendFailed, &order);
   }
 }
@@ -186,6 +199,7 @@ void TradingService::Apply(std::uint64_t account_id,
   if (!UpdateFill(order, next, reported, order.detailed_filled_quantity)) {
     return;
   }
+  UpdateReservation(*account_index_.at(account_id), order);
   if (send_failed) {
     Diagnose("report_after_send_failure", account_id, report.order_id);
   }

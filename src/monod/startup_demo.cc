@@ -27,7 +27,8 @@ int RunStartupDemo() {
     return 1;
   }
   const trading::FundsInfo funds{model::Currency("CNY"), 100, 90, 10, 0};
-  const std::array<trading::PositionInfo, 1> positions{{{{42}, 1, 0, 0, 0}}};
+  const std::array<trading::PositionInfo, 1> positions{{
+      {{42}, 1, 0, 0, 0, trading::PositionCost{100, 10}}}};
   adapter.SetInitialState(funds, positions);
   // A failed request result precedes the queued successful baseline. Its late
   // data must not reopen the failed attempt; an explicit retry is required.

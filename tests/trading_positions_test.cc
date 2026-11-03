@@ -7,6 +7,7 @@
 
 #include "gtest/gtest.h"
 #include "yquant/model/currency.h"
+#include "yquant/trading/order.h"
 #include "yquant/trading/simulated_trading_adapter.h"
 #include "yquant/trading/trading_service.h"
 #include "yquant/trading/trading_service_registry.h"
@@ -14,7 +15,18 @@
 namespace yquant::trading {
 namespace {
 
-const PositionInfo kInitial{{42}, 3, 7, 0, 0};
+// Gives fixture quantities a known zero-margin cost basis.
+PositionInfo Priced(PositionInfo value) {
+  if (value.today_quantity > 0) {
+    value.today_cost = PositionCost{100.0 * value.today_quantity, 0};
+  }
+  if (value.yesterday_quantity > 0) {
+    value.yesterday_cost = PositionCost{100.0 * value.yesterday_quantity, 0};
+  }
+  return value;
+}
+
+const PositionInfo kInitial = Priced({{42}, 3, 7, 0, 0});
 
 // Stages startup rows through the adapter and reads only the public client.
 class PositionsTest : public ::testing::Test {
@@ -78,9 +90,9 @@ TEST_F(PositionsTest, CompleteEmptySnapshotAndAbsentKeysReturnZero) {
 
 TEST_F(PositionsTest, CompleteIdentityAndDuplicateRowsArePreserved) {
   const std::array<PositionInfo, 4> values{{
-      kInitial, {{42, PositionSide::kShort}, 4, 5, 0, 0},
-      {{42, PositionSide::kLong, HedgeFlag::kHedge}, 1, 2, 0, 0},
-      {{81}, 9, 0, 0, 0}}};
+      kInitial, Priced({{42, PositionSide::kShort}, 4, 5, 0, 0}),
+      Priced({{42, PositionSide::kLong, HedgeFlag::kHedge}, 1, 2, 0, 0}),
+      Priced({{81}, 9, 0, 0, 0})}};
   Begin(1);
   for (auto value : values) {
     adapter.QueuePositions({1, value});
@@ -166,7 +178,7 @@ TEST_F(PositionsTest, RejectsInvalidKeysQuantitiesAndFrozenBuckets) {
   }
   Begin(id);
   constexpr auto kMax = std::numeric_limits<std::int32_t>::max();
-  adapter.QueuePositions({id, PositionInfo{kInitial.key, kMax, kMax, 0, 0}});
+  adapter.QueuePositions({id, Priced({kInitial.key, kMax, kMax, 0, 0})});
   Finish(id, 1);
   PositionInfo position;
   ASSERT_TRUE(client->QueryPosition({7, kInitial.key}, position));
@@ -176,7 +188,7 @@ TEST_F(PositionsTest, RejectsInvalidKeysQuantitiesAndFrozenBuckets) {
 TEST_F(PositionsTest, LargeSnapshotIsBoundedAndLateSnapshotsDoNotOverwriteIt) {
   Begin(1);
   for (std::uint32_t i = 1; i <= 130; ++i) {
-    adapter.QueuePositions({1, PositionInfo{{i}, 1, 0, 0, 0}});
+    adapter.QueuePositions({1, Priced({{i}, 1, 0, 0, 0})});
   }
   Finish(1, 130);
   Unavailable();

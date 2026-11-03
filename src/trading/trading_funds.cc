@@ -33,7 +33,8 @@ bool TradingService::QueryFunds(const QueryFundsRequest& query,
                                 FundsSnapshot& snapshot) const {
   const auto found = account_index_.find(query.account_id);
   if (found == account_index_.end() ||
-      found->second->sync_state != SyncState::kReady) {
+      found->second->sync_state != SyncState::kReady ||
+      !found->second->funds_available || found->second->unpriced_orders != 0) {
     return false;
   }
   snapshot = found->second->funds;
@@ -42,6 +43,8 @@ bool TradingService::QueryFunds(const QueryFundsRequest& query,
     snapshot.reserved = std::nextafter(snapshot.reserved,
                                        std::numeric_limits<double>::infinity());
   }
+  snapshot.funds.frozen_margin =
+      static_cast<double>(found->second->reserved_margin);
   return true;
 }
 

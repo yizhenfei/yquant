@@ -11,6 +11,7 @@
 #include "yquant/container/container.h"
 #include "yquant/model/currency.h"
 #include "yquant/trading/funds.h"
+#include "yquant/trading/order.h"
 #include "yquant/trading/position.h"
 #include "yquant/trading/simulated_trading_adapter.h"
 #include "yquant/trading/trading_adapter.h"
@@ -101,9 +102,10 @@ int RunPositionsDemo() {
   const trading::PositionKey key{
       42, trading::PositionSide::kLong, trading::HedgeFlag::kSpeculation};
   const std::array<trading::PositionInfo, 2> initial{{
-      {key, 3, 7, 0, 0},
+      {key, 3, 7, 0, 0, trading::PositionCost{300, 60},
+       trading::PositionCost{700, 140}},
       {{81, trading::PositionSide::kShort, trading::HedgeFlag::kArbitrage},
-       2, 0, 0, 0},
+       2, 0, 0, 0, trading::PositionCost{200, 0}},
   }};
   const trading::FundsInfo funds{model::Currency("CNY"), 1000, 800, 200, 0};
   first.SetInitialState(funds, initial);

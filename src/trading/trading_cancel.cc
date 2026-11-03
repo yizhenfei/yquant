@@ -1,5 +1,6 @@
 #include "yquant/trading/trading_service.h"
 
+#include <algorithm>
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
@@ -99,13 +100,23 @@ void TradingService::ApplyCancel(std::uint64_t account_id,
     return;
   }
   auto& cancel = found->second;
+  auto& order = *cancel.order;
+  if (report.result == CancelResult::kCanceled &&
+      (report.filled_quantity < 0 ||
+       report.filled_quantity > order.order.quantity)) {
+    DiagnoseCancel("invalid_cancel_fill", account_id, report);
+    return;
+  }
   if (cancel.result) {
     if (*cancel.result != report.result) {
       DiagnoseCancel("contradictory_cancel_report", account_id, report);
+    } else if (report.result == CancelResult::kCanceled &&
+               cancel.final_filled_quantity != report.filled_quantity) {
+      account_index_.at(account_id)->funds_available = false;
+      DiagnoseCancel("conflicting_cancel_fill", account_id, report);
     }
     return;
   }
-  auto& order = *cancel.order;
   if (report.result == CancelResult::kCanceled &&
       !internal::IsActiveOrder(order.state) &&
       order.state != OrderState::kCanceled &&
@@ -117,11 +128,14 @@ void TradingService::ApplyCancel(std::uint64_t account_id,
     DiagnoseCancel("report_after_cancel_send_failure", account_id, report);
   }
   cancel.result = report.result;
-  const bool changed = report.result == CancelResult::kCanceled &&
-                       internal::IsActiveOrder(order.state);
-  if (changed) {
-    order.state = OrderState::kCanceled;
-    ++order.version;
+  cancel.final_filled_quantity = report.filled_quantity;
+  bool changed = false;
+  if (report.result == CancelResult::kCanceled) {
+    changed = UpdateFill(order, OrderState::kCanceled,
+                         std::max(order.reported_filled_quantity,
+                                  report.filled_quantity),
+                         order.detailed_filled_quantity);
+    UpdateReservation(*account_index_.at(account_id), order);
   }
   const auto snapshot = MakeSnapshot(order);
   if (changed) {

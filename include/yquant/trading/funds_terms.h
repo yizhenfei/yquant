@@ -22,6 +22,9 @@ struct FundsTerms {
   double contract_multiplier = 0;
   std::optional<double> margin_rate;
   std::array<std::optional<FeeRate>, 4> fees;
+  // Applies only to Offset::kClose. Explicit today/yesterday offsets take
+  // priority. Set this to match the counter's generic-close allocation rule.
+  bool close_today_first = false;
 };
 
 }  // namespace yquant::trading

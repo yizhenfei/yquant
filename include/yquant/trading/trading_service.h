@@ -14,6 +14,7 @@
 #include "yquant/trading/funds.h"
 #include "yquant/trading/funds_terms.h"
 #include "yquant/trading/internal/call_context.h"
+#include "yquant/trading/internal/funds_calculation.h"
 #include "yquant/trading/order.h"
 #include "yquant/trading/position.h"
 #include "yquant/trading/trade.h"
@@ -123,8 +124,8 @@ class TradingService final : public container::Service {
   // Binds during initialization. Duplicate accounts or adapter instances fail
   // without replacing the existing binding. Borrows adapter until shutdown.
   bool BindAccount(std::uint64_t account_id, ITradingAdapter& adapter);
-  // Returns true only after both snapshots and the adapter's boundary
-  // confirmation have completed. Unknown accounts return false.
+  // Reports startup completion; unknown accounts return false.
+  // QueryFunds separately reports runtime accounting availability.
   bool IsAccountReady(std::uint64_t account_id) const;
   // Schedules another attempt after a failed initialization. Returns false
   // for unknown, pending or ready accounts, or from requests/Run/callbacks.
@@ -156,11 +157,12 @@ class TradingService final : public container::Service {
   // Copies the latest available complete funds snapshot and returns true.
   // Returns false if the account is unknown or its funds are unavailable.
   // Leaves snapshot unchanged on false. Values become available only after
-  // account initialization completes; late startup results cannot replace them.
+  // initialization completes and all known fills are booked without errors.
   bool QueryFunds(const QueryFundsRequest& query,
                   FundsSnapshot& snapshot) const;
 
-  // Returns true and borrows the complete rows when account state is available.
+  // Returns true and borrows the complete rows when accounting is available.
+  // Copy rows before the next position update or service destruction.
   // Returns false without changing snapshot if the account is unknown or its
   // positions are unavailable.
   bool QueryPositions(const QueryPositionsRequest& query,
@@ -207,6 +209,9 @@ class TradingService final : public container::Service {
     FundsSnapshot funds;
     std::unordered_map<std::uint64_t, FundsTerms> funds_terms;
     long double reserved_funds = 0;
+    long double reserved_margin = 0;
+    std::size_t reservation_count = 0;
+    std::size_t unpriced_orders = 0;
     std::uint64_t funds_refresh_id = 0;
     bool funds_refresh_pending = false;
     bool funds_available = false;
@@ -228,6 +233,12 @@ class TradingService final : public container::Service {
     std::uint64_t version = 1;
     std::size_t pending = 0;
     double reserved_funds = 0;
+    // Retains the original estimate for acceptance after a failed send.
+    double initial_reservation = 0;
+    double initial_margin = 0;
+    double reserved_margin = 0;
+    std::int32_t booked_quantity = 0;
+    bool funds_pending = false;
     std::unordered_set<std::uint64_t> cancel_ids{};
   };
   // Keeps each attempt independent of other cancellations for the same order.
@@ -238,6 +249,7 @@ class TradingService final : public container::Service {
     internal::CallContext call;
     bool send_failed = false;
     std::optional<CancelResult> result = std::nullopt;
+    std::int32_t final_filled_quantity = 0;
   };
   // Keeps an event's snapshot and internal invocation context together.
   struct Notification {
@@ -255,7 +267,17 @@ class TradingService final : public container::Service {
   // On failure returns the request error used by the deferred failure callback.
   std::optional<FailureReason> CheckFunds(const AccountContext& account,
                                          const OrderInfo& order,
-                                         double& amount) const;
+                                         internal::OrderCost& cost) const;
+  // Finds immutable configured terms for an account/order, or returns nullptr.
+  const FundsTerms* FindFundsTerms(const AccountContext& account,
+                                  const OrderInfo& order) const;
+  // Applies one unique fill to a candidate position and commits all cash and
+  // cost changes together. On failure, retains balances and blocks cash use.
+  void BookTrade(AccountContext& account, OrderRecord& order,
+                 const TradeInfo& trade);
+  // Updates the account reservation from this order's latest confirmed state.
+  // Canceled filled quantities retain their estimate until priced by a trade.
+  void UpdateReservation(AccountContext& account, OrderRecord& order);
   // Validates and sends one attempt while CancelOrder defers notifications.
   void ProcessCancelOrder(const CancelOrderRequest& request,
                           TradingListener& listener,

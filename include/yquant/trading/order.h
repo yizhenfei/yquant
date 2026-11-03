@@ -23,6 +23,9 @@ struct OrderIdHash {
   }
 };
 
+// Identifies the hedge category of an order and its resulting position.
+enum class HedgeFlag { kSpeculation, kArbitrage, kHedge };
+
 enum class Side { kBuy, kSell };
 enum class Offset { kOpen, kClose, kCloseToday, kCloseYesterday };
 enum class CancelResult { kCanceled, kRejected };
@@ -38,6 +41,7 @@ struct OrderInfo {
   Offset offset = Offset::kOpen;
   double price = 0;
   std::int32_t quantity = 0;
+  HedgeFlag hedge = HedgeFlag::kSpeculation;
   bool operator==(const OrderInfo&) const = default;
 };
 

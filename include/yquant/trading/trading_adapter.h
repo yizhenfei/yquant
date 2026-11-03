@@ -38,6 +38,9 @@ struct AdapterCancelReport {
   OrderId order_id;
   std::uint64_t service_cancel_id = 0;
   CancelResult result = CancelResult::kCanceled;
+  // Final cumulative quantity on successful cancellation. Include fills whose
+  // details have not been delivered yet; rejected attempts ignore this field.
+  std::int32_t filled_quantity = 0;
 };
 
 // Marks the start of a new account funds refresh.
@@ -95,6 +98,8 @@ class ITradingAdapterCallback {
   virtual ~ITradingAdapterCallback() = default;
   virtual void OnOrderReport(const AdapterOrderReport& report) = 0;
   virtual void OnCancelReport(const AdapterCancelReport& report) = 0;
+  // Preserve source order for distinct fills; duplicate and delayed reports
+  // may repeat an existing trade ID without applying its cash impact again.
   virtual void OnTradeReport(const TradeInfo& trade) = 0;
   virtual void OnAccountSyncReport(const AdapterAccountSyncReport& report) = 0;
   virtual void OnFundsReport(const AdapterFundsReport& report) = 0;

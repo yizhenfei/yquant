@@ -30,6 +30,7 @@ target_link_libraries(yquant_strategy PUBLIC yquant_market)
 
 add_library(yquant_trading
   src/trading/account_startup.cc
+  src/trading/funds_accounting.cc
   src/trading/funds_reservation.cc
   src/trading/local_trading_client.cc
   src/trading/order_id_generator.cc
@@ -48,7 +49,7 @@ target_link_libraries(yquant_trading PUBLIC yquant_model yquant_container)
 add_executable(monod
   src/monod/main.cc src/monod/trading_demo.cc src/monod/funds_demo.cc
   src/monod/positions_demo.cc src/monod/reservation_demo.cc
-  src/monod/startup_demo.cc)
+  src/monod/startup_demo.cc src/monod/funds_lifecycle_demo.cc)
 target_include_directories(monod PRIVATE examples)
 target_link_libraries(monod PRIVATE yquant_strategy yquant_trading)
 
@@ -109,6 +110,16 @@ if(BUILD_TESTING)
     COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_fill_output_test.cmake)
   set_tests_properties(v1_02_trade_details v1_02_trade_details_monod
+    PROPERTIES TIMEOUT 5 LABELS v1_02_order)
+
+  add_executable(trading_funds_lifecycle_test tests/trading_funds_lifecycle_test.cc)
+  target_link_libraries(trading_funds_lifecycle_test PRIVATE
+    yquant_trading GTest::gtest_main)
+  add_test(NAME v1_02_funds_lifecycle COMMAND trading_funds_lifecycle_test)
+  add_test(NAME v1_02_funds_lifecycle_monod
+    COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_funds_lifecycle_output_test.cmake)
+  set_tests_properties(v1_02_funds_lifecycle v1_02_funds_lifecycle_monod
     PROPERTIES TIMEOUT 5 LABELS v1_02_order)
 
   add_executable(trading_startup_test tests/trading_startup_test.cc)

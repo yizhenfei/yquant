@@ -2,10 +2,12 @@
 
 #include <cinttypes>
 #include <cstddef>
+#include <cmath>
 #include <cstdio>
 #include <utility>
 #include <variant>
 
+#include "yquant/trading/order.h"
 #include "yquant/trading/position.h"
 #include "yquant/trading/trading_adapter.h"
 
@@ -21,9 +23,19 @@ bool ValidKey(const PositionKey& key) {
           key.hedge == HedgeFlag::kArbitrage || key.hedge == HedgeFlag::kHedge);
 }
 
+// Requires a priced basis for nonempty buckets and zero costs for empty ones.
+bool ValidCost(std::int32_t quantity, const std::optional<PositionCost>& cost) {
+  if (!cost) return quantity == 0;
+  return std::isfinite(cost->cost) && std::isfinite(cost->margin) &&
+         cost->margin >= 0 && (quantity == 0
+             ? cost->cost == 0 && cost->margin == 0 : cost->cost > 0);
+}
+
 // Checks each quantity before saving it in the pending account snapshot.
 bool ValidPosition(const PositionInfo& value) {
-  return ValidKey(value.key) && value.today_quantity >= 0 &&
+  return ValidCost(value.today_quantity, value.today_cost) &&
+         ValidCost(value.yesterday_quantity, value.yesterday_cost) &&
+         ValidKey(value.key) && value.today_quantity >= 0 &&
          value.yesterday_quantity >= 0 && value.today_frozen >= 0 &&
          value.today_frozen <= value.today_quantity &&
          value.yesterday_frozen >= 0 &&
@@ -36,7 +48,8 @@ bool TradingService::QueryPositions(const QueryPositionsRequest& query,
                                     PositionsSnapshot& snapshot) const {
   const auto found = account_index_.find(query.account_id);
   if (found == account_index_.end() ||
-      found->second->sync_state != SyncState::kReady) {
+      found->second->sync_state != SyncState::kReady ||
+      !found->second->funds_available || found->second->unpriced_orders != 0) {
     return false;
   }
   const auto& account = *found->second;
@@ -49,6 +62,7 @@ bool TradingService::QueryPosition(const QueryPositionRequest& query,
   const auto found = account_index_.find(query.account_id);
   if (found == account_index_.end() ||
       found->second->sync_state != SyncState::kReady ||
+      !found->second->funds_available || found->second->unpriced_orders != 0 ||
       !ValidKey(query.key)) {
     return false;
   }

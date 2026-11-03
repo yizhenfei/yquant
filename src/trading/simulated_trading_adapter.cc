@@ -158,6 +158,9 @@ void SimulatedTradingAdapter::DeliverCancel(AdapterCancelReport report) {
        !internal::IsActiveOrder(found->second.state))) {
     report.result = CancelResult::kRejected;
   }
+  if (report.result == CancelResult::kCanceled) {
+    report.filled_quantity = found->second.filled_quantity;
+  }
   EmitCancel(report);
 }
 
