@@ -1,10 +1,10 @@
-#include "yquant/strategy/market_maker.h"
+#include "yquant/strategies/market_maker/market_maker.h"
 
 #include <cmath>
 #include <limits>
 #include <vector>
 
-namespace yquant::strategy {
+namespace yquant::strategies::market_maker {
 
 using trading::OrderState;
 using trading::RequestResult;
@@ -182,4 +182,4 @@ void MarketMaker::OnRequestFailure(const trading::RequestFailure& failure) {
   Requote();
 }
 
-}  // namespace yquant::strategy
+}  // namespace yquant::strategies::market_maker

@@ -1,4 +1,4 @@
-#include "yquant/strategy/market_maker.h"
+#include "yquant/strategies/market_maker/market_maker.h"
 
 #include <limits>
 #include <memory>
@@ -9,7 +9,7 @@
 #include "yquant/trading/trading_client_factory.h"
 #include "yquant/trading/trading_service_registry.h"
 
-namespace yquant::strategy {
+namespace yquant::strategies::market_maker {
 namespace {
 using namespace yquant::trading;
 
@@ -247,4 +247,4 @@ TEST_F(MakerTest, ExhaustedSharedGeneratorDoesNotReuseAnOrderId) {
             std::numeric_limits<std::uint64_t>::max());
 }
 }  // namespace
-}  // namespace yquant::strategy
+}  // namespace yquant::strategies::market_maker

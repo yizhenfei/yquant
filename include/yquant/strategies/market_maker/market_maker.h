@@ -1,18 +1,18 @@
-#ifndef YQUANT_STRATEGY_MARKET_MAKER_H_
-#define YQUANT_STRATEGY_MARKET_MAKER_H_
+#ifndef YQUANT_STRATEGIES_MARKET_MAKER_MARKET_MAKER_H_
+#define YQUANT_STRATEGIES_MARKET_MAKER_MARKET_MAKER_H_
 
 #include <cstdint>
 
-#include "yquant/strategy/plugin.h"
+#include "yquant/strategy/strategy.h"
 #include "yquant/trading/order_id_generator.h"
 #include "yquant/trading/trading_client.h"
 
-namespace yquant::strategy {
+namespace yquant::strategies::market_maker {
 
 // Maintains buy and sell quotes for one instrument at the best bid and ask.
 // Cancels an old quote before replacing it. Run callbacks on the business thread
 // and share the caller service's ID generator with its other strategy instances.
-class MarketMaker final : public Strategy {
+class MarketMaker final : public strategy::Strategy {
  public:
   MarketMaker(trading::TradingClient& client, trading::OrderIdGenerator& ids,
               std::uint64_t account_id, std::uint64_t strategy_id,
@@ -20,7 +20,7 @@ class MarketMaker final : public Strategy {
   MarketMaker(const MarketMaker&) = delete;
   MarketMaker& operator=(const MarketMaker&) = delete;
 
-  // Strategy implementation.
+  // strategy::Strategy implementation.
   std::span<const std::uint32_t> Subscriptions() const override {
     return {&instrument_, 1};
   }
@@ -73,6 +73,6 @@ class MarketMaker final : public Strategy {
   Leg ask_;
 };
 
-}  // namespace yquant::strategy
+}  // namespace yquant::strategies::market_maker
 
-#endif  // YQUANT_STRATEGY_MARKET_MAKER_H_
+#endif  // YQUANT_STRATEGIES_MARKET_MAKER_MARKET_MAKER_H_

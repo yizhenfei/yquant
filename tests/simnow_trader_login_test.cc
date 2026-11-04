@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "yquant/strategy/market_maker.h"
+#include "yquant/strategies/market_maker/market_maker.h"
 #include "simnow_order_tag.h"
 #include "simnow_submissions.h"
 #include "simnow_trader_session.h"
@@ -1459,8 +1459,8 @@ TEST_F(AccountBoundaryTest, TwoMakersAdoptOnlyTheirOwnLegAndContinueQuoting) {
   probe->account_balance.FrozenCommission += 4.02;
   probe->account_balance.Available = 10000;
   OrderIdGenerator ids(5);
-  strategy::MarketMaker first(*client, ids, 7, 31, 42, 1);
-  strategy::MarketMaker second(*client, ids, 7, 32, 42, 1);
+  strategies::market_maker::MarketMaker first(*client, ids, 7, 31, 42, 1);
+  strategies::market_maker::MarketMaker second(*client, ids, 7, 32, 42, 1);
   model::Quote quote{42, 100, 102, 1, 1, 1};
   first.OnQuote(quote);
   EXPECT_TRUE(adapter->submits.empty());
@@ -1509,7 +1509,7 @@ TEST_F(AccountBoundaryTest, NeitherAmbiguousLegsNorASecondListenerCanStealOrders
   Drain();
   ASSERT_TRUE(service.IsAccountReady(7));
   OrderIdGenerator ids(5);
-  strategy::MarketMaker maker(*client, ids, 7, 31, 42, 1);
+  strategies::market_maker::MarketMaker maker(*client, ids, 7, 31, 42, 1);
   maker.OnQuote({42, 100, 102, 1, 1, 1});
   EXPECT_TRUE(adapter->submits.empty());
   const StrategyOrderScope scope{5, 7, 31, 42};

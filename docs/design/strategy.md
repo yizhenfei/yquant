@@ -1,5 +1,11 @@
 # 策略设计
 
+## 代码组织
+
+策略框架的公共头文件位于 `include/yquant/strategy/`，实现位于 `src/strategy/`，使用 `yquant::strategy` 命名空间。具体策略按名称组织在 `include/yquant/strategies/<名称>/` 和 `src/strategies/<名称>/`，使用各自的命名空间；做市策略使用 `yquant::strategies::market_maker`。
+
+`yquant_strategy_api` 提供策略接口的编译依赖，`yquant_strategy_host` 负责配置解析和动态库加载，`yquant_strategy` 负责策略 service。做市实现编译为 `yquant_market_maker_core`，供插件入口和测试使用；`yquant_market_maker` 是宿主动态加载的策略库。做市实现依赖框架接口，框架库不包含或链接具体策略实现。
+
 ## 配置与动态加载
 
 `yquant_strategy_host` 从配置文件加载一个策略实例。配置采用 `key=value`，支持空行和以 `#` 开头的整行注释。重复键、未知键、缺少必需项及超出整数范围的标识均报错。动态库路径相对于配置文件解析。

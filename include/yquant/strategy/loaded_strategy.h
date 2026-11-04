@@ -4,7 +4,7 @@
 #include <memory>
 #include <vector>
 
-#include "yquant/strategy/plugin.h"
+#include "yquant/strategy/strategy.h"
 
 namespace yquant::strategy {
 

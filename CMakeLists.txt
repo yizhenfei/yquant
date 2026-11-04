@@ -55,9 +55,8 @@ set_target_properties(yquant_ctp_md PROPERTIES IMPORTED_LOCATION "${ctp_library}
 find_package(Threads REQUIRED)
 add_library(yquant_simnow_market src/market/simnow_quote_source.cc)
 target_link_libraries(yquant_simnow_market PUBLIC yquant_market PRIVATE yquant_ctp_md Threads::Threads)
-add_library(yquant_strategy
-  src/strategy/market_maker.cc src/strategy/strategy_service.cc)
-target_link_libraries(yquant_strategy PUBLIC yquant_market yquant_trading yquant_strategy_host)
+add_library(yquant_strategy src/strategy/strategy_service.cc)
+target_link_libraries(yquant_strategy PUBLIC yquant_strategy_host)
 
 add_library(yquant_trading
   src/trading/account_recovery.cc
@@ -108,11 +107,15 @@ if(APPLE)
   target_compile_definitions(yquant_ctp_td INTERFACE YQUANT_CTP_MAC_LOGIN)
 endif()
 
-add_library(yquant_strategy_host src/strategy/plugin.cc src/strategy/loaded_strategy.cc)
-target_link_libraries(yquant_strategy_host PUBLIC yquant_market yquant_trading
+add_library(yquant_strategy_api INTERFACE)
+target_link_libraries(yquant_strategy_api INTERFACE yquant_market yquant_trading)
+add_library(yquant_strategy_host src/strategy/strategy.cc src/strategy/loaded_strategy.cc)
+target_link_libraries(yquant_strategy_host PUBLIC yquant_strategy_api
   PRIVATE ${CMAKE_DL_LIBS})
-add_library(yquant_market_maker SHARED src/strategy/market_maker_plugin.cc)
-target_link_libraries(yquant_market_maker PRIVATE yquant_strategy)
+add_library(yquant_market_maker_core STATIC src/strategies/market_maker/market_maker.cc)
+target_link_libraries(yquant_market_maker_core PUBLIC yquant_strategy_api)
+add_library(yquant_market_maker SHARED src/strategies/market_maker/plugin.cc)
+target_link_libraries(yquant_market_maker PRIVATE yquant_market_maker_core)
 set_target_properties(yquant_market_maker PROPERTIES
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES)
 # Keep archive definitions private too, including the shared C++ interface RTTI.
@@ -158,7 +161,7 @@ if(BUILD_TESTING)
     tests/scenarios/startup_demo.cc tests/scenarios/funds_lifecycle_demo.cc
     tests/scenarios/position_holds_demo.cc tests/scenarios/maker_demo.cc)
   target_include_directories(yquant_scenarios PRIVATE examples)
-  target_link_libraries(yquant_scenarios PRIVATE yquant_strategy)
+  target_link_libraries(yquant_scenarios PRIVATE yquant_market_maker_core)
   add_custom_target(verify_simnow_market
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify_simnow_market
       --probe $<TARGET_FILE:simnow_market_probe>
@@ -267,7 +270,7 @@ if(BUILD_TESTING)
   target_include_directories(simnow_trader_login_test PRIVATE tests/scenarios src/trading)
   target_include_directories(simnow_trader_login_test SYSTEM PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/trader_test_sdk")
-  target_link_libraries(simnow_trader_login_test PRIVATE yquant_simnow_trading yquant_strategy
+  target_link_libraries(simnow_trader_login_test PRIVATE yquant_simnow_trading yquant_market_maker_core
     yquant_ctp_td GTest::gtest_main Threads::Threads)
   add_test(NAME v1_05_trader_login COMMAND simnow_trader_login_test
     --gtest_filter=-StartupSnapshot*:ContractTerms*:OrderHistory*:PositionCosts*:OrderHolds*:RecoveredAccounting*:AccountBoundary*:SimNowSubmit*:SimNowCancel*:SimNowFills*)
@@ -329,7 +332,7 @@ if(BUILD_TESTING)
     PROPERTIES TIMEOUT 10 LABELS v1_04_simnow_market)
 
   add_executable(market_maker_test tests/market_maker_test.cc)
-  target_link_libraries(market_maker_test PRIVATE yquant_strategy GTest::gtest_main)
+  target_link_libraries(market_maker_test PRIVATE yquant_market_maker_core GTest::gtest_main)
   add_test(NAME v1_03_maker COMMAND market_maker_test)
   add_test(NAME v1_03_maker_monod
     COMMAND ${CMAKE_COMMAND} -DSCENARIOS=$<TARGET_FILE:yquant_scenarios>

@@ -1,4 +1,4 @@
-#include "yquant/strategy/plugin.h"
+#include "yquant/strategy/strategy.h"
 
 #include <charconv>
 #include <filesystem>

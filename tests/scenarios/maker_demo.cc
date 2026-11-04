@@ -10,7 +10,7 @@
 #include "yquant/market/market_client_factory.h"
 #include "yquant/market/market_service.h"
 #include "yquant/market/market_service_registry.h"
-#include "yquant/strategy/market_maker.h"
+#include "yquant/strategies/market_maker/market_maker.h"
 #include "yquant/trading/simulated_trading_adapter.h"
 #include "yquant/trading/trading_client_factory.h"
 #include "yquant/trading/trading_service_registry.h"
@@ -153,7 +153,7 @@ bool VerifyMaker() {
   auto trader = trading::TradingClientFactory(traders).Create(3);
   if (!market || !trader || !trading_service.IsAccountReady(7)) return false;
   trading::OrderIdGenerator ids(100);
-  strategy::MarketMaker maker(*trader, ids, 7, 2, 42, 2);
+  strategies::market_maker::MarketMaker maker(*trader, ids, 7, 2, 42, 2);
   market->Subscribe(42, maker);
   container::Container container;
   const bool ran = container.Register(market_service) &&

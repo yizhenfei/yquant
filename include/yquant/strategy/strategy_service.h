@@ -10,7 +10,7 @@
 
 #include "yquant/market/market_client.h"
 #include "yquant/strategy/loaded_strategy.h"
-#include "yquant/strategy/plugin.h"
+#include "yquant/strategy/strategy.h"
 #include "yquant/trading/order_id_generator.h"
 #include "yquant/trading/trading_client.h"
 

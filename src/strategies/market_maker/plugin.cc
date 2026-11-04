@@ -1,13 +1,13 @@
-#include "yquant/strategy/plugin.h"
+#include "yquant/strategy/strategy.h"
 
 #include <charconv>
 
-#include "yquant/strategy/market_maker.h"
+#include "yquant/strategies/market_maker/market_maker.h"
 
-namespace yquant::strategy {
+namespace yquant::strategies::market_maker {
 namespace {
 
-Strategy* Create(const StrategyConfig& config, trading::TradingClient& client,
+strategy::Strategy* Create(const strategy::StrategyConfig& config, trading::TradingClient& client,
                   trading::OrderIdGenerator& ids, std::string& error) {
   const auto quantity = config.parameters.find("quantity");
   const auto instrument = config.parameters.find("instrument_id");
@@ -31,13 +31,13 @@ Strategy* Create(const StrategyConfig& config, trading::TradingClient& client,
                           instrument_id, lots);
 }
 
-void Destroy(Strategy* strategy) { delete strategy; }
+void Destroy(strategy::Strategy* strategy) { delete strategy; }
 
-const StrategyPlugin kPlugin{kStrategyPluginVersion, Create, Destroy};
+const strategy::StrategyPlugin kPlugin{strategy::kStrategyPluginVersion, Create, Destroy};
 
 }  // namespace
-}  // namespace yquant::strategy
+}  // namespace yquant::strategies::market_maker
 
 extern "C" const yquant::strategy::StrategyPlugin* yquant_strategy_plugin() {
-  return &yquant::strategy::kPlugin;
+  return &yquant::strategies::market_maker::kPlugin;
 }

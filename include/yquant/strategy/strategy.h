@@ -1,5 +1,5 @@
-#ifndef YQUANT_STRATEGY_PLUGIN_H_
-#define YQUANT_STRATEGY_PLUGIN_H_
+#ifndef YQUANT_STRATEGY_STRATEGY_H_
+#define YQUANT_STRATEGY_STRATEGY_H_
 
 #include <cstdint>
 #include <map>
@@ -58,4 +58,4 @@ using StrategyPluginEntry = const StrategyPlugin* (*)();
 extern "C" __attribute__((visibility("default")))
 const yquant::strategy::StrategyPlugin* yquant_strategy_plugin();
 
-#endif  // YQUANT_STRATEGY_PLUGIN_H_
+#endif  // YQUANT_STRATEGY_STRATEGY_H_

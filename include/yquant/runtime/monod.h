@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "yquant/market/simnow_quote_source.h"
-#include "yquant/strategy/plugin.h"
+#include "yquant/strategy/strategy.h"
 #include "yquant/trading/simnow_trading_adapter.h"
 
 namespace yquant::runtime {
