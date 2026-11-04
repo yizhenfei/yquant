@@ -85,7 +85,7 @@ cmake --build build --target strategy_plugin_test
 ctest --test-dir build -R '^v1_06_strategy_plugin$' --output-on-failure
 ```
 
-库接口、兼容性和停止顺序见[策略设计](docs/design/strategy.md#配置与动态加载)。
+库接口、兼容性和停止顺序见[策略设计](docs/design/strategy.md#配置与动态加载)。多实例 service 的验收入口为 `ctest --test-dir build -R v1_07_strategy_instances --output-on-failure`。
 
 ## 首版目标
 

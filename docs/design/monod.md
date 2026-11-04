@@ -1,6 +1,6 @@
 # 单进程运行
 
-`monod --config PATH` 读取静态部署配置，创建 SimNow 行情和交易接入，再由 `yquant_runtime` 组装行情、交易 service、本地 client 及动态策略实例。策略加载使用[策略库接口](strategy.md#配置与动态加载)。当前入口运行一个账户、一个订阅合约和一个策略实例；该账户启动恢复所需的合约须包含在这一映射中。
+`monod --config PATH` 读取静态部署配置，创建 SimNow 行情和交易接入，再由 `yquant_runtime` 组装行情、交易 service、本地 client 及动态策略实例。策略实例由 `StrategyService` 管理，加载使用[策略库接口](strategy.md#配置与动态加载)。当前入口运行一个账户、一个订阅合约和一个策略实例；该账户启动恢复所需的合约须包含在这一映射中。
 
 ## 配置
 

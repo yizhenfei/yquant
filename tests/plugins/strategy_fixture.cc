@@ -29,7 +29,15 @@ class FixedPrice final : public Strategy {
 
   // trading::TradingListener implementation.
   void OnRequestFailure(const trading::RequestFailure&) override {}
-  void OnOrderReport(const trading::OrderReport&) override {}
+  void OnOrderReport(const trading::OrderReport& report) override {
+    auto marker = config_.parameters.find("marker");
+    if (marker != config_.parameters.end()) {
+      std::ofstream(marker->second + ".orders", std::ios::app)
+          << report.snapshot.order.strategy_id << " "
+          << report.snapshot.order.order_id.caller_service_id << " "
+          << report.snapshot.order.order_id.sequence << "\n";
+    }
+  }
   void OnCancelReport(const trading::CancelReport&) override {}
   void OnTradeReport(const trading::TradeReport&) override {}
 

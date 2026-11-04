@@ -50,13 +50,20 @@ LoadedStrategy::~LoadedStrategy() {
   if (!Stop()) std::abort();  // Destruction during callbacks violates the lifetime contract.
 }
 
-bool LoadedStrategy::Stop() {
+bool LoadedStrategy::Detach() {
+  if (detached_) return true;
   if (dispatching_) return false;
   if (instance_ && !trading_.DetachListener(*instance_)) return false;
   if (subscribed_) {
     market_.Unsubscribe(config_.instrument_id, *this);
     subscribed_ = false;
   }
+  detached_ = true;
+  return true;
+}
+
+bool LoadedStrategy::Stop() {
+  if (!Detach()) return false;
   if (instance_) {
     plugin_->destroy(instance_);
     instance_ = nullptr;
@@ -70,7 +77,7 @@ bool LoadedStrategy::Stop() {
 }
 
 void LoadedStrategy::OnQuote(const model::Quote& quote) {
-  if (!instance_ || dispatching_) return;
+  if (!instance_ || detached_ || dispatching_) return;
   dispatching_ = true;
   instance_->OnQuote(quote);
   dispatching_ = false;

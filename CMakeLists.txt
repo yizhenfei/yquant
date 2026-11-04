@@ -57,7 +57,7 @@ add_library(yquant_simnow_market src/market/simnow_quote_source.cc)
 target_link_libraries(yquant_simnow_market PUBLIC yquant_market PRIVATE yquant_ctp_md Threads::Threads)
 add_library(yquant_strategy
   src/strategy/market_maker.cc src/strategy/strategy_service.cc)
-target_link_libraries(yquant_strategy PUBLIC yquant_market yquant_trading)
+target_link_libraries(yquant_strategy PUBLIC yquant_market yquant_trading yquant_strategy_host)
 
 add_library(yquant_trading
   src/trading/account_recovery.cc
@@ -127,7 +127,7 @@ file(GENERATE OUTPUT "$<TARGET_FILE_DIR:yquant_market_maker>/market_maker.conf"
   INPUT "${CMAKE_CURRENT_SOURCE_DIR}/configs/market_maker.conf.in")
 
 add_library(yquant_runtime src/runtime/monod_config.cc src/runtime/monod.cc)
-target_link_libraries(yquant_runtime PUBLIC yquant_strategy_host yquant_simnow_market
+target_link_libraries(yquant_runtime PUBLIC yquant_strategy yquant_simnow_market
   yquant_simnow_trading)
 add_executable(monod src/monod/main.cc)
 target_link_libraries(monod PRIVATE yquant_runtime)
@@ -207,6 +207,15 @@ if(BUILD_TESTING)
     strategy_bad_version strategy_fail_create strategy_no_entry)
   add_test(NAME v1_06_strategy_plugin COMMAND strategy_plugin_test)
   set_tests_properties(v1_06_strategy_plugin PROPERTIES TIMEOUT 10 LABELS v1_06_production)
+
+  add_executable(strategy_instances_test tests/strategy_instances_test.cc)
+  target_link_libraries(strategy_instances_test PRIVATE yquant_strategy GTest::gtest_main)
+  target_compile_definitions(strategy_instances_test PRIVATE
+    FIXED_PLUGIN="$<TARGET_FILE:strategy_fixed>"
+    FAIL_PLUGIN="$<TARGET_FILE:strategy_fail_create>")
+  add_dependencies(strategy_instances_test strategy_fixed strategy_fail_create)
+  add_test(NAME v1_07_strategy_instances COMMAND strategy_instances_test)
+  set_tests_properties(v1_07_strategy_instances PROPERTIES TIMEOUT 10 LABELS v1_07_multi_strategy)
 
   add_executable(monod_runtime_test tests/monod_runtime_test.cc)
   target_link_libraries(monod_runtime_test PRIVATE yquant_runtime GTest::gtest_main)

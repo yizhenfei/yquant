@@ -10,7 +10,7 @@
 #include "yquant/market/market_client_factory.h"
 #include "yquant/market/market_service.h"
 #include "yquant/market/market_service_registry.h"
-#include "yquant/strategy/loaded_strategy.h"
+#include "yquant/strategy/strategy_service.h"
 #include "yquant/trading/trading_client_factory.h"
 #include "yquant/trading/trading_service_registry.h"
 
@@ -94,13 +94,12 @@ int RunMonod(const MonodConfig& c, market::SimNowQuoteSource& source,
   market::MarketService market(gate);
   trading::TradingServiceRegistry traders;
   market::MarketServiceRegistry markets;
-  trading::OrderIdGenerator ids(c.caller_service_id);
   if (!trading.BindAccount(c.strategy.account_id, adapter) || !traders.Register(1, trading) ||
       !markets.Register(1, market)) { error = "Service assembly failed"; return 1; }
   auto trader = trading::TradingClientFactory(traders).Create(1);
   auto quotes = market::MarketClientFactory(markets).Create(1);
-  auto strategy = strategy::LoadedStrategy::Load(c.strategy, *quotes, *trader, ids, error);
-  if (!strategy) return 1;
+  strategy::StrategyService strategies(c.caller_service_id, *quotes, *trader);
+  if (!strategies.Load(std::span{&c.strategy, 1}, error)) return 1;
   container::Container container;
   container.Register(trading);
   container.Register(market);
@@ -125,7 +124,7 @@ int RunMonod(const MonodConfig& c, market::SimNowQuoteSource& source,
     return (stop && stop()) || (gate.started && c.run_seconds > 0 &&
         Clock::now() - gate.since >= std::chrono::seconds(c.run_seconds));
   });
-  if (!strategy->Stop()) { error = "Could not detach strategy callbacks"; return 1; }
+  if (!strategies.Stop()) { error = "Could not detach strategy callbacks"; return 1; }
   const trading::StrategyOrderScope scope{c.caller_service_id, c.strategy.account_id,
                                           c.strategy.strategy_id, c.strategy.instrument_id};
   std::vector<trading::OrderSnapshot> active;

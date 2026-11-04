@@ -26,6 +26,9 @@ class LoadedStrategy final : public market::QuoteListener {
   // instance and unloads the library. Returns false during a callback or
   // service operation, leaving the instance running. Repeated Stop succeeds.
   bool Stop();
+  // Stops quote and trade delivery without destroying the instance. Used to
+  // detach a whole service group before any plugin destructor runs.
+  bool Detach();
   const StrategyConfig& config() const { return config_; }
 
   // market::QuoteListener implementation.
@@ -40,7 +43,7 @@ class LoadedStrategy final : public market::QuoteListener {
   void* library_ = nullptr;
   const StrategyPlugin* plugin_ = nullptr;
   Strategy* instance_ = nullptr;
-  bool subscribed_ = false, dispatching_ = false;
+  bool subscribed_ = false, dispatching_ = false, detached_ = false;
 };
 
 }  // namespace yquant::strategy
