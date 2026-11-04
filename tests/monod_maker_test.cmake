@@ -5,7 +5,7 @@ maker_submit id=3 side=buy price=101
 maker_summary quotes=1280 submits=1280 cancels=1278 bid=100 ask=102
 ]=])
 foreach(run RANGE 1 2)
-  execute_process(COMMAND "${MONOD}" --maker RESULT_VARIABLE result
+  execute_process(COMMAND "${SCENARIOS}" --maker RESULT_VARIABLE result
     OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 5)
   set(stats "warmup=256 samples=1024 p50=[0-9]+ p95=[0-9]+ p99=[0-9]+")
   string(REGEX MATCH "maker_latency_ns phase=cancel ${stats}\nmaker_latency_ns phase=replace ${stats}\n$" timing "${out}")

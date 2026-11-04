@@ -1,6 +1,6 @@
 # 单进程报价延迟
 
-运行 `monod --maker`。每轮向一个合约输入 1,280 条行情，每个调度周期交付一条，再由交易 service 处理模拟柜台回报。前 256 条用于预热，后 1,024 条交替改变买一价、保持卖一价不变。每条测量行情产生一次撤单和一次替换报单。
+运行 `yquant_scenarios --maker`。每轮向一个合约输入 1,280 条行情，每个调度周期交付一条，再由交易 service 处理模拟柜台回报。前 256 条用于预热，后 1,024 条交替改变买一价、保持卖一价不变。每条测量行情产生一次撤单和一次替换报单。
 
 两条路径均从行情源写好盘口、返回给行情 service 前读取 `steady_clock` 开始计时：
 
@@ -21,7 +21,7 @@
 复测命令：
 
 ```sh
-cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
-cmake --build build-release --target monod
-./build-release/monod --maker
+cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+cmake --build build-release --target yquant_scenarios
+./build-release/yquant_scenarios --maker
 ```

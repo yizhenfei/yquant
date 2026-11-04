@@ -1,8 +1,8 @@
-execute_process(COMMAND "${MONOD}" --reserve
+execute_process(COMMAND "${SCENARIOS}" --reserve
   RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE diagnostics
   TIMEOUT 3)
 if(NOT result EQUAL 0)
-  message(FATAL_ERROR "monod --reserve failed: ${result}\n${diagnostics}")
+  message(FATAL_ERROR "yquant_scenarios --reserve failed: ${result}\n${diagnostics}")
 endif()
 foreach(event IN ITEMS
     "reservation account=7 reserved=70 available_for_orders=30"

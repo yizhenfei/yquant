@@ -2197,7 +2197,7 @@ TEST(SimNowFillsSettlement, TradingModeRequiresMatchingSettlementSuccess) {
     if (error) EXPECT_TRUE(probe->funds_ids.empty());
   }
 }
-TEST(StartupSnapshot, MonodPublishesOnlyTheCompletedSummary) {
+TEST(StartupSnapshot, StandaloneProbePublishesOnlyTheCompletedSummary) {
   const char* args[] = {"tcp://fixture:1", "2"};
   auto connect = [](const SimNowTraderConfig& config) {
     return internal::StartTraderSession(config, [] {
@@ -2208,14 +2208,14 @@ TEST(StartupSnapshot, MonodPublishesOnlyTheCompletedSummary) {
     });
   };
   ::testing::internal::CaptureStdout();
-  const int result = monod::RunTraderLogin(2, args, true, connect);
+  const int result = verification::RunTraderLogin(2, args, true, connect);
   const auto out = ::testing::internal::GetCapturedStdout();
   EXPECT_EQ(result, 0);
   EXPECT_EQ(out, "startup_holds_verified orders=0\nstartup_snapshot trading_day=20261103 currencies=1 "
                  "position_rows=0 orders=0 fills=0 account_ready=false\n");
 }
 
-TEST(TraderLogin, MonodProbeShowsLoginWithoutTradingReadiness) {
+TEST(TraderLogin, StandaloneProbeShowsLoginWithoutTradingReadiness) {
   const char* args[] = {"tcp://fixture:1", "2"};
   auto connect = [](const SimNowTraderConfig& config) {
     return internal::StartTraderSession(config, [] {
@@ -2225,7 +2225,7 @@ TEST(TraderLogin, MonodProbeShowsLoginWithoutTradingReadiness) {
     });
   };
   ::testing::internal::CaptureStdout();
-  const int result = monod::RunTraderLogin(2, args, false, connect);
+  const int result = verification::RunTraderLogin(2, args, false, connect);
   const auto out = ::testing::internal::GetCapturedStdout();
   EXPECT_EQ(result, 0);
   EXPECT_NE(out.find("trader_logged_in trading_day=20261103 account_ready=false"),

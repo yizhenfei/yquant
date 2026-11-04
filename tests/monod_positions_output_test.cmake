@@ -1,8 +1,8 @@
-execute_process(COMMAND "${MONOD}" --positions
+execute_process(COMMAND "${SCENARIOS}" --positions
   RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE diagnostics
   TIMEOUT 3)
 if(NOT result EQUAL 0)
-  message(FATAL_ERROR "monod --positions failed: ${result}\n${diagnostics}")
+  message(FATAL_ERROR "yquant_scenarios --positions failed: ${result}\n${diagnostics}")
 endif()
 foreach(event IN ITEMS
     "positions account=7 ready=false"

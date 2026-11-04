@@ -11,7 +11,7 @@ import tempfile
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--monod", default="build/monod", type=Path)
+    parser.add_argument("--probe", default="build/simnow_market_probe", type=Path)
     parser.add_argument("--anonymous", action="store_true")
     parser.add_argument("--front", default=os.getenv("YQUANT_CTP_MD_FRONT"))
     parser.add_argument("--symbol", default=os.getenv("YQUANT_CTP_SYMBOL"))
@@ -24,7 +24,7 @@ def main():
         parser.error("count must be 1..10000 and timeout must be 1..3600")
     with tempfile.TemporaryDirectory(prefix="yquant-ctp-") as flow:
         result = subprocess.run(
-            [str(args.monod.resolve()), "--simnow-market",
+            [str(args.probe.resolve()),
              *(["--anonymous"] if args.anonymous else []), args.front, args.symbol,
              str(args.count), str(args.timeout)], cwd=flow,
             stdout=subprocess.PIPE, text=True, timeout=args.timeout + 5)

@@ -1,10 +1,10 @@
 # SimNow 行情接入
 
-`monod --simnow-market` 使用 CTP 行情前置，将一个指定合约的盘口交给验证策略，输出行情及对应的报价意图。程序只创建行情 API。实际柜台成交和交易请求由后续交易接入里程碑处理。
+`simnow_market_probe` 使用 CTP 行情前置，将一个指定合约的盘口交给验证策略，输出行情及对应的报价意图。程序创建行情 API，交易接入通过独立的交易验收程序验证。
 
 ## 构建依赖
 
-Linux x86_64 和 macOS 的默认构建均链接厂商行情和交易动态库。头文件必须与该平台的二进制来自同一套 SDK；不要混用 Linux 和 macOS 的头文件。SDK 由构建环境提供，默认根目录为 `vendor/ctp/`，也可通过 `-DYQUANT_CTP_SDK_ROOT=/path/to/sdk` 指定。缺少任一 SDK 的头文件或动态库时，CMake 配置失败。
+Linux x86_64 和 macOS 的行情、交易接入组件均使用厂商动态库。头文件必须与该平台的二进制来自同一套 SDK；不要混用 Linux 和 macOS 的头文件。SDK 由构建环境提供，默认根目录为 `vendor/ctp/`，也可通过 `-DYQUANT_CTP_SDK_ROOT=/path/to/sdk` 指定。缺少任一 SDK 的头文件或动态库时，CMake 配置失败。
 
 | 平台 | SDK 根目录下的布局 |
 | --- | --- |
@@ -21,7 +21,7 @@ cmake -S . -B build -DYQUANT_CTP_SDK_ROOT=/tmp/yquant-ctp-sdk/vnpy_ctp/api
 cmake --build build
 ```
 
-运行时保留 SDK 动态库目录；部署机器也需要对应库。macOS 可用 `otool -L build/monod` 核对 framework 依赖，Linux 可用 `ldd build/monod` 核对共享库解析。
+运行时保留 SDK 动态库目录；部署机器也需要对应库。macOS 可用 `otool -L build/simnow_market_probe` 核对 framework 依赖，Linux 可用 `ldd build/simnow_market_probe` 核对共享库解析。
 
 ## 连接与行情交付
 
@@ -35,6 +35,8 @@ SDK 回调不执行策略代码。回调将值写入预分配的 1,024 条环形
 
 ## 验收
 
+验收程序仅在 `BUILD_TESTING=ON` 时生成。
+
 可控场景使用当前平台真实 SDK 头文件，以测试实现替换行情 API 对象。SPI、回调转换、行情 service、client、验证策略和 CLI 输出校验均复用实际接入路径。
 
 ```sh
@@ -46,9 +48,9 @@ ctest --test-dir build -L v1_04_simnow_market --output-on-failure
 ```sh
 cmake --build build --target verify_simnow_market
 # 或指定采样条数和超时：
-./scripts/verify_simnow_market --monod build/monod --count 3 --timeout 60
+./scripts/verify_simnow_market --probe build/simnow_market_probe --count 3 --timeout 60
 ```
 
-脚本在临时目录中启动 `monod --simnow-market [--anonymous] FRONT SYMBOL COUNT TIMEOUT_SECONDS`，分别核对行情和意图的内部标识、序号及买卖价，并检查有效数量和汇总条数。此单合约程序使用内部标识 1。默认取 1 条、超时 30 秒；脚本另设进程退出时限。直接运行 monod 时，SDK 使用进程当前目录作为默认流文件目录。
+脚本在临时目录中启动 `simnow_market_probe [--anonymous] FRONT SYMBOL COUNT TIMEOUT_SECONDS`，分别核对行情和意图的内部标识、序号及买卖价，并检查有效数量和汇总条数。此单合约程序使用内部标识 1。默认取 1 条、超时 30 秒；脚本另设进程退出时限。直接运行行情探测程序时，SDK 使用进程当前目录作为默认流文件目录。
 
 真实连接结果见[SimNow 行情连接验收记录](../verification/simnow-market.md)。

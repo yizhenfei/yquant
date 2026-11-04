@@ -15,7 +15,7 @@
 #include "yquant/market/simnow_quote_source.h"
 #include "yquant/strategy/strategy_service.h"
 
-namespace yquant::monod {
+namespace yquant::verification {
 namespace {
 
 std::string_view Env(const char* name) {
@@ -79,7 +79,7 @@ int RunSimNowMarket(int argc, const char* const* argv,
   if (argc < 2 || argc > 4 ||
       (argc >= 3 && !Positive(argv[2], 10000, count)) ||
       (argc == 4 && !Positive(argv[3], 3600, seconds))) {
-    std::fprintf(stderr, "Usage: monod --simnow-market [--anonymous] FRONT SYMBOL "
+    std::fprintf(stderr, "Usage: simnow_market_probe [--anonymous] FRONT SYMBOL "
                          "[COUNT [TIMEOUT_SECONDS]]\n");
     return 2;
   }
@@ -132,4 +132,4 @@ int RunSimNowMarket(int argc, const char* const* argv,
   return 0;
 }
 
-}  // namespace yquant::monod
+}  // namespace yquant::verification

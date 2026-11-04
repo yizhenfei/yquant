@@ -13,7 +13,7 @@
 #include "yquant/trading/trading_service.h"
 #include "yquant/trading/trading_service_registry.h"
 
-namespace yquant::monod {
+namespace yquant::verification {
 namespace {
 
 // Distinguishes expected business refusals from transmission diagnostics.
@@ -123,4 +123,4 @@ int RunReservationDemo() {
   return 0;
 }
 
-}  // namespace yquant::monod
+}  // namespace yquant::verification

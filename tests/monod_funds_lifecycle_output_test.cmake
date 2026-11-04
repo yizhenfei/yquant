@@ -1,8 +1,8 @@
-execute_process(COMMAND "${MONOD}" --funds-lifecycle
+execute_process(COMMAND "${SCENARIOS}" --funds-lifecycle
   RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE diagnostics
   TIMEOUT 3)
 if(NOT result EQUAL 0)
-  message(FATAL_ERROR "monod --funds-lifecycle failed: ${result}\n${diagnostics}")
+  message(FATAL_ERROR "yquant_scenarios --funds-lifecycle failed: ${result}\n${diagnostics}")
 endif()
 foreach(event IN ITEMS
     "stage=submitted available=978 reserved=22 margin=0 commission=0 realized_pnl=0"

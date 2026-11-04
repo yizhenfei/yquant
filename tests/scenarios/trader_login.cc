@@ -12,7 +12,7 @@
 
 #include "yquant/trading/trading_service.h"
 
-namespace yquant::monod {
+namespace yquant::verification {
 namespace {
 std::string_view Env(const char* key) {
   const auto* value = std::getenv(key);
@@ -32,8 +32,8 @@ int RunTraderLogin(int argc, const char* const* argv, bool collect_snapshot,
   const std::string_view symbol = argc == 3 ? argv[2] : "";
   if (argc < 1 || argc > (collect_snapshot ? 3 : 2) ||
       (argc == 3 && symbol.empty()) || seconds <= 0 || seconds > 3600) {
-    std::fputs("Usage: monod --simnow-trader-login FRONT [SECONDS]\n"
-               "       monod --simnow-startup-snapshot FRONT [SECONDS [SYMBOL]]\n", stderr);
+    std::fputs("Usage: simnow_trader_probe FRONT [SECONDS]\n"
+               "       simnow_trader_probe --snapshot FRONT [SECONDS [SYMBOL]]\n", stderr);
     return 2;
   }
   trading::SimNowTraderConfig config{
@@ -129,4 +129,4 @@ int RunTraderLogin(int argc, const char* const* argv, bool collect_snapshot,
   }
 }
 
-}  // namespace yquant::monod
+}  // namespace yquant::verification

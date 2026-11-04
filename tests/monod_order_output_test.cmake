@@ -1,7 +1,7 @@
-execute_process(COMMAND "${MONOD}" --orders
+execute_process(COMMAND "${SCENARIOS}" --orders
   RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE diagnostics)
 if(NOT result EQUAL 0)
-  message(FATAL_ERROR "monod --orders failed: ${result}\n${diagnostics}")
+  message(FATAL_ERROR "yquant_scenarios --orders failed: ${result}\n${diagnostics}")
 endif()
 set(expected
   "order caller=100 sequence=1 account=7 strategy=2 state=accepted\n"
@@ -23,12 +23,12 @@ endif()
 if(diagnostics MATCHES "state=rejected")
   message(FATAL_ERROR "Counter rejection must go to stdout")
 endif()
-execute_process(COMMAND "${MONOD}" --help
+execute_process(COMMAND "${SCENARIOS}" --help
   RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE diagnostics)
 if(NOT result EQUAL 0 OR NOT output MATCHES "Usage:" OR NOT diagnostics STREQUAL "")
   message(FATAL_ERROR "Help must succeed on stdout")
 endif()
-execute_process(COMMAND "${MONOD}" --invalid
+execute_process(COMMAND "${SCENARIOS}" --invalid
   RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE diagnostics)
 if(result EQUAL 0 OR NOT output STREQUAL "" OR NOT diagnostics MATCHES "Usage:")
   message(FATAL_ERROR "Invalid arguments must fail on stderr")

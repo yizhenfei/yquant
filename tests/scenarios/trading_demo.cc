@@ -21,7 +21,7 @@
 #include "yquant/trading/trading_service.h"
 #include "yquant/trading/trading_service_registry.h"
 
-namespace yquant::monod {
+namespace yquant::verification {
 namespace {
 
 // Names the transmission outcomes used by the executable validation scenario.
@@ -229,4 +229,4 @@ int RunTradingDemo(TradingScenario scenario) {
   return valid ? 0 : 1;
 }
 
-}  // namespace yquant::monod
+}  // namespace yquant::verification

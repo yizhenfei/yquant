@@ -1,9 +1,9 @@
-#ifndef YQUANT_MONOD_TRADER_LOGIN_H_
-#define YQUANT_MONOD_TRADER_LOGIN_H_
+#ifndef YQUANT_TESTS_SCENARIOS_TRADER_LOGIN_H_
+#define YQUANT_TESTS_SCENARIOS_TRADER_LOGIN_H_
 
 #include "yquant/trading/simnow_trading_adapter.h"
 
-namespace yquant::monod {
+namespace yquant::verification {
 
 // Runs a read-only probe for FRONT and optional timeout seconds. With
 // collect_snapshot, a symbol after the timeout also requests contract terms.
@@ -12,6 +12,6 @@ int RunTraderLogin(int argc, const char* const* argv, bool collect_snapshot,
     decltype(&trading::SimNowTradingAdapter::Connect) connect =
         trading::SimNowTradingAdapter::Connect);
 
-}  // namespace yquant::monod
+}  // namespace yquant::verification
 
-#endif  // YQUANT_MONOD_TRADER_LOGIN_H_
+#endif  // YQUANT_TESTS_SCENARIOS_TRADER_LOGIN_H_

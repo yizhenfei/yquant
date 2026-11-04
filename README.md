@@ -13,34 +13,34 @@ Linux 执行正式构建、功能及并发验收；macOS 支持本机构建、�
 
 ## 构建与验证
 
-使用支持 C++20 的编译器、CMake 3.20 或更高版本，以及与目标平台匹配的 CTP 行情和交易 SDK。Linux 和 macOS 的默认构建都链接两套厂商动态库。先按[SDK 安装说明](docs/design/simnow-market.md#构建依赖)准备 `vendor/ctp/`，或在配置时指定 `-DYQUANT_CTP_SDK_ROOT=/path/to/sdk`：
+使用支持 C++20 的编译器、CMake 3.20 或更高版本，以及与目标平台匹配的 CTP 行情和交易 SDK。Linux 和 macOS 的行情、交易接入组件均使用厂商动态库。先按[SDK 安装说明](docs/design/simnow-market.md#构建依赖)准备 `vendor/ctp/`，或在配置时指定 `-DYQUANT_CTP_SDK_ROOT=/path/to/sdk`：
 
 ```sh
-cmake -S . -B build
+cmake -S . -B build -DBUILD_TESTING=ON
 cmake --build build
 ctest --test-dir build --output-on-failure
-./build/monod
+./build/yquant_scenarios
 ```
 
-`monod` 在 `main` 中将行情 service 按 ID 注册到本地实例表，再把实例表注入 factory，取得行情 client。container 调度行情 service，由 service 内部接收两个品种交错的五条固定行情，只为订阅品种输出报价意图。`main` 向 container 提供退出条件，固定行情处理完成后结束运行，随后退订并退出。固定行情源位于 `examples/market/`，验证策略位于 `examples/strategies/`。
+`yquant_scenarios` 在 `main` 中将行情 service 按 ID 注册到本地实例表，再把实例表注入 factory，取得行情 client。container 调度行情 service，由 service 内部接收两个品种交错的五条固定行情，只为订阅品种输出报价意图。`main` 向 container 提供退出条件，固定行情处理完成后结束运行，随后退订并退出。固定行情源位于 `examples/market/`，验证策略位于 `examples/strategies/`。
 
 运行 `ctest --test-dir build -L v1_04_simnow_market --output-on-failure` 验证可控行情接入。使用有效 SimNow 行情前置和账户时，按[真实连接验收说明](docs/design/simnow-market.md#验收)运行 `scripts/verify_simnow_market`，逐条比较接收的买卖价与策略输出。
 
-个人 SimNow 交易账户的登录入口是 `monod --simnow-trader-login FRONT [SECONDS]`。查询启动资金、持仓和当日订单与成交使用 `monod --simnow-startup-snapshot FRONT [SECONDS [SYMBOL]]`。指定合约后也返回合约乘数和费率。两者复用同一组登录参数，见[交易前置登录](docs/design/trading.md#交易前置登录)。
+独立测试程序中，个人 SimNow 交易账户的登录入口是 `simnow_trader_probe FRONT [SECONDS]`。查询启动资金、持仓和当日订单与成交使用 `simnow_trader_probe --snapshot FRONT [SECONDS [SYMBOL]]`。指定合约后也返回合约乘数和费率。两者复用同一组登录参数，见[交易前置登录](docs/design/trading.md#交易前置登录)。
 
-运行交易报单验证场景：
+运行交易验证场景：
 
 ```sh
-./build/monod --maker
-./build/monod --orders
-./build/monod --cancel
-./build/monod --fills
-./build/monod --funds
-./build/monod --positions
-./build/monod --reserve
-./build/monod --startup
-./build/monod --funds-lifecycle
-./build/monod --positions-lifecycle
+./build/yquant_scenarios --maker
+./build/yquant_scenarios --orders
+./build/yquant_scenarios --cancel
+./build/yquant_scenarios --fills
+./build/yquant_scenarios --funds
+./build/yquant_scenarios --positions
+./build/yquant_scenarios --reserve
+./build/yquant_scenarios --startup
+./build/yquant_scenarios --funds-lifecycle
+./build/yquant_scenarios --positions-lifecycle
 ctest --test-dir build -L v1_02_order --output-on-failure
 ```
 
@@ -65,6 +65,16 @@ ctest --test-dir build -L v1_02_order --output-on-failure
 `--positions-lifecycle` 验证两个策略向同一账户各申请平仓 7 手，10 手持仓只允许发送一笔；部分成交后撤单，剩余可平量可再次使用。
 
 测试构建获取固定版本的 GoogleTest；离线构建可通过 `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/path/to/googletest` 指定已有源码。
+
+## 生产程序构建
+
+```sh
+cmake -S . -B build-production -DBUILD_TESTING=OFF
+cmake --build build-production --target monod
+./build-production/monod --help
+```
+
+当前 `monod` 的生产配置和策略加载入口尚待 N6.2、N6.3 接入，默认启动会报告该状态并返回非零退出码。验证场景在 `tests/scenarios/` 中组装，仅在 `BUILD_TESTING=ON` 时构建。`yquant_scenarios` 运行固定输入与延迟测量，`simnow_market_probe` 和 `simnow_trader_probe` 提供行情、登录与快照探测。既有 CTest 中以 `_monod` 结尾的场景名称保留，执行目标已切换到独立测试程序。
 
 ## 首版目标
 

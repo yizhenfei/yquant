@@ -1,8 +1,8 @@
-execute_process(COMMAND "${MONOD}" --funds
+execute_process(COMMAND "${SCENARIOS}" --funds
   RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE diagnostics
   TIMEOUT 3)
 if(NOT result EQUAL 0)
-  message(FATAL_ERROR "monod --funds failed: ${result}\n${diagnostics}")
+  message(FATAL_ERROR "yquant_scenarios --funds failed: ${result}\n${diagnostics}")
 endif()
 foreach(event IN ITEMS
     "funds account=7 ready=false"

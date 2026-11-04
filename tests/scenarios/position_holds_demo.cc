@@ -9,7 +9,7 @@
 #include "yquant/trading/trading_service.h"
 #include "yquant/trading/trading_service_registry.h"
 
-namespace yquant::monod {
+namespace yquant::verification {
 namespace {
 
 // Only the second strategy's first attempt should be refused.
@@ -98,4 +98,4 @@ int RunPositionHoldsDemo() {
   return 1;
 }
 
-}  // namespace yquant::monod
+}  // namespace yquant::verification

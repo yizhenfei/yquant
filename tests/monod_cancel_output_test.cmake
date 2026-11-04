@@ -1,7 +1,7 @@
-execute_process(COMMAND "${MONOD}" --cancel
+execute_process(COMMAND "${SCENARIOS}" --cancel
   RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE diagnostics)
 if(NOT result EQUAL 0)
-  message(FATAL_ERROR "monod --cancel failed: ${result}\n${diagnostics}")
+  message(FATAL_ERROR "yquant_scenarios --cancel failed: ${result}\n${diagnostics}")
 endif()
 foreach(event IN ITEMS
     "order caller=100 sequence=1 account=7 strategy=2 state=canceled"

@@ -1,4 +1,4 @@
-execute_process(COMMAND "${MONOD}" --positions-lifecycle
+execute_process(COMMAND "${SCENARIOS}" --positions-lifecycle
   RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE diagnostics
   TIMEOUT 3)
 set(expected [=[position_close stage=submitted quantity=10 frozen=7 available=3

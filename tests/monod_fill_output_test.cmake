@@ -1,8 +1,8 @@
-execute_process(COMMAND "${MONOD}" --fills
+execute_process(COMMAND "${SCENARIOS}" --fills
   RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE diagnostics
   TIMEOUT 3)
 if(NOT result EQUAL 0)
-  message(FATAL_ERROR "monod --fills failed: ${result}\n${diagnostics}")
+  message(FATAL_ERROR "yquant_scenarios --fills failed: ${result}\n${diagnostics}")
 endif()
 foreach(event IN ITEMS
     "trade sequence=1 id=sim/day-1/1 price=100.25 quantity=1 state=partially_filled filled=1"

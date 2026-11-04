@@ -12,6 +12,5 @@ std::unique_ptr<yquant::market::SimNowQuoteSource> Connect(
 }  // namespace
 
 int main(int argc, char* argv[]) {
-  if (argc < 2 || std::string_view(argv[1]) != "--simnow-market") return 2;
-  return yquant::monod::RunSimNowMarket(argc - 2, argv + 2, Connect);
+  return yquant::verification::RunSimNowMarket(argc - 1, argv + 1, Connect);
 }

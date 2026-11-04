@@ -107,29 +107,46 @@ if(APPLE)
   target_compile_definitions(yquant_ctp_td INTERFACE YQUANT_CTP_MAC_LOGIN)
 endif()
 
-add_library(monod_simnow OBJECT src/monod/simnow_market_demo.cc)
-target_include_directories(monod_simnow PRIVATE examples)
-target_link_libraries(monod_simnow PRIVATE yquant_simnow_market yquant_strategy)
-
-add_library(monod_trader_login OBJECT src/monod/trader_login.cc)
-target_link_libraries(monod_trader_login PRIVATE yquant_simnow_trading)
-add_executable(monod
-  $<TARGET_OBJECTS:monod_trader_login>
-  $<TARGET_OBJECTS:monod_simnow>
-  src/monod/main.cc src/monod/trading_demo.cc src/monod/funds_demo.cc
-  src/monod/positions_demo.cc src/monod/reservation_demo.cc
-  src/monod/startup_demo.cc src/monod/funds_lifecycle_demo.cc
-  src/monod/position_holds_demo.cc src/monod/maker_demo.cc)
-target_include_directories(monod PRIVATE examples)
-target_link_libraries(monod PRIVATE yquant_simnow_trading yquant_strategy
-  yquant_simnow_market)
-add_custom_target(verify_simnow_market
-  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify_simnow_market
-    --monod $<TARGET_FILE:monod>
-  DEPENDS monod USES_TERMINAL VERBATIM)
+add_executable(monod src/monod/main.cc)
+target_link_libraries(monod PRIVATE yquant_options)
 
 include(CTest)
 if(BUILD_TESTING)
+  add_library(verification_market OBJECT tests/scenarios/simnow_market_demo.cc)
+  target_include_directories(verification_market PRIVATE examples)
+  target_link_libraries(verification_market PRIVATE yquant_simnow_market yquant_strategy)
+  add_library(verification_trader OBJECT tests/scenarios/trader_login.cc)
+  target_link_libraries(verification_trader PRIVATE yquant_simnow_trading)
+
+  add_executable(simnow_market_probe tests/scenarios/market_main.cc
+    $<TARGET_OBJECTS:verification_market>)
+  target_link_libraries(simnow_market_probe PRIVATE yquant_simnow_market yquant_strategy)
+  add_executable(simnow_trader_probe tests/scenarios/trader_main.cc
+    $<TARGET_OBJECTS:verification_trader>)
+  target_link_libraries(simnow_trader_probe PRIVATE yquant_simnow_trading)
+  add_executable(yquant_scenarios tests/scenarios/main.cc
+    tests/scenarios/trading_demo.cc tests/scenarios/funds_demo.cc
+    tests/scenarios/positions_demo.cc tests/scenarios/reservation_demo.cc
+    tests/scenarios/startup_demo.cc tests/scenarios/funds_lifecycle_demo.cc
+    tests/scenarios/position_holds_demo.cc tests/scenarios/maker_demo.cc)
+  target_include_directories(yquant_scenarios PRIVATE examples)
+  target_link_libraries(yquant_scenarios PRIVATE yquant_strategy)
+  add_custom_target(verify_simnow_market
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify_simnow_market
+      --probe $<TARGET_FILE:simnow_market_probe>
+    DEPENDS simnow_market_probe USES_TERMINAL VERBATIM)
+
+  add_test(NAME v1_06_monod_cli COMMAND ${CMAKE_COMMAND}
+    -DMONOD=$<TARGET_FILE:monod> -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_production_test.cmake)
+  add_test(NAME v1_06_production_build COMMAND ${CMAKE_COMMAND}
+    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}
+    -DBINARY=${CMAKE_CURRENT_BINARY_DIR}/production-check
+    -DGENERATOR=${CMAKE_GENERATOR} -DMAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}
+    -DCOMPILER=${CMAKE_CXX_COMPILER} -DSDK=${YQUANT_CTP_SDK_ROOT}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/production_build_test.cmake)
+  set_tests_properties(v1_06_monod_cli v1_06_production_build
+    PROPERTIES TIMEOUT 75 LABELS v1_06_production)
+
   include(FetchContent)
   set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
   set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
@@ -145,8 +162,8 @@ if(BUILD_TESTING)
 
   include(tests/generate_trader_stubs.cmake)
   add_executable(simnow_trader_login_test tests/simnow_trader_login_test.cc
-    $<TARGET_OBJECTS:monod_trader_login>)
-  target_include_directories(simnow_trader_login_test PRIVATE src/monod src/trading)
+    $<TARGET_OBJECTS:verification_trader>)
+  target_include_directories(simnow_trader_login_test PRIVATE tests/scenarios src/trading)
   target_include_directories(simnow_trader_login_test SYSTEM PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/trader_test_sdk")
   target_link_libraries(simnow_trader_login_test PRIVATE yquant_simnow_trading yquant_strategy
@@ -184,16 +201,16 @@ if(BUILD_TESTING)
     yquant_strategy GTest::gtest_main Threads::Threads)
   add_test(NAME v1_04_simnow_market COMMAND simnow_market_test)
   add_executable(simnow_market_fixture tests/simnow_market_fixture.cc
-    $<TARGET_OBJECTS:monod_simnow>)
-  target_include_directories(simnow_market_fixture PRIVATE src/market src/monod)
+    $<TARGET_OBJECTS:verification_market>)
+  target_include_directories(simnow_market_fixture PRIVATE src/market tests/scenarios)
   target_link_libraries(simnow_market_fixture PRIVATE yquant_simnow_market
     yquant_ctp_md yquant_strategy Threads::Threads)
   add_test(NAME v1_04_simnow_market_monod COMMAND
     ${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify_simnow_market
-    --monod $<TARGET_FILE:simnow_market_fixture> --front tcp://fixture:1
+    --probe $<TARGET_FILE:simnow_market_fixture> --front tcp://fixture:1
     --symbol IFtest --count 2 --timeout 2)
   add_test(NAME v1_04_simnow_market_cli COMMAND ${CMAKE_COMMAND}
-    -DFIXTURE=$<TARGET_FILE:simnow_market_fixture> -DMONOD=$<TARGET_FILE:monod>
+    -DFIXTURE=$<TARGET_FILE:simnow_market_fixture> -DPROBE=$<TARGET_FILE:simnow_market_probe>
     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/simnow_market_cli_test.cmake)
   set_tests_properties(v1_04_simnow_market_monod v1_04_simnow_market_cli
     PROPERTIES ENVIRONMENT
@@ -205,7 +222,7 @@ if(BUILD_TESTING)
   target_link_libraries(market_maker_test PRIVATE yquant_strategy GTest::gtest_main)
   add_test(NAME v1_03_maker COMMAND market_maker_test)
   add_test(NAME v1_03_maker_monod
-    COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
+    COMMAND ${CMAKE_COMMAND} -DSCENARIOS=$<TARGET_FILE:yquant_scenarios>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_maker_test.cmake)
   set_tests_properties(v1_03_maker v1_03_maker_monod
     PROPERTIES TIMEOUT 10 LABELS v1_03_maker)
@@ -227,7 +244,7 @@ if(BUILD_TESTING)
     yquant_trading GTest::gtest_main)
   add_test(NAME v1_02_submit COMMAND trading_client_test)
   add_test(NAME v1_02_submit_monod
-    COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
+    COMMAND ${CMAKE_COMMAND} -DSCENARIOS=$<TARGET_FILE:yquant_scenarios>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_order_output_test.cmake)
   set_tests_properties(v1_02_submit v1_02_submit_monod
     PROPERTIES TIMEOUT 5 LABELS v1_02_order)
@@ -236,7 +253,7 @@ if(BUILD_TESTING)
     yquant_trading GTest::gtest_main)
   add_test(NAME v1_02_cancel COMMAND trading_cancel_test)
   add_test(NAME v1_02_cancel_monod
-    COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
+    COMMAND ${CMAKE_COMMAND} -DSCENARIOS=$<TARGET_FILE:yquant_scenarios>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_cancel_output_test.cmake)
   set_tests_properties(v1_02_cancel v1_02_cancel_monod
     PROPERTIES TIMEOUT 5 LABELS v1_02_order)
@@ -254,7 +271,7 @@ if(BUILD_TESTING)
     yquant_trading GTest::gtest_main)
   add_test(NAME v1_02_trade_details COMMAND trading_trade_test)
   add_test(NAME v1_02_trade_details_monod
-    COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
+    COMMAND ${CMAKE_COMMAND} -DSCENARIOS=$<TARGET_FILE:yquant_scenarios>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_fill_output_test.cmake)
   set_tests_properties(v1_02_trade_details v1_02_trade_details_monod
     PROPERTIES TIMEOUT 5 LABELS v1_02_order)
@@ -264,7 +281,7 @@ if(BUILD_TESTING)
     yquant_trading GTest::gtest_main)
   add_test(NAME v1_02_positions_lifecycle COMMAND trading_position_holds_test)
   add_test(NAME v1_02_positions_lifecycle_monod
-    COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
+    COMMAND ${CMAKE_COMMAND} -DSCENARIOS=$<TARGET_FILE:yquant_scenarios>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_position_holds_output_test.cmake)
   set_tests_properties(v1_02_positions_lifecycle v1_02_positions_lifecycle_monod
     PROPERTIES TIMEOUT 5 LABELS v1_02_order)
@@ -274,7 +291,7 @@ if(BUILD_TESTING)
     yquant_trading GTest::gtest_main)
   add_test(NAME v1_02_funds_lifecycle COMMAND trading_funds_lifecycle_test)
   add_test(NAME v1_02_funds_lifecycle_monod
-    COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
+    COMMAND ${CMAKE_COMMAND} -DSCENARIOS=$<TARGET_FILE:yquant_scenarios>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_funds_lifecycle_output_test.cmake)
   set_tests_properties(v1_02_funds_lifecycle v1_02_funds_lifecycle_monod
     PROPERTIES TIMEOUT 5 LABELS v1_02_order)
@@ -284,7 +301,7 @@ if(BUILD_TESTING)
     yquant_trading GTest::gtest_main)
   add_test(NAME v1_02_account_startup COMMAND trading_startup_test)
   add_test(NAME v1_02_account_startup_monod
-    COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
+    COMMAND ${CMAKE_COMMAND} -DSCENARIOS=$<TARGET_FILE:yquant_scenarios>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_startup_output_test.cmake)
   set_tests_properties(v1_02_account_startup v1_02_account_startup_monod
     PROPERTIES TIMEOUT 5 LABELS v1_02_order)
@@ -300,7 +317,7 @@ if(BUILD_TESTING)
     yquant_trading GTest::gtest_main)
   add_test(NAME v1_02_funds COMMAND trading_funds_test)
   add_test(NAME v1_02_funds_monod
-    COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
+    COMMAND ${CMAKE_COMMAND} -DSCENARIOS=$<TARGET_FILE:yquant_scenarios>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_funds_output_test.cmake)
   set_tests_properties(v1_02_funds v1_02_funds_monod
     PROPERTIES TIMEOUT 5 LABELS v1_02_order)
@@ -310,7 +327,7 @@ if(BUILD_TESTING)
     yquant_trading GTest::gtest_main)
   add_test(NAME v1_02_positions COMMAND trading_positions_test)
   add_test(NAME v1_02_positions_monod
-    COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
+    COMMAND ${CMAKE_COMMAND} -DSCENARIOS=$<TARGET_FILE:yquant_scenarios>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_positions_output_test.cmake)
   set_tests_properties(v1_02_positions v1_02_positions_monod
     PROPERTIES TIMEOUT 5 LABELS v1_02_order)
@@ -320,7 +337,7 @@ if(BUILD_TESTING)
     yquant_trading GTest::gtest_main)
   add_test(NAME v1_02_funds_reservation COMMAND trading_reservation_test)
   add_test(NAME v1_02_funds_reservation_monod
-    COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
+    COMMAND ${CMAKE_COMMAND} -DSCENARIOS=$<TARGET_FILE:yquant_scenarios>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_reservation_output_test.cmake)
   set_tests_properties(v1_02_funds_reservation v1_02_funds_reservation_monod
     PROPERTIES TIMEOUT 5 LABELS v1_02_order)
@@ -353,7 +370,7 @@ if(BUILD_TESTING)
     yquant_market GTest::gtest_main)
   add_test(NAME v1_01_client_factory COMMAND market_client_factory_test)
   add_test(NAME v1_01_client_factory_monod
-    COMMAND ${CMAKE_COMMAND} -DMONOD=$<TARGET_FILE:monod>
+    COMMAND ${CMAKE_COMMAND} -DSCENARIOS=$<TARGET_FILE:yquant_scenarios>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_output_test.cmake)
   set_tests_properties(v1_01_single_quote v1_01_quote_sequence
     v1_01_client_factory_monod v1_01_container v1_01_subscription

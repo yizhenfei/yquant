@@ -16,7 +16,7 @@
 #include "yquant/trading/trading_client_factory.h"
 #include "yquant/trading/trading_service_registry.h"
 
-namespace yquant::monod {
+namespace yquant::verification {
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -197,4 +197,4 @@ int RunMakerDemo() {
   return 1;
 }
 
-}  // namespace yquant::monod
+}  // namespace yquant::verification

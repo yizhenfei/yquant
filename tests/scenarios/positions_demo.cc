@@ -20,7 +20,7 @@
 #include "yquant/trading/trading_service.h"
 #include "yquant/trading/trading_service_registry.h"
 
-namespace yquant::monod {
+namespace yquant::verification {
 namespace {
 
 // Names the hedge category in a validated position snapshot.
@@ -129,4 +129,4 @@ int RunPositionsDemo() {
   return 0;
 }
 
-}  // namespace yquant::monod
+}  // namespace yquant::verification

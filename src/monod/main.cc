@@ -1,139 +1,16 @@
-#include <array>
-#include <cinttypes>
-#include <cstdint>
 #include <cstdio>
 #include <string_view>
 
-#include "funds_demo.h"
-#include "funds_lifecycle_demo.h"
-#include "maker_demo.h"
-#include "market/fixed_quote_source.h"
-#include "position_holds_demo.h"
-#include "positions_demo.h"
-#include "reservation_demo.h"
-#include "strategies/quote_strategy.h"
-#include "simnow_market_demo.h"
-#include "startup_demo.h"
-#include "trader_login.h"
-#include "trading_demo.h"
-#include "yquant/container/container.h"
-#include "yquant/market/market_client_factory.h"
-#include "yquant/market/market_service.h"
-#include "yquant/market/market_service_registry.h"
-#include "yquant/model/quote.h"
-#include "yquant/strategy/strategy_service.h"
-
-namespace {
-
-// Writes each intent and its source sequence to stdout for validation.
-class PrintIntent final : public yquant::examples::QuoteIntentListener {
- public:
-  // yquant::examples::QuoteIntentListener implementation.
-  void OnQuoteIntent(const yquant::examples::QuoteIntent& intent) override {
-    std::printf("quote_intent instrument=%" PRIu32
-                " sequence=%" PRIu64 " bid=%.17g ask=%.17g\n",
-                intent.instrument_id, intent.sequence, intent.bid_price,
-                intent.ask_price);
-  }
-};
-
-}  // namespace
-
 int main(int argc, char* argv[]) {
-  if (argc >= 2 && (std::string_view(argv[1]) == "--simnow-trader-login" ||
-                    std::string_view(argv[1]) == "--simnow-startup-snapshot")) {
-    return yquant::monod::RunTraderLogin(argc - 2, argv + 2,
-        std::string_view(argv[1]) == "--simnow-startup-snapshot");
-  }
-  if (argc >= 2 && std::string_view(argv[1]) == "--simnow-market") {
-    return yquant::monod::RunSimNowMarket(argc - 2, argv + 2);
-  }
-  if (argc == 2 && std::string_view(argv[1]) == "--maker") {
-    return yquant::monod::RunMakerDemo();
-  }
-  if (argc == 2 && std::string_view(argv[1]) == "--orders") {
-    return yquant::monod::RunTradingDemo();
-  }
-  if (argc == 2 && std::string_view(argv[1]) == "--cancel") {
-    return yquant::monod::RunTradingDemo(
-        yquant::monod::TradingScenario::kCancel);
-  }
-  if (argc == 2 && std::string_view(argv[1]) == "--fills") {
-    return yquant::monod::RunTradingDemo(yquant::monod::TradingScenario::kFill);
-  }
-  if (argc == 2 && std::string_view(argv[1]) == "--funds") {
-    return yquant::monod::RunFundsDemo();
-  }
-  if (argc == 2 && std::string_view(argv[1]) == "--positions") {
-    return yquant::monod::RunPositionsDemo();
-  }
-  if (argc == 2 && std::string_view(argv[1]) == "--reserve") {
-    return yquant::monod::RunReservationDemo();
-  }
-  if (argc == 2 && std::string_view(argv[1]) == "--startup") {
-    return yquant::monod::RunStartupDemo();
-  }
-  if (argc == 2 && std::string_view(argv[1]) == "--positions-lifecycle") {
-    return yquant::monod::RunPositionHoldsDemo();
-  }
-  if (argc == 2 && std::string_view(argv[1]) == "--funds-lifecycle") {
-    return yquant::monod::RunFundsLifecycleDemo();
-  }
   if (argc == 2 && std::string_view(argv[1]) == "--help") {
-    std::printf("Usage: monod "
-                "[--maker|--orders|--cancel|--fills|--funds|"
-                "--positions|--reserve|--startup|"
-                "--funds-lifecycle|--positions-lifecycle]\n       monod --simnow-market [--anonymous] FRONT SYMBOL [COUNT [TIMEOUT_SECONDS]]\n"
-                "       monod --simnow-trader-login FRONT [SECONDS]\n"
-                "       monod --simnow-startup-snapshot FRONT [SECONDS [SYMBOL]]\n");
+    std::puts("Usage: monod --help");
+    std::puts("Production configuration loading is not implemented yet.");
     return 0;
   }
   if (argc != 1) {
-    std::fprintf(stderr, "Usage: monod "
-                         "[--maker|--orders|--cancel|--fills|--funds|"
-                         "--positions|--reserve|--startup|"
-                         "--funds-lifecycle|--positions-lifecycle]\n       monod --simnow-market [--anonymous] FRONT SYMBOL [COUNT [TIMEOUT_SECONDS]]\n"
-                "       monod --simnow-trader-login FRONT [SECONDS]\n"
-                "       monod --simnow-startup-snapshot FRONT [SECONDS [SYMBOL]]\n");
+    std::fputs("Unsupported argument. Use monod --help.\n", stderr);
     return 2;
   }
-  constexpr std::uint64_t kMarketServiceId = 1;
-  constexpr std::uint32_t kStrategyInstrumentId = 42;
-  const std::array<yquant::model::Quote, 5> quotes{{
-      {42, 100.25, 100.5, 7, 11, 1},
-      {81, 98.75, 99.25, 5, 8, 2},
-      {42, 100.5, 100.75, 9, 13, 3},
-      {81, 99, 99.5, 6, 9, 4},
-      {42, 100.5, 100.75, 15, 4, 5},
-  }};
-  yquant::examples::FixedQuoteSource source(quotes);
-  PrintIntent output;
-  yquant::market::MarketService market(source);
-  yquant::market::MarketServiceRegistry local_services;
-  if (!local_services.Register(kMarketServiceId, market)) {
-    std::fprintf(stderr, "Failed to register market service %" PRIu64 "\n",
-                 kMarketServiceId);
-    return 1;
-  }
-  yquant::market::MarketClientFactory factory(local_services);
-  auto client = factory.Create(kMarketServiceId);
-  if (!client) {
-    std::fprintf(stderr,
-                 "Failed to create client for market service %" PRIu64 "\n",
-                 kMarketServiceId);
-    return 1;
-  }
-  yquant::examples::QuoteStrategy strategy(output);
-  yquant::strategy::StrategyService strategy_service(strategy);
-  client->Subscribe(kStrategyInstrumentId, strategy_service);
-  yquant::container::Container container;
-  const bool completed =
-      container.Register(market) &&
-      container.Run([&source] { return source.exhausted(); });
-  client->Unsubscribe(kStrategyInstrumentId, strategy_service);
-  if (!completed) {
-    std::fprintf(stderr, "Failed to run the market service\n");
-    return 1;
-  }
-  return 0;
+  std::fputs("Production configuration loading is not implemented yet.\n", stderr);
+  return 1;
 }

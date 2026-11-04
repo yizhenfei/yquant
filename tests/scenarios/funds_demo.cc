@@ -17,7 +17,7 @@
 #include "yquant/trading/trading_service.h"
 #include "yquant/trading/trading_service_registry.h"
 
-namespace yquant::monod {
+namespace yquant::verification {
 namespace {
 
 // Returns true after both accounts publish the requested complete refresh.
@@ -86,4 +86,4 @@ int RunFundsDemo() {
   return 0;
 }
 
-}  // namespace yquant::monod
+}  // namespace yquant::verification
