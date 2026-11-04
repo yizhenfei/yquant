@@ -140,6 +140,8 @@ class TradingService final : public container::Service {
   // query. A different listener cannot displace an existing binding.
   bool AdoptWorkingOrders(StrategyOrderScope scope, std::span<const OrderSnapshot> orders,
                           TradingListener& listener);
+  // Removes borrowed listener references between service operations.
+  bool DetachListener(TradingListener& listener);
   // Reports startup completion; unknown accounts return false.
   // QueryFunds separately reports runtime accounting availability.
   bool IsAccountReady(std::uint64_t account_id) const;

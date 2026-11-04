@@ -74,7 +74,16 @@ cmake --build build-production --target monod
 ./build-production/monod --help
 ```
 
-当前 `monod` 的生产配置和策略加载入口尚待 N6.2、N6.3 接入，默认启动会报告该状态并返回非零退出码。验证场景在 `tests/scenarios/` 中组装，仅在 `BUILD_TESTING=ON` 时构建。`yquant_scenarios` 运行固定输入与延迟测量，`simnow_market_probe` 和 `simnow_trader_probe` 提供行情、登录与快照探测。既有 CTest 中以 `_monod` 结尾的场景名称保留，执行目标已切换到独立测试程序。
+策略动态库加载已由 `yquant_strategy_host` 实现，构建 `yquant_market_maker` 并使用同目录生成的 `market_maker.conf`可供宿主加载。`monod` 的配置驱动业务组装待 N6.3 接入，当前默认启动会报告该状态并返回非零退出码。验证场景在 `tests/scenarios/` 中组装，仅在 `BUILD_TESTING=ON` 时构建。`yquant_scenarios` 运行固定输入与延迟测量，`simnow_market_probe` 和 `simnow_trader_probe` 提供行情、登录与快照探测。既有 CTest 中以 `_monod` 结尾的场景名称保留，执行目标已切换到独立测试程序。
+
+运行动态加载验收：
+
+```sh
+cmake --build build --target strategy_plugin_test
+ctest --test-dir build -R '^v1_06_strategy_plugin$' --output-on-failure
+```
+
+库接口、兼容性和停止顺序见[策略设计](docs/design/strategy.md#配置与动态加载)。
 
 ## 首版目标
 

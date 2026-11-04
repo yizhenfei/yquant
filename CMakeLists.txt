@@ -4,6 +4,7 @@ project(yquant VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 add_library(yquant_options INTERFACE)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -107,6 +108,24 @@ if(APPLE)
   target_compile_definitions(yquant_ctp_td INTERFACE YQUANT_CTP_MAC_LOGIN)
 endif()
 
+add_library(yquant_strategy_host src/strategy/plugin.cc src/strategy/loaded_strategy.cc)
+target_link_libraries(yquant_strategy_host PUBLIC yquant_market yquant_trading
+  PRIVATE ${CMAKE_DL_LIBS})
+add_library(yquant_market_maker SHARED src/strategy/market_maker_plugin.cc)
+target_link_libraries(yquant_market_maker PRIVATE yquant_strategy)
+set_target_properties(yquant_market_maker PROPERTIES
+  CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES)
+# Keep archive definitions private too, including the shared C++ interface RTTI.
+if(APPLE)
+  target_link_options(yquant_market_maker PRIVATE
+    "LINKER:-exported_symbol,_yquant_strategy_plugin")
+else()
+  target_link_options(yquant_market_maker PRIVATE "LINKER:--exclude-libs,ALL")
+endif()
+
+file(GENERATE OUTPUT "$<TARGET_FILE_DIR:yquant_market_maker>/market_maker.conf"
+  INPUT "${CMAKE_CURRENT_SOURCE_DIR}/configs/market_maker.conf.in")
+
 add_executable(monod src/monod/main.cc)
 target_link_libraries(monod PRIVATE yquant_options)
 
@@ -154,6 +173,35 @@ if(BUILD_TESTING)
     GIT_REPOSITORY https://github.com/google/googletest.git
     GIT_TAG 6910c9d9165801d8827d628cb72eb7ea9dd538c5)
   FetchContent_MakeAvailable(googletest)
+
+  foreach(fixture IN ITEMS fixed bad_version fail_create)
+    add_library(strategy_${fixture} SHARED tests/plugins/strategy_fixture.cc)
+    target_link_libraries(strategy_${fixture} PRIVATE yquant_trading yquant_market)
+    set_target_properties(strategy_${fixture} PROPERTIES
+      CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES)
+    if(APPLE)
+      target_link_options(strategy_${fixture} PRIVATE
+        "LINKER:-exported_symbol,_yquant_strategy_plugin")
+    else()
+      target_link_options(strategy_${fixture} PRIVATE "LINKER:--exclude-libs,ALL")
+    endif()
+  endforeach()
+  target_compile_definitions(strategy_bad_version PRIVATE TEST_VERSION=99)
+  target_compile_definitions(strategy_fail_create PRIVATE FAIL_CREATE)
+  add_library(strategy_no_entry MODULE tests/plugins/no_entry.cc)
+  add_executable(strategy_plugin_test tests/strategy_plugin_test.cc)
+  target_link_libraries(strategy_plugin_test PRIVATE yquant_strategy_host
+    GTest::gtest_main ${CMAKE_DL_LIBS})
+  target_compile_definitions(strategy_plugin_test PRIVATE
+    MAKER_PLUGIN="$<TARGET_FILE:yquant_market_maker>"
+    FIXED_PLUGIN="$<TARGET_FILE:strategy_fixed>"
+    BAD_VERSION_PLUGIN="$<TARGET_FILE:strategy_bad_version>"
+    FAIL_CREATE_PLUGIN="$<TARGET_FILE:strategy_fail_create>"
+    NO_ENTRY_PLUGIN="$<TARGET_FILE:strategy_no_entry>")
+  add_dependencies(strategy_plugin_test yquant_market_maker strategy_fixed
+    strategy_bad_version strategy_fail_create strategy_no_entry)
+  add_test(NAME v1_06_strategy_plugin COMMAND strategy_plugin_test)
+  set_tests_properties(v1_06_strategy_plugin PROPERTIES TIMEOUT 10 LABELS v1_06_production)
 
   add_executable(verify_simnow_trading tests/verify_simnow_trading.cc)
   target_link_libraries(verify_simnow_trading PRIVATE yquant_simnow_trading Threads::Threads)

@@ -43,6 +43,10 @@ RequestResult LocalTradingClient::CancelOrder(
                               {instance_id_, ++last_call_id_});
 }
 
+bool LocalTradingClient::DetachListener(TradingListener& listener) {
+  return service_.DetachListener(listener);
+}
+
 bool LocalTradingClient::QueryWorkingOrders(StrategyOrderScope scope,
     std::vector<OrderSnapshot>& orders, std::uint64_t& last_sequence) const {
   return service_.QueryWorkingOrders(scope, orders, last_sequence);

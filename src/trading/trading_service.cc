@@ -168,6 +168,20 @@ void TradingService::ProcessSubmitOrder(const SubmitOrderRequest& request,
   }
 }
 
+bool TradingService::DetachListener(TradingListener& listener) {
+  if (running_ || request_depth_ || callback_depth_) return false;
+  for (auto& [id, order] : orders_) {
+    if (order.listener == &listener) order.listener = nullptr;
+  }
+  for (auto& [id, cancel] : cancels_) {
+    if (cancel.listener == &listener) cancel.listener = nullptr;
+  }
+  for (auto& notification : pending_) {
+    if (notification.listener == &listener) notification.listener = nullptr;
+  }
+  return true;
+}
+
 bool TradingService::QueryWorkingOrders(StrategyOrderScope scope,
     std::vector<OrderSnapshot>& orders, std::uint64_t& last_sequence) const {
   if (!IsAccountReady(scope.account)) return false;
@@ -307,6 +321,7 @@ void TradingService::Notify(Notification notification) {
 }
 
 void TradingService::Dispatch(const Notification& notification) {
+  if (!notification.listener) return;
   ++callback_depth_;
   if (const auto* failure = std::get_if<RequestFailure>(&notification.event)) {
     notification.listener->OnRequestFailure(*failure);

@@ -13,6 +13,10 @@ namespace yquant::trading {
 class TradingClient {
  public:
   virtual ~TradingClient() = default;
+  // Removes all references to listener, including pending notifications.
+  // Call between service operations. Returns false during a service callback
+  // or request; success permits destroying the listener. Orders remain tracked.
+  virtual bool DetachListener(TradingListener& listener) = 0;
   // Reads one strategy's active orders and caller sequence floor after recovery.
   virtual bool QueryWorkingOrders(StrategyOrderScope scope, std::vector<OrderSnapshot>& orders,
                           std::uint64_t& last_sequence) const = 0;

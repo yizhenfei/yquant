@@ -3,7 +3,7 @@
 
 #include <cstdint>
 
-#include "yquant/market/market_client.h"
+#include "yquant/strategy/plugin.h"
 #include "yquant/trading/order_id_generator.h"
 #include "yquant/trading/trading_client.h"
 
@@ -12,8 +12,7 @@ namespace yquant::strategy {
 // Quotes one instrument on the business thread. The owner subscribes the
 // strategy service to instrument_id and keeps this listener alive until trading
 // stops. client and the caller service's shared ID generator are borrowed.
-class MarketMaker final : public market::QuoteListener,
-                          public trading::TradingListener {
+class MarketMaker final : public Strategy {
  public:
   MarketMaker(trading::TradingClient& client, trading::OrderIdGenerator& ids,
               std::uint64_t account_id, std::uint64_t strategy_id,

@@ -1,5 +1,41 @@
 # 策略设计
 
+## 配置与动态加载
+
+`yquant_strategy_host` 从配置文件加载一个策略实例。配置采用 `key=value`，支持空行和以 `#` 开头的整行注释。重复键、未知键、缺少必需项及超出整数范围的标识均报错。动态库路径相对于配置文件解析。
+
+| 配置项 | 含义 |
+| --- | --- |
+| `library` | 策略动态库路径 |
+| `strategy_id` | 本实例的非零策略标识 |
+| `account_id` | 组装层绑定的非零账户标识 |
+| `instrument_id` | 与行情和交易 client 一致的非零合约标识 |
+| `param.<名称>` | 交给策略工厂校验的字符串参数 |
+
+[做市策略配置模板](../../configs/market_maker.conf.in) 使用 `param.quantity` 指定每侧正整数手数。CMake 的 `yquant_market_maker` 目标在 Linux 生成 `libyquant_market_maker.so`，在 macOS 生成 `libyquant_market_maker.dylib`，并在库的同一目录生成 `market_maker.conf`。宿主通过配置选择库路径。
+
+### 库接口
+
+动态库导出 C 链接入口 `yquant_strategy_plugin()`，返回接口版本、创建函数和销毁函数。宿主用 `RTLD_NOW | RTLD_LOCAL` 打开库，检查版本及函数入口后再创建实例。
+
+```cpp
+Strategy* create(const StrategyConfig&, TradingClient&,
+                 OrderIdGenerator&, std::string& error);
+void destroy(Strategy*);
+```
+
+实例实现行情和交易 listener 接口。交易 client 与 caller 共用的订单 ID 生成器由宿主注入；行情 client 由宿主用于订阅。策略只能使用自身作为交易 listener，创建和销毁期间不发起交易或注册额外 listener。工厂创建失败时释放已取得资源并返回空指针，错误说明通过 `error` 返回。销毁函数在所属动态库仍加载时执行。
+
+当前版本为 1，接口包含 C++ 虚类和标准库类型。宿主与策略库须使用同一版项目头文件、兼容编译器 ABI 和相同标准库。接口布局或语义发生不兼容变化时提升版本，并重新构建两端。
+
+### 实例生命周期
+
+组装层通过 `LoadedStrategy::Load(config_path, market, trading, ids, error)` 创建实例。配置和库校验成功后，宿主才订阅对应合约。多个实例分别拥有注册关系，共享的 client、service 和订单 ID 生成器由组装层管理。
+
+停止发生在单业务线程的 service 调用之间。先解除交易服务保留的 listener 引用和待通知队列中的目标，再退订行情，最后销毁实例并卸载库。订单与资金继续由交易服务维护。停止发生在报价回调或交易 service 操作中时返回 false，实例继续运行；组装层应在停止调度后再销毁宿主对象。
+
+`v1_06_strategy_plugin` 用两份配置加载做市库和不同的测试策略库，验证行为、参数及共享序号。失败场景覆盖无效路径、入口缺失、版本不符、创建失败和非法配置；卸载后继续交付排队回报，核对账本仍可更新且不再调用旧实例。
+
 ## 简单做市策略
 
 `MarketMaker` 为一个账户的一个合约维持一笔买单和一笔卖单。每侧使用固定手数，买单按买一价开仓，卖单按卖一价开仓。有效盘口要求两侧价格有限、买价大于零且低于卖价、两侧挂量均为正；忽略其他合约和无效盘口，保留最后一次有效目标价。盘口数量变化不触发改价。
