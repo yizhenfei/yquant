@@ -12,6 +12,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("config", type=Path)
     parser.add_argument("--binary", type=Path, default=Path("build/monod"))
+    parser.add_argument("--require-all-strategies", action="store_true",
+                        help="require a confirmed exit cancellation for every configured instance")
     args = parser.parse_args()
     fields = {}
     for line in args.config.read_text().splitlines():
@@ -22,6 +24,14 @@ def main():
         if key in fields:
             raise ValueError(f"duplicate configuration key: {key}")
         fields[key] = value
+    expected = set()
+    if args.require_all_strategies:
+        for key in fields:
+            match = re.fullmatch(r"strategy\.(\d+)\.(\d+)", key)
+            if match:
+                expected.add(tuple(map(int, match.groups())))
+        if len(expected) < 2:
+            raise ValueError("multi-strategy verification requires at least two configured instances")
     run = int(fields.get("run_seconds", "0"))
     if run <= 0:
         raise ValueError("live verification requires a positive run_seconds")
@@ -54,6 +64,14 @@ def main():
     canceled, commission, _ = matches[0]
     if int(canceled) == 0 and float(commission) == 0:
         raise ValueError("no canceled order or priced fill observed")
+    if args.require_all_strategies:
+        confirmed = {(int(caller), int(strategy)) for caller, strategy in re.findall(
+            r"^monod_canceled caller=(\d+) strategy=(\d+) sequence=\d+ request=\d+ filled=\d+$",
+            out, re.MULTILINE)}
+        missing = expected - confirmed
+        if missing:
+            raise ValueError(f"instances without confirmed exit cancellations: {sorted(missing)}")
+        print(f"simnow_multi_strategy_verified instances={len(expected)}")
     print("simnow_monod_verified")
     return 0
 

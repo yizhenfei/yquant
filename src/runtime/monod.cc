@@ -75,7 +75,14 @@ class ShutdownListener final : public trading::TradingListener {
   void OnCancelReport(const trading::CancelReport& report) override {
     const auto it = pending.find(report.order_id);
     if (it == pending.end() || report.cancel_request_id != it->second.cancel_request_id) return;
-    if (report.result != trading::CancelResult::kRejected) ++canceled;
+    if (report.result != trading::CancelResult::kRejected) {
+      ++canceled;
+      std::printf("monod_canceled caller=%llu strategy=%llu sequence=%llu request=%llu filled=%d\n",
+          static_cast<unsigned long long>(report.order_id.caller_service_id),
+          static_cast<unsigned long long>(it->second.strategy_id),
+          static_cast<unsigned long long>(report.order_id.sequence),
+          static_cast<unsigned long long>(report.cancel_request_id), report.snapshot.filled_quantity);
+    }
     pending.erase(it);
   }
   void OnOrderReport(const trading::OrderReport&) override {}

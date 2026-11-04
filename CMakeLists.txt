@@ -221,6 +221,28 @@ if(BUILD_TESTING)
   add_test(NAME v1_07_strategy_instances COMMAND strategy_instances_test)
   set_tests_properties(v1_07_strategy_instances PROPERTIES TIMEOUT 10 LABELS v1_07_multi_strategy)
 
+  add_library(shared_account_probe SHARED tests/plugins/shared_account_probe.cc)
+  target_link_libraries(shared_account_probe PRIVATE yquant_trading yquant_market)
+  set_target_properties(shared_account_probe PROPERTIES
+    CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES)
+  if(APPLE)
+    target_link_options(shared_account_probe PRIVATE "LINKER:-exported_symbol,_yquant_strategy_plugin")
+  else()
+    target_link_options(shared_account_probe PRIVATE "LINKER:--exclude-libs,ALL")
+  endif()
+  add_executable(shared_account_test tests/shared_account_test.cc)
+  target_link_libraries(shared_account_test PRIVATE yquant_runtime GTest::gtest_main)
+  target_compile_definitions(shared_account_test PRIVATE
+    PROBE_PLUGIN="$<TARGET_FILE:shared_account_probe>")
+  add_dependencies(shared_account_test shared_account_probe)
+  add_test(NAME v1_07_multi_strategy COMMAND shared_account_test)
+  set_tests_properties(v1_07_multi_strategy PROPERTIES TIMEOUT 15 LABELS v1_07_multi_strategy)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(NAME v1_07_multi_verifier COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_verifier_test.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify_simnow_monod)
+  set_tests_properties(v1_07_multi_verifier PROPERTIES TIMEOUT 15 LABELS v1_07_multi_strategy)
+
   add_executable(monod_runtime_test tests/monod_runtime_test.cc)
   target_link_libraries(monod_runtime_test PRIVATE yquant_runtime GTest::gtest_main)
   target_compile_definitions(monod_runtime_test PRIVATE

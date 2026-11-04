@@ -262,6 +262,13 @@ TEST_F(MultiRuntimeTest, GroupsShareAccountWithIndependentCallersAndCompleteShut
   EXPECT_EQ(Reports("a"), a); EXPECT_EQ(Reports("b"), b); EXPECT_EQ(Reports("c"), c);
   EXPECT_EQ(counter.cancels.size(), 3);
   EXPECT_EQ(late_reports, 3);
+  for (const std::string owner : {"caller=10 strategy=11 sequence=1",
+                                  "caller=10 strategy=12 sequence=2",
+                                  "caller=20 strategy=11 sequence=1"}) {
+    const auto at = out.find("monod_canceled " + owner);
+    EXPECT_NE(at, out.npos);
+    if (at != out.npos) EXPECT_EQ(out.find("monod_canceled " + owner, at + 1), out.npos);
+  }
   EXPECT_NE(out.find("monod_started services=2 strategies=3 account=7"), out.npos);
   EXPECT_NE(out.find("monod_stopped canceled=3 remaining=0"), out.npos);
 }
