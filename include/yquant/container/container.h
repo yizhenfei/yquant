@@ -8,25 +8,28 @@
 
 namespace yquant::container {
 
-// Repeatedly calls registered services until the exit condition is met.
-// Register grows the registration list as needed; Run reuses its storage.
-// Services are not owned. Keep them alive until Run returns.
-// A completed run removes all registrations.
+// Repeatedly runs services in registration order on the calling thread.
+// Container borrows each service. Keep it alive while it is registered.
+// Run clears all registrations before returning successfully.
+// Different threads must not call methods on the same Container concurrently.
 class Container {
  public:
   Container() = default;
   Container(const Container&) = delete;
   Container& operator=(const Container&) = delete;
 
-  // Registers a service for the next Run. Returns false if it is already
-  // registered or Run is active.
+  // Registers service for the next Run and returns true. Returns false without
+  // changing the list if service is already registered or if a running service
+  // or stop condition calls Register on this container.
   bool Register(Service& service);
-  // Calls each service's Run in registration order on the calling thread.
-  // Checks should_stop before each call. An empty condition runs indefinitely
-  // when services are registered. With no services, returns true immediately.
-  // Returns true when the condition is true and clears all registrations.
-  // Returns false if Run is already active, without checking the condition.
-  // Uses the condition only during this call; it must not block.
+  // Returns true when scheduling finishes and all registrations are cleared.
+  // Returns false if Run is already active on this container. The nested call
+  // leaves the outer run unchanged and does not invoke its own stop condition.
+  //
+  // An empty service list completes immediately without checking should_stop.
+  // Otherwise, Run checks should_stop before each service call and stops when
+  // should_stop returns true. With no condition, Run loops indefinitely.
+  // Run does not retain the condition; the condition must not block.
   bool Run(const std::function<bool()>& should_stop = {});
 
  private:

@@ -5,10 +5,13 @@
 
 namespace yquant::trading::internal {
 
-// Correlates a client invocation and response when order IDs are duplicated.
-// Services retain this context internally; business listeners use order IDs.
+// Identifies one client call so the service can match its response even when
+// multiple calls use the same order ID. Used internally; business listeners
+// receive order IDs instead of this context.
 struct CallContext {
+  // Identifies the client instance that made the call.
   std::uint64_t client_instance_id = 0;
+  // Identifies this call within that client instance.
   std::uint64_t call_id = 0;
   bool operator==(const CallContext&) const = default;
 };
