@@ -1,8 +1,8 @@
 # The production executable must never dispatch the migrated verification paths.
 execute_process(COMMAND "${MONOD}" RESULT_VARIABLE rc
   OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 3)
-if(NOT rc EQUAL 1 OR NOT out STREQUAL "" OR NOT err MATCHES "configuration")
-  message(FATAL_ERROR "Default production startup did not report missing runtime support")
+if(NOT rc EQUAL 2 OR NOT out STREQUAL "" OR NOT err MATCHES "--config")
+  message(FATAL_ERROR "Default production startup did not request its configuration")
 endif()
 execute_process(COMMAND "${MONOD}" --help RESULT_VARIABLE rc
   OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 3)

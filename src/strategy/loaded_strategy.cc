@@ -9,8 +9,20 @@ namespace yquant::strategy {
 std::unique_ptr<LoadedStrategy> LoadedStrategy::Load(const std::string& config_path,
     market::MarketClient& market, trading::TradingClient& trading,
     trading::OrderIdGenerator& ids, std::string& error) {
+  StrategyConfig config;
+  if (!ReadStrategyConfig(config_path, config, error)) return nullptr;
+  return Load(config, market, trading, ids, error);
+}
+
+std::unique_ptr<LoadedStrategy> LoadedStrategy::Load(const StrategyConfig& config,
+    market::MarketClient& market, trading::TradingClient& trading,
+    trading::OrderIdGenerator& ids, std::string& error) {
+  if (config.library.empty() || !config.strategy_id || !config.account_id || !config.instrument_id) {
+    error = "Incomplete strategy configuration";
+    return nullptr;
+  }
   auto loaded = std::unique_ptr<LoadedStrategy>(new LoadedStrategy(market, trading));
-  if (!ReadStrategyConfig(config_path, loaded->config_, error)) return nullptr;
+  loaded->config_ = config;
   loaded->library_ = dlopen(loaded->config_.library.c_str(), RTLD_NOW | RTLD_LOCAL);
   if (!loaded->library_) { error = dlerror(); return nullptr; }
   dlerror();

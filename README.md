@@ -70,11 +70,13 @@ ctest --test-dir build -L v1_02_order --output-on-failure
 
 ```sh
 cmake -S . -B build-production -DBUILD_TESTING=OFF
-cmake --build build-production --target monod
-./build-production/monod --help
+cmake --build build-production --target monod yquant_market_maker
+./build-production/monod --config /absolute/path/monod.conf
 ```
 
-策略动态库加载已由 `yquant_strategy_host` 实现，构建 `yquant_market_maker` 并使用同目录生成的 `market_maker.conf`可供宿主加载。`monod` 的配置驱动业务组装待 N6.3 接入，当前默认启动会报告该状态并返回非零退出码。验证场景在 `tests/scenarios/` 中组装，仅在 `BUILD_TESTING=ON` 时构建。`yquant_scenarios` 运行固定输入与延迟测量，`simnow_market_probe` 和 `simnow_trader_probe` 提供行情、登录与快照探测。既有 CTest 中以 `_monod` 结尾的场景名称保留，执行目标已切换到独立测试程序。
+构建目录生成 `monod.conf` 和 `market_maker.conf`。复制这两个配置到部署目录，调整库路径、账户及合约映射；凭据通过交易登录环境变量提供。生产运行方式与退出行为见[单进程运行](docs/design/monod.md)。
+
+验证场景在 `tests/scenarios/` 中组装，仅在 `BUILD_TESTING=ON` 时构建。`yquant_scenarios` 运行固定输入与延迟测量，`simnow_market_probe` 和 `simnow_trader_probe` 提供行情、登录与快照探测。既有 CTest 中以 `_monod` 结尾的场景名称保留，执行目标已切换到独立测试程序。
 
 运行动态加载验收：
 

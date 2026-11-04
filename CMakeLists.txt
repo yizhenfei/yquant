@@ -126,8 +126,13 @@ endif()
 file(GENERATE OUTPUT "$<TARGET_FILE_DIR:yquant_market_maker>/market_maker.conf"
   INPUT "${CMAKE_CURRENT_SOURCE_DIR}/configs/market_maker.conf.in")
 
+add_library(yquant_runtime src/runtime/monod_config.cc src/runtime/monod.cc)
+target_link_libraries(yquant_runtime PUBLIC yquant_strategy_host yquant_simnow_market
+  yquant_simnow_trading)
 add_executable(monod src/monod/main.cc)
-target_link_libraries(monod PRIVATE yquant_options)
+target_link_libraries(monod PRIVATE yquant_runtime)
+file(GENERATE OUTPUT "$<TARGET_FILE_DIR:monod>/monod.conf"
+  INPUT "${CMAKE_CURRENT_SOURCE_DIR}/configs/monod.conf.in")
 
 include(CTest)
 if(BUILD_TESTING)
@@ -202,6 +207,14 @@ if(BUILD_TESTING)
     strategy_bad_version strategy_fail_create strategy_no_entry)
   add_test(NAME v1_06_strategy_plugin COMMAND strategy_plugin_test)
   set_tests_properties(v1_06_strategy_plugin PROPERTIES TIMEOUT 10 LABELS v1_06_production)
+
+  add_executable(monod_runtime_test tests/monod_runtime_test.cc)
+  target_link_libraries(monod_runtime_test PRIVATE yquant_runtime GTest::gtest_main)
+  target_compile_definitions(monod_runtime_test PRIVATE
+    MAKER_PLUGIN="$<TARGET_FILE:yquant_market_maker>")
+  add_dependencies(monod_runtime_test yquant_market_maker)
+  add_test(NAME v1_06_simnow_monod COMMAND monod_runtime_test)
+  set_tests_properties(v1_06_simnow_monod PROPERTIES TIMEOUT 10 LABELS v1_06_production)
 
   add_executable(verify_simnow_trading tests/verify_simnow_trading.cc)
   target_link_libraries(verify_simnow_trading PRIVATE yquant_simnow_trading Threads::Threads)

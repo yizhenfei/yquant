@@ -1,0 +1,11 @@
+strategy=market_maker.conf
+market_front=tcp://182.254.243.31:30011
+trading_front=tcp://182.254.243.31:30001
+exchange=SHFE
+symbol=ag2612
+caller_service_id=63001
+startup_seconds=45
+shutdown_seconds=10
+# Zero runs until SIGINT or SIGTERM.
+run_seconds=0
+close_priority=yesterday

@@ -15,6 +15,10 @@ class LoadedStrategy final : public market::QuoteListener {
   static std::unique_ptr<LoadedStrategy> Load(const std::string& config_path,
       market::MarketClient& market, trading::TradingClient& trading,
       trading::OrderIdGenerator& ids, std::string& error);
+  // Uses an already parsed immutable configuration for process assembly.
+  static std::unique_ptr<LoadedStrategy> Load(const StrategyConfig& config,
+      market::MarketClient& market, trading::TradingClient& trading,
+      trading::OrderIdGenerator& ids, std::string& error);
   ~LoadedStrategy() override;
   LoadedStrategy(const LoadedStrategy&) = delete;
   LoadedStrategy& operator=(const LoadedStrategy&) = delete;
