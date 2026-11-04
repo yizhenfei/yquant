@@ -3,21 +3,11 @@
 
 #include <cstdint>
 
-#include "yquant/model/quote.h"
+#include "yquant/market/market_service.h"
 
 namespace yquant::market {
 
-// Receives subscribed quote updates. Implementations copy any data needed after
-// the callback returns; the producer retains ownership of the input.
-class QuoteListener {
- public:
-  virtual ~QuoteListener() = default;
-  // The quote is borrowed until OnQuote returns.
-  virtual void OnQuote(const model::Quote& quote) = 0;
-};
-
-// Selects the instruments a listener receives, regardless of service location.
-// Keep each listener alive until all its subscriptions have been removed.
+// Provides an interface for subscribing to market quotes.
 // Change subscriptions between quote deliveries, outside OnQuote callbacks.
 class MarketClient {
  public:

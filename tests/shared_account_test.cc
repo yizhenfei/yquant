@@ -29,11 +29,11 @@ class Source final : public market::QuoteSource {
   model::Quote next;
   bool available = false;
   // market::QuoteSource implementation.
-  market::QuoteReadResult Read(model::Quote& quote) override {
-    if (!available) return market::QuoteReadResult::kIdle;
+  bool TryRead(model::Quote& quote) override {
+    if (!available) return false;
     quote = next;
     available = false;
-    return market::QuoteReadResult::kQuote;
+    return true;
   }
 };
 

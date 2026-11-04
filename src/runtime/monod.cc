@@ -28,13 +28,13 @@ class GatedSource final : public market::QuoteSource {
   GatedSource(market::SimNowQuoteSource& source, trading::TradingService& trading,
               const MonodConfig& config) : source(source), trading(trading), config(config) {}
   // market::QuoteSource implementation.
-  market::QuoteReadResult Read(model::Quote& q) override {
-    const auto result = source.Read(q);
-    if (result != market::QuoteReadResult::kQuote) return result;
+  bool TryRead(model::Quote& out) override {
+    model::Quote q;
+    if (!source.TryRead(q)) return false;
     trading::FundsSnapshot funds;
     if (source.failed() || !source.ready() ||
         !trading.QueryFunds({config.account_id}, funds)) {
-      return market::QuoteReadResult::kIdle;
+      return false;
     }
     if (!started) {
       started = true;
@@ -46,7 +46,8 @@ class GatedSource final : public market::QuoteSource {
                   static_cast<unsigned long long>(config.account_id));
       std::fflush(stdout);
     }
-    return result;
+    out = q;
+    return true;
   }
   market::SimNowQuoteSource& source;
   trading::TradingService& trading;

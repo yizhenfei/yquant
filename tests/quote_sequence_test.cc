@@ -108,7 +108,7 @@ TEST(QuoteSequenceTest, EmptyInputLeavesOutputUnchanged) {
   const model::Quote sentinel{9, 7.5, 8.5, 2, 3, 99};
   model::Quote quote = sentinel;
   EXPECT_TRUE(source.exhausted());
-  EXPECT_EQ(source.Read(quote), market::QuoteReadResult::kIdle);
+  EXPECT_FALSE(source.TryRead(quote));
   ExpectQuote(quote, sentinel);
 }
 
@@ -117,11 +117,11 @@ TEST(QuoteSequenceTest, DeliversLastQuoteOnceAndPreservesItWhileIdle) {
   examples::FixedQuoteSource source(input);
   model::Quote quote;
   EXPECT_FALSE(source.exhausted());
-  ASSERT_EQ(source.Read(quote), market::QuoteReadResult::kQuote);
+  ASSERT_TRUE(source.TryRead(quote));
   EXPECT_TRUE(source.exhausted());
   ExpectQuote(quote, input.front());
-  EXPECT_EQ(source.Read(quote), market::QuoteReadResult::kIdle);
-  EXPECT_EQ(source.Read(quote), market::QuoteReadResult::kIdle);
+  EXPECT_FALSE(source.TryRead(quote));
+  EXPECT_FALSE(source.TryRead(quote));
   ExpectQuote(quote, input.front());
 }
 

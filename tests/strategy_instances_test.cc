@@ -24,10 +24,10 @@ class Source final : public market::QuoteSource {
   std::vector<model::Quote> quotes;
   std::size_t index = 0;
   // market::QuoteSource implementation.
-  market::QuoteReadResult Read(model::Quote& q) override {
-    if (index == quotes.size()) return market::QuoteReadResult::kIdle;
+  bool TryRead(model::Quote& q) override {
+    if (index == quotes.size()) return false;
     q = quotes[index++];
-    return market::QuoteReadResult::kQuote;
+    return true;
   }
 };
 

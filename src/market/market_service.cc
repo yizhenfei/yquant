@@ -44,7 +44,7 @@ void MarketService::Run() {
   running_ = true;
   model::Quote quote;
   for (std::size_t count = 0; count < kMaxQuotesPerRun; ++count) {
-    if (source_.Read(quote) == QuoteReadResult::kIdle) {
+    if (!source_.TryRead(quote)) {
       break;
     }
     Dispatch(quote);

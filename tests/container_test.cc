@@ -89,10 +89,10 @@ class TraceSource final : public market::QuoteSource {
   TraceSource& operator=(const TraceSource&) = delete;
 
   // market::QuoteSource implementation.
-  market::QuoteReadResult Read(model::Quote& quote) override {
+  bool TryRead(model::Quote& quote) override {
     EXPECT_EQ(std::this_thread::get_id(), caller);
     ++count;
-    return source_.Read(quote);
+    return source_.TryRead(quote);
   }
 
   std::thread::id caller = std::this_thread::get_id();

@@ -8,20 +8,20 @@
 
 namespace yquant::market {
 
-// Maps local service IDs to borrowed MarketService instances.
-// Keep registered services alive until this registry is destroyed.
+// Maps service IDs to MarketService instances in this process.
+// Does not own the services. Each registered service must outlive this registry.
 class MarketServiceRegistry {
  public:
   MarketServiceRegistry() = default;
   MarketServiceRegistry(const MarketServiceRegistry&) = default;
   MarketServiceRegistry& operator=(const MarketServiceRegistry&) = default;
 
-  // Registers service under service_id. Returns false if the ID is already
-  // registered, preserving its original service binding.
+  // Associates service_id with service and returns true.
+  // If service_id is already registered, returns false and keeps the
+  // previously registered service, even if it is the same service.
   bool Register(std::uint64_t service_id, MarketService& service);
-  // Returns the registered service, or nullptr if service_id is not registered.
-  // The pointer does not transfer ownership and is valid until the service
-  // is destroyed.
+  // Returns a pointer to the service registered under service_id,
+  // or nullptr if the ID is not registered.
   MarketService* Find(std::uint64_t service_id) const;
 
  private:

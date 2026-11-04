@@ -18,7 +18,7 @@ namespace {
 const SimNowMarketConfig kConfig{"tcp://fake:1", "IFtest", "broker", "user",
                                  "password", 42};
 
-// Drives the native SPI manually; Read advances SDK requests on this thread.
+// Drives the native SPI manually; TryRead advances SDK requests on this thread.
 class MarketSessionTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -27,12 +27,12 @@ class MarketSessionTest : public ::testing::Test {
   }
   void Login() {
     api.spi->OnFrontConnected();
-    source->Read(unused);
+    source->TryRead(unused);
   }
   void Subscribe() {
     Login();
     api.LoginReply();
-    source->Read(unused);
+    source->TryRead(unused);
   }
   test::FakeMdApi api;
   std::unique_ptr<SimNowQuoteSource> source;
@@ -57,14 +57,14 @@ class Capture final : public QuoteListener, public examples::QuoteIntentListener
 TEST_F(MarketSessionTest, WorkerCallbacksReachSubscribedStrategyOnBusinessThread) {
   const auto business = std::this_thread::get_id();
   std::thread([&] { api.spi->OnFrontConnected(); }).join();
-  source->Read(unused);
+  source->TryRead(unused);
   EXPECT_EQ(api.front, "tcp://fake:1");
   EXPECT_STREQ(api.login.UserID, "user");
   EXPECT_STREQ(api.login.BrokerID, "broker");
   EXPECT_STREQ(api.login.Password, "password");
   EXPECT_EQ(api.login_calls, 1);
   std::thread([&] { api.LoginReply(); }).join();
-  source->Read(unused);
+  source->TryRead(unused);
   EXPECT_EQ(api.symbol, "IFtest");
   EXPECT_EQ(api.login_thread, business);
   EXPECT_EQ(api.sub_thread, business);
@@ -117,7 +117,7 @@ TEST_F(MarketSessionTest, LoginFailureIsTerminal) {
   Login();
   api.LoginReply(3);
   api.LoginReply();
-  source->Read(unused);
+  source->TryRead(unused);
   EXPECT_TRUE(source->failed());
   EXPECT_EQ(api.sub_calls, 0);
 }
@@ -125,7 +125,7 @@ TEST_F(MarketSessionTest, LoginFailureIsTerminal) {
 TEST_F(MarketSessionTest, FailedRequestDoesNotRetryOnEveryRead) {
   api.login_rc = -1;
   Login();
-  source->Read(unused);
+  source->TryRead(unused);
   EXPECT_TRUE(source->failed());
   EXPECT_EQ(api.login_calls, 1);
 }
@@ -135,7 +135,7 @@ TEST_F(MarketSessionTest, SubscriptionErrorPreventsDelivery) {
   api.SubReply("IFtest", 7);
   api.Tick("IFtest");
   EXPECT_TRUE(source->failed());
-  EXPECT_EQ(source->Read(unused), QuoteReadResult::kIdle);
+  EXPECT_FALSE(source->TryRead(unused));
 }
 
 TEST_F(MarketSessionTest, WrongLastContractCannotMakeSessionReady) {
@@ -151,7 +151,7 @@ TEST_F(MarketSessionTest, DisconnectInvalidatesQueuedQuotesAndStopsReconnect) {
   api.spi->OnFrontDisconnected(123);
   api.spi->OnFrontConnected();
   model::Quote sentinel{99, 10, 11, 1, 2, 9};
-  EXPECT_EQ(source->Read(sentinel), QuoteReadResult::kIdle);
+  EXPECT_FALSE(source->TryRead(sentinel));
   EXPECT_EQ(sentinel.instrument_id, 99U);
   EXPECT_TRUE(source->failed());
   EXPECT_EQ(api.login_calls, 1);
@@ -164,7 +164,7 @@ TEST_F(MarketSessionTest, BoundedQueueFailsInsteadOfOverwritingUnreadQuotes) {
   EXPECT_FALSE(source->failed());
   api.Tick("IFtest");
   EXPECT_TRUE(source->failed());
-  EXPECT_EQ(source->Read(unused), QuoteReadResult::kIdle);
+  EXPECT_FALSE(source->TryRead(unused));
 }
 
 TEST_F(MarketSessionTest, IgnoresUnrelatedLoginAndWaitsForFinalReply) {
@@ -172,11 +172,11 @@ TEST_F(MarketSessionTest, IgnoresUnrelatedLoginAndWaitsForFinalReply) {
   CThostFtdcRspUserLoginField reply{};
   api.spi->OnRspUserLogin(&reply, nullptr, 2, true);
   api.spi->OnRspUserLogin(&reply, nullptr, 1, false);
-  source->Read(unused);
+  source->TryRead(unused);
   EXPECT_EQ(api.sub_calls, 0);
   api.LoginReply();
   api.sub_rc = -2;
-  source->Read(unused);
+  source->TryRead(unused);
   EXPECT_EQ(api.sub_calls, 1);
   EXPECT_TRUE(source->failed());
 }
@@ -185,10 +185,10 @@ TEST_F(MarketSessionTest, ZeroIdFinalLoginReplyStartsTheSingleSubscription) {
   Login();
   CThostFtdcRspUserLoginField reply{};
   api.spi->OnRspUserLogin(&reply, nullptr, 0, false);
-  source->Read(unused);
+  source->TryRead(unused);
   EXPECT_EQ(api.sub_calls, 0);
   api.spi->OnRspUserLogin(&reply, nullptr, 0, true);
-  source->Read(unused);
+  source->TryRead(unused);
   EXPECT_EQ(api.sub_calls, 1);
   EXPECT_EQ(api.symbol, "IFtest");
 }
@@ -199,7 +199,7 @@ TEST_F(MarketSessionTest, RingWrapPreservesArrivalOrderAndQuantity) {
   for (int i = 1; i <= 800; ++i) api.Tick("IFtest", 100, 101, i);
   auto read = [&](int first, int last) {
     for (int i = first; i <= last; ++i) {
-      ASSERT_EQ(source->Read(unused), QuoteReadResult::kQuote);
+      ASSERT_TRUE(source->TryRead(unused));
       EXPECT_EQ(unused.sequence, static_cast<std::uint64_t>(i));
       EXPECT_EQ(unused.bid_quantity, i);
     }
@@ -207,7 +207,7 @@ TEST_F(MarketSessionTest, RingWrapPreservesArrivalOrderAndQuantity) {
   read(1, 700);
   for (int i = 801; i <= 1600; ++i) api.Tick("IFtest", 100, 101, i);
   read(701, 1600);
-  EXPECT_EQ(source->Read(unused), QuoteReadResult::kIdle);
+  EXPECT_FALSE(source->TryRead(unused));
 }
 
 TEST_F(MarketSessionTest, DestructionUnregistersSpiBeforeRelease) {
@@ -223,7 +223,7 @@ TEST(MarketConfig, ExplicitAnonymousLoginDoesNotForwardAccountCredentials) {
   ASSERT_NE(source, nullptr);
   api.spi->OnFrontConnected();
   model::Quote unused{};
-  source->Read(unused);
+  source->TryRead(unused);
   EXPECT_EQ(api.login_calls, 1);
   EXPECT_STREQ(api.login.BrokerID, "");
   EXPECT_STREQ(api.login.UserID, "");

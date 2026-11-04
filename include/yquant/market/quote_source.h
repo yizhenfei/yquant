@@ -5,17 +5,16 @@
 
 namespace yquant::market {
 
-// Indicates whether a quote is available for this read.
-enum class QuoteReadResult { kQuote, kIdle };
-
-// Supplies quotes to MarketService. Read must return without waiting for input.
-// Implementations may access the output quote only while Read is executing.
+// Provides market quotes to MarketService.
 class QuoteSource {
  public:
   virtual ~QuoteSource() = default;
-  // Writes one available quote and returns kQuote.
-  // Returns kIdle if no quote is currently available, leaving quote unchanged.
-  virtual QuoteReadResult Read(model::Quote& quote) = 0;
+
+  // Reads one quote into quote and returns true.
+  // If no quote can be delivered now, returns false without changing quote.
+  // Does not wait for new quotes to arrive.
+  // Implementations must not retain a pointer or reference to quote.
+  virtual bool TryRead(model::Quote& quote) = 0;
 };
 
 }  // namespace yquant::market

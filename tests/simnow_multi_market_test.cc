@@ -23,9 +23,9 @@ class MultiMarketTest : public ::testing::Test {
     ASSERT_TRUE(source);
     EXPECT_FALSE(source->ready());
     api.spi->OnFrontConnected();
-    source->Read(quote);
+    source->TryRead(quote);
     api.LoginReply();
-    source->Read(quote);
+    source->TryRead(quote);
   }
   SimNowMarketConfig config;
   test::FakeMdApi api;
@@ -106,7 +106,7 @@ TEST_F(MultiMarketTest, PartialFailureIsTerminalAndCannotExposeConfirmedContract
   EXPECT_TRUE(source->failed());
   EXPECT_FALSE(source->ready());
   quote.instrument_id = 777;
-  EXPECT_EQ(source->Read(quote),QuoteReadResult::kIdle);
+  EXPECT_FALSE(source->TryRead(quote));
   EXPECT_EQ(quote.instrument_id,777);
 }
 
@@ -118,7 +118,7 @@ TEST_F(MultiMarketTest, NullFinalMarkerWorksOnlyAfterAllContractsWereAcknowledge
   api.Tick("TFtest");
   api.spi->OnFrontDisconnected(4097);
   EXPECT_FALSE(source->ready());
-  EXPECT_EQ(source->Read(quote),QuoteReadResult::kIdle);
+  EXPECT_FALSE(source->TryRead(quote));
   EXPECT_TRUE(source->failed());
 }
 
@@ -141,7 +141,7 @@ TEST_F(MultiMarketTest, LateSubscriptionFailureInvalidatesAlreadyQueuedQuotes) {
   api.Tick("TFtest");
   api.SubReply("Ttest",9);
   EXPECT_FALSE(source->ready());
-  EXPECT_EQ(source->Read(quote),QuoteReadResult::kIdle);
+  EXPECT_FALSE(source->TryRead(quote));
 }
 
 TEST(MultiMarketConfig, ConflictingMappingsAreRejectedBeforeCreatingSdk) {
@@ -166,17 +166,17 @@ TEST_F(MultiMarketTest, GroupSharesOneRingWhileEachInstrumentKeepsItsSequence) {
   for (const auto& name : api.symbols) api.SubReply(name.c_str());
   for (int i=0;i<800;++i) api.Tick(i%2 ? "TFtest" : "Ttest");
   for (int i=0;i<700;++i) {
-    ASSERT_EQ(source->Read(quote),QuoteReadResult::kQuote);
+    ASSERT_TRUE(source->TryRead(quote));
     EXPECT_EQ(quote.instrument_id,i%2 ? 42 : 81);
     EXPECT_EQ(quote.sequence,static_cast<unsigned>(i/2+1));
   }
   for (int i=800;i<1600;++i) api.Tick(i%2 ? "TFtest" : "Ttest");
   for (int i=700;i<1600;++i) {
-    ASSERT_EQ(source->Read(quote),QuoteReadResult::kQuote);
+    ASSERT_TRUE(source->TryRead(quote));
     EXPECT_EQ(quote.instrument_id,i%2 ? 42 : 81);
     EXPECT_EQ(quote.sequence,static_cast<unsigned>(i/2+1));
   }
-  EXPECT_EQ(source->Read(quote),QuoteReadResult::kIdle);
+  EXPECT_FALSE(source->TryRead(quote));
 }
 
 }  // namespace

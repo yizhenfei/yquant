@@ -6,7 +6,7 @@
 
 namespace yquant::test {
 
-// Supplies one quote set by the test, then returns kIdle until SetQuote is
+// Supplies one quote set by the test, then returns false until SetQuote is
 // called again.
 // Records the output address so tests can verify delivery without another copy.
 class QuoteSourceStub final : public market::QuoteSource {
@@ -22,15 +22,15 @@ class QuoteSourceStub final : public market::QuoteSource {
   }
 
   // market::QuoteSource implementation.
-  // Consumes the pending quote, or returns kIdle without changing quote.
-  market::QuoteReadResult Read(model::Quote& quote) override {
+  // Consumes the pending quote, or returns false without changing quote.
+  bool TryRead(model::Quote& quote) override {
     if (!available_) {
-      return market::QuoteReadResult::kIdle;
+      return false;
     }
     quote = next_quote_;
     available_ = false;
     last_output = &quote;
-    return market::QuoteReadResult::kQuote;
+    return true;
   }
 
   const model::Quote* last_output = nullptr;

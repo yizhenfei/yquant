@@ -38,10 +38,10 @@ class Verification final : public market::QuoteSource,
       : source_(source), symbol_(symbol), limit_(count) {}
 
   // QuoteSource implementation.
-  market::QuoteReadResult Read(model::Quote& quote) override {
-    if (done()) return market::QuoteReadResult::kIdle;
-    const auto result = source_.Read(quote);
-    if (result == market::QuoteReadResult::kQuote) {
+  bool TryRead(model::Quote& quote) override {
+    if (done()) return false;
+    const auto result = source_.TryRead(quote);
+    if (result) {
       std::printf("simnow_quote symbol=%s instrument=%" PRIu32
                   " sequence=%" PRIu64 " bid=%.17g ask=%.17g"
                   " bid_qty=%d ask_qty=%d\n",

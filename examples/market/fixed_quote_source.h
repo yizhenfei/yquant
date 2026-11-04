@@ -11,7 +11,7 @@ namespace yquant::examples {
 
 // Reads quotes from a fixed input sequence for validation.
 // Does not own the input data. Keep that data alive and unchanged while using
-// this source. Read copies quotes into the caller's output buffer.
+// this source. TryRead copies quotes into the caller's output buffer.
 class FixedQuoteSource final : public market::QuoteSource {
  public:
   explicit FixedQuoteSource(std::span<const model::Quote> quotes)
@@ -20,14 +20,14 @@ class FixedQuoteSource final : public market::QuoteSource {
   FixedQuoteSource& operator=(const FixedQuoteSource&) = delete;
 
   // market::QuoteSource implementation.
-  // Copies the next quote into quote and returns kQuote.
-  // Returns kIdle when all quotes have been read, without changing quote.
-  market::QuoteReadResult Read(model::Quote& quote) override {
+  // Copies the next quote into quote and returns true.
+  // Returns false when all quotes have been read, without changing quote.
+  bool TryRead(model::Quote& quote) override {
     if (exhausted()) {
-      return market::QuoteReadResult::kIdle;
+      return false;
     }
     quote = quotes_[next_index_++];
-    return market::QuoteReadResult::kQuote;
+    return true;
   }
 
   bool exhausted() const { return next_index_ == quotes_.size(); }

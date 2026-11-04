@@ -6,30 +6,41 @@
 #include <vector>
 
 #include "yquant/container/service.h"
-#include "yquant/market/market_client.h"
 #include "yquant/market/quote_source.h"
 #include "yquant/model/quote.h"
 
 namespace yquant::market {
 
-// Receives quotes from a source and delivers them to subscribed listeners.
-// The source is not owned; keep it alive until this service is destroyed.
-// Change subscriptions between Run calls. Keep listeners alive until removed.
+// Receives subscribed quote updates. Implementations copy any data needed after
+// the callback returns; the producer retains ownership of the input.
+class QuoteListener {
+ public:
+  virtual ~QuoteListener() = default;
+  // The quote is borrowed until OnQuote returns.
+  virtual void OnQuote(const model::Quote& quote) = 0;
+};
+
+// Reads quotes from a source and delivers each quote to listeners subscribed
+// to its instrument. Use this service on one business thread.
+// The source must outlive this service.
+// Change subscriptions only between Run calls, never from OnQuote callbacks.
+// Keep each listener alive until all its subscriptions have been removed.
 class MarketService final : public container::Service {
  public:
   explicit MarketService(QuoteSource& source) : source_(source) {}
   MarketService(const MarketService&) = delete;
   MarketService& operator=(const MarketService&) = delete;
 
-  // Subscribes listener to instrument_id; duplicate requests have no effect.
+  // Subscribes listener to instrument_id.
+  // Repeating the same instrument_id and listener pair has no effect.
   void Subscribe(std::uint32_t instrument_id, QuoteListener& listener);
   // Removes listener's subscription to instrument_id if one exists.
   void Unsubscribe(std::uint32_t instrument_id, QuoteListener& listener);
 
   // container::Service implementation.
-  // Delivers available quotes until the source is idle or the batch limit
-  // is reached, then returns so other services can run.
-  // If Run is already active, returns without reading again.
+  // Reads and dispatches quotes on the calling thread.
+  // Stops when TryRead returns false or the per-call read limit is reached.
+  // Calling Run again before the current call returns does nothing.
   void Run() override;
 
  private:

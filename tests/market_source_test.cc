@@ -24,15 +24,15 @@ void ExpectQuote(const model::Quote& actual, const model::Quote& expected) {
   EXPECT_EQ(actual.sequence, expected.sequence);
 }
 
-// Describes one source read; quote is used only for kQuote results.
+// Describes one source read; quote is used only for successful reads.
 struct SourceEvent {
-  QuoteReadResult result;
+  bool result;
   model::Quote quote{};
 };
 
-// Returns each scripted result in order, then returns kIdle.
+// Returns each scripted result in order, then returns false.
 // Keep the event array alive while using this source.
-// Set reenter_service to call Run once from the next Read.
+// Set reenter_service to call Run once from the next TryRead.
 class ScriptedSource final : public QuoteSource {
  public:
   explicit ScriptedSource(std::span<const SourceEvent> events)
@@ -41,10 +41,10 @@ class ScriptedSource final : public QuoteSource {
   ScriptedSource& operator=(const ScriptedSource&) = default;
 
   // QuoteSource implementation.
-  QuoteReadResult Read(model::Quote& quote) override {
+  bool TryRead(model::Quote& quote) override {
     EXPECT_LT(read_count, addresses.size());
     if (read_count >= addresses.size()) {
-      return QuoteReadResult::kIdle;
+      return false;
     }
     addresses[read_count] = &quote;
     threads[read_count++] = std::this_thread::get_id();
@@ -54,10 +54,10 @@ class ScriptedSource final : public QuoteSource {
       service->Run();
     }
     if (next_ == events_.size()) {
-      return QuoteReadResult::kIdle;
+      return false;
     }
     const SourceEvent& event = events_[next_++];
-    if (event.result == QuoteReadResult::kQuote) {
+    if (event.result) {
       quote = event.quote;
     }
     return event.result;
@@ -102,12 +102,12 @@ class RecordQuotes final : public QuoteListener {
 
 TEST(MarketSourceTest, IdleReadsDoNotRedeliverThePreviousQuote) {
   const std::array<SourceEvent, 6> events{{
-      {QuoteReadResult::kIdle},
-      {QuoteReadResult::kQuote, {17, 201.5, 202.25, 13, 29, 7}},
-      {QuoteReadResult::kIdle},
-      {QuoteReadResult::kQuote, {17, 203, 204.5, 5, 8, 12}},
-      {QuoteReadResult::kIdle},
-      {QuoteReadResult::kIdle},
+      {false},
+      {true, {17, 201.5, 202.25, 13, 29, 7}},
+      {false},
+      {true, {17, 203, 204.5, 5, 8, 12}},
+      {false},
+      {false},
   }};
   ScriptedSource source(events);
   RecordQuotes listener;
@@ -142,9 +142,9 @@ TEST(MarketSourceTest, KeepsReadingWhenNoQuotesAreAvailable) {
 
 TEST(MarketSourceTest, ResumesReadingQuotesAfterIdle) {
   const std::array<SourceEvent, 3> events{{
-      {QuoteReadResult::kQuote, {17, 201.5, 202.25, 13, 29, 7}},
-      {QuoteReadResult::kIdle},
-      {QuoteReadResult::kQuote, {17, 203, 204.5, 5, 8, 12}},
+      {true, {17, 201.5, 202.25, 13, 29, 7}},
+      {false},
+      {true, {17, 203, 204.5, 5, 8, 12}},
   }};
   ScriptedSource source(events);
   RecordQuotes listener;
@@ -162,9 +162,9 @@ TEST(MarketSourceTest, ResumesReadingQuotesAfterIdle) {
 
 TEST(MarketSourceTest, DrainsAvailableQuotesAndPreservesRetainedSnapshots) {
   const std::array<SourceEvent, 3> events{{
-      {QuoteReadResult::kQuote, {17, 201.5, 202.25, 13, 29, 7}},
-      {QuoteReadResult::kQuote, {81, 98.75, 99.25, 5, 8, 12}},
-      {QuoteReadResult::kQuote, {81, 99, 99.5, 21, 3, 31}},
+      {true, {17, 201.5, 202.25, 13, 29, 7}},
+      {true, {81, 98.75, 99.25, 5, 8, 12}},
+      {true, {81, 99, 99.5, 21, 3, 31}},
   }};
   ScriptedSource source(events);
   RecordQuotes listener;
@@ -189,7 +189,7 @@ TEST(MarketSourceTest, DrainsAvailableQuotesAndPreservesRetainedSnapshots) {
 TEST(MarketSourceTest, BusySourceReturnsAtBatchLimitAndContinuesNextRun) {
   std::array<SourceEvent, 128> events{};
   for (std::size_t i = 0; i < events.size(); ++i) {
-    events[i] = {QuoteReadResult::kQuote, {17, 201.5, 202.25, 13, 29, i + 1}};
+    events[i] = {true, {17, 201.5, 202.25, 13, 29, i + 1}};
   }
   ScriptedSource source(events);
   RecordQuotes listener;
@@ -219,8 +219,8 @@ TEST(MarketSourceTest, BusySourceReturnsAtBatchLimitAndContinuesNextRun) {
 
 TEST(MarketSourceTest, ReadsAndDeliversQuotesOnTheThreadCallingRun) {
   const std::array<SourceEvent, 2> events{{
-      {QuoteReadResult::kIdle},
-      {QuoteReadResult::kQuote, {17, 201.5, 202.25, 13, 29, 7}},
+      {false},
+      {true, {17, 201.5, 202.25, 13, 29, 7}},
   }};
   ScriptedSource source(events);
   RecordQuotes listener;
@@ -242,8 +242,8 @@ TEST(MarketSourceTest, ReadsAndDeliversQuotesOnTheThreadCallingRun) {
 
 TEST(MarketSourceTest, NestedRunFromListenerPreservesCurrentAndNextQuotes) {
   const std::array<SourceEvent, 2> events{{
-      {QuoteReadResult::kQuote, {17, 201.5, 202.25, 13, 29, 7}},
-      {QuoteReadResult::kQuote, {17, 203, 204.5, 5, 8, 12}},
+      {true, {17, 201.5, 202.25, 13, 29, 7}},
+      {true, {17, 203, 204.5, 5, 8, 12}},
   }};
   ScriptedSource source(events);
   RecordQuotes first;
@@ -266,8 +266,8 @@ TEST(MarketSourceTest, NestedRunFromListenerPreservesCurrentAndNextQuotes) {
 
 TEST(MarketSourceTest, NestedRunFromSourceDoesNotConsumeAnotherEvent) {
   const std::array<SourceEvent, 2> events{{
-      {QuoteReadResult::kQuote, {17, 201.5, 202.25, 13, 29, 7}},
-      {QuoteReadResult::kQuote, {17, 203, 204.5, 5, 8, 12}},
+      {true, {17, 201.5, 202.25, 13, 29, 7}},
+      {true, {17, 203, 204.5, 5, 8, 12}},
   }};
   ScriptedSource source(events);
   RecordQuotes listener;

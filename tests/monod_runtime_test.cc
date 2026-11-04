@@ -106,13 +106,13 @@ class Quotes final : public market::SimNowQuoteSource {
   bool failed() const override { return broken; }
   bool ready() const override { return !broken && counter.started && counter.runs >= ready_after; }
   // QuoteSource implementation.
-  market::QuoteReadResult Read(model::Quote& q) override {
-    if (last == counter.runs) return market::QuoteReadResult::kIdle;
+  bool TryRead(model::Quote& q) override {
+    if (last == counter.runs) return false;
     last = counter.runs;
     q = {42, counter.runs < 4 ? 50.0 : counter.runs < 6 ? 100.0 : 101.0,
          103,1,1,static_cast<std::uint64_t>(counter.runs)};
     if (multi && counter.runs % 2) q.instrument_id = 81;
-    return market::QuoteReadResult::kQuote;
+    return true;
   }
 };
 

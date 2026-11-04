@@ -29,15 +29,15 @@ constexpr auto kQuotes = kWarmup + kSamples;
 class MakerFeed final : public market::QuoteSource {
  public:
   // market::QuoteSource implementation.
-  market::QuoteReadResult Read(model::Quote& quote) override {
+  bool TryRead(model::Quote& quote) override {
     measuring = false;
     if (pause_) {
       pause_ = false;
-      return market::QuoteReadResult::kIdle;
+      return false;
     }
     if (count == kQuotes) {
       done = true;
-      return market::QuoteReadResult::kIdle;
+      return false;
     }
     const double bid = count >= 2 && count % 2 == 0 ? 101 : 100;
     quote = {42, bid, 102, 10, 10, count + 1};
@@ -45,7 +45,7 @@ class MakerFeed final : public market::QuoteSource {
     ++count;
     pause_ = true;
     start = Clock::now();
-    return market::QuoteReadResult::kQuote;
+    return true;
   }
 
   Clock::time_point start;

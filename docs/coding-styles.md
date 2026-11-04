@@ -2711,6 +2711,10 @@ Types of things to mention in comments at the function declaration:
 - For class member functions: whether the object remembers reference or
   pointer arguments beyond the duration of the method call. This is quite
   common for pointer/reference arguments to constructors.
+  Document lifetime and ownership constraints when callers need to take
+  special care and the types or interface do not make those constraints clear.
+  Do not restate ordinary C++ object lifetime rules, ownership already
+  expressed by types, or the same constraint documented elsewhere.
 - For each pointer argument, whether the pointer may be null.
 - For each nullable pointer argument, how a null input is handled.
 - For each output or input/output argument, what happens to any state that

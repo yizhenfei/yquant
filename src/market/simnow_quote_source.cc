@@ -94,7 +94,7 @@ class Session final : public SimNowQuoteSource, private CThostFtdcMdSpi {
   }
 
   // QuoteSource implementation.
-  QuoteReadResult Read(model::Quote& out) override {
+  bool TryRead(model::Quote& out) override {
     const auto phase = phase_.load();
     if (phase == Phase::kConnected && Move(phase, Phase::kLogin)) {
       std::puts("simnow_connected");
@@ -107,15 +107,15 @@ class Session final : public SimNowQuoteSource, private CThostFtdcMdSpi {
       const int rc = api_->SubscribeMarketData(subscriptions_.data(), static_cast<int>(subscriptions_.size()));
       if (rc != 0) Fail("subscribe_request", rc);
     }
-    if (phase_ != Phase::kStreaming) return QuoteReadResult::kIdle;
+    if (phase_ != Phase::kStreaming) return false;
     std::unique_lock lock(queue_mutex_, std::try_to_lock);
     if (!lock || count_ == 0 || phase_ != Phase::kStreaming) {
-      return QuoteReadResult::kIdle;
+      return false;
     }
     out = queue_[head_];
     head_ = (head_ + 1) % queue_.size();
     --count_;
-    return QuoteReadResult::kQuote;
+    return true;
   }
 
   // SimNowQuoteSource implementation.

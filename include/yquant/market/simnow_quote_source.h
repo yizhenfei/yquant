@@ -28,9 +28,10 @@ struct SimNowMarketConfig {
   std::vector<SimNowSubscription> subscriptions{};
 };
 
-// Receives a group of SimNow market subscriptions. Call Connect, Read and destroy it
-// on the business thread. Read advances login and subscription without waiting
-// for a reply. A failed session returns idle and must be destroyed to restart.
+// Receives a group of SimNow market subscriptions. Connect, TryRead and
+// destruction use the business thread. TryRead advances login and subscription
+// without waiting for a reply. After session failure, TryRead returns false;
+// destroy the source and connect again to restart.
 class SimNowQuoteSource : public QuoteSource {
  public:
   // Starts the SDK connection. Invalid parameters or API creation failure

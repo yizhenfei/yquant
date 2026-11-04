@@ -26,11 +26,11 @@ class QuoteInput final : public market::QuoteSource {
  public:
   std::optional<model::Quote> pending;
   // market::QuoteSource implementation.
-  market::QuoteReadResult Read(model::Quote& quote) override {
-    if (!pending) return market::QuoteReadResult::kIdle;
+  bool TryRead(model::Quote& quote) override {
+    if (!pending) return false;
     quote = *pending;
     pending.reset();
-    return market::QuoteReadResult::kQuote;
+    return true;
   }
 };
 
