@@ -265,6 +265,15 @@ if(BUILD_TESTING)
     LABELS v1_05_simnow_trading ENVIRONMENT
     "YQUANT_CTP_BROKER_ID=test;YQUANT_CTP_USER_ID=test;YQUANT_CTP_PASSWORD=test;YQUANT_CTP_APP_ID=test;YQUANT_CTP_AUTH_CODE=test")
 
+  add_executable(simnow_multi_market_test tests/simnow_multi_market_test.cc)
+  target_include_directories(simnow_multi_market_test PRIVATE src/market)
+  target_link_libraries(simnow_multi_market_test PRIVATE yquant_simnow_market
+    yquant_ctp_md GTest::gtest_main Threads::Threads)
+  add_test(NAME v1_07_multi_market COMMAND simnow_multi_market_test)
+  set_tests_properties(v1_07_multi_market PROPERTIES TIMEOUT 10 LABELS v1_07_multi_strategy)
+  add_executable(verify_simnow_multi_market tests/verify_simnow_multi_market.cc)
+  target_link_libraries(verify_simnow_multi_market PRIVATE yquant_simnow_market Threads::Threads)
+
   add_executable(simnow_market_test tests/simnow_market_test.cc)
   target_include_directories(simnow_market_test PRIVATE src/market examples)
   target_link_libraries(simnow_market_test PRIVATE yquant_simnow_market yquant_ctp_md

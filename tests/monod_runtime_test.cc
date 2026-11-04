@@ -93,6 +93,7 @@ class Quotes final : public market::SimNowQuoteSource {
   bool broken = false;
   // SimNowQuoteSource implementation.
   bool failed() const override { return broken; }
+  bool ready() const override { return !broken && counter.started; }
   // QuoteSource implementation.
   market::QuoteReadResult Read(model::Quote& q) override {
     if (last == counter.runs) return market::QuoteReadResult::kIdle;

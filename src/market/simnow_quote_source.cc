@@ -10,6 +10,9 @@
 #include <limits>
 #include <mutex>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include "simnow_session.h"
 
@@ -42,7 +45,7 @@ bool CopyField(char (&out)[N], std::string_view value) {
 class Session final : public SimNowQuoteSource, private CThostFtdcMdSpi {
  public:
   explicit Session(const SimNowMarketConfig& c)
-      : front_(c.front), symbol_(c.symbol), instrument_(c.instrument_id) {}
+      : front_(c.front) {}
   ~Session() override {
     phase_ = Phase::kStopping;
     if (api_) {
@@ -58,15 +61,32 @@ class Session final : public SimNowQuoteSource, private CThostFtdcMdSpi {
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.";
     constexpr auto width = sizeof(CThostFtdcSpecificInstrumentField::InstrumentID);
     if (!front_.starts_with("tcp://") || front_.size() <= 6 ||
-        front_.find('\0') != front_.npos || instrument_ == 0 ||
-        symbol_.empty() || symbol_.size() >= width ||
-        symbol_.find_first_not_of(allowed) != symbol_.npos) return false;
+        front_.find('\0') != front_.npos ||
+        (!c.subscriptions.empty() && (!c.symbol.empty() || c.instrument_id != 0)) ||
+        c.subscriptions.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+      return false;
+    }
+    instruments_.reserve(c.subscriptions.empty() ? 1 : c.subscriptions.size());
+    if (c.subscriptions.empty()) {
+      instruments_.push_back({std::string(c.symbol), c.instrument_id});
+    } else {
+      for (const auto& s : c.subscriptions) instruments_.push_back({s.symbol, s.instrument_id});
+    }
+    std::unordered_set<std::uint32_t> ids;
+    index_.reserve(instruments_.size());
+    subscriptions_.reserve(instruments_.size());
+    for (std::size_t i = 0; i < instruments_.size(); ++i) {
+      auto& s = instruments_[i];
+      if (!s.id || s.symbol.empty() || s.symbol.size() >= width ||
+          s.symbol.find_first_not_of(allowed) != s.symbol.npos ||
+          !ids.insert(s.id).second || !index_.emplace(s.symbol, i).second) return false;
+      subscriptions_.push_back(s.symbol.data());
+    }
     if (!c.anonymous && (!CopyField(login_.BrokerID, c.broker) ||
                          !CopyField(login_.UserID, c.user) ||
                          !CopyField(login_.Password, c.password))) return false;
     api_ = create();
     if (!api_) return false;
-    subscription_ = symbol_.data();
     api_->RegisterSpi(this);
     api_->RegisterFront(front_.data());
     api_->Init();
@@ -84,7 +104,7 @@ class Session final : public SimNowQuoteSource, private CThostFtdcMdSpi {
     } else if (phase == Phase::kLoggedIn && Move(phase, Phase::kSubscribe)) {
       std::puts("simnow_logged_in");
       std::fflush(stdout);
-      const int rc = api_->SubscribeMarketData(&subscription_, 1);
+      const int rc = api_->SubscribeMarketData(subscriptions_.data(), static_cast<int>(subscriptions_.size()));
       if (rc != 0) Fail("subscribe_request", rc);
     }
     if (phase_ != Phase::kStreaming) return QuoteReadResult::kIdle;
@@ -100,6 +120,7 @@ class Session final : public SimNowQuoteSource, private CThostFtdcMdSpi {
 
   // SimNowQuoteSource implementation.
   bool failed() const override { return phase_ == Phase::kFailed; }
+  bool ready() const override { return phase_ == Phase::kStreaming; }
 
  private:
   // CThostFtdcMdSpi implementation.
@@ -130,57 +151,90 @@ class Session final : public SimNowQuoteSource, private CThostFtdcMdSpi {
   void OnRspSubMarketData(CThostFtdcSpecificInstrumentField* contract,
                           CThostFtdcRspInfoField* error, int,
                           bool last) override {
-    if (phase_ != Phase::kSubscribe) return;
+    std::lock_guard lock(queue_mutex_);
+    if (phase_ != Phase::kSubscribe && phase_ != Phase::kStreaming) return;
     if (error && error->ErrorID) {
-      Fail("subscribe", error->ErrorID);
-    } else if (last && (!contract || Field(contract->InstrumentID) != symbol_)) {
-      Fail("subscription_mismatch", -1);
-    } else if (last && Move(Phase::kSubscribe, Phase::kStreaming)) {
-      std::printf("simnow_subscribed symbol=%s\n", symbol_.c_str());
+      Fail("subscribe", error->ErrorID, contract ? Field(contract->InstrumentID) : "<missing>");
+      return;
+    }
+    if (contract) {
+      const auto it = index_.find(Field(contract->InstrumentID));
+      if (it == index_.end()) { Fail("subscription_mismatch", -1); return; }
+      auto& instrument = instruments_[it->second];
+      if (!instrument.confirmed) {
+        instrument.confirmed = true;
+        ++confirmed_;
+      }
+    } else if (!last || confirmed_ != instruments_.size()) {
+      Fail("missing_subscription_response", -1);
+      return;
+    }
+    final_seen_ |= last;
+    if (final_seen_ && confirmed_ == instruments_.size() &&
+        Move(Phase::kSubscribe, Phase::kStreaming)) {
+      if (instruments_.size() == 1) {
+        std::printf("simnow_subscribed symbol=%s\n", instruments_[0].symbol.c_str());
+      } else {
+        std::printf("simnow_subscribed contracts=%zu\n", instruments_.size());
+      }
       std::fflush(stdout);
     }
   }
   void OnRtnDepthMarketData(CThostFtdcDepthMarketDataField* tick) override {
-    if (phase_ != Phase::kStreaming || !tick ||
-        Field(tick->InstrumentID) != symbol_) return;
+    if (phase_ != Phase::kStreaming || !tick) return;
+    const auto found = index_.find(Field(tick->InstrumentID));
+    if (found == index_.end()) return;
     const double bid = tick->BidPrice1, ask = tick->AskPrice1;
     if (!std::isfinite(bid) || !std::isfinite(ask) || bid <= 0 || bid >= ask ||
         ask == std::numeric_limits<double>::max() || tick->BidVolume1 <= 0 ||
         tick->AskVolume1 <= 0) return;
     std::lock_guard lock(queue_mutex_);
     if (phase_ != Phase::kStreaming) return;
-    if (count_ == queue_.size() || seq_ == UINT64_MAX) {
+    auto& instrument = instruments_[found->second];
+    if (count_ == queue_.size() || instrument.sequence == UINT64_MAX) {
       Fail("quote_capacity_exhausted", -1);
       return;
     }
     queue_[(head_ + count_) % queue_.size()] =
-        {instrument_, bid, ask, tick->BidVolume1, tick->AskVolume1, ++seq_};
+        {instrument.id, bid, ask, tick->BidVolume1, tick->AskVolume1, ++instrument.sequence};
     ++count_;
   }
 
   bool Move(Phase from, Phase to) {
     return phase_.compare_exchange_strong(from, to);
   }
-  void Fail(const char* reason, int code) {
+  void Fail(const char* reason, int code, std::string_view symbol = {}) {
     auto phase = phase_.load();
     while (phase != Phase::kFailed && phase != Phase::kStopping) {
       if (phase_.compare_exchange_weak(phase, Phase::kFailed)) {
-        std::fprintf(stderr, "simnow_market %s code=%d\n", reason, code);
+        std::fprintf(stderr, "simnow_market %s code=%d", reason, code);
+        if (!symbol.empty()) std::fprintf(stderr, " symbol=%.*s", static_cast<int>(symbol.size()), symbol.data());
+        std::fputc('\n', stderr);
         return;
       }
     }
   }
 
-  std::string front_, symbol_;
-  std::uint32_t instrument_;
+  // Strings and the index are frozen before Init; views and SDK pointers
+  // remain valid until Release finishes. Callback counters use queue_mutex_.
+  struct Instrument {
+    std::string symbol;
+    std::uint32_t id;
+    bool confirmed = false;
+    std::uint64_t sequence = 0;
+  };
+  std::string front_;
+  std::vector<Instrument> instruments_;
+  std::unordered_map<std::string_view, std::size_t> index_;
+  std::vector<char*> subscriptions_;
+  std::size_t confirmed_ = 0;
+  bool final_seen_ = false;
   CThostFtdcReqUserLoginField login_{};
   CThostFtdcMdApi* api_ = nullptr;
-  char* subscription_ = nullptr;
   std::atomic<Phase> phase_{Phase::kConnecting};
   std::mutex queue_mutex_;
   std::array<model::Quote, 1024> queue_{};
   std::size_t head_ = 0, count_ = 0;
-  std::uint64_t seq_ = 0;
 };
 
 }  // namespace

@@ -26,6 +26,8 @@ ctest --test-dir build --output-on-failure
 
 运行 `ctest --test-dir build -L v1_04_simnow_market --output-on-failure` 验证可控行情接入。使用有效 SimNow 行情前置和账户时，按[真实连接验收说明](docs/design/simnow-market.md#验收)运行 `scripts/verify_simnow_market`，逐条比较接收的买卖价与策略输出。
 
+多合约行情接入使用 `SimNowMarketConfig::subscriptions`。可控验收运行 `ctest --test-dir build -R v1_07_multi_market --output-on-failure`，真实只读程序见[多合约订阅](docs/design/simnow-market.md#多合约订阅)。
+
 独立测试程序中，个人 SimNow 交易账户的登录入口是 `simnow_trader_probe FRONT [SECONDS]`。查询启动资金、持仓和当日订单与成交使用 `simnow_trader_probe --snapshot FRONT [SECONDS [SYMBOL]]`。指定合约后也返回合约乘数和费率。两者复用同一组登录参数，见[交易前置登录](docs/design/trading.md#交易前置登录)。
 
 运行交易验证场景：

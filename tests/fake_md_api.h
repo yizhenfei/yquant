@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace yquant::test {
 
@@ -28,16 +29,21 @@ class FakeMdApi final : public CThostFtdcMdApi {
     if (automatic) LoginReply();
     return login_rc;
   }
-  int SubscribeMarketData(char* symbols[], int count) override {
+  int SubscribeMarketData(char* requested[], int count) override {
     ++sub_calls;
-    symbol = count == 1 ? symbols[0] : "";
+    symbols.assign(requested, requested + count);
+    symbol = count == 1 ? requested[0] : "";
     sub_thread = std::this_thread::get_id();
     if (automatic) {
       std::thread producer([this] {
-        SubReply(symbol.c_str());
+        for (std::size_t i = 0; i < symbols.size(); ++i) {
+          SubReply(symbols[i].c_str(), 0, i + 1 == symbols.size());
+        }
         Tick("ignored");
-        Tick(symbol.c_str());
-        Tick(symbol.c_str(), 102, 103);
+        for (const auto& name : symbols) {
+          Tick(name.c_str());
+          Tick(name.c_str(), 102, 103);
+        }
       });
       producer.join();
     }
@@ -60,12 +66,12 @@ class FakeMdApi final : public CThostFtdcMdApi {
     CThostFtdcRspUserLoginField reply{};
     spi->OnRspUserLogin(&reply, &info, request_id, true);
   }
-  void SubReply(const char* name, int error = 0) {
+  void SubReply(const char* name, int error = 0, bool last = true) {
     CThostFtdcSpecificInstrumentField reply{};
     std::snprintf(reply.InstrumentID, sizeof(reply.InstrumentID), "%s", name);
     CThostFtdcRspInfoField info{};
     info.ErrorID = error;
-    spi->OnRspSubMarketData(&reply, &info, 0, true);
+    spi->OnRspSubMarketData(&reply, &info, 0, last);
   }
   void Tick(const char* name, double bid = 100, double ask = 101, int qty = 3) {
     CThostFtdcDepthMarketDataField tick{};
@@ -80,6 +86,7 @@ class FakeMdApi final : public CThostFtdcMdApi {
   CThostFtdcMdSpi* spi = nullptr;
   CThostFtdcReqUserLoginField login{};
   std::string front, symbol;
+  std::vector<std::string> symbols;
   int request_id = 0, login_calls = 0, sub_calls = 0, login_rc = 0, sub_rc = 0;
   bool automatic = false, released_without_spi = false;
   std::thread::id login_thread, sub_thread;
