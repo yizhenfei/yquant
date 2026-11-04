@@ -133,6 +133,10 @@ add_executable(monod src/monod/main.cc)
 target_link_libraries(monod PRIVATE yquant_runtime)
 file(GENERATE OUTPUT "$<TARGET_FILE_DIR:monod>/monod.conf"
   INPUT "${CMAKE_CURRENT_SOURCE_DIR}/configs/monod.conf.in")
+foreach(config IN ITEMS monod.multi market_maker_second market_maker_other)
+  file(GENERATE OUTPUT "$<TARGET_FILE_DIR:monod>/${config}.conf"
+    INPUT "${CMAKE_CURRENT_SOURCE_DIR}/configs/${config}.conf.in")
+endforeach()
 
 include(CTest)
 if(BUILD_TESTING)
@@ -221,8 +225,13 @@ if(BUILD_TESTING)
   target_link_libraries(monod_runtime_test PRIVATE yquant_runtime GTest::gtest_main)
   target_compile_definitions(monod_runtime_test PRIVATE
     MAKER_PLUGIN="$<TARGET_FILE:yquant_market_maker>")
-  add_dependencies(monod_runtime_test yquant_market_maker)
-  add_test(NAME v1_06_simnow_monod COMMAND monod_runtime_test)
+  target_compile_definitions(monod_runtime_test PRIVATE
+    FIXED_PLUGIN="$<TARGET_FILE:strategy_fixed>"
+    FAIL_PLUGIN="$<TARGET_FILE:strategy_fail_create>")
+  add_dependencies(monod_runtime_test yquant_market_maker strategy_fixed strategy_fail_create)
+  add_test(NAME v1_06_simnow_monod COMMAND monod_runtime_test --gtest_filter=MonodRuntimeTest.*)
+  add_test(NAME v1_07_multi_runtime COMMAND monod_runtime_test --gtest_filter=MultiRuntimeTest.*)
+  set_tests_properties(v1_07_multi_runtime PROPERTIES TIMEOUT 15 LABELS v1_07_multi_strategy)
   set_tests_properties(v1_06_simnow_monod PROPERTIES TIMEOUT 10 LABELS v1_06_production)
 
   add_executable(verify_simnow_trading tests/verify_simnow_trading.cc)

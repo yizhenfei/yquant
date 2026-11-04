@@ -3,7 +3,10 @@
 #include <chrono>
 #include <cstdio>
 #include <limits>
+#include <memory>
 #include <thread>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "yquant/container/container.h"
@@ -29,15 +32,18 @@ class GatedSource final : public market::QuoteSource {
     const auto result = source.Read(q);
     if (result != market::QuoteReadResult::kQuote) return result;
     trading::FundsSnapshot funds;
-    if (source.failed() || !trading.QueryFunds({config.strategy.account_id}, funds)) {
+    if (source.failed() || !source.ready() ||
+        !trading.QueryFunds({config.account_id}, funds)) {
       return market::QuoteReadResult::kIdle;
     }
     if (!started) {
       started = true;
       since = Clock::now();
-      std::printf("monod_started strategy=%llu account=%llu instrument=%u\n",
-          static_cast<unsigned long long>(config.strategy.strategy_id),
-          static_cast<unsigned long long>(config.strategy.account_id), config.strategy.instrument_id);
+      std::size_t count = 0;
+      for (const auto& group : config.services) count += group.instances.size();
+      std::printf("monod_started services=%zu strategies=%zu account=%llu\n",
+                  config.services.size(), count,
+                  static_cast<unsigned long long>(config.account_id));
       std::fflush(stdout);
     }
     return result;
@@ -55,27 +61,28 @@ class ShutdownListener final : public trading::TradingListener {
  public:
   // trading::TradingListener implementation.
   void OnRequestFailure(const trading::RequestFailure& failure) override {
+    const auto it = pending.find(failure.order_id);
+    if (it == pending.end() || failure.cancel_request_id != it->second.cancel_request_id) return;
     if (failure.reason == trading::FailureReason::kDuplicateCancel &&
-        failure.cancel_request_id && *failure.cancel_request_id !=
-            std::numeric_limits<std::uint64_t>::max()) {
-      // Duplicate IDs are rejected locally before reaching the adapter.
-      if (client->CancelOrder({failure.order_id, account, strategy,
-                               *failure.cancel_request_id + 1}, *this) !=
-          trading::RequestResult::kDelivered) rejected = true;
-    } else {
-      rejected = true;
+        it->second.cancel_request_id != std::numeric_limits<std::uint64_t>::max()) {
+      // Duplicate IDs are rejected locally before reaching the adapter. Preserve
+      // this order's account and strategy when trying the next request ID.
+      ++it->second.cancel_request_id;
+      if (client->CancelOrder(it->second, *this) == trading::RequestResult::kDelivered) return;
     }
+    pending.erase(it);
   }
   void OnCancelReport(const trading::CancelReport& report) override {
-    if (report.result == trading::CancelResult::kRejected) rejected = true;
-    else ++canceled;
+    const auto it = pending.find(report.order_id);
+    if (it == pending.end() || report.cancel_request_id != it->second.cancel_request_id) return;
+    if (report.result != trading::CancelResult::kRejected) ++canceled;
+    pending.erase(it);
   }
   void OnOrderReport(const trading::OrderReport&) override {}
   void OnTradeReport(const trading::TradeReport&) override {}
   trading::TradingClient* client = nullptr;
-  std::uint64_t account = 0, strategy = 0;
+  std::unordered_map<trading::OrderId, trading::CancelOrderRequest, trading::OrderIdHash> pending;
   std::size_t canceled = 0;
-  bool rejected = false;
 };
 
 bool Disconnected(const trading::SimNowTradingAdapter& adapter) {
@@ -94,12 +101,22 @@ int RunMonod(const MonodConfig& c, market::SimNowQuoteSource& source,
   market::MarketService market(gate);
   trading::TradingServiceRegistry traders;
   market::MarketServiceRegistry markets;
-  if (!trading.BindAccount(c.strategy.account_id, adapter) || !traders.Register(1, trading) ||
+  if (!trading.BindAccount(c.account_id, adapter) || !traders.Register(1, trading) ||
       !markets.Register(1, market)) { error = "Service assembly failed"; return 1; }
   auto trader = trading::TradingClientFactory(traders).Create(1);
   auto quotes = market::MarketClientFactory(markets).Create(1);
-  strategy::StrategyService strategies(c.caller_service_id, *quotes, *trader);
-  if (!strategies.Load(std::span{&c.strategy, 1}, error)) return 1;
+  std::vector<std::unique_ptr<strategy::StrategyService>> services;
+  std::vector<trading::StrategyOrderScope> scopes;
+  services.reserve(c.services.size());
+  for (const auto& group : c.services) {
+    auto service = std::make_unique<strategy::StrategyService>(group.caller_service_id, *quotes, *trader);
+    if (!service->Load(group.instances, error)) return 1;
+    services.push_back(std::move(service));
+    for (const auto& instance : group.instances) {
+      scopes.push_back({group.caller_service_id, c.account_id,
+                        instance.strategy_id, instance.instrument_id});
+    }
+  }
   container::Container container;
   container.Register(trading);
   container.Register(market);
@@ -112,7 +129,7 @@ int RunMonod(const MonodConfig& c, market::SimNowQuoteSource& source,
       return true;
     }
     if (source.failed()) { error = "Market session failed"; return true; }
-    if (trading.AccountSyncFailed(c.strategy.account_id)) {
+    if (trading.AccountSyncFailed(c.account_id)) {
       error = "Account initialization failed: " + std::string(adapter.snapshot_status().reason);
       if (const auto* snapshot = adapter.snapshot()) error += snapshot->holds_error;
       return true;
@@ -124,33 +141,57 @@ int RunMonod(const MonodConfig& c, market::SimNowQuoteSource& source,
     return (stop && stop()) || (gate.started && c.run_seconds > 0 &&
         Clock::now() - gate.since >= std::chrono::seconds(c.run_seconds));
   });
-  if (!strategies.Stop()) { error = "Could not detach strategy callbacks"; return 1; }
-  const trading::StrategyOrderScope scope{c.caller_service_id, c.strategy.account_id,
-                                          c.strategy.strategy_id, c.strategy.instrument_id};
-  std::vector<trading::OrderSnapshot> active;
-  std::uint64_t last;
-  if (!trader->QueryWorkingOrders(scope, active, last)) return error.empty() ? 0 : 1;
+  for (const auto& service : services) {
+    if (!service->Stop()) { error = "Could not detach strategy callbacks"; return 1; }
+  }
+  std::vector<trading::OrderSnapshot> active, group_orders;
+  const auto collect = [&] {
+    active.clear();
+    std::uint64_t last;
+    for (const auto& scope : scopes) {
+      if (!trader->QueryWorkingOrders(scope, group_orders, last)) return false;
+      active.insert(active.end(), group_orders.begin(), group_orders.end());
+    }
+    return true;
+  };
+  if (!collect()) return error.empty() ? 0 : 1;
   shutdown.client = trader.get();
-  shutdown.account = scope.account;
-  shutdown.strategy = scope.strategy;
-  for (const auto& order : active) {
-    if (trader->CancelOrder({order.order.order_id, scope.account, scope.strategy, 1}, shutdown) !=
-        trading::RequestResult::kDelivered) shutdown.rejected = true;
+  shutdown.pending.reserve(active.size());
+  for (const auto& snapshot : active) {
+    const auto& order = snapshot.order;
+    const trading::CancelOrderRequest request{order.order_id, order.account_id, order.strategy_id, 1};
+    if (trader->CancelOrder(request, shutdown) == trading::RequestResult::kDelivered) {
+      shutdown.pending.emplace(order.order_id, request);
+    }
   }
   const auto closing = Clock::now() + std::chrono::seconds(c.shutdown_seconds);
   trading::FundsSnapshot funds;
   do {
     trading.Run();
-    trader->QueryWorkingOrders(scope, active, last);
-    if (active.empty() && trader->QueryFunds({scope.account}, funds)) {
+    if (!collect()) { error = "Cannot query orders during shutdown"; break; }
+    if (active.empty() && shutdown.pending.empty() && trader->QueryFunds({c.account_id}, funds)) {
       std::printf("monod_stopped canceled=%zu remaining=0 commission=%.12g realized=%.12g\n",
                   shutdown.canceled, funds.commission, funds.realized_pnl);
       std::fflush(stdout);
       return error.empty() ? 0 : 1;
     }
-    if (Disconnected(adapter) || shutdown.rejected) break;
+    if (Disconnected(adapter) || (!active.empty() && shutdown.pending.empty())) break;
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   } while (Clock::now() < closing);
+  for (const auto& snapshot : active) {
+    const auto& order = snapshot.order;
+    std::fprintf(stderr, "monod_unconfirmed caller=%llu strategy=%llu sequence=%llu\n",
+        static_cast<unsigned long long>(order.order_id.caller_service_id),
+        static_cast<unsigned long long>(order.strategy_id),
+        static_cast<unsigned long long>(order.order_id.sequence));
+  }
+  for (const auto& [id, request] : shutdown.pending) {
+    std::fprintf(stderr, "monod_cancel_unconfirmed caller=%llu strategy=%llu sequence=%llu request=%llu\n",
+        static_cast<unsigned long long>(id.caller_service_id),
+        static_cast<unsigned long long>(request.strategy_id),
+        static_cast<unsigned long long>(id.sequence),
+        static_cast<unsigned long long>(request.cancel_request_id));
+  }
   error = "Shutdown could not confirm all orders and priced fills; remaining=" +
           std::to_string(active.size());
   return 1;

@@ -33,14 +33,16 @@ int main(int argc, char* argv[]) {
     std::fprintf(stderr, "%s\n", error.c_str());
     return 2;
   }
-  yquant::market::SimNowMarketConfig market{config.market_front, config.symbol,
+  yquant::market::SimNowMarketConfig market{config.market_front, {},
       Env("YQUANT_CTP_BROKER_ID"), Env("YQUANT_CTP_USER_ID"), Env("YQUANT_CTP_PASSWORD"),
-      config.strategy.instrument_id};
+      0};
+  for (const auto& [native, binding] : config.instruments) {
+    market.subscriptions.push_back({native.second, binding.instrument_id});
+  }
   yquant::trading::SimNowTraderConfig trader{config.trading_front, market.broker, market.user,
       market.password, Env("YQUANT_CTP_APP_ID"), Env("YQUANT_CTP_AUTH_CODE"), {},
       std::chrono::seconds(config.startup_seconds)};
-  trader.instruments[{config.exchange, config.symbol}] =
-      {config.strategy.instrument_id, config.close_priority};
+  trader.instruments = config.instruments;
   trader.confirm_settlement = true;
   std::array<char, 4096> system_info{};
   if (const auto* path = std::getenv("YQUANT_CTP_SYSTEM_INFO_FILE")) {

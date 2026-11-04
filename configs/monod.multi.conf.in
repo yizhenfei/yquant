@@ -1,0 +1,11 @@
+# Two strategy services, three instances, one shared account.
+strategy.63001.11=market_maker.conf
+strategy.63001.12=market_maker_second.conf
+strategy.63002.11=market_maker_other.conf
+instrument.42=CFFEX TF2612 yesterday
+instrument.81=CFFEX T2612 yesterday
+market_front=tcp://182.254.243.31:30011
+trading_front=tcp://182.254.243.31:30001
+startup_seconds=45
+shutdown_seconds=10
+run_seconds=1

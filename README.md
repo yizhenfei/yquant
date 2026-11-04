@@ -76,7 +76,7 @@ cmake --build build-production --target monod yquant_market_maker
 ./build-production/monod --config /absolute/path/monod.conf
 ```
 
-构建目录生成 `monod.conf` 和 `market_maker.conf`。复制这两个配置到部署目录，调整库路径、账户及合约映射；凭据通过交易登录环境变量提供。生产运行方式与退出行为见[单进程运行](docs/design/monod.md)。
+构建目录生成 `monod.conf` 和 `market_maker.conf`。复制这两个配置到部署目录，调整库路径、账户及合约映射；凭据通过交易登录环境变量提供。`monod.multi.conf` 和 `market_maker*.conf` 提供两个策略 service、三个实例共用账户的样例。生产运行方式与退出行为见[单进程运行](docs/design/monod.md)。
 
 验证场景在 `tests/scenarios/` 中组装，仅在 `BUILD_TESTING=ON` 时构建。`yquant_scenarios` 运行固定输入与延迟测量，`simnow_market_probe` 和 `simnow_trader_probe` 提供行情、登录与快照探测。既有 CTest 中以 `_monod` 结尾的场景名称保留，执行目标已切换到独立测试程序。
 

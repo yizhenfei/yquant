@@ -1,0 +1,5 @@
+library=$<TARGET_FILE_NAME:yquant_market_maker>
+strategy_id=11
+account_id=7
+instrument_id=81
+param.quantity=1
