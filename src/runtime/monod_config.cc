@@ -47,9 +47,8 @@ bool ReadMonodConfig(const std::string& path, MonodConfig& output, std::string& 
   }
   if (!file.eof() || file.bad()) { error = "Cannot read runtime configuration"; return false; }
   MonodConfig c;
-  std::string strategy_file, exchange, symbol;
+  std::string strategy_file;
   std::uint64_t caller = 0;
-  auto priority = trading::SimNowClosePriority::kUnspecified;
   std::map<std::uint64_t, std::map<std::uint64_t, std::string>> groups;
   std::set<std::uint32_t> contracts;
   for (const auto& [key, value] : fields) {
@@ -57,13 +56,10 @@ bool ReadMonodConfig(const std::string& path, MonodConfig& output, std::string& 
     if (key == "strategy") strategy_file = value;
     else if (key == "market_front") c.market_front = value;
     else if (key == "trading_front") c.trading_front = value;
-    else if (key == "exchange") exchange = value;
-    else if (key == "symbol") symbol = value;
     else if (key == "caller_service_id") valid &= Number(value, caller);
     else if (key == "startup_seconds") valid &= Number(value, c.startup_seconds);
     else if (key == "shutdown_seconds") valid &= Number(value, c.shutdown_seconds);
     else if (key == "run_seconds") valid &= Number(value, c.run_seconds);
-    else if (key == "close_priority") valid &= Priority(value, priority);
     else if (key.starts_with("strategy.")) {
       const auto split = key.find('.', 9);
       std::uint64_t service = 0, instance = 0;
@@ -89,7 +85,7 @@ bool ReadMonodConfig(const std::string& path, MonodConfig& output, std::string& 
   }
   if (!c.market_front.starts_with("tcp://") || c.market_front.size() <= 6 ||
       !c.trading_front.starts_with("tcp://") || c.trading_front.size() <= 6 ||
-      c.startup_seconds <= 0 || c.startup_seconds > 3600 ||
+      contracts.empty() || c.startup_seconds <= 0 || c.startup_seconds > 3600 ||
       c.shutdown_seconds <= 0 || c.shutdown_seconds > 3600 || c.run_seconds < 0) {
     error = "Incomplete or invalid runtime configuration";
     return false;
@@ -98,18 +94,15 @@ bool ReadMonodConfig(const std::string& path, MonodConfig& output, std::string& 
   const auto base = std::filesystem::absolute(path, ec).parent_path();
   if (ec) { error = "Cannot resolve runtime config: " + ec.message(); return false; }
   if (!strategy_file.empty()) {
-    if (!groups.empty() || !contracts.empty() || exchange.empty() || symbol.empty() || !caller) {
+    if (!groups.empty() || !caller) {
       error = "Single-strategy and grouped configuration cannot be mixed";
       return false;
     }
     strategy::StrategyConfig instance;
     if (!strategy::ReadStrategyConfig((base / strategy_file).string(), instance, error)) return false;
-    c.instruments.emplace(std::pair{exchange, symbol},
-                          trading::SimNowInstrumentBinding{instance.instrument_id, priority});
     c.services.push_back({caller, {std::move(instance)}});
   } else {
-    if (groups.empty() || contracts.empty() || fields.contains("caller_service_id") ||
-        fields.contains("exchange") || fields.contains("symbol") || fields.contains("close_priority")) {
+    if (groups.empty() || fields.contains("caller_service_id")) {
       error = "Incomplete grouped configuration or conflicting legacy keys";
       return false;
     }
@@ -118,8 +111,8 @@ bool ReadMonodConfig(const std::string& path, MonodConfig& output, std::string& 
       for (const auto& [id, file] : paths) {
         strategy::StrategyConfig instance;
         if (!strategy::ReadStrategyConfig((base / file).string(), instance, error)) return false;
-        if (instance.strategy_id != id || !contracts.contains(instance.instrument_id)) {
-          error = "Strategy identity or instrument does not match its deployment binding";
+        if (instance.strategy_id != id) {
+          error = "Strategy identity does not match its deployment binding";
           return false;
         }
         group.instances.push_back(std::move(instance));

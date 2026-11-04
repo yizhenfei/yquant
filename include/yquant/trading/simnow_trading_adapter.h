@@ -11,8 +11,9 @@
 
 namespace yquant::trading {
 
-// Connect copies the supplied values. system_info holds the binary terminal
-// data for a macOS front that requires it; leave it empty on Linux.
+// Configures a SimNow trading connection and its instrument mappings.
+// Connect copies these settings. system_info contains binary terminal data
+// required by some macOS fronts; leave it empty on Linux.
 struct SimNowTraderConfig {
   std::string_view front, broker, user, password, app_id, auth_code;
   std::string_view system_info{};
@@ -32,8 +33,8 @@ enum class LoginPhase {
   kConnecting, kAuthenticating, kLoggingIn, kLoggedIn, kDisconnected, kFailed
 };
 
-// Business-thread view. Session identifiers are populated only while logged
-// in. reason names the failed operation and code carries the SDK error number.
+// Reports login progress and session identifiers from a successful login.
+// reason names a failed operation and code carries the SDK error number.
 struct TraderLoginStatus {
   LoginPhase phase = LoginPhase::kConnecting;
   std::string trading_day, max_order_ref;
@@ -48,20 +49,20 @@ class SimNowTradingAdapter : public ITradingAdapter {
   // Returns nullptr for invalid configuration or failure to create the SDK.
   static std::unique_ptr<SimNowTradingAdapter> Connect(
       const SimNowTraderConfig& config);
-  // Borrowed until the next Run or destruction. Read on the business thread.
+  // Returns the login status, which Run may update.
   virtual const TraderLoginStatus& login_status() const = 0;
-  // Starts read-only queries after login. Retry after a failed query or an
-  // unresolved hold. A verified snapshot needs no further collection.
-  // A nonempty symbol also requests that futures contract's speculative
-  // margin and fees. The adapter copies the symbol before returning.
+  // Starts read-only queries after login and returns true. A nonempty symbol
+  // also requests that futures contract's speculative margin and fees.
+  // Returns false for an invalid symbol, an unfinished login, an active query
+  // or a completed snapshot without hold errors. Failed queries and snapshots
+  // with hold errors may be retried. Drive Run to advance accepted queries.
   virtual bool StartSnapshot(std::string_view symbol = {}) = 0;
-  // Drive Run to advance the queries. Both accessors use the business thread.
   virtual SnapshotStatus snapshot_status() const = 0;
-  // Copies the native identity bound to an order submitted by this session.
-  // Before exchange acceptance system_id can be empty.
+  // Returns the native identity of an order submitted by this session, or
+  // nullopt if unknown. system_id may be empty before exchange acceptance.
   virtual std::optional<SimNowNativeOrderKey> NativeKey(OrderId order) const = 0;
-  // Returns a borrowed raw snapshot once collected. Check holds_error before
-  // using holds. A retry or a processed disconnect invalidates the snapshot.
+  // Returns nullptr until collection completes. Check holds_error before using
+  // the per-order holds. A retry or processed disconnect invalidates the result.
   virtual const SimNowStartupSnapshot* snapshot() const = 0;
 };
 

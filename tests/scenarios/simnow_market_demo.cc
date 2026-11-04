@@ -13,7 +13,6 @@
 #include "yquant/market/market_service.h"
 #include "yquant/market/market_service_registry.h"
 #include "yquant/market/simnow_quote_source.h"
-#include "yquant/strategy/strategy_service.h"
 
 namespace yquant::verification {
 namespace {
@@ -110,15 +109,14 @@ int RunSimNowMarket(int argc, const char* const* argv,
     return 1;
   }
   examples::QuoteStrategy strategy(output);
-  strategy::StrategyService strategies(strategy);
-  client->Subscribe(kInstrument, strategies);
+  client->Subscribe(kInstrument, strategy);
   container::Container container;
   const bool ran = container.Register(market_service) &&
       container.Run([&] {
         return output.done() || source->failed() ||
                std::chrono::steady_clock::now() >= deadline;
       });
-  client->Unsubscribe(kInstrument, strategies);
+  client->Unsubscribe(kInstrument, strategy);
   if (!ran) {
     std::fprintf(stderr, "Failed to run SimNow market service\n");
     return 1;

@@ -24,8 +24,8 @@ struct TradeIdHash {
   std::size_t operator()(const TradeId& id) const;
 };
 
-// Owns one fill's identity, original order ID, execution price and quantity.
-// The account comes from the adapter binding, not an untrusted report field.
+// Describes one execution of an order. Its account is determined by the adapter
+// that delivers the report.
 struct TradeInfo {
   OrderId order_id;
   TradeId trade_id;

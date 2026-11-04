@@ -10,7 +10,6 @@
 #include "yquant/market/market_service.h"
 #include "yquant/market/quote_source.h"
 #include "yquant/model/quote.h"
-#include "yquant/strategy/strategy_service.h"
 
 namespace yquant {
 namespace {
@@ -72,8 +71,7 @@ TEST(QuoteSequenceTest, RetainsSnapshotsAndIntentsAcrossBufferReuse) {
   for (int run = 0; run < 2; ++run) {
     RecordIntents output;
     examples::QuoteStrategy strategy(output);
-    strategy::StrategyService strategy_service(strategy);
-    RecordQuotes receiver(strategy_service);
+    RecordQuotes receiver(strategy);
     examples::FixedQuoteSource source(input);
     market::MarketService market(source);
     market::LocalMarketClient client(market);

@@ -15,7 +15,7 @@ namespace yquant::trading {
 
 struct SubmitOrderRequest;
 
-// Records transmission status independently of the counter's decision.
+// Reports whether the adapter sent a request; kSent does not mean acceptance.
 enum class SendResult { kSent, kNotSent };
 enum class AdapterOrderState { kAccepted, kRejected, kCanceled };
 
@@ -70,7 +70,7 @@ struct PositionsRefreshFailed {};
 // Carries one positions refresh event on its bound account's business thread.
 // IDs increase across the adapter runtime and reconnects. Begin with a start,
 // send normalized rows, then complete with the distinct row count or fail.
-// Copy data needed after the callback; identical repeated rows keep their key.
+// Identical rows with the same PositionKey do not increase the distinct count.
 struct AdapterPositionsReport {
   std::uint64_t refresh_id = 0;
   std::variant<PositionsRefreshStarted, PositionInfo, PositionsRefreshCompleted,
@@ -84,7 +84,8 @@ enum class AccountSyncResult { kComplete, kFailed, kUnresolvedOrders };
 // Ends one requested initialization attempt. kComplete certifies that the
 // funds and positions delivered with sync_id share a consistent boundary:
 // all preceding historical reports are included, and every pre-start order
-// that can still affect the account has been recovered. Deliver subsequent live events after this report.
+// that can still affect the account has been recovered. Deliver subsequent
+// live events after this report.
 // An adapter unable to prove this boundary must report failure or unresolved
 // orders, never infer completion from the arrival order of query responses.
 struct AdapterAccountSyncReport {
@@ -108,7 +109,8 @@ class ITradingAdapterCallback {
   // Stages a complete baseline instead of the separate funds/positions streams.
   // Only kComplete for the same sync_id may publish it.
   virtual void OnAccountRecovery(std::uint64_t sync_id, AccountRecovery baseline) = 0;
-  // Delivers a post-boundary fill or unsolicited cancellation for a recovered order.
+  // Delivers fills, cumulative quantities, cancellations or routing failures
+  // for recovered orders after initialization.
   virtual void OnRecoveredEvent(const RecoveredEvent& event) = 0;
   virtual void OnAccountSyncReport(const AdapterAccountSyncReport& report) = 0;
   virtual void OnFundsReport(const AdapterFundsReport& report) = 0;
@@ -120,7 +122,7 @@ class ITradingAdapterCallback {
 class ITradingAdapter {
  public:
   virtual ~ITradingAdapter() = default;
-  // Borrows callback for all subsequent deliveries; register before submitting.
+  // Sets the callback used for subsequent reports. Register before submitting.
   virtual void SetCallback(ITradingAdapterCallback& callback) = 0;
   // Requests a complete startup baseline using sync_id for both snapshot
   // streams and their final AccountSync report. Returns true when accepted,
@@ -128,12 +130,11 @@ class ITradingAdapter {
   // deliver all results through Run. Failed attempts may be retried with a new
   // ID; a successful account is not synchronized again during this runtime.
   virtual bool StartAccountSync(std::uint64_t sync_id) = 0;
-  // Copies parameters needed after return. Must not invoke any registered
-  // Callback during this call. Buffer reports produced by the counter and
-  // deliver them after SubmitOrder returns, through Run on the business thread.
+  // Sends an order and returns its transmission result. Must not invoke
+  // callbacks during this call; deliver reports through a subsequent Run.
   virtual SendResult SubmitOrder(const SubmitOrderRequest& request) = 0;
-  // Copies retained data and sends one attempt. Must not invoke Callback during
-  // this call; deliver cancellation results through subsequent Run calls.
+  // Sends one cancellation attempt. Must not invoke callbacks during this call;
+  // deliver cancellation results through subsequent Run calls.
   virtual SendResult CancelOrder(const AdapterCancelOrderRequest& request) = 0;
   // Delivers available work up to an internal batch limit, then returns.
   virtual void Run() = 0;

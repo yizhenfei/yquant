@@ -2,20 +2,24 @@
 #define YQUANT_STRATEGY_LOADED_STRATEGY_H_
 
 #include <memory>
+#include <vector>
 
 #include "yquant/strategy/plugin.h"
 
 namespace yquant::strategy {
 
-// Owns an instance and its library on the business thread. The injected clients,
-// their services and the shared ID generator must outlive this object. Destroy
-// it between service calls, after stopping the container's scheduling loop.
+// Loads a strategy plugin and manages its instance, subscriptions and unloading.
+// Load, Detach, Stop and destruction run on the business thread, outside
+// service callbacks. Keep the injected clients and ID generator available until
+// the instance has stopped.
 class LoadedStrategy final : public market::QuoteListener {
  public:
+  // Loads the configured plugin and subscribes to the instruments it declares.
+  // Returns nullptr and sets error if configuration, loading or creation fails.
   static std::unique_ptr<LoadedStrategy> Load(const std::string& config_path,
       market::MarketClient& market, trading::TradingClient& trading,
       trading::OrderIdGenerator& ids, std::string& error);
-  // Uses an already parsed immutable configuration for process assembly.
+  // Loads from parsed settings with the same result and error behavior.
   static std::unique_ptr<LoadedStrategy> Load(const StrategyConfig& config,
       market::MarketClient& market, trading::TradingClient& trading,
       trading::OrderIdGenerator& ids, std::string& error);
@@ -26,8 +30,9 @@ class LoadedStrategy final : public market::QuoteListener {
   // instance and unloads the library. Returns false during a callback or
   // service operation, leaving the instance running. Repeated Stop succeeds.
   bool Stop();
-  // Stops quote and trade delivery without destroying the instance. Used to
-  // detach a whole service group before any plugin destructor runs.
+  // Stops quote and trading callbacks without destroying the instance.
+  // Returns false if a callback is active or the trading client cannot detach.
+  // Used to detach all instances before destroying any member of a group.
   bool Detach();
   const StrategyConfig& config() const { return config_; }
 
@@ -43,7 +48,8 @@ class LoadedStrategy final : public market::QuoteListener {
   void* library_ = nullptr;
   const StrategyPlugin* plugin_ = nullptr;
   Strategy* instance_ = nullptr;
-  bool subscribed_ = false, dispatching_ = false, detached_ = false;
+  std::vector<std::uint32_t> subscriptions_;
+  bool dispatching_ = false, detached_ = false;
 };
 
 }  // namespace yquant::strategy

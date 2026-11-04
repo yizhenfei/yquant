@@ -13,10 +13,12 @@ namespace yquant::trading::internal {
 using OrderRateKey = std::tuple<std::string, std::string, std::string, char>;
 using OrderRates = std::map<OrderRateKey, SimNowContractTerms>;
 
-// Lists one rate query per distinct working-order scope. Unknown states fail
-// before any order can be omitted from reconciliation.
+// Adds the rate-query keys needed by working orders. Returns an empty string
+// on success or a diagnostic for invalid or unresolved orders; on failure,
+// rates may contain partial results and must not be used for reconciliation.
 std::string CollectOrderRates(const SimNowOrderHistory& history, OrderRates& rates);
-// Publishes all verified per-order holds together or sets holds_error.
+// Sets holds only when per-order calculations match the counter totals.
+// On failure, leaves holds empty and sets holds_error.
 void ReconcileOrderHolds(SimNowStartupSnapshot& snapshot, const OrderRates& rates);
 
 }  // namespace yquant::trading::internal

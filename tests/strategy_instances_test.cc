@@ -90,8 +90,8 @@ class StrategyInstancesTest : public ::testing::Test {
   }
   void TearDown() override { std::filesystem::remove_all(root); }
   StrategyConfig Config(std::uint64_t id, std::uint32_t instrument = 42) {
-    return {FIXED_PLUGIN,id,7,instrument,
-            {{"price",std::to_string(80 + id)}, {"marker",Marker(id)}}};
+    return {FIXED_PLUGIN,id,7,
+            {{"instrument_id",std::to_string(instrument)}, {"price",std::to_string(80 + id)}, {"marker",Marker(id)}}};
   }
   std::string Marker(std::uint64_t id) { return (root / std::to_string(id)).string(); }
   std::string Reports(std::uint64_t id) {
@@ -145,6 +145,44 @@ TEST_F(StrategyInstancesTest, SameAndDifferentInstrumentsShareOnlyTheServiceSequ
   ASSERT_TRUE(group.Load(std::vector{Config(14)},error));
   Publish(42);
   EXPECT_EQ(counter.orders.back().order_id,(trading::OrderId{10,4}));
+}
+
+TEST_F(StrategyInstancesTest, OneInstanceDeclaresMultipleSubscriptionsAndCleansUpAll) {
+  StrategyService group(10, quotes, *trader);
+  auto multi = Config(11);
+  multi.parameters["instrument_id"] = "42 81";
+  ASSERT_TRUE(group.Load(std::vector{multi, Config(12, 81)}, error)) << error;
+  EXPECT_EQ(quotes.subscribed, 2);
+  Publish(42);
+  Publish(81);
+  trading.Run();
+  ASSERT_EQ(counter.orders.size(), 3);
+  EXPECT_EQ(counter.orders[0].strategy_id, 11);
+  EXPECT_EQ(counter.orders[0].instrument_id, 42);
+  EXPECT_EQ(counter.orders[1].strategy_id, 11);
+  EXPECT_EQ(counter.orders[1].instrument_id, 81);
+  EXPECT_EQ(counter.orders[2].strategy_id, 12);
+  ASSERT_TRUE(group.Stop());
+  EXPECT_EQ(quotes.unsubscribed, 2);
+  Publish(42);
+  Publish(81);
+  EXPECT_EQ(counter.orders.size(), 3);
+}
+
+TEST_F(StrategyInstancesTest, EmptySubscriptionListIsValidAndInvalidListsRollBack) {
+  StrategyService group(10, quotes, *trader);
+  auto config = Config(11);
+  config.parameters.erase("instrument_id");
+  ASSERT_TRUE(group.Load(std::vector{config}, error)) << error;
+  EXPECT_EQ(quotes.subscribed, 0);
+  ASSERT_TRUE(group.Stop());
+  for (const auto* invalid : {"0", "42 42"}) {
+    config.parameters["instrument_id"] = invalid;
+    EXPECT_FALSE(group.Load(std::vector{Config(12), config}, error));
+    EXPECT_EQ(quotes.subscribed, 0);
+    Publish(42);
+    EXPECT_TRUE(counter.orders.empty());
+  }
 }
 
 TEST_F(StrategyInstancesTest, GroupFailureRollsBackBeforeAnyUpstreamSubscription) {

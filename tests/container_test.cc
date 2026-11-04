@@ -12,7 +12,6 @@
 #include "yquant/market/market_service.h"
 #include "yquant/market/quote_source.h"
 #include "yquant/model/quote.h"
-#include "yquant/strategy/strategy_service.h"
 
 namespace yquant {
 namespace {
@@ -222,13 +221,12 @@ TEST(ContainerTest, PublishesFiniteInputsBeforeRunReturns) {
     SCOPED_TRACE(length);
     RecordIntents output;
     examples::QuoteStrategy strategy(output);
-    strategy::StrategyService strategy_service(strategy);
     examples::FixedQuoteSource source({input.data(), length});
     TraceSource traced(source);
     market::MarketService market(traced);
     market::LocalMarketClient client(market);
-    client.Subscribe(17, strategy_service);
-    client.Subscribe(81, strategy_service);
+    client.Subscribe(17, strategy);
+    client.Subscribe(81, strategy);
     container::Container runner;
     ASSERT_TRUE(runner.Register(market));
     ASSERT_TRUE(runner.Run([&source] { return source.exhausted(); }));
@@ -247,8 +245,8 @@ TEST(ContainerTest, PublishesFiniteInputsBeforeRunReturns) {
     EXPECT_TRUE(runner.Run([&source] { return source.exhausted(); }));
     EXPECT_EQ(output.count, length);
     EXPECT_EQ(traced.count, length == 0 ? 0 : length + 1);
-    client.Unsubscribe(17, strategy_service);
-    client.Unsubscribe(81, strategy_service);
+    client.Unsubscribe(17, strategy);
+    client.Unsubscribe(81, strategy);
   }
 }
 

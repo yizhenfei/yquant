@@ -22,7 +22,7 @@ struct FundsInfo {
   bool operator==(const FundsInfo&) const = default;
 };
 
-// Owns the local funds value and pending-order reservation at query time.
+// Captures the account balance and local order reservations at query time.
 // refresh_id identifies the initial counter baseline for this runtime.
 struct FundsSnapshot {
   FundsInfo funds;

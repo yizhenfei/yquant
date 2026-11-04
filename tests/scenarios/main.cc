@@ -19,7 +19,6 @@
 #include "yquant/market/market_service.h"
 #include "yquant/market/market_service_registry.h"
 #include "yquant/model/quote.h"
-#include "yquant/strategy/strategy_service.h"
 
 namespace {
 
@@ -110,13 +109,12 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   yquant::examples::QuoteStrategy strategy(output);
-  yquant::strategy::StrategyService strategy_service(strategy);
-  client->Subscribe(kStrategyInstrumentId, strategy_service);
+  client->Subscribe(kStrategyInstrumentId, strategy);
   yquant::container::Container container;
   const bool completed =
       container.Register(market) &&
       container.Run([&source] { return source.exhausted(); });
-  client->Unsubscribe(kStrategyInstrumentId, strategy_service);
+  client->Unsubscribe(kStrategyInstrumentId, strategy);
   if (!completed) {
     std::fprintf(stderr, "Failed to run the market service\n");
     return 1;

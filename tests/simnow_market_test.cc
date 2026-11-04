@@ -10,7 +10,6 @@
 #include "strategies/quote_strategy.h"
 #include "yquant/market/market_client_factory.h"
 #include "yquant/market/market_service_registry.h"
-#include "yquant/strategy/strategy_service.h"
 
 namespace yquant::market {
 namespace {
@@ -75,9 +74,8 @@ TEST_F(MarketSessionTest, WorkerCallbacksReachSubscribedStrategyOnBusinessThread
   ASSERT_NE(client, nullptr);
   Capture seen, other;
   examples::QuoteStrategy strategy(seen);
-  strategy::StrategyService strategies(strategy);
   client->Subscribe(42, seen);
-  client->Subscribe(42, strategies);
+  client->Subscribe(42, strategy);
   client->Subscribe(99, other);
   std::thread([&] {
     api.Tick("IFtest");  // Before subscription confirmation.
@@ -108,7 +106,7 @@ TEST_F(MarketSessionTest, WorkerCallbacksReachSubscribedStrategyOnBusinessThread
     EXPECT_DOUBLE_EQ(seen.intents[i].bid_price, seen.quotes[i].bid_price);
     EXPECT_DOUBLE_EQ(seen.intents[i].ask_price, seen.quotes[i].ask_price);
   }
-  client->Unsubscribe(42, strategies);
+  client->Unsubscribe(42, strategy);
   client->Unsubscribe(42, seen);
   client->Unsubscribe(99, other);
 }

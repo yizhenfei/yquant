@@ -44,7 +44,6 @@ bool ReadStrategyConfig(const std::string& path, StrategyConfig& output, std::st
       if (key == "library") config.library = value;
       else if (key == "strategy_id") valid = Id(value, config.strategy_id);
       else if (key == "account_id") valid = Id(value, config.account_id);
-      else if (key == "instrument_id") valid = Id(value, config.instrument_id);
       else if (key.starts_with("param.") && key.size() > 6) {
         config.parameters.emplace(key.substr(6), value);
       } else valid = false;
@@ -55,7 +54,7 @@ bool ReadStrategyConfig(const std::string& path, StrategyConfig& output, std::st
     }
   }
   if (file.bad() || config.library.empty() || !config.strategy_id ||
-      !config.account_id || !config.instrument_id) {
+      !config.account_id) {
     error = "Incomplete strategy config: " + path;
     return false;
   }

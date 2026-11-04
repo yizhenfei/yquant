@@ -63,7 +63,7 @@ struct SimNowOrderHold {
   FundsTerms terms;
 };
 
-// Owns completed query results for the logged-in account and trading day.
+// Collects startup query results for the logged-in account and trading day.
 // Funds and positions were sampled by separate requests.
 struct SimNowStartupSnapshot {
   std::string trading_day;
@@ -80,6 +80,7 @@ struct SimNowStartupSnapshot {
 // A generic close spanning both dates needs the counter's actual fill priority.
 // Single-bucket holds can be booked without configuring a priority.
 enum class SimNowClosePriority { kUnspecified, kYesterdayFirst, kTodayFirst };
+// Maps a counter contract to an internal instrument and its close priority.
 struct SimNowInstrumentBinding {
   std::uint32_t instrument_id;
   SimNowClosePriority close_priority = SimNowClosePriority::kUnspecified;
@@ -88,8 +89,9 @@ using SimNowInstruments =
     std::map<std::pair<std::string, std::string>, SimNowInstrumentBinding>;
 
 // Converts a verified snapshot to the trading book's accounting basis.
-// Returns a diagnostic on failure and leaves output unchanged. A successful
-// conversion still requires separate confirmation of the live-event boundary.
+// Returns an empty string on success, or a diagnostic without changing output
+// on failure. Account synchronization must still confirm that historical and
+// live events form a consistent sequence before publishing the baseline.
 std::string BuildAccountRecovery(const SimNowStartupSnapshot& snapshot,
                                  const SimNowInstruments& instruments,
                                  AccountRecovery& output);

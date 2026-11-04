@@ -6,10 +6,9 @@
 
 namespace yquant::trading {
 
-// Provides trading requests and cached queries on the caller's business thread.
-// Callers use the same interface across deployment locations.
-// Keep listeners alive for the target service's runtime. Inputs are borrowed
-// until return; reports are borrowed until their callback returns.
+// Provides an interface for submitting trading requests and querying account
+// state without exposing the service's deployment location. Use on the caller's
+// business thread. Request and query contracts are defined by TradingService.
 class TradingClient {
  public:
   virtual ~TradingClient() = default;
@@ -17,10 +16,10 @@ class TradingClient {
   // Call between service operations. Returns false during a service callback
   // or request; success permits destroying the listener. Orders remain tracked.
   virtual bool DetachListener(TradingListener& listener) = 0;
-  // Reads one strategy's active orders and caller sequence floor after recovery.
+  // Queries active orders and the caller's highest sequence; see TradingService.
   virtual bool QueryWorkingOrders(StrategyOrderScope scope, std::vector<OrderSnapshot>& orders,
                           std::uint64_t& last_sequence) const = 0;
-  // Claims the previously read set together. Failure leaves all bindings intact.
+  // Registers listener for the queried orders; see TradingService for validation.
   virtual bool AdoptWorkingOrders(StrategyOrderScope scope, std::span<const OrderSnapshot> orders,
                           TradingListener& listener) = 0;
   // kDelivered means the service received the request, including requests that
@@ -28,8 +27,8 @@ class TradingClient {
   // kIdExhausted means no delivery and no callback for this invocation.
   virtual RequestResult SubmitOrder(const SubmitOrderRequest& request,
                                     TradingListener& listener) = 0;
-  // Uses a new cancel_request_id for each attempt. Delivery and listener
-  // lifetime follow SubmitOrder; counter results arrive through OnCancelReport.
+  // Requires a new cancel_request_id for each attempt on an order.
+  // Delivery results follow SubmitOrder; counter results use OnCancelReport.
   virtual RequestResult CancelOrder(const CancelOrderRequest& request,
                                     TradingListener& listener) = 0;
   // Returns the current snapshot for a matching order, account and strategy.
@@ -39,14 +38,10 @@ class TradingClient {
   // Copies the account's latest available complete funds and returns true.
   // Returns false if the account is unknown or its funds are unavailable.
   // Leaves snapshot unchanged on false.
-  // Both account snapshots and the initialization boundary must be complete.
-  // Unpriced fills or accounting errors make the account data unavailable.
-  // Late initialization results cannot replace the running account state.
   virtual bool QueryFunds(const QueryFundsRequest& query,
                           FundsSnapshot& snapshot) const = 0;
-  // Borrows complete account positions on true; the row range may be empty.
-  // On false the account is unknown/unavailable and snapshot stays unchanged.
-  // Copy rows before the next position update or service/cache destruction.
+  // Returns the account positions view; see PositionsSnapshot for view validity.
+  // Returns false without changing snapshot if the account data is unavailable.
   virtual bool QueryPositions(const QueryPositionsRequest& query,
                               PositionsSnapshot& snapshot) const = 0;
   // Copies one holding and returns true. An absent valid key produces zeros.

@@ -3,6 +3,7 @@
 #include <dlfcn.h>
 
 #include <cstdlib>
+#include <unordered_set>
 
 namespace yquant::strategy {
 
@@ -17,7 +18,7 @@ std::unique_ptr<LoadedStrategy> LoadedStrategy::Load(const std::string& config_p
 std::unique_ptr<LoadedStrategy> LoadedStrategy::Load(const StrategyConfig& config,
     market::MarketClient& market, trading::TradingClient& trading,
     trading::OrderIdGenerator& ids, std::string& error) {
-  if (config.library.empty() || !config.strategy_id || !config.account_id || !config.instrument_id) {
+  if (config.library.empty() || !config.strategy_id || !config.account_id) {
     error = "Incomplete strategy configuration";
     return nullptr;
   }
@@ -40,8 +41,16 @@ std::unique_ptr<LoadedStrategy> LoadedStrategy::Load(const StrategyConfig& confi
     if (error.empty()) error = "Strategy creation failed: " + loaded->config_.library;
     return nullptr;
   }
-  market.Subscribe(loaded->config_.instrument_id, *loaded);
-  loaded->subscribed_ = true;
+  std::unordered_set<std::uint32_t> unique;
+  const auto subscriptions = loaded->instance_->Subscriptions();
+  for (auto instrument : subscriptions) {
+    if (!instrument || !unique.insert(instrument).second) {
+      error = "Strategy declared a zero or duplicate subscription";
+      return nullptr;
+    }
+  }
+  loaded->subscriptions_.assign(subscriptions.begin(), subscriptions.end());
+  for (auto instrument : loaded->subscriptions_) market.Subscribe(instrument, *loaded);
   error.clear();
   return loaded;
 }
@@ -54,10 +63,8 @@ bool LoadedStrategy::Detach() {
   if (detached_) return true;
   if (dispatching_) return false;
   if (instance_ && !trading_.DetachListener(*instance_)) return false;
-  if (subscribed_) {
-    market_.Unsubscribe(config_.instrument_id, *this);
-    subscribed_ = false;
-  }
+  for (auto instrument : subscriptions_) market_.Unsubscribe(instrument, *this);
+  subscriptions_.clear();
   detached_ = true;
   return true;
 }

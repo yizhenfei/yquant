@@ -30,7 +30,7 @@ struct MonodConfig {
 
 // Reads a key=value deployment file and every referenced strategy configuration.
 // Requires unique caller/instance pairs and a shared account; output changes only
-// on success. Legacy single-instance settings become a group with one instance.
+// on success. Single-instance settings become a group with one instance.
 // Both library and strategy file paths resolve relative to their own file.
 bool ReadMonodConfig(const std::string& path, MonodConfig& output, std::string& error);
 

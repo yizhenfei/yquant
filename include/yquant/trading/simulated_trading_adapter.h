@@ -18,7 +18,7 @@
 
 namespace yquant::trading {
 
-// Selects the next submission's send result and report, delivered through Run.
+// Selects the next submission's return value and the report delivered by Run.
 // Send result and report may deliberately contradict each other.
 struct SimulatedSubmit {
   SendResult send_result = SendResult::kSent;
@@ -31,9 +31,9 @@ struct SimulatedCancel {
   std::optional<CancelResult> report = CancelResult::kCanceled;
 };
 
-// Saves one simulated account's orders and delivers controlled counter reports.
-// Configure and run it on the business thread. Keep the callback alive until
-// this adapter stops delivering reports.
+// Simulates one account for testing order requests and counter reports.
+// Tests control send results and may inject failed, duplicate or late reports.
+// Use on the business thread.
 class SimulatedTradingAdapter final : public ITradingAdapter {
  public:
   SimulatedTradingAdapter();
@@ -68,7 +68,7 @@ class SimulatedTradingAdapter final : public ITradingAdapter {
   void EmitCancel(const AdapterCancelReport& report);
   // Saves one new native fill for an active order and queues its report.
   // Returns false for invalid, duplicate or excessive fills without changes.
-  // Copies retained data; invokes no callback until a subsequent Run.
+  // Delivers the fill report through a subsequent Run.
   bool Fill(const TradeInfo& trade);
   // Injects an event directly, including malformed and late reports, without
   // updating the simulated book. Call only after a request method returns.
@@ -79,8 +79,7 @@ class SimulatedTradingAdapter final : public ITradingAdapter {
   // Copies a controlled positions event for delivery by a subsequent Run.
   // Events queued before binding wait for a registered callback.
   void QueuePositions(const AdapterPositionsReport& report);
-  // Returns the saved order, or nullptr if absent. The pointer remains valid
-  // until this adapter is destroyed; later submissions do not invalidate it.
+  // Returns the saved order, or nullptr if the ID is unknown.
   const OrderInfo* FindOrder(const OrderId& id) const;
 
  private:

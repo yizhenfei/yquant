@@ -2,6 +2,9 @@
 
 #include <charconv>
 #include <fstream>
+#include <sstream>
+#include <unordered_set>
+#include <vector>
 
 namespace yquant::strategy {
 namespace {
@@ -12,19 +15,26 @@ class FixedPrice final : public Strategy {
  public:
   FixedPrice(const StrategyConfig& config, trading::TradingClient& client,
              trading::OrderIdGenerator& ids, double price)
-      : config_(config), client_(client), ids_(ids), price_(price) {}
+      : config_(config), client_(client), ids_(ids), price_(price) {
+    const auto setting = config.parameters.find("instrument_id");
+    std::istringstream input(setting == config.parameters.end() ? "" : setting->second);
+    std::uint32_t instrument;
+    while (input >> instrument) instruments_.push_back(instrument);
+  }
   ~FixedPrice() override {
     auto marker = config_.parameters.find("marker");
     if (marker != config_.parameters.end()) std::ofstream(marker->second) << "destroyed";
   }
 
+  // Strategy implementation.
+  std::span<const std::uint32_t> Subscriptions() const override { return instruments_; }
+
   // market::QuoteListener implementation.
-  void OnQuote(const model::Quote&) override {
-    if (sent_) return;
-    sent_ = true;
+  void OnQuote(const model::Quote& quote) override {
+    if (!sent_.insert(quote.instrument_id).second) return;
     auto id = ids_.Next();
     if (id) client_.SubmitOrder({{*id, config_.account_id, config_.strategy_id,
-        config_.instrument_id, trading::Side::kBuy, trading::Offset::kOpen, price_, 1}}, *this);
+        quote.instrument_id, trading::Side::kBuy, trading::Offset::kOpen, price_, 1}}, *this);
   }
 
   // trading::TradingListener implementation.
@@ -46,7 +56,8 @@ class FixedPrice final : public Strategy {
   trading::TradingClient& client_;
   trading::OrderIdGenerator& ids_;
   double price_;
-  bool sent_ = false;
+  std::vector<std::uint32_t> instruments_;
+  std::unordered_set<std::uint32_t> sent_;
 };
 
 Strategy* Create(const StrategyConfig& config, trading::TradingClient& client,
@@ -69,7 +80,7 @@ Strategy* Create(const StrategyConfig& config, trading::TradingClient& client,
 
 void Destroy(Strategy* strategy) { delete strategy; }
 #ifndef TEST_VERSION
-#define TEST_VERSION 1
+#define TEST_VERSION kStrategyPluginVersion
 #endif
 const StrategyPlugin kPlugin{TEST_VERSION, Create, Destroy};
 

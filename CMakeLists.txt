@@ -142,13 +142,13 @@ include(CTest)
 if(BUILD_TESTING)
   add_library(verification_market OBJECT tests/scenarios/simnow_market_demo.cc)
   target_include_directories(verification_market PRIVATE examples)
-  target_link_libraries(verification_market PRIVATE yquant_simnow_market yquant_strategy)
+  target_link_libraries(verification_market PRIVATE yquant_simnow_market)
   add_library(verification_trader OBJECT tests/scenarios/trader_login.cc)
   target_link_libraries(verification_trader PRIVATE yquant_simnow_trading)
 
   add_executable(simnow_market_probe tests/scenarios/market_main.cc
     $<TARGET_OBJECTS:verification_market>)
-  target_link_libraries(simnow_market_probe PRIVATE yquant_simnow_market yquant_strategy)
+  target_link_libraries(simnow_market_probe PRIVATE yquant_simnow_market)
   add_executable(simnow_trader_probe tests/scenarios/trader_main.cc
     $<TARGET_OBJECTS:verification_trader>)
   target_link_libraries(simnow_trader_probe PRIVATE yquant_simnow_trading)
@@ -195,7 +195,7 @@ if(BUILD_TESTING)
       target_link_options(strategy_${fixture} PRIVATE "LINKER:--exclude-libs,ALL")
     endif()
   endforeach()
-  target_compile_definitions(strategy_bad_version PRIVATE TEST_VERSION=99)
+  target_compile_definitions(strategy_bad_version PRIVATE TEST_VERSION=1)
   target_compile_definitions(strategy_fail_create PRIVATE FAIL_CREATE)
   add_library(strategy_no_entry MODULE tests/plugins/no_entry.cc)
   add_executable(strategy_plugin_test tests/strategy_plugin_test.cc)
@@ -308,13 +308,13 @@ if(BUILD_TESTING)
   add_executable(simnow_market_test tests/simnow_market_test.cc)
   target_include_directories(simnow_market_test PRIVATE src/market examples)
   target_link_libraries(simnow_market_test PRIVATE yquant_simnow_market yquant_ctp_md
-    yquant_strategy GTest::gtest_main Threads::Threads)
+    GTest::gtest_main Threads::Threads)
   add_test(NAME v1_04_simnow_market COMMAND simnow_market_test)
   add_executable(simnow_market_fixture tests/simnow_market_fixture.cc
     $<TARGET_OBJECTS:verification_market>)
   target_include_directories(simnow_market_fixture PRIVATE src/market tests/scenarios)
   target_link_libraries(simnow_market_fixture PRIVATE yquant_simnow_market
-    yquant_ctp_md yquant_strategy Threads::Threads)
+    yquant_ctp_md Threads::Threads)
   add_test(NAME v1_04_simnow_market_monod COMMAND
     ${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify_simnow_market
     --probe $<TARGET_FILE:simnow_market_fixture> --front tcp://fixture:1
@@ -455,17 +455,17 @@ if(BUILD_TESTING)
   add_executable(single_quote_test tests/single_quote_test.cc)
   target_include_directories(single_quote_test PRIVATE examples)
   target_link_libraries(single_quote_test PRIVATE
-    yquant_strategy GTest::gtest_main)
+    yquant_market GTest::gtest_main)
   add_test(NAME v1_01_single_quote COMMAND single_quote_test)
   add_executable(quote_sequence_test tests/quote_sequence_test.cc)
   target_include_directories(quote_sequence_test PRIVATE examples)
   target_link_libraries(quote_sequence_test PRIVATE
-    yquant_strategy GTest::gtest_main)
+    yquant_market GTest::gtest_main)
   add_test(NAME v1_01_quote_sequence COMMAND quote_sequence_test)
   add_executable(container_test tests/container_test.cc)
   target_include_directories(container_test PRIVATE examples)
   target_link_libraries(container_test PRIVATE
-    yquant_strategy GTest::gtest_main)
+    yquant_market GTest::gtest_main)
   add_test(NAME v1_01_container COMMAND container_test)
   add_executable(market_subscription_test tests/market_subscription_test.cc)
   target_link_libraries(market_subscription_test PRIVATE

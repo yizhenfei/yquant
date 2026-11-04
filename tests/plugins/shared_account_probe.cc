@@ -23,6 +23,9 @@ class AccountProbe final : public Strategy {
     while (cancels >> sequence) cancels_.push_back(sequence);
   }
 
+  // Strategy implementation.
+  std::span<const std::uint32_t> Subscriptions() const override { return {&instrument_, 1}; }
+
   // market::QuoteListener implementation.
   void OnQuote(const model::Quote& quote) override {
     for (auto sequence : submits_) {
@@ -32,7 +35,7 @@ class AccountProbe final : public Strategy {
       last_ = *id;
       const bool close = config_.parameters.at("offset") == "close";
       client_.SubmitOrder({{last_, config_.account_id, config_.strategy_id,
-          config_.instrument_id, close ? trading::Side::kSell : trading::Side::kBuy,
+          instrument_, close ? trading::Side::kSell : trading::Side::kBuy,
           close ? trading::Offset::kCloseToday : trading::Offset::kOpen,
           quote.bid_price, std::stoi(config_.parameters.at("quantity"))}}, *this);
     }
@@ -80,6 +83,7 @@ class AccountProbe final : public Strategy {
     output_.flush();
   }
   StrategyConfig config_;
+  std::uint32_t instrument_ = std::stoul(config_.parameters.at("instrument_id"));
   trading::TradingClient& client_;
   trading::OrderIdGenerator& ids_;
   std::ofstream output_;

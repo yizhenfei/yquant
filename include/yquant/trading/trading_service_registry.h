@@ -8,17 +8,18 @@
 
 namespace yquant::trading {
 
-// Maps local service IDs to borrowed concrete instances during assembly.
-// Keep registered services alive until the registry is destroyed.
+// Maps service IDs to TradingService instances in this process.
+// Does not own the services. Each registered service must outlive this registry.
 class TradingServiceRegistry {
  public:
   TradingServiceRegistry() = default;
   TradingServiceRegistry(const TradingServiceRegistry&) = default;
   TradingServiceRegistry& operator=(const TradingServiceRegistry&) = default;
 
-  // Returns false for an existing ID without replacing its service binding.
+  // Registers service under service_id and returns true. An existing ID returns
+  // false without replacing its service, even when registering the same object.
   bool Register(std::uint64_t service_id, TradingService& service);
-  // Returns a borrowed service pointer, or nullptr if the ID is unregistered.
+  // Returns the service registered under service_id, or nullptr if none exists.
   TradingService* Find(std::uint64_t service_id) const;
 
  private:

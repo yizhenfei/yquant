@@ -15,13 +15,17 @@
 
 namespace yquant::trading::internal {
 
-// Verifies position costs for a single startup attempt. Prepare takes rows
-// sorted by exchange and symbol. Their storage must remain stable until all
-// detail queries finish or the attempt is discarded.
+// Verifies today/yesterday position costs against counter totals at startup.
+// Prepare requires rows sorted by exchange and symbol. This object writes costs
+// into those rows; do not resize or replace their storage while queries run.
 class SimNowPositionCosts {
  public:
+  // Checks initial rows and identifies contracts needing detail queries.
+  // Returns nullptr on success or a diagnostic on invalid data.
+  // Discard the verifier and partial results on error.
   const char* Prepare(std::span<SimNowPosition> rows);
   bool complete() const { return groups_.empty(); }
+  // Identifies the contract needing detail queries. Requires !complete().
   const SimNowPosition& contract() const { return groups_.back().front(); }
   // Accepts one multiplier for the active futures contract.
   bool SetMultiplier(const CThostFtdcInstrumentField& row);
@@ -29,6 +33,8 @@ class SimNowPositionCosts {
   // Returns a diagnostic for invalid rows or totals, nullptr on success.
   const char* Add(const CThostFtdcInvestorPositionDetailField& row,
                   std::string_view trading_day);
+  // Checks collected details against the contract totals and advances to the
+  // next contract. Returns nullptr on success, or a diagnostic on mismatch.
   const char* FinishContract();
 
  private:

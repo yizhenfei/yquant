@@ -6,6 +6,7 @@
 #include <memory>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -93,6 +94,30 @@ class ShutdownListener final : public trading::TradingListener {
   std::size_t canceled = 0;
 };
 
+// Checks declared subscriptions against deployment mappings before scheduling.
+class ConfiguredMarketClient final : public market::MarketClient {
+ public:
+  ConfiguredMarketClient(market::MarketClient& client, const trading::SimNowInstruments& mappings)
+      : client_(client) {
+    for (const auto& [native, binding] : mappings) instruments_.insert(binding.instrument_id);
+  }
+  bool valid() const { return valid_; }
+
+  // market::MarketClient implementation.
+  void Subscribe(std::uint32_t instrument, market::QuoteListener& listener) override {
+    if (!instruments_.contains(instrument)) { valid_ = false; return; }
+    client_.Subscribe(instrument, listener);
+  }
+  void Unsubscribe(std::uint32_t instrument, market::QuoteListener& listener) override {
+    client_.Unsubscribe(instrument, listener);
+  }
+
+ private:
+  market::MarketClient& client_;
+  std::unordered_set<std::uint32_t> instruments_;
+  bool valid_ = true;
+};
+
 bool Disconnected(const trading::SimNowTradingAdapter& adapter) {
   const auto phase = adapter.login_status().phase;
   return phase == trading::LoginPhase::kFailed || phase == trading::LoginPhase::kDisconnected;
@@ -113,16 +138,21 @@ int RunMonod(const MonodConfig& c, market::SimNowQuoteSource& source,
       !markets.Register(1, market)) { error = "Service assembly failed"; return 1; }
   auto trader = trading::TradingClientFactory(traders).Create(1);
   auto quotes = market::MarketClientFactory(markets).Create(1);
+  ConfiguredMarketClient configured_quotes(*quotes, c.instruments);
   std::vector<std::unique_ptr<strategy::StrategyService>> services;
   std::vector<trading::StrategyOrderScope> scopes;
   services.reserve(c.services.size());
   for (const auto& group : c.services) {
-    auto service = std::make_unique<strategy::StrategyService>(group.caller_service_id, *quotes, *trader);
+    auto service = std::make_unique<strategy::StrategyService>(group.caller_service_id, configured_quotes, *trader);
     if (!service->Load(group.instances, error)) return 1;
+    if (!configured_quotes.valid()) {
+      error = "Strategy subscription has no deployment instrument mapping";
+      return 1;
+    }
     services.push_back(std::move(service));
     for (const auto& instance : group.instances) {
       scopes.push_back({group.caller_service_id, c.account_id,
-                        instance.strategy_id, instance.instrument_id});
+                        instance.strategy_id});
     }
   }
   container::Container container;

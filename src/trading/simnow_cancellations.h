@@ -19,15 +19,16 @@ struct ActionError {
 };
 
 // Tracks all in-flight cancellations of each order on the business thread.
-// Native request IDs disambiguate individual rejections. A terminal cancel
-// achieves the requested outcome for every still-pending attempt on that order.
+// Matches rejections to individual requests. An order cancellation completes
+// every pending cancellation attempt for that order.
 class SimNowCancellations {
  public:
+  // Clears previous attempts and sets the session issuing new cancellations.
   void Start(int front, int session);
   // Assigns both native action identifiers and saves the attempt before send.
   void Register(AdapterCancelOrderRequest attempt, int id,
                 CThostFtdcInputOrderActionField& action);
-  // A nonzero send return removes the attempt from the pending success set.
+  // Removes an unsent attempt from the requests waiting for cancellation success.
   void NotSent(int id);
   bool HasRequest(int id) const { return attempts_.contains(id); }
   // id is supplied by a direct SDK response; zero denotes a private error

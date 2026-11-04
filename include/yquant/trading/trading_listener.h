@@ -9,7 +9,8 @@ struct CancelReport;
 struct TradeReport;
 
 // Receives reports on the business thread after request methods return.
-// Keep listeners alive for the service's runtime, including terminal orders.
+// To destroy a listener before the service stops, first detach it successfully
+// through DetachListener. Terminal orders can still receive late reports.
 // Copy any reports needed after a callback returns. Callbacks may submit new
 // requests; calling Run from a callback does no work.
 class TradingListener {

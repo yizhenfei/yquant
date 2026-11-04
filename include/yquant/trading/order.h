@@ -7,14 +7,14 @@
 
 namespace yquant::trading {
 
-// Identifies an order independently of its account, strategy and storage slot.
+// Identifies an order by its caller service and a sequence unique to that caller.
 struct OrderId {
   std::uint64_t caller_service_id = 0;
   std::uint64_t sequence = 0;
   bool operator==(const OrderId&) const = default;
 };
 
-// Hashes both fields so each caller can independently start its sequence at 1.
+// Hashes the caller service ID and order sequence.
 struct OrderIdHash {
   std::size_t operator()(const OrderId& id) const {
     const auto caller = std::hash<std::uint64_t>{}(id.caller_service_id);
@@ -31,7 +31,6 @@ enum class Offset { kOpen, kClose, kCloseToday, kCloseYesterday };
 enum class CancelResult { kCanceled, kRejected };
 
 // Stores an order's identity, ownership and original parameters.
-// Requests and snapshots each own a copy of this value.
 struct OrderInfo {
   OrderId order_id;
   std::uint64_t account_id = 0;
@@ -73,7 +72,8 @@ enum class OrderState {
   // No valid counter report has confirmed otherwise.
   // A later valid report can correct this state.
   kSendFailed,
-  // The counter confirmed cancellation; filled_quantity remains unchanged.
+  // The counter confirmed cancellation of the unfilled remainder.
+  // The cancellation report may also increase the known filled quantity.
   kCanceled,
   // Some quantity filled; the unfilled remainder is still active.
   kPartiallyFilled,
@@ -83,7 +83,6 @@ enum class OrderState {
 
 // Represents an order at a specific version. order contains the parameters
 // submitted by the caller; filled_quantity is the total filled at that version.
-// Copy the snapshot if you need it after the callback returns.
 struct OrderSnapshot {
   OrderInfo order;
   OrderState state = OrderState::kSubmitting;

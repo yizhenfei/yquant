@@ -17,15 +17,16 @@ using TermsRow = std::variant<CThostFtdcInstrumentField, CThostFtdcProductField,
     CThostFtdcInstrumentMarginRateField, CThostFtdcExchangeMarginRateField,
     CThostFtdcInstrumentCommissionRateField>;
 
-// Assembles one contract's directional terms on the business thread. Send one
-// request at a time and pass its matching rows, including the final marker,
-// to Receive. Publish terms only after complete becomes true.
+// Queries a contract's multiplier, margin and fee rates on the business thread.
+// Send one request at a time and pass matching responses, including the final
+// marker, to Receive. Use terms only after complete becomes true.
 class SimNowContractQuery {
  public:
   explicit SimNowContractQuery(std::string_view symbol, std::string exchange = {},
                                std::string unit = {},
                                char hedge = THOST_FTDC_HF_Speculation);
   const std::string& exchange() const { return exchange_; }
+  // Sends the current query and returns the SDK request result.
   int Send(CThostFtdcTraderApi& api, const std::string& broker,
            const std::string& user, int id) const;
   // Returns false for missing, ambiguous or invalid data. field continues

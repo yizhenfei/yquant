@@ -81,7 +81,7 @@ class SharedAccountTest : public ::testing::TestWithParam<bool> {
     deployment += "strategy." + std::to_string(caller) + "." + std::to_string(strategy)
                   + "=" + name + ".conf\n";
     std::ofstream(root / (name + ".conf")) << "library=" << PROBE_PLUGIN
-        << "\nstrategy_id=" << strategy << "\naccount_id=7\ninstrument_id=" << instrument
+        << "\nstrategy_id=" << strategy << "\naccount_id=7\nparam.instrument_id=" << instrument
         << "\nparam.output=" << (root / name).string()
         << "\nparam.submit=" << submit << "\nparam.cancel=" << cancel
         << "\nparam.offset=" << (close ? "close" : "open")

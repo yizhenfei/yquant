@@ -25,8 +25,6 @@
 namespace yquant::trading {
 
 // Carries order information for a submission request.
-// Once an order record is established, it owns a copy of order.
-// Callers can reuse this request after SubmitOrder returns.
 struct SubmitOrderRequest {
   OrderInfo order;
   bool operator==(const SubmitOrderRequest&) const = default;
@@ -43,7 +41,8 @@ struct CancelOrderRequest {
 // Selects the working orders one strategy instance can take over.
 struct StrategyOrderScope {
   std::uint64_t caller, account, strategy;
-  std::uint32_t instrument;
+  // Omit to include all instruments owned by this strategy instance.
+  std::optional<std::uint32_t> instrument = std::nullopt;
 };
 
 // Selects an order and the account and strategy that must own it.
@@ -99,7 +98,7 @@ struct RequestFailure {
   std::optional<std::uint64_t> cancel_request_id = std::nullopt;
 };
 
-// Owns the state at this event's version, independent of later state changes.
+// Reports the order snapshot at the time of a state change.
 struct OrderReport {
   OrderSnapshot snapshot;
 };
@@ -120,27 +119,34 @@ struct TradeReport {
   OrderSnapshot snapshot;
 };
 
-// Routes orders to borrowed account adapters and owns their business state.
-// Use on one business thread. Adapters and listeners must outlive service use;
-// stop adapter callbacks before destroying this service's account contexts.
+// Routes trading requests to account adapters and maintains shared order,
+// funds and position state. Use on one business thread.
+// Stop adapter callbacks before destroying the service. Listener requirements
+// are defined by TradingListener.
 class TradingService final : public container::Service {
  public:
   TradingService();
   TradingService(const TradingService&) = delete;
   TradingService& operator=(const TradingService&) = delete;
 
-  // Binds during initialization. Duplicate accounts or adapter instances fail
-  // without replacing the existing binding. Borrows adapter until shutdown.
+  // Registers an account adapter during initialization and returns true.
+  // Returns false for a duplicate account or adapter, or a call during Run,
+  // a request or a callback. Existing bindings stay unchanged.
   bool BindAccount(std::uint64_t account_id, ITradingAdapter& adapter);
-  // On success copies all matching active orders and this caller's sequence
-  // high-water mark across the service's recovered accounts. Single business thread.
+  // Replaces orders with the active orders matching scope and returns true.
+  // Sets last_sequence to the caller's highest known sequence across all accounts,
+  // including recovered and terminal orders. If the account is not ready,
+  // returns false without changing either output.
   bool QueryWorkingOrders(StrategyOrderScope scope, std::vector<OrderSnapshot>& orders,
                           std::uint64_t& last_sequence) const;
-  // Binds the entire matching set if its IDs and versions still match the
-  // query. A different listener cannot displace an existing binding.
+  // Registers listener for the complete active set previously queried by scope.
+  // Returns false without changing bindings if the account is not ready, the
+  // set or versions have changed, or any order has a different listener.
   bool AdoptWorkingOrders(StrategyOrderScope scope, std::span<const OrderSnapshot> orders,
                           TradingListener& listener);
-  // Removes borrowed listener references between service operations.
+  // Removes listener from orders, cancellations and queued notifications.
+  // Returns false during Run, a request or a callback; otherwise returns true.
+  // After success the listener may be destroyed; orders continue to be tracked.
   bool DetachListener(TradingListener& listener);
   // Reports startup completion; unknown accounts return false.
   // QueryFunds separately reports runtime accounting availability.
@@ -181,8 +187,8 @@ class TradingService final : public container::Service {
   bool QueryFunds(const QueryFundsRequest& query,
                   FundsSnapshot& snapshot) const;
 
-  // Returns true and borrows the complete rows when accounting is available.
-  // Copy rows before the next position update or service destruction.
+  // Returns the complete account view when accounting is available.
+  // View validity is described by PositionsSnapshot.
   // Returns false without changing snapshot if the account is unknown or its
   // positions are unavailable.
   bool QueryPositions(const QueryPositionsRequest& query,
@@ -200,7 +206,7 @@ class TradingService final : public container::Service {
   void Run() override;
 
  private:
-  // Keeps row order contiguous and locates a holding by its complete identity.
+  // Stores account positions and supports lookup by PositionKey.
   struct PositionsBook {
     std::vector<PositionInfo> rows;
     std::unordered_map<PositionKey, std::size_t, PositionKey::Hash> index;
@@ -318,8 +324,9 @@ class TradingService final : public container::Service {
   void ProcessSubmitOrder(const SubmitOrderRequest& request,
                           TradingListener& listener,
                           internal::CallContext call);
-  // Reads account state and terms without mutation; on success writes amount.
-  // On failure returns the request error used by the deferred failure callback.
+  // Checks available funds against the order's margin and fee requirements.
+  // Returns nullopt and writes cost on success; otherwise returns a failure
+  // reason without changing cost or the account.
   std::optional<FailureReason> CheckFunds(const AccountContext& account,
                                          const OrderInfo& order,
                                          internal::OrderCost& cost) const;
@@ -346,7 +353,7 @@ class TradingService final : public container::Service {
                           internal::CallContext call);
   // Applies a counter result to its attempt and updates the order on success.
   void ApplyCancel(std::uint64_t account_id, const AdapterCancelReport& report);
-  // Validates a detail and deduplicates it within its bound account.
+  // Validates a fill and applies it only once within the account.
   void ApplyTrade(AccountContext& account, OrderRecord& order, const TradeInfo& trade);
   bool ConfirmCancellation(AccountContext& account, OrderRecord& order, int filled);
   const char* InstallRecovery(AccountContext& account, const AccountRecovery& baseline);

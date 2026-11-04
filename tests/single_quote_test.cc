@@ -8,7 +8,6 @@
 #include "yquant/market/market_client.h"
 #include "yquant/market/market_service.h"
 #include "yquant/model/quote.h"
-#include "yquant/strategy/strategy_service.h"
 
 namespace yquant {
 namespace {
@@ -73,8 +72,7 @@ TEST(SingleQuoteTest, StrategyProducesOneIntentFromReceivedPrices) {
   market::MarketService service(source);
   market::LocalMarketClient client(service);
   examples::QuoteStrategy strategy(output);
-  strategy::StrategyService strategy_service(strategy);
-  client.Subscribe(81, strategy_service);
+  client.Subscribe(81, strategy);
   service.Run();
 
   EXPECT_EQ(output.count, 1);
@@ -82,7 +80,7 @@ TEST(SingleQuoteTest, StrategyProducesOneIntentFromReceivedPrices) {
   EXPECT_EQ(output.intent.instrument_id, 81U);
   EXPECT_DOUBLE_EQ(output.intent.bid_price, 98.75);
   EXPECT_DOUBLE_EQ(output.intent.ask_price, 99.25);
-  client.Unsubscribe(81, strategy_service);
+  client.Unsubscribe(81, strategy);
 }
 
 }  // namespace

@@ -9,9 +9,9 @@
 
 namespace yquant::trading {
 
-// Calls a borrowed local service and assigns distinct invocation identifiers.
-// The service must outlive this client. Destroying the client does not cancel
-// orders or detach listeners; keep listeners alive for the service's runtime.
+// Forwards trading operations to a service in this process and identifies
+// each request invocation. Destroying the client does not cancel orders or
+// detach listeners; use DetachListener before destroying a registered listener.
 class LocalTradingClient final : public TradingClient {
  public:
   explicit LocalTradingClient(TradingService& service);
@@ -20,10 +20,8 @@ class LocalTradingClient final : public TradingClient {
 
   // TradingClient implementation.
   bool DetachListener(TradingListener& listener) override;
-  // Reads one strategy's active orders and caller sequence floor after recovery.
   bool QueryWorkingOrders(StrategyOrderScope scope, std::vector<OrderSnapshot>& orders,
                           std::uint64_t& last_sequence) const override;
-  // Claims the previously read set together. Failure leaves all bindings intact.
   bool AdoptWorkingOrders(StrategyOrderScope scope, std::span<const OrderSnapshot> orders,
                           TradingListener& listener) override;
   RequestResult SubmitOrder(const SubmitOrderRequest& request,

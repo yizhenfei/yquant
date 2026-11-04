@@ -2,65 +2,42 @@
 
 #include <algorithm>
 #include <cstdlib>
-#include <unordered_map>
 #include <unordered_set>
-#include <vector>
+#include <utility>
 
 #include "yquant/strategy/loaded_strategy.h"
 
 namespace yquant::strategy {
 
-// Collects private subscriptions during construction. Only Activate publishes
-// the service to the upstream client, once per instrument. Instance pointers
-// remain stable until the group has been detached.
-struct StrategyService::Instances final : market::MarketClient {
-  Instances(StrategyService& owner, std::uint64_t caller, market::MarketClient& market,
-            trading::TradingClient& trading)
-      : owner(owner), market(market), trading(trading), ids(caller) {}
-
-  // market::MarketClient implementation.
-  void Subscribe(std::uint32_t instrument, market::QuoteListener& listener) override {
-    auto& subscribers = listeners[instrument];
-    if (std::find(subscribers.begin(), subscribers.end(), &listener) == subscribers.end()) {
-      subscribers.push_back(&listener);
-    }
-  }
-  void Unsubscribe(std::uint32_t instrument, market::QuoteListener& listener) override {
-    const auto it = listeners.find(instrument);
-    if (it == listeners.end()) return;
-    std::erase(it->second, &listener);
-    if (it->second.empty()) {
-      if (active) market.Unsubscribe(instrument, owner);
-      listeners.erase(it);
-    }
-  }
-
-  void Activate() {
-    for (const auto& [instrument, unused] : listeners) market.Subscribe(instrument, owner);
-    active = true;
-  }
-
-  StrategyService& owner;
-  market::MarketClient& market;
-  trading::TradingClient& trading;
-  trading::OrderIdGenerator ids;
-  std::unordered_map<std::uint32_t, std::vector<market::QuoteListener*>> listeners;
-  std::vector<std::unique_ptr<LoadedStrategy>> strategies;
-  bool active = false, dispatching = false;
-};
-
-StrategyService::StrategyService(market::QuoteListener& strategy) : borrowed_(&strategy) {}
-
 StrategyService::StrategyService(std::uint64_t caller, market::MarketClient& market,
                                  trading::TradingClient& trading)
-    : instances_(std::make_unique<Instances>(*this, caller, market, trading)) {}
+    : market_(market), trading_(trading), ids_(caller), subscription_client_(*this) {}
 
 StrategyService::~StrategyService() {
   if (!Stop()) std::abort();
 }
 
+void StrategyService::AddListener(std::uint32_t instrument,
+                                  market::QuoteListener& listener) {
+  auto& subscribers = listeners_[instrument];
+  if (std::find(subscribers.begin(), subscribers.end(), &listener) == subscribers.end()) {
+    subscribers.push_back(&listener);
+  }
+}
+
+void StrategyService::RemoveListener(std::uint32_t instrument,
+                                     market::QuoteListener& listener) {
+  const auto it = listeners_.find(instrument);
+  if (it == listeners_.end()) return;
+  std::erase(it->second, &listener);
+  if (it->second.empty()) {
+    if (active_) market_.Unsubscribe(instrument, *this);
+    listeners_.erase(it);
+  }
+}
+
 bool StrategyService::Load(std::span<const StrategyConfig> configs, std::string& error) {
-  if (!instances_ || instances_->active || instances_->dispatching || configs.empty()) {
+  if (active_ || dispatching_ || configs.empty()) {
     error = "Strategy service cannot load this group";
     return false;
   }
@@ -71,45 +48,43 @@ bool StrategyService::Load(std::span<const StrategyConfig> configs, std::string&
       return false;
     }
   }
-  auto& state = *instances_;
-  state.listeners.reserve(configs.size());
-  state.strategies.reserve(configs.size());
+  listeners_.reserve(configs.size());
+  strategies_.reserve(configs.size());
   for (const auto& config : configs) {
-    auto strategy = LoadedStrategy::Load(config, state, state.trading, state.ids, error);
+    auto strategy = LoadedStrategy::Load(config, subscription_client_, trading_, ids_, error);
     if (!strategy) {
-      state.strategies.clear();
+      strategies_.clear();
       return false;
     }
-    state.strategies.push_back(std::move(strategy));
+    strategies_.push_back(std::move(strategy));
   }
-  state.Activate();
+  for (const auto& [instrument, unused] : listeners_) {
+    market_.Subscribe(instrument, *this);
+  }
+  active_ = true;
   error.clear();
   return true;
 }
 
 bool StrategyService::Stop() {
-  if (!instances_) return true;
-  auto& state = *instances_;
-  if (state.dispatching) return false;
+  if (dispatching_) return false;
   // Every instance shares one trading client. On the single business thread,
   // a busy client rejects the first detach before any binding is changed.
-  for (const auto& strategy : state.strategies) {
+  for (const auto& strategy : strategies_) {
     if (!strategy->Detach()) return false;
   }
-  state.active = false;
-  state.strategies.clear();
+  active_ = false;
+  strategies_.clear();
   return true;
 }
 
 void StrategyService::OnQuote(const model::Quote& quote) {
-  if (borrowed_) { borrowed_->OnQuote(quote); return; }
-  auto& state = *instances_;
-  if (!state.active || state.dispatching) return;
-  const auto found = state.listeners.find(quote.instrument_id);
-  if (found == state.listeners.end()) return;
-  state.dispatching = true;
+  if (!active_ || dispatching_) return;
+  const auto found = listeners_.find(quote.instrument_id);
+  if (found == listeners_.end()) return;
+  dispatching_ = true;
   for (auto* listener : found->second) listener->OnQuote(quote);
-  state.dispatching = false;
+  dispatching_ = false;
 }
 
 }  // namespace yquant::strategy

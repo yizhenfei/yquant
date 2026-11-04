@@ -11,7 +11,6 @@
 #include "yquant/market/market_service.h"
 #include "yquant/market/market_service_registry.h"
 #include "yquant/strategy/market_maker.h"
-#include "yquant/strategy/strategy_service.h"
 #include "yquant/trading/simulated_trading_adapter.h"
 #include "yquant/trading/trading_client_factory.h"
 #include "yquant/trading/trading_service_registry.h"
@@ -155,13 +154,12 @@ bool VerifyMaker() {
   if (!market || !trader || !trading_service.IsAccountReady(7)) return false;
   trading::OrderIdGenerator ids(100);
   strategy::MarketMaker maker(*trader, ids, 7, 2, 42, 2);
-  strategy::StrategyService strategies(maker);
-  market->Subscribe(42, strategies);
+  market->Subscribe(42, maker);
   container::Container container;
   const bool ran = container.Register(market_service) &&
                    container.Register(trading_service) &&
                    container.Run([&feed] { return feed.done; });
-  market->Unsubscribe(42, strategies);
+  market->Unsubscribe(42, maker);
   trading::OrderSnapshot bid, ask;
   if (!ran || !counter.valid || counter.samples != kSamples ||
       counter.replacements != kSamples || counter.submits != kQuotes ||

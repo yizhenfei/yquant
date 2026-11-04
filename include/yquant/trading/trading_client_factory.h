@@ -9,12 +9,12 @@
 
 namespace yquant::trading {
 
-// Creates clients using a borrowed typed registry supplied by program assembly.
-// Keep the registry alive for this factory's lifetime. Returned clients are
-// owned by callers and may outlive the factory and registry. Keep each service
-// alive until its clients and report delivery have finished.
+// Creates trading clients by service ID so callers do not need to locate
+// service instances or choose a concrete client class.
+// Currently supports services in this process.
 class TradingClientFactory {
  public:
+  // registry must outlive this factory.
   explicit TradingClientFactory(const TradingServiceRegistry& registry)
       : registry_(registry) {}
   TradingClientFactory(const TradingClientFactory&) = delete;

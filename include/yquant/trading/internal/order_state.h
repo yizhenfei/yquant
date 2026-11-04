@@ -7,7 +7,7 @@
 
 namespace yquant::trading::internal {
 
-// Returns whether an order can still have an outstanding remainder canceled.
+// Returns whether the order state allows cancellation of an unfilled remainder.
 bool IsActiveOrder(OrderState state);
 // Combines a validated quantity in [0, total] with the current order state.
 // A full fill wins over cancellation; a partial fill preserves cancellation.

@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <map>
+#include <span>
 #include <string>
 
 #include "yquant/market/market_client.h"
@@ -11,34 +12,38 @@
 
 namespace yquant::strategy {
 
-// Supplies one strategy instance's immutable settings. Library paths are
-// resolved relative to the configuration file; parameter values remain strings.
+// Configures one strategy instance and its plugin parameters.
 struct StrategyConfig {
   std::string library;
   std::uint64_t strategy_id = 0, account_id = 0;
-  std::uint32_t instrument_id = 0;
   std::map<std::string, std::string> parameters;
 };
 
 // Reads key=value lines. Unknown or repeated keys and missing required fields
-// fail with a diagnostic; output remains unchanged on failure.
+// fail with a diagnostic in error; output remains unchanged on failure.
+// Resolves relative library paths against the configuration file's directory.
 bool ReadStrategyConfig(const std::string& path, StrategyConfig& output,
                         std::string& error);
 
-// A loaded strategy uses this object as its sole trading listener. It receives
-// quotes from the host and submits requests only during business callbacks.
+// Defines the quote and trading callbacks implemented by a strategy plugin.
+// Submit requests only during business callbacks, using this instance as the
+// sole trading listener so the host can detach all callbacks before unloading.
 // Creation/destruction must not subscribe or register additional listeners.
 class Strategy : public market::QuoteListener, public trading::TradingListener {
  public:
   ~Strategy() override = default;
+  // Declares the initial quote subscriptions after creation. The list may be
+  // empty; IDs must be nonzero and unique. The host copies the list and manages
+  // subscription setup and removal.
+  virtual std::span<const std::uint32_t> Subscriptions() const = 0;
 };
 
-inline constexpr std::uint32_t kStrategyPluginVersion = 1;
+inline constexpr std::uint32_t kStrategyPluginVersion = 2;
 
-// The C entry point returns this descriptor before any instance is created.
-// This version uses the project's C++ interfaces: host and plugin must share
-// the same headers, compiler ABI and standard library. Factory errors return
-// nullptr after releasing partial resources; destroy runs before dlclose.
+// Defines the plugin version and the functions the host uses to create and
+// destroy strategy instances. Host and plugin must use compatible headers,
+// compiler ABI and standard library. On failure, create sets error and returns
+// nullptr after cleanup. The host calls destroy before unloading the library.
 struct StrategyPlugin {
   std::uint32_t version;
   Strategy* (*create)(const StrategyConfig&, trading::TradingClient&,

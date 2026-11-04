@@ -26,8 +26,6 @@ class QuoteIntentListener {
 };
 
 // Validation strategy that emits one intent at each received bid/ask pair.
-// Used by StrategyService; the output listener is borrowed and must outlive
-// this strategy.
 class QuoteStrategy final : public market::QuoteListener {
  public:
   explicit QuoteStrategy(QuoteIntentListener& listener) : listener_(listener) {}

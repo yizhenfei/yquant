@@ -61,7 +61,7 @@ struct PositionInfo {
   std::int32_t yesterday_quantity = 0;
   std::int32_t today_frozen = 0;
   std::int32_t yesterday_frozen = 0;
-  // Nonempty buckets require costs; an empty bucket may omit them.
+  // A positive today/yesterday quantity requires the corresponding cost value.
   std::optional<PositionCost> today_cost = std::nullopt;
   std::optional<PositionCost> yesterday_cost = std::nullopt;
   std::int32_t today_available() const { return today_quantity - today_frozen; }
@@ -75,9 +75,9 @@ struct PositionInfo {
   bool operator==(const PositionInfo&) const = default;
 };
 
-// Borrows a complete account view; an empty positions range is a valid result.
-// Copy rows needed beyond the next position update or destruction of the
-// service or cache that owns the rows.
+// Provides a view of all account positions; the range may be empty.
+// Copy positions that must be kept across an update: the range refers to storage
+// owned by the service or client cache, and updates may invalidate it.
 struct PositionsSnapshot {
   std::span<const PositionInfo> positions;
   std::uint64_t refresh_id = 0;

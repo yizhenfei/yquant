@@ -13,12 +13,12 @@
 
 namespace yquant::trading::internal {
 
-// Tracks limit orders issued in one authenticated session on the business
-// thread. Request IDs identify front responses; exchange IDs are bound only
-// after the front/session/ref tuple identifies the same submitted order.
+// Matches counter responses to orders submitted in one authenticated session.
+// Uses request IDs for front responses and session/reference or exchange IDs
+// for order reports. Use on the business thread.
 class SimNowSubmissions {
  public:
-  // Identifies one invocation before and after the exchange assigns system_id.
+  // Associates a submitted order with its request and counter identifiers.
   struct Entry {
     OrderInfo order;
     int request_id;
@@ -33,11 +33,13 @@ class SimNowSubmissions {
   // this session's startup snapshot. An invalid or exhausted floor blocks sends.
   void Start(int front, int session, std::string_view max_ref,
              const SimNowOrderHistory& history);
-  // Writes the order fields into a zero-initialized request containing the
-  // account fields. Installs all associations before the SDK sees the request.
+  // Fills a zero-initialized request whose account fields are already set.
+  // On success registers its identifiers and returns true; the caller can then
+  // send it to the SDK. Returns false if the order cannot be prepared.
   bool Prepare(const OrderInfo& order, int request_id, CThostFtdcInputOrderField& request);
   // Fills the target of a delete action for an order sent by this session.
   bool SetCancelTarget(OrderId id, CThostFtdcInputOrderActionField& action) const;
+  // These lookups return nullptr if the native identifier is unknown.
   const Entry* ByRequest(int request_id) const;
   const Entry* ByReference(std::string_view ref) const;
   const Entry* ByExchange(const std::string& exchange, const std::string& system_id) const;

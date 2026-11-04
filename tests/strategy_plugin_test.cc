@@ -79,7 +79,7 @@ class PluginTest : public ::testing::Test {
     auto file = root / (std::to_string(strategy) + ".conf");
     std::ofstream out(file);
     out << "# test configuration\nlibrary=" << library
-        << "\nstrategy_id=" << strategy << "\naccount_id=7\ninstrument_id=42\n" << params;
+        << "\nstrategy_id=" << strategy << "\naccount_id=7\nparam.instrument_id=42\n" << params;
     out.close();
     return file.string();
   }
@@ -190,6 +190,29 @@ TEST_F(PluginTest, RejectsBadLibraryEntryVersionAndCreationWithoutResidualCallba
   }
   auto valid = Load(Config(MAKER_PLUGIN, "param.quantity=1"));
   ASSERT_TRUE(valid) << error;
+}
+
+TEST_F(PluginTest, InstrumentIsValidatedByThePluginRatherThanTheConfigParser) {
+  for (const auto* value : {"0", "-1", "4294967296", "bad"}) {
+    const auto path = root / "private.conf";
+    std::ofstream(path) << "library=" << MAKER_PLUGIN
+        << "\nstrategy_id=11\naccount_id=7\nparam.quantity=1\nparam.instrument_id=" << value << '\n';
+    StrategyConfig config;
+    ASSERT_TRUE(ReadStrategyConfig(path.string(), config, error)) << error;
+    EXPECT_FALSE(Load(path.string()));
+    EXPECT_FALSE(error.empty());
+  }
+  const auto path = root / "generic.conf";
+  std::ofstream(path) << "library=" << FIXED_PLUGIN
+      << "\nstrategy_id=11\naccount_id=7\nparam.price=100\n";
+  auto plugin = Load(path.string());
+  ASSERT_TRUE(plugin) << error;
+  Quote();
+  EXPECT_TRUE(counter.orders.empty());
+  ASSERT_TRUE(plugin->Stop());
+  std::ofstream(path, std::ios::app) << "instrument_id=42\n";
+  StrategyConfig config;
+  EXPECT_FALSE(ReadStrategyConfig(path.string(), config, error));
 }
 
 TEST_F(PluginTest, InvalidConfigurationDoesNotChangeOutputOrLoadLibrary) {

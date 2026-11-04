@@ -10,7 +10,6 @@ namespace yquant::trading {
 
 // Generates order IDs for one caller service on its business thread.
 // Share it across that service's strategies, accounts and target services.
-// Copying would let multiple generators allocate the same future IDs.
 class OrderIdGenerator {
  public:
   // Starts after last_sequence, which defaults to no previously allocated IDs.
@@ -21,7 +20,7 @@ class OrderIdGenerator {
   OrderIdGenerator& operator=(const OrderIdGenerator&) = delete;
 
   std::uint64_t caller_service_id() const { return caller_service_id_; }
-  // Skips already issued sequences without rewinding a shared generator.
+  // Ensures the next ID is above sequence; never decreases the current sequence.
   void AdvancePast(std::uint64_t sequence) {
     if (sequence > sequence_) sequence_ = sequence;
   }

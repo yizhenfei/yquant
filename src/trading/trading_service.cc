@@ -38,7 +38,8 @@ bool Valid(const OrderInfo& order) {
 bool InScope(const OrderInfo& order, OrderState state, StrategyOrderScope scope) {
   return order.order_id.caller_service_id == scope.caller &&
          order.account_id == scope.account && order.strategy_id == scope.strategy &&
-         order.instrument_id == scope.instrument && internal::IsActiveOrder(state);
+         (!scope.instrument || order.instrument_id == *scope.instrument) &&
+         internal::IsActiveOrder(state);
 }
 
 // Checks a counter report before applying it to an established order.

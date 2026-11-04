@@ -9,8 +9,9 @@
 
 namespace yquant::trading::internal {
 
-// Creates the native API after validating config. The session calls Release
-// after unregistering its SPI; the factory is used only during this call.
+// Creates a trading session using an injectable SDK factory for testing.
+// Returns nullptr if configuration is invalid or SDK creation fails.
+// The session releases the SDK after unregistering its callbacks.
 std::unique_ptr<SimNowTradingAdapter> StartTraderSession(
     const SimNowTraderConfig& config,
     const std::function<CThostFtdcTraderApi*()>& create);

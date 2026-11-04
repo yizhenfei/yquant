@@ -15,7 +15,7 @@
 
 namespace yquant::trading {
 
-// The original caller identity is absent for an external working order.
+// Identifies the YQuant caller and strategy of a recovered order.
 struct RecoveredOwner {
   OrderId order_id;
   std::uint64_t strategy_id = 0;
@@ -25,6 +25,7 @@ struct RecoveredOwner {
 // order within this account's baseline, independently of strategy ownership.
 struct RecoveredOrder {
   std::size_t key;
+  // Absent when the order cannot be attributed to a YQuant caller and strategy.
   std::optional<RecoveredOwner> owner;
   std::uint32_t instrument;
   Side side;
@@ -59,17 +60,18 @@ struct RecoveredCumulative {
 struct RecoveryRoutingFailure {};
 using RecoveredEvent = std::variant<RecoveredFill, RecoveredCancellation, RecoveredCumulative, RecoveryRoutingFailure>;
 
-// Owns a single-currency accounting baseline. Funds use local book units,
-// positions already include all freezes and fills include the booked history
-// of working orders. A separate sync completion certifies the live boundary.
+// Provides the initial account state used to resume local accounting.
+// Funds follow FundsInfo conventions; positions include existing freezes, and
+// fills contain the already-booked executions of recovered working orders.
+// Publish only after the matching account-sync completion report.
 struct AccountRecovery {
   FundsInfo funds;
   std::vector<PositionInfo> positions;
   std::vector<RecoveredOrder> orders;
   std::vector<RecoveredFill> fills;
-  // Default speculative terms for new orders on the configured instruments.
+  // Buy and sell terms, in that order, for new speculative orders by instrument.
   std::unordered_map<std::uint32_t, std::pair<FundsTerms, FundsTerms>> order_terms;
-  // Includes terminal orders returned by the counter for each caller.
+  // Highest observed sequence per caller, including terminal counter orders.
   std::unordered_map<std::uint64_t, std::uint64_t> last_sequences;
 };
 

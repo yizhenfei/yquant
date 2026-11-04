@@ -9,9 +9,9 @@
 
 namespace yquant::strategy {
 
-// Quotes one instrument on the business thread. The owner subscribes the
-// strategy service to instrument_id and keeps this listener alive until trading
-// stops. client and the caller service's shared ID generator are borrowed.
+// Maintains buy and sell quotes for one instrument at the best bid and ask.
+// Cancels an old quote before replacing it. Run callbacks on the business thread
+// and share the caller service's ID generator with its other strategy instances.
 class MarketMaker final : public Strategy {
  public:
   MarketMaker(trading::TradingClient& client, trading::OrderIdGenerator& ids,
@@ -19,6 +19,11 @@ class MarketMaker final : public Strategy {
               std::uint32_t instrument_id, std::int32_t quantity);
   MarketMaker(const MarketMaker&) = delete;
   MarketMaker& operator=(const MarketMaker&) = delete;
+
+  // Strategy implementation.
+  std::span<const std::uint32_t> Subscriptions() const override {
+    return {&instrument_, 1};
+  }
 
   // market::QuoteListener implementation.
   void OnQuote(const model::Quote& quote) override;
@@ -46,7 +51,7 @@ class MarketMaker final : public Strategy {
   };
 
   // Restores at most one working quote per side before placing any new quote.
-  // An ambiguous set stays unbound and is reconsidered on the next quote.
+  // Returns false if the working orders cannot be adopted; retries on a later quote.
   bool AdoptWorkingOrders();
   // Acts on the latest prices, using at most one live order per side.
   void Requote();

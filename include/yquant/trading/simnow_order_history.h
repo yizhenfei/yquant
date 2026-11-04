@@ -51,8 +51,8 @@ struct SimNowFill {
 };
 
 // Builds an account's trading-day history before the snapshot is published.
-// Identical duplicates succeed. Conflicting identifiers or data fail the
-// collection. Neither insertion sends a request or changes any account funds.
+// AddOrder and AddFill accept identical duplicates and reject conflicting
+// identifiers or data. This history does not perform account accounting.
 class SimNowOrderHistory {
  public:
   // Indexes the order by each available native key and its decoded OrderId.
@@ -67,12 +67,15 @@ class SimNowOrderHistory {
   // Compares complete native identities, order states and fills. Query row
   // order and the resulting local indexes may differ between reads.
   bool Matches(const SimNowOrderHistory& other) const;
+  // Returns true when detailed fill quantities equal every order's traded total.
   bool HasCompleteFills() const;
+  // Looks up the native order; returns nullptr for missing or conflicting IDs.
   const SimNowOrder* FindNative(const SimNowOrder& order) const;
   // Returns the largest recovered sequence for use with OrderIdGenerator.
   // Take the maximum across this caller's accounts before allocating IDs.
   std::uint64_t LastSequence(std::uint64_t caller) const;
-  // The returned order is borrowed until the next insertion or destruction.
+  // The Find overloads return nullptr for unknown IDs. Adding orders may
+  // invalidate returned pointers; look up the order again after insertion.
   const SimNowOrder* Find(OrderId id) const;
   const SimNowOrder* Find(int front, int session, const std::string& ref) const;
   const SimNowOrder* Find(const std::string& exchange,

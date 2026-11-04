@@ -16,7 +16,7 @@ struct OrderCost {
   double total() const { return margin + fee; }
 };
 
-// Prices a quantity using a validated order and configured terms. Missing
+// Calculates margin and fees for the given price and quantity. Missing
 // rates, invalid price/quantity or unrepresentable costs return nullopt.
 std::optional<OrderCost> CalculateOrderCost(const OrderInfo& order,
                                            const FundsTerms& terms,

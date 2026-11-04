@@ -123,10 +123,10 @@ class MonodRuntimeTest : public ::testing::Test {
     ASSERT_NE(mkdtemp(path), nullptr);
     root = path;
     std::ofstream(root / "strategy.conf") << "library=" << MAKER_PLUGIN
-        << "\nstrategy_id=11\naccount_id=7\ninstrument_id=42\nparam.quantity=1\n";
+        << "\nstrategy_id=11\naccount_id=7\nparam.instrument_id=42\nparam.quantity=1\n";
     std::ofstream(root / "runtime.conf") << "strategy=strategy.conf\n"
         "market_front=tcp://fixture:1\ntrading_front=tcp://fixture:2\n"
-        "exchange=TEST\nsymbol=contract\ncaller_service_id=10\n"
+        "instrument.42=TEST contract\ncaller_service_id=10\n"
         "startup_seconds=1\nshutdown_seconds=1\nrun_seconds=1\n";
     ASSERT_TRUE(ReadMonodConfig((root / "runtime.conf").string(), config, error)) << error;
   }
@@ -205,7 +205,7 @@ class MultiRuntimeTest : public MonodRuntimeTest {
     std::ofstream file(root / (name + ".conf"));
     file << "library=" << library
         << "\nstrategy_id=" << id << "\naccount_id=" << account
-        << "\ninstrument_id=" << instrument << "\nparam.quantity=2\n";
+        << "\nparam.instrument_id=" << instrument << "\nparam.quantity=2\n";
     if (library != MAKER_PLUGIN) {
       file << "param.price=100\nparam.marker=" << (root / name).string() << "\n";
     }
@@ -273,6 +273,31 @@ TEST_F(MultiRuntimeTest, GroupsShareAccountWithIndependentCallersAndCompleteShut
   EXPECT_NE(out.find("monod_stopped canceled=3 remaining=0"), out.npos);
 }
 
+TEST_F(MultiRuntimeTest, ShutdownCancelsAllInstrumentsOwnedByEachInstance) {
+  std::ifstream input(root / "a.conf");
+  std::string settings{std::istreambuf_iterator<char>(input), {}};
+  const auto start = settings.find("param.instrument_id=42");
+  ASSERT_NE(start, settings.npos);
+  settings.replace(start, std::string("param.instrument_id=42").size(),
+                   "param.instrument_id=42 81");
+  std::ofstream(root / "a.conf") << settings;
+  ASSERT_TRUE(Read(deployment)) << error;
+  Counter counter;
+  counter.auto_fill = false;
+  Quotes quotes(counter);
+  quotes.multi = true;
+  EXPECT_EQ(RunMonod(config, quotes, counter, [&] { return counter.runs >= 9; }, error), 0) << error;
+  ASSERT_EQ(counter.orders.size(), 4);
+  EXPECT_EQ(counter.cancels.size(), 4);
+  std::set<std::uint32_t> instruments;
+  for (const auto& order : counter.orders) {
+    if (order.order_id.caller_service_id == 10 && order.strategy_id == 11) {
+      instruments.insert(order.instrument_id);
+    }
+  }
+  EXPECT_EQ(instruments, (std::set<std::uint32_t>{42, 81}));
+}
+
 TEST_F(MultiRuntimeTest, PluginFailureRollsBackAllPreviouslyCreatedGroups) {
   WriteStrategy("c", 11, 81, FAIL_PLUGIN);
   ASSERT_TRUE(Read(deployment)) << error;
@@ -299,7 +324,13 @@ TEST_F(MultiRuntimeTest, RejectsAmbiguousIdentityMappingsAndMixedAccounts) {
   WriteStrategy("c", 11, 81, FIXED_PLUGIN, 8);
   EXPECT_FALSE(Read(deployment));
   WriteStrategy("c", 11, 99);
-  EXPECT_FALSE(Read(deployment));
+  ASSERT_TRUE(Read(deployment));
+  Counter counter;
+  Quotes quotes(counter);
+  EXPECT_EQ(RunMonod(config, quotes, counter, [] { return false; }, error), 1);
+  EXPECT_NE(error.find("no deployment instrument mapping"), error.npos);
+  EXPECT_TRUE(counter.orders.empty());
+  EXPECT_EQ(counter.runs, 0);
 }
 
 TEST_F(MultiRuntimeTest, ShutdownCollectsOtherGroupsAfterOneRejection) {

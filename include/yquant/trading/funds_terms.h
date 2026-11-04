@@ -15,7 +15,7 @@ struct FeeRate {
   double per_notional = 0;
 };
 
-// Owns the parameters for one account, instrument and order direction.
+// Defines the margin and fee rules for an account, instrument and order side.
 // fees is indexed by Offset; a missing rate is unknown, while FeeRate{} is a
 // known zero fee. margin_rate is needed only for opening orders.
 struct FundsTerms {
