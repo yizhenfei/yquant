@@ -13,9 +13,10 @@ namespace {
 // module so tests can check cleanup after the last dlclose.
 class FixedPrice final : public Strategy {
  public:
-  FixedPrice(const StrategyConfig& config, trading::TradingClient& client,
-             trading::OrderIdGenerator& ids, double price)
-      : config_(config), client_(client), ids_(ids), price_(price) {
+  FixedPrice(StrategyContext& context, double price)
+      : context_(context), config_(context.config()), client_(context.trading_client()),
+        ids_(context.order_ids()), price_(price) {
+    const auto& config = context.config();
     const auto setting = config.parameters.find("instrument_id");
     std::istringstream input(setting == config.parameters.end() ? "" : setting->second);
     std::uint32_t instrument;
@@ -27,7 +28,27 @@ class FixedPrice final : public Strategy {
   }
 
   // Strategy implementation.
-  std::span<const std::uint32_t> Subscriptions() const override { return instruments_; }
+  bool OnInitialize(std::string& error) override {
+    if (client_.BindListener(*this)) {
+      error = "Trading listener was not bound before initialization";
+      return false;
+    }
+    const auto marker = config_.parameters.find("marker");
+    if (marker != config_.parameters.end()) {
+      std::ofstream(marker->second + ".initialized", std::ios::app) << "initialized\n";
+    }
+    for (auto instrument : instruments_) {
+      if (!context_.market_client().Subscribe(instrument)) {
+        error = "fixture subscription failed";
+        return false;
+      }
+    }
+    if (config_.parameters.contains("fail_initialize")) {
+      error = "fixture initialization failed after subscribing";
+      return false;
+    }
+    return true;
+  }
 
   // market::QuoteListener implementation.
   void OnQuote(const model::Quote& quote) override {
@@ -52,7 +73,8 @@ class FixedPrice final : public Strategy {
   void OnTradeReport(const trading::TradeReport&) override {}
 
  private:
-  StrategyConfig config_;
+  StrategyContext& context_;
+  const StrategyConfig& config_;
   trading::TradingClient& client_;
   trading::OrderIdGenerator& ids_;
   double price_;
@@ -60,15 +82,15 @@ class FixedPrice final : public Strategy {
   std::unordered_set<std::uint32_t> sent_;
 };
 
-Strategy* Create(const StrategyConfig& config, trading::TradingClient& client,
-                  trading::OrderIdGenerator& ids, std::string& error) {
+Strategy* Create(StrategyContext& context, std::string& error) {
+  const auto& config = context.config();
   const auto it = config.parameters.find("price");
   if (it == config.parameters.end()) { error = "missing price"; return nullptr; }
   double price = 0;
   const auto end = it->second.data() + it->second.size();
   auto [ptr, ec] = std::from_chars(it->second.data(), end, price);
   if (ec != std::errc{} || ptr != end || price <= 0) { error = "bad price"; return nullptr; }
-  auto* instance = new FixedPrice(config, client, ids, price);
+  auto* instance = new FixedPrice(context, price);
 #ifdef FAIL_CREATE
   delete instance;
   error = "fixture creation failed";

@@ -27,7 +27,7 @@ instrument.42=CFFEX TF2612 yesterday
 instrument.81=CFFEX T2612 yesterday
 ```
 
-策略文件中的 `strategy_id` 必须与部署键一致，所有实例的 `account_id` 必须相同。实例声明的订阅必须存在于合约映射中。策略 ID 在各自 service 内唯一；不同 service 可以复用策略 ID。重复的 caller/策略组合和合约标识在创建接入前报错；插件加载后校验订阅映射，缺失映射时清理实例并拒绝启动业务循环。构建目录生成的 `monod.multi.conf` 和三个 `market_maker*.conf` 提供完整样例，运行时长为 1 秒。
+策略文件中的 `strategy_id` 必须与部署键一致，所有实例的 `account_id` 必须相同。策略初始化时建立的订阅必须存在于合约映射中。策略 ID 在各自 service 内唯一；不同 service 可以复用策略 ID。重复的 caller/策略组合和合约标识在创建接入前报错；全部实例初始化后校验实际订阅映射，缺失映射时清理实例并拒绝启动业务循环。构建目录生成的 `monod.multi.conf` 和三个 `market_maker*.conf` 提供完整样例，运行时长为 1 秒。
 
 单实例配置使用 `strategy` 和 `caller_service_id`，读取后转换成单实例组；合约同样通过 `instrument.<id>` 显式映射，可配置多个。单实例字段不能与 `strategy.<caller_id>.<strategy_id>` 混用。旧配置中的 `exchange`、`symbol`、`close_priority` 合并为 `instrument.<id>=交易所 合约 平仓优先顺序`，策略文件中的 `instrument_id` 改为做市插件的 `param.instrument_id`。
 
@@ -35,7 +35,7 @@ instrument.81=CFFEX T2612 yesterday
 
 ## 调度与退出
 
-宿主先加载所有策略 service 的实例，并为每个实例创建独立 client；任一加载失败会清理此前创建的实例，业务循环不会启动。container 在一个业务线程上依次调度交易和行情 service。启动期间继续读取行情以推进登录和订阅；账户资金或整组行情订阅尚不可用时丢弃读到的行情。二者就绪后，第一条可用行情触发 `monod_started services=N strategies=N account=ID`，随后经各 client 交给订阅该合约的策略实例。
+宿主先加载所有策略 service 的实例，并为每个实例创建独立 client；任一加载或初始化失败会清理此前创建的实例，业务循环不会启动。container 在一个业务线程上依次调度交易和行情 service。启动期间继续读取行情以推进登录和订阅；账户资金或整组行情订阅尚不可用时丢弃读到的行情。二者就绪后，第一条可用行情触发 `monod_started services=N strategies=N account=ID`，随后经各 client 交给订阅该合约的策略实例。
 
 达到运行时长或收到终止信号时，运行循环结束。宿主先关闭所有实例的行情、交易 client，再销毁实例。退出撤单使用另一个绑定到宿主接收者的交易 client，按各实例的 caller、账户和策略 ID 收集所有合约的活动订单并撤销。若候选撤单 ID 已用过，改用下一个未用 ID；该重复检查发生在 service 内，不向柜台重发。每笔撤单保留对应的账户及策略归属，成功确认时输出 `monod_canceled`，包含 caller ID、策略 ID、订单序号、撤单请求 ID 和累计成交量，重复回报不重复输出。停止后继续调度交易回报，所有活动订单结束、撤单结果收齐且资金重新可查询时输出 `monod_stopped`。未知归属订单继续由账户独立记账，不加入这些实例的退出撤单集合。
 

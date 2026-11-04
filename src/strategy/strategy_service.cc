@@ -28,19 +28,14 @@ bool StrategyService::Load(std::span<const StrategyConfig> configs, std::string&
       return false;
     }
   }
-  std::unordered_set<std::uint32_t> instruments;
   strategies_.reserve(configs.size());
   for (const auto& config : configs) {
     auto strategy = LoadedStrategy::Load(config, markets_, market_id_, traders_, trading_id_, ids_, error);
     if (!strategy) { Stop(); return false; }
-    for (auto instrument : strategy->subscriptions()) {
-      if (instruments.insert(instrument).second) subscriptions_.push_back(instrument);
-    }
     strategies_.push_back(std::move(strategy));
   }
   for (const auto& strategy : strategies_) {
-    if (!strategy->Start()) {
-      error = "Could not start strategy subscriptions";
+    if (!strategy->Initialize(error)) {
       Stop();
       return false;
     }
@@ -53,7 +48,6 @@ bool StrategyService::Stop() {
   for (const auto& strategy : strategies_) if (!strategy->CanStop()) return false;
   for (const auto& strategy : strategies_) if (!strategy->Detach()) return false;
   strategies_.clear();
-  subscriptions_.clear();
   return true;
 }
 

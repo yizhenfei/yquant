@@ -12,10 +12,10 @@ namespace {
 // view. Each module instance has its own output file and trading listener.
 class AccountProbe final : public Strategy {
  public:
-  AccountProbe(const StrategyConfig& config, trading::TradingClient& client,
-               trading::OrderIdGenerator& ids)
-      : config_(config), client_(client), ids_(ids),
-        output_(config.parameters.at("output")) {
+  explicit AccountProbe(StrategyContext& context)
+      : context_(context), config_(context.config()), client_(context.trading_client()),
+        ids_(context.order_ids()), output_(config_.parameters.at("output")) {
+    const auto& config = context.config();
     std::istringstream submits(config.parameters.at("submit"));
     std::istringstream cancels(config.parameters.at("cancel"));
     std::uint64_t sequence;
@@ -24,7 +24,11 @@ class AccountProbe final : public Strategy {
   }
 
   // Strategy implementation.
-  std::span<const std::uint32_t> Subscriptions() const override { return {&instrument_, 1}; }
+  bool OnInitialize(std::string& error) override {
+    if (context_.market_client().Subscribe(instrument_)) return true;
+    error = "Account probe could not subscribe";
+    return false;
+  }
 
   // market::QuoteListener implementation.
   void OnQuote(const model::Quote& quote) override {
@@ -82,7 +86,8 @@ class AccountProbe final : public Strategy {
             << config_.strategy_id << ' ' << value << '\n';
     output_.flush();
   }
-  StrategyConfig config_;
+  StrategyContext& context_;
+  const StrategyConfig& config_;
   std::uint32_t instrument_ = std::stoul(config_.parameters.at("instrument_id"));
   trading::TradingClient& client_;
   trading::OrderIdGenerator& ids_;
@@ -92,9 +97,8 @@ class AccountProbe final : public Strategy {
   std::uint64_t cancel_id_ = 0;
 };
 
-Strategy* Create(const StrategyConfig& c, trading::TradingClient& client,
-                 trading::OrderIdGenerator& ids, std::string&) {
-  return new AccountProbe(c, client, ids);
+Strategy* Create(StrategyContext& context, std::string&) {
+  return new AccountProbe(context);
 }
 void Destroy(Strategy* s) { delete s; }
 const StrategyPlugin kPlugin{kStrategyPluginVersion, Create, Destroy};

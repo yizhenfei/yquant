@@ -37,6 +37,13 @@ void MarketService::Unsubscribe(std::uint32_t instrument_id,
   }
 }
 
+std::vector<std::uint32_t> MarketService::SubscribedInstruments() const {
+  std::vector<std::uint32_t> instruments;
+  instruments.reserve(subscriptions_.size());
+  for (const auto& [instrument, listeners] : subscriptions_) instruments.push_back(instrument);
+  return instruments;
+}
+
 bool MarketService::DetachListener(QuoteListener& listener) {
   if (!CanDetachListeners()) return false;
   for (auto it = subscriptions_.begin(); it != subscriptions_.end();) {

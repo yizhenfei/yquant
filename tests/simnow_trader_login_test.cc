@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "strategy_test_context.h"
 #include "bound_clients.h"
 #include "yquant/strategies/market_maker/market_maker.h"
 #include "simnow_order_tag.h"
@@ -1462,13 +1463,16 @@ TEST_F(AccountBoundaryTest, TwoMakersAdoptOnlyTheirOwnLegAndContinueQuoting) {
   probe->account_balance.FrozenCommission += 4.02;
   probe->account_balance.Available = 10000;
   OrderIdGenerator ids(5);
-  strategies::market_maker::MarketMaker first(*client, ids, 7, 31, 42, 1);
-  ASSERT_TRUE(client->BindListener(first));
+  test::StrategyTestContext first_context(*client, ids, 7, 31);
+  strategies::market_maker::MarketMaker first(first_context.context(), 42, 1);
+  std::string initialization_error;
+  ASSERT_TRUE(first_context.Initialize(first, initialization_error));
   TradingServiceRegistry second_registry;
   ASSERT_TRUE(second_registry.Register(1, service));
   auto second_client = TradingClientFactory(second_registry).Create(1);
-  strategies::market_maker::MarketMaker second(*second_client, ids, 7, 32, 42, 1);
-  ASSERT_TRUE(second_client->BindListener(second));
+  test::StrategyTestContext second_context(*second_client, ids, 7, 32);
+  strategies::market_maker::MarketMaker second(second_context.context(), 42, 1);
+  ASSERT_TRUE(second_context.Initialize(second, initialization_error));
   model::Quote quote{42, 100, 102, 1, 1, 1};
   first.OnQuote(quote);
   EXPECT_TRUE(adapter->submits.empty());
@@ -1517,8 +1521,10 @@ TEST_F(AccountBoundaryTest, NeitherAmbiguousLegsNorASecondListenerCanStealOrders
   Drain();
   ASSERT_TRUE(service.IsAccountReady(7));
   OrderIdGenerator ids(5);
-  strategies::market_maker::MarketMaker maker(*client, ids, 7, 31, 42, 1);
-  ASSERT_TRUE(client->BindListener(maker));
+  test::StrategyTestContext context(*client, ids, 7, 31);
+  strategies::market_maker::MarketMaker maker(context.context(), 42, 1);
+  std::string initialization_error;
+  ASSERT_TRUE(context.Initialize(maker, initialization_error));
   maker.OnQuote({42, 100, 102, 1, 1, 1});
   EXPECT_TRUE(adapter->submits.empty());
   const StrategyOrderScope scope{5, 7, 31, 42};

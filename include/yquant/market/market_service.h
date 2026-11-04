@@ -37,6 +37,9 @@ class MarketService final : public container::Service {
   // Removes listener's subscription to instrument_id if one exists.
   void Unsubscribe(std::uint32_t instrument_id, QuoteListener& listener);
 
+  // Returns the distinct instruments currently subscribed, in unspecified order.
+  std::vector<std::uint32_t> SubscribedInstruments() const;
+
   // Removes every subscription for listener; returns false during Run.
   bool DetachListener(QuoteListener& listener);
   bool CanDetachListeners() const { return !running_; }

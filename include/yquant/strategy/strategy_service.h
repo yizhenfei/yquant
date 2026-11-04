@@ -26,14 +26,13 @@ class StrategyService final {
   StrategyService(const StrategyService&) = delete;
   StrategyService& operator=(const StrategyService&) = delete;
 
-  // Loads every instance before starting quote delivery. Failure releases the
-  // attempted group; an already loaded group remains unchanged.
+  // Creates and binds every instance before calling their OnInitialize callbacks.
+  // Failure releases the attempted group; an already loaded group is unchanged.
   bool Load(std::span<const StrategyConfig> configs, std::string& error);
   // Closes all clients before destroying any instance. If any client cannot
   // close now, returns false without changing the group. After success another
   // group may load.
   bool Stop();
-  std::span<const std::uint32_t> subscriptions() const { return subscriptions_; }
 
  private:
   const market::MarketClientFactory& markets_;
@@ -41,7 +40,6 @@ class StrategyService final {
   std::uint64_t market_id_, trading_id_;
   trading::OrderIdGenerator ids_;
   std::vector<std::unique_ptr<LoadedStrategy>> strategies_;
-  std::vector<std::uint32_t> subscriptions_;
 };
 
 }  // namespace yquant::strategy

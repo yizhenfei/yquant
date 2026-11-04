@@ -13,7 +13,8 @@ class MarketClient {
   virtual ~MarketClient() = default;
   // Binds the only callback receiver. Returns false if already bound or closed.
   virtual bool BindListener(QuoteListener& listener) = 0;
-  // Returns false if unbound, closed or subscriptions cannot change during delivery.
+  // Returns false for zero IDs, an unbound or closed client, or during delivery.
+  // Repeating a subscription has no effect.
   virtual bool Subscribe(std::uint32_t instrument_id) = 0;
   virtual bool Unsubscribe(std::uint32_t instrument_id) = 0;
   // Reports whether Close can complete now without interrupting a callback.

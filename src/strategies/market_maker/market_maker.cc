@@ -10,12 +10,19 @@ using trading::OrderState;
 using trading::RequestResult;
 using trading::Side;
 
-MarketMaker::MarketMaker(trading::TradingClient& client,
-                         trading::OrderIdGenerator& ids,
-                         std::uint64_t account_id, std::uint64_t strategy_id,
+MarketMaker::MarketMaker(strategy::StrategyContext& context,
                          std::uint32_t instrument_id, std::int32_t quantity)
-    : client_(client), ids_(ids), account_(account_id), strategy_(strategy_id),
+    : context_(context), client_(context.trading_client()), ids_(context.order_ids()),
+      account_(context.config().account_id), strategy_(context.config().strategy_id),
       instrument_(instrument_id), quantity_(quantity) {}
+
+bool MarketMaker::OnInitialize(std::string& error) {
+  if (!context_.market_client().Subscribe(instrument_)) {
+    error = "MarketMaker could not subscribe to its instrument";
+    return false;
+  }
+  return true;
+}
 
 void MarketMaker::OnQuote(const model::Quote& quote) {
   if (quote.instrument_id != instrument_ || quantity_ <= 0 ||

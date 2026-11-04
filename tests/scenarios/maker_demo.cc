@@ -152,11 +152,14 @@ bool VerifyMaker() {
   auto trader = trading::TradingClientFactory(traders).Create(3);
   if (!trader || !trading_service.IsAccountReady(7)) return false;
   trading::OrderIdGenerator ids(100);
-  strategies::market_maker::MarketMaker maker(*trader, ids, 7, 2, 42, 2);
-  if (!trader->BindListener(maker)) return false;
-  auto market = market::MarketClientFactory(markets).Create(1, maker);
+  auto market = market::MarketClientFactory(markets).Create(1);
   if (!market) return false;
-  market->Subscribe(42);
+  const strategy::StrategyConfig config{"", 2, 7, {}};
+  strategy::StrategyContext context(config, *market, *trader, ids);
+  strategies::market_maker::MarketMaker maker(context, 42, 2);
+  std::string error;
+  if (!trader->BindListener(maker) || !market->BindListener(maker) ||
+      !maker.OnInitialize(error)) return false;
   container::Container container;
   const bool ran = container.Register(market_service) &&
                    container.Register(trading_service) &&

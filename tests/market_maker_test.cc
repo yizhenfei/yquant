@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "strategy_test_context.h"
 #include "yquant/trading/simulated_trading_adapter.h"
 #include "yquant/trading/trading_client_factory.h"
 #include "yquant/trading/trading_service_registry.h"
@@ -44,8 +45,10 @@ class MakerTest : public ::testing::Test {
     ASSERT_TRUE(registry.Register(3, service));
     client = TradingClientFactory(registry).Create(3);
     ASSERT_NE(client, nullptr);
-    maker = std::make_unique<MarketMaker>(*client, ids, 7, 2, 42, 2);
-    ASSERT_TRUE(client->BindListener(*maker));
+    environment = std::make_unique<test::StrategyTestContext>(*client, ids, 7, 2);
+    maker = std::make_unique<MarketMaker>(environment->context(), 42, 2);
+    std::string error;
+    ASSERT_TRUE(environment->Initialize(*maker, error)) << error;
     FundsTerms terms;
     terms.currency = model::Currency("CNY");
     terms.contract_multiplier = 1;
@@ -70,6 +73,7 @@ class MakerTest : public ::testing::Test {
   TradingServiceRegistry registry;
   OrderIdGenerator ids{100};
   std::unique_ptr<TradingClient> client;
+  std::unique_ptr<test::StrategyTestContext> environment;
   std::unique_ptr<MarketMaker> maker;
   std::uint64_t seq = 0;
 };
@@ -240,8 +244,10 @@ TEST_F(MakerTest, LatePricedFillOnCanceledOrderLeavesReplacementIntact) {
 TEST_F(MakerTest, ExhaustedSharedGeneratorDoesNotReuseAnOrderId) {
   OrderIdGenerator limited(101, std::numeric_limits<std::uint64_t>::max() - 1);
   auto last_client = TradingClientFactory(registry).Create(3);
-  MarketMaker last(*last_client, limited, 7, 3, 42, 1);
-  ASSERT_TRUE(last_client->BindListener(last));
+  test::StrategyTestContext last_context(*last_client, limited, 7, 3);
+  MarketMaker last(last_context.context(), 42, 1);
+  std::string error;
+  ASSERT_TRUE(last_context.Initialize(last, error)) << error;
   last.OnQuote({42, 100, 102, 1, 1, 1});
   service.Run();
   last.OnQuote({42, 100, 103, 1, 1, 2});

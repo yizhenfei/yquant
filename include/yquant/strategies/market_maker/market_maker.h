@@ -14,16 +14,13 @@ namespace yquant::strategies::market_maker {
 // and share the caller service's ID generator with its other strategy instances.
 class MarketMaker final : public strategy::Strategy {
  public:
-  MarketMaker(trading::TradingClient& client, trading::OrderIdGenerator& ids,
-              std::uint64_t account_id, std::uint64_t strategy_id,
+  MarketMaker(strategy::StrategyContext& context,
               std::uint32_t instrument_id, std::int32_t quantity);
   MarketMaker(const MarketMaker&) = delete;
   MarketMaker& operator=(const MarketMaker&) = delete;
 
   // strategy::Strategy implementation.
-  std::span<const std::uint32_t> Subscriptions() const override {
-    return {&instrument_, 1};
-  }
+  bool OnInitialize(std::string& error) override;
 
   // market::QuoteListener implementation.
   void OnQuote(const model::Quote& quote) override;
@@ -62,6 +59,7 @@ class MarketMaker final : public strategy::Strategy {
   static void Retire(Leg& leg, double failed_target = 0);
   void Apply(const trading::OrderSnapshot& snapshot);
 
+  strategy::StrategyContext& context_;
   trading::TradingClient& client_;
   trading::OrderIdGenerator& ids_;
   std::uint64_t account_;

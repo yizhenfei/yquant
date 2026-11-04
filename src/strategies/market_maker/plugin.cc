@@ -7,8 +7,8 @@
 namespace yquant::strategies::market_maker {
 namespace {
 
-strategy::Strategy* Create(const strategy::StrategyConfig& config, trading::TradingClient& client,
-                  trading::OrderIdGenerator& ids, std::string& error) {
+strategy::Strategy* Create(strategy::StrategyContext& context, std::string& error) {
+  const auto& config = context.config();
   const auto quantity = config.parameters.find("quantity");
   const auto instrument = config.parameters.find("instrument_id");
   if (quantity == config.parameters.end() || instrument == config.parameters.end() ||
@@ -27,8 +27,7 @@ strategy::Strategy* Create(const strategy::StrategyConfig& config, trading::Trad
     error = "MarketMaker quantity and instrument_id must be positive integers within range";
     return nullptr;
   }
-  return new MarketMaker(client, ids, config.account_id, config.strategy_id,
-                          instrument_id, lots);
+  return new MarketMaker(context, instrument_id, lots);
 }
 
 void Destroy(strategy::Strategy* strategy) { delete strategy; }

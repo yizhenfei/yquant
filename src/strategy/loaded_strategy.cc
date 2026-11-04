@@ -3,7 +3,6 @@
 #include <dlfcn.h>
 
 #include <cstdlib>
-#include <unordered_set>
 
 namespace yquant::strategy {
 
@@ -42,23 +41,15 @@ std::unique_ptr<LoadedStrategy> LoadedStrategy::Load(const StrategyConfig& confi
   if (!loaded->market_) { error = "Market service is unavailable for client creation"; return nullptr; }
   loaded->trading_ = traders.Create(trading_id);
   if (!loaded->trading_) { error = "Trading service is unavailable for client creation"; return nullptr; }
-  loaded->instance_ = api->create(loaded->config_, *loaded->trading_, ids, error);
+  loaded->context_.emplace(loaded->config_, *loaded->market_, *loaded->trading_, ids);
+  loaded->instance_ = api->create(*loaded->context_, error);
   if (!loaded->instance_) {
     if (error.empty()) error = "Strategy creation failed: " + loaded->config_.library;
     return nullptr;
   }
-  std::unordered_set<std::uint32_t> unique;
-  const auto subscriptions = loaded->instance_->Subscriptions();
-  for (auto instrument : subscriptions) {
-    if (!instrument || !unique.insert(instrument).second) {
-      error = "Strategy declared a zero or duplicate subscription";
-      return nullptr;
-    }
-  }
-  loaded->subscriptions_.assign(subscriptions.begin(), subscriptions.end());
   if (!loaded->market_->BindListener(*loaded->instance_) ||
       !loaded->trading_->BindListener(*loaded->instance_)) {
-    error = "Strategy must not bind its own trading listener";
+    error = "Strategy must not bind its own client listeners";
     return nullptr;
   }
   error.clear();
@@ -69,16 +60,27 @@ LoadedStrategy::~LoadedStrategy() {
   if (!Stop()) std::abort();  // Destruction during callbacks violates the lifetime contract.
 }
 
-bool LoadedStrategy::Start() {
-  if (!instance_ || detached_) return false;
-  for (auto instrument : subscriptions_) {
-    if (!market_->Subscribe(instrument)) return false;
+bool LoadedStrategy::Initialize(std::string& error) {
+  if (!instance_ || detached_ || initializing_) {
+    error = "Strategy cannot initialize in its current state";
+    return false;
   }
+  if (initialized_) { error.clear(); return true; }
+  initializing_ = true;
+  const bool ok = instance_->OnInitialize(error);
+  initializing_ = false;
+  if (!ok) {
+    if (error.empty()) error = "Strategy initialization failed: " + config_.library;
+    Stop();
+    return false;
+  }
+  initialized_ = true;
+  error.clear();
   return true;
 }
 
 bool LoadedStrategy::CanStop() const {
-  return (!market_ || market_->CanClose()) && (!trading_ || trading_->CanClose());
+  return !initializing_ && (!market_ || market_->CanClose()) && (!trading_ || trading_->CanClose());
 }
 
 bool LoadedStrategy::Detach() {

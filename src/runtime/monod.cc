@@ -123,16 +123,16 @@ int RunMonod(const MonodConfig& c, market::SimNowQuoteSource& source,
   for (const auto& group : c.services) {
     auto service = std::make_unique<strategy::StrategyService>(group.caller_service_id, market_factory, 1, trader_factory, 1);
     if (!service->Load(group.instances, error)) return 1;
-    for (auto instrument : service->subscriptions()) {
-      if (!instruments.contains(instrument)) {
-        error = "Strategy subscription has no deployment instrument mapping";
-        return 1;
-      }
-    }
     services.push_back(std::move(service));
     for (const auto& instance : group.instances) {
       scopes.push_back({group.caller_service_id, c.account_id,
                         instance.strategy_id});
+    }
+  }
+  for (auto instrument : market.SubscribedInstruments()) {
+    if (!instruments.contains(instrument)) {
+      error = "Strategy subscription has no deployment instrument mapping";
+      return 1;
     }
   }
   container::Container container;

@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <vector>
@@ -84,7 +85,7 @@ class PluginTest : public ::testing::Test {
   }
   auto Load(const std::string& path) {
     auto loaded = LoadedStrategy::Load(path, market_factory, 1, trading_factory, 2, ids, error);
-    if (loaded && !loaded->Start()) return decltype(loaded){};
+    if (loaded && !loaded->Initialize(error)) return decltype(loaded){};
     return loaded;
   }
   void Quote(double bid = 100) {
@@ -109,6 +110,50 @@ class PluginTest : public ::testing::Test {
   std::unique_ptr<trading::TradingClient> trading_client;
   std::string error;
 };
+
+TEST_F(PluginTest, InitializesOnceAfterBindingAndRetainsItsOwnContextSettings) {
+  const auto marker = (root / "initialization").string();
+  StrategyConfig config{FIXED_PLUGIN, 11, 7,
+      {{"instrument_id", "42"}, {"price", "90"}, {"marker", marker}}};
+  auto loaded = LoadedStrategy::Load(config, market_factory, 1, trading_factory, 2, ids, error);
+  ASSERT_TRUE(loaded) << error;
+  config.strategy_id = 99;
+  config.parameters.clear();
+  Quote();
+  EXPECT_TRUE(counter.orders.empty());
+  EXPECT_FALSE(std::filesystem::exists(marker + ".initialized"));
+  ASSERT_TRUE(loaded->Initialize(error)) << error;
+  ASSERT_TRUE(loaded->Initialize(error)) << error;
+  std::ifstream initialized(marker + ".initialized");
+  EXPECT_EQ((std::string{std::istreambuf_iterator<char>(initialized), {}}), "initialized\n");
+  Quote();
+  trading.Run();
+  ASSERT_EQ(counter.orders.size(), 1);
+  EXPECT_EQ(counter.orders.front().strategy_id, 11);
+  EXPECT_EQ(counter.orders.front().price, 90);
+  EXPECT_EQ(counter.orders.front().order_id, (trading::OrderId{10, 1}));
+  ASSERT_TRUE(loaded->Stop());
+  EXPECT_FALSE(loaded->Initialize(error));
+  Quote();
+  EXPECT_EQ(counter.orders.size(), 1);
+}
+
+TEST_F(PluginTest, FailedInitializationClosesPartialSubscriptionsAndCannotRetry) {
+  const auto marker = (root / "failed-init").string();
+  auto loaded = LoadedStrategy::Load(Config(FIXED_PLUGIN,
+      "param.price=90\nparam.marker=" + marker + "\nparam.fail_initialize=yes"),
+      market_factory, 1, trading_factory, 2, ids, error);
+  ASSERT_TRUE(loaded) << error;
+  EXPECT_FALSE(loaded->Initialize(error));
+  EXPECT_EQ(error, "fixture initialization failed after subscribing");
+  EXPECT_TRUE(market.SubscribedInstruments().empty());
+  EXPECT_TRUE(std::filesystem::exists(marker));
+  EXPECT_FALSE(loaded->Initialize(error));
+  Quote();
+  trading.Run();
+  EXPECT_TRUE(counter.orders.empty());
+  EXPECT_TRUE(loaded->Stop());
+}
 
 TEST_F(PluginTest, SameHostLoadsDifferentStrategiesAndParametersFromFiles) {
   const auto relative = std::filesystem::relative(MAKER_PLUGIN, root).string();

@@ -129,7 +129,7 @@ TEST_F(StrategyInstancesTest, SameAndDifferentInstrumentsShareOnlyTheServiceSequ
   EXPECT_EQ(counter.orders.back().order_id,(trading::OrderId{10,4}));
 }
 
-TEST_F(StrategyInstancesTest, OneInstanceDeclaresMultipleSubscriptionsAndCleansUpAll) {
+TEST_F(StrategyInstancesTest, OneInstanceSubscribesToMultipleInstrumentsDuringInitialization) {
   StrategyService group(10, market_factory, 1, trading_factory, 1);
   auto multi = Config(11);
   multi.parameters["instrument_id"] = "42 81";
@@ -149,19 +149,41 @@ TEST_F(StrategyInstancesTest, OneInstanceDeclaresMultipleSubscriptionsAndCleansU
   EXPECT_EQ(counter.orders.size(), 3);
 }
 
-TEST_F(StrategyInstancesTest, EmptySubscriptionListIsValidAndInvalidListsRollBack) {
+TEST_F(StrategyInstancesTest, EmptyInitializationIsValidAndZeroSubscriptionRollsBack) {
   StrategyService group(10, market_factory, 1, trading_factory, 1);
   auto config = Config(11);
   config.parameters.erase("instrument_id");
   ASSERT_TRUE(group.Load(std::vector{config}, error)) << error;
   ASSERT_TRUE(group.Stop());
-  for (const auto* invalid : {"0", "42 42"}) {
-    config.parameters["instrument_id"] = invalid;
-    EXPECT_FALSE(group.Load(std::vector{Config(12), config}, error));
+  config.parameters["instrument_id"] = "42 0";
+  EXPECT_FALSE(group.Load(std::vector{Config(12), config}, error));
+  EXPECT_TRUE(market.SubscribedInstruments().empty());
+  Publish(42);
+  EXPECT_TRUE(counter.orders.empty());
+  config.parameters["instrument_id"] = "42 42";
+  ASSERT_TRUE(group.Load(std::vector{config}, error));
+  Publish(42);
+  EXPECT_EQ(counter.orders.size(), 1);
+}
 
-    Publish(42);
-    EXPECT_TRUE(counter.orders.empty());
-  }
+TEST_F(StrategyInstancesTest, InitializationFailureRollsBackEveryInstanceAndAllowsReload) {
+  StrategyService group(10, market_factory, 1, trading_factory, 1);
+  auto broken = Config(12, 81);
+  broken.parameters["fail_initialize"] = "yes";
+  EXPECT_FALSE(group.Load(std::vector{Config(11), broken, Config(13)}, error));
+  EXPECT_EQ(error, "fixture initialization failed after subscribing");
+  EXPECT_TRUE(market.SubscribedInstruments().empty());
+  for (auto id : {11, 12, 13}) EXPECT_TRUE(std::filesystem::exists(Marker(id)));
+  EXPECT_TRUE(std::filesystem::exists(Marker(11) + ".initialized"));
+  EXPECT_TRUE(std::filesystem::exists(Marker(12) + ".initialized"));
+  EXPECT_FALSE(std::filesystem::exists(Marker(13) + ".initialized"));
+  Publish(42);
+  Publish(81);
+  EXPECT_TRUE(counter.orders.empty());
+  ASSERT_TRUE(group.Load(std::vector{Config(14)}, error));
+  Publish(42);
+  ASSERT_EQ(counter.orders.size(), 1);
+  EXPECT_EQ(counter.orders.front().strategy_id, 14);
 }
 
 TEST_F(StrategyInstancesTest, GroupFailureRollsBackBeforeAnyUpstreamSubscription) {

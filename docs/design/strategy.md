@@ -24,29 +24,32 @@
 动态库导出 C 链接入口 `yquant_strategy_plugin()`，返回接口版本、创建函数和销毁函数。宿主用 `RTLD_NOW | RTLD_LOCAL` 打开库，检查版本及函数入口后再创建实例。
 
 ```cpp
-std::span<const std::uint32_t> Strategy::Subscriptions() const;
-Strategy* create(const StrategyConfig&, TradingClient&,
-                 OrderIdGenerator&, std::string& error);
+Strategy* create(StrategyContext&, std::string& error);
+bool Strategy::OnInitialize(std::string& error);
 void destroy(Strategy*);
 ```
 
-实例实现行情和交易 listener 接口。宿主为每个实例创建独立的行情和交易 client，并注入 caller 共用的订单 ID 生成器。实例通过 `Subscriptions()` 返回初始订阅合约列表，可为空；合约 ID 必须非零且不重复。宿主复制列表，在整组加载完成后建立订阅。策略调用报单、撤单方法时不再传 listener，也不自行绑定或替换接收者。创建和销毁期间不发起交易。工厂创建失败时释放已取得资源并返回空指针，错误说明通过 `error` 返回。销毁函数在所属动态库仍加载时执行。
+`StrategyContext` 提供只读的策略配置、该实例独立的行情和交易 client，以及 caller service 共用的订单 ID 生成器，分别通过 `config()`、`market_client()`、`trading_client()` 和 `order_ids()` 获取。宿主持有 context 及其引用的配置和 client，保证它们在策略实例销毁前有效。策略工厂只接收 context 和错误输出，不再逐个接收组件。
 
-当前版本为 4，接口包含 C++ 虚类和标准库类型。宿主与策略库须使用同一版项目头文件、兼容编译器 ABI 和相同标准库。接口布局或语义发生不兼容变化时提升版本，并重新构建两端。
+实例实现行情和交易 listener 接口。宿主绑定接收者后调用 `OnInitialize(error)`，策略在此调用行情 client 的 `Subscribe`，自行决定订阅哪些合约，也可以不订阅。合约 ID 必须非零；重复订阅遵循 client 的幂等语义。初始化返回 false 时保留错误说明，关闭已建立的订阅并清理实例。策略不自行绑定或替换接收者；创建、初始化和销毁期间不发起交易，初始化期间不运行 service。工厂创建失败时释放已取得资源并返回空指针，错误说明通过 `error` 返回。销毁函数在所属动态库仍加载时执行。
+
+当前版本为 5，接口包含 C++ 虚类和标准库类型。宿主与策略库须使用同一版项目头文件、兼容编译器 ABI 和相同标准库。接口布局或语义发生不兼容变化时提升版本，并重新构建两端。
 
 ### 实例生命周期
 
-组装层向 `LoadedStrategy::Load` 提供配置、行情和交易 factory、目标 service ID 及订单 ID 生成器。宿主先创建两个未绑定的 client，将交易 client 注入策略工厂；实例创建成功后，分别调用两个 client 的 `BindListener`，将实例绑定为唯一回调接收者。`Start()` 建立订阅。`LoadedStrategy` 持有两个 client，不接收或转发行情；行情 client 将 service 的行情直接交给策略实例。
+组装层向 `LoadedStrategy::Load` 提供配置、行情和交易 factory、目标 service ID 及订单 ID 生成器。宿主复制配置，创建两个未绑定的 client，组装 `StrategyContext` 后调用策略工厂；实例创建成功后，分别调用两个 client 的 `BindListener`，将实例绑定为唯一回调接收者。`Load` 不执行初始化回调，组装层随后调用 `Initialize(error)`。初始化成功后重复调用不再执行回调；失败后该实例停止，重试需要重新加载。
+
+`LoadedStrategy` 持有 context 和两个 client，不接收或转发行情；行情 client 将 service 的行情直接交给策略实例。框架不保存策略的订阅声明，部署层在初始化完成后读取行情 service 的实际订阅，校验合约映射。
 
 停止发生在单业务线程的 service 调用之间。宿主先检查两个 client 是否可以关闭，再关闭它们，最后销毁实例并卸载库。client 统一清理所有订阅和包括排队通知在内的回调关联，插件无需逐项退订。`Stop()` 在行情或交易交付期间返回 false，实例继续运行；调用方在回调结束后重试。关闭 client 后订单、资金和持仓仍由交易服务维护。
 
-`v1_06_strategy_plugin` 用两份配置加载做市库和不同的测试策略库，验证行为、参数及共享序号。失败场景覆盖无效路径、入口缺失、版本不符、创建失败和非法配置；卸载后继续交付排队回报，核对账本仍可更新且不再调用旧实例。
+`v1_06_strategy_plugin` 用两份配置加载做市库和不同的测试策略库，验证行为、参数及共享序号。失败场景覆盖无效路径、入口缺失、版本不符、创建失败、部分订阅后的初始化失败和非法配置；卸载后继续交付排队回报，核对账本仍可更新且不再调用旧实例。
 
 ## 策略 service 实例管理
 
 组装层向 `StrategyService` 提供 caller ID、两个 client factory 及对应的目标 service ID，再用 `Load(configs, error)` 一次加载整组配置。实例 ID 在同一 service 内唯一。每个 service 持有自己的订单序号生成器，组内策略共享生成器但使用各自的 client。
 
-service 先完成全部实例创建，再启动各实例的订阅；任一创建失败时销毁本次已创建实例，不发布行情订阅。行情 service 按合约向已订阅的 client 分发，client 再调用各自的固定接收者，分发期间不分配内存。交易 service 将回报交给原 client，client 关闭后不再转发给策略。多个 client 共用同一个行情接入和交易账户。
+service 先完成全部实例创建和回调绑定，再依次调用初始化回调；任一创建或初始化失败时清理整组实例及其 client。全部初始化完成后才进入业务循环。行情 service 按合约向已订阅的 client 分发，client 再调用各自的固定接收者，分发期间不分配内存。交易 service 将回报交给原 client，client 关闭后不再转发给策略。多个 client 共用同一个行情接入和交易账户。
 
 `Stop()` 先检查整组 client 都可以关闭，再关闭全部 client，最后销毁整组实例。回调期间请求停止返回 false，继续完成本次分发；不会先关闭一部分实例再报告失败。
 
@@ -56,7 +59,7 @@ service 先完成全部实例创建，再启动各实例的订阅；任一创建
 
 `MarketMaker` 为一个账户的一个合约维持一笔买单和一笔卖单。每侧使用固定手数，买单按买一价开仓，卖单按卖一价开仓。有效盘口要求两侧价格有限、买价大于零且低于卖价、两侧挂量均为正；忽略其他合约和无效盘口，保留最后一次有效目标价。盘口数量变化不触发改价。
 
-组装层通过 factory 创建行情和交易 client，在账户启动同步完成后交付策略行情，并向策略注入交易 client 和 caller service 共用的订单 ID 生成器。行情和交易 client 分别向绑定的策略实例交付回调。请求期间不发生业务回调，接口契约见[交易设计](trading.md)。策略在一个业务线程中运行，报价路径使用两个固定的委托状态对象。
+组装层通过 factory 创建行情和交易 client，在账户启动同步完成后交付策略行情，通过 context 向策略提供配置、client 和共享的订单 ID 生成器。做市策略在 `OnInitialize` 中订阅配置指定的合约。行情和交易 client 分别向绑定的策略实例交付回调。请求期间不发生业务回调，接口契约见[交易设计](trading.md)。策略在一个业务线程中运行，报价路径使用两个固定的委托状态对象。
 
 ### 每侧委托的处理规则
 

@@ -15,7 +15,7 @@ bool LocalMarketClient::BindListener(QuoteListener& listener) {
 }
 
 bool LocalMarketClient::Subscribe(std::uint32_t instrument_id) {
-  if (!listener_ || !service_.CanDetachListeners()) return false;
+  if (!instrument_id || !listener_ || !service_.CanDetachListeners()) return false;
   service_.Subscribe(instrument_id, *this);
   registered_ = true;
   return true;
