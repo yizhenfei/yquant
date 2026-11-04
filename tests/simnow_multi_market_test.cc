@@ -54,12 +54,15 @@ TEST_F(MultiMarketTest, EntireGroupMustConfirmBeforeBusinessThreadDelivery) {
   MarketService market(*source);
   MarketServiceRegistry registry;
   ASSERT_TRUE(registry.Register(1,market));
-  auto client = MarketClientFactory(registry).Create(1);
   Seen first, same, second, unrelated;
-  client->Subscribe(42,first);
-  client->Subscribe(42,same);
-  client->Subscribe(81,second);
-  client->Subscribe(7,unrelated);
+  auto first_client = MarketClientFactory(registry).Create(1, first);
+  auto same_client = MarketClientFactory(registry).Create(1, same);
+  auto second_client = MarketClientFactory(registry).Create(1, second);
+  auto unrelated_client = MarketClientFactory(registry).Create(1, unrelated);
+  first_client->Subscribe(42);
+  same_client->Subscribe(42);
+  second_client->Subscribe(81);
+  unrelated_client->Subscribe(7);
   std::thread([&] {
     api.SubReply("Ttest",0,false);
     api.Tick("Ttest");
@@ -91,10 +94,10 @@ TEST_F(MultiMarketTest, EntireGroupMustConfirmBeforeBusinessThreadDelivery) {
   EXPECT_EQ(second.quotes[1].bid_quantity,8);
   EXPECT_EQ(first.threads[0],std::this_thread::get_id());
   EXPECT_EQ(second.threads[1],std::this_thread::get_id());
-  client->Unsubscribe(42,first);
-  client->Unsubscribe(42,same);
-  client->Unsubscribe(81,second);
-  client->Unsubscribe(7,unrelated);
+  first_client->Unsubscribe(42);
+  same_client->Unsubscribe(42);
+  second_client->Unsubscribe(81);
+  unrelated_client->Unsubscribe(7);
 }
 
 TEST_F(MultiMarketTest, PartialFailureIsTerminalAndCannotExposeConfirmedContracts) {

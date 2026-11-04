@@ -19,4 +19,11 @@ std::unique_ptr<MarketClient> MarketClientFactory::Create(
   return std::make_unique<LocalMarketClient>(*service);
 }
 
+std::unique_ptr<MarketClient> MarketClientFactory::Create(
+    std::uint64_t service_id, QuoteListener& listener) const {
+  auto client = Create(service_id);
+  if (client) client->BindListener(listener);
+  return client;
+}
+
 }  // namespace yquant::market

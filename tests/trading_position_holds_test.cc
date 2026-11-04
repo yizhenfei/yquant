@@ -34,8 +34,8 @@ class PositionHoldsTest : public ::testing::Test {
     ASSERT_TRUE(service.BindAccount(7, adapter));
     ASSERT_TRUE(registry.Register(3, service));
     TradingClientFactory factory(registry);
-    a = factory.Create(3);
-    b = factory.Create(3);
+    a = factory.Create(3, results);
+    b = factory.Create(3, results);
     FundsTerms terms;
     terms.currency = model::Currency("CNY");
     terms.contract_multiplier = 1;
@@ -53,7 +53,7 @@ class PositionHoldsTest : public ::testing::Test {
               Offset offset = Offset::kClose, Side side = Side::kSell,
               HedgeFlag hedge = HedgeFlag::kSpeculation) {
     client.SubmitOrder({{{1, seq}, 7, &client == a.get() ? 2U : 3U, 42,
-                         side, offset, 100, quantity, hedge}}, results);
+                         side, offset, 100, quantity, hedge}});
   }
   PositionInfo Position() {
     PositionInfo row;
@@ -92,7 +92,7 @@ TEST_F(PositionHoldsTest, PartialFillCancelAndReuse) {
   EXPECT_EQ(Position().yesterday_quantity, 3);
   EXPECT_EQ(Position().yesterday_frozen, 3);
   EXPECT_EQ(Position().today_frozen, 1);
-  a->CancelOrder({{1, 1}, 7, 2, 1}, results);
+  a->CancelOrder({{1, 1}, 7, 2, 1});
   EXPECT_EQ(Position().available_quantity(), 3);
   service.Run();
   EXPECT_EQ(Position().available_quantity(), 7);
@@ -148,10 +148,10 @@ TEST_F(PositionHoldsTest, FailedCancelsAndSilenceKeepTheOrderFrozen) {
   Submit(*a, 1, 7);
   service.Run();
   adapter.SetNextCancel({SendResult::kNotSent, std::nullopt});
-  a->CancelOrder({{1, 1}, 7, 2, 1}, results);
+  a->CancelOrder({{1, 1}, 7, 2, 1});
   service.Run();
   adapter.SetNextCancel({SendResult::kSent, CancelResult::kRejected});
-  a->CancelOrder({{1, 1}, 7, 2, 2}, results);
+  a->CancelOrder({{1, 1}, 7, 2, 2});
   service.Run();
   for (int i = 0; i < 10; ++i) service.Run();
   EXPECT_EQ(Position().available_quantity(), 3);
@@ -166,7 +166,7 @@ TEST_F(PositionHoldsTest, CumulativeFillWaitsForPriceEvenAfterCancellation) {
   EXPECT_EQ(untouched.key.instrument_id, 99U);
   Submit(*b, 2, 1);
   EXPECT_EQ(adapter.FindOrder({1, 2}), nullptr);
-  a->CancelOrder({{1, 1}, 7, 2, 1}, results);
+  a->CancelOrder({{1, 1}, 7, 2, 1});
   service.Run();
   adapter.EmitTrade({{1, 1}, {"sim", "day", "late"}, 100, 3});
   EXPECT_EQ(Position().available_quantity(), 7);
@@ -231,7 +231,7 @@ TEST_F(PositionHoldsTest, OpenFillAddsTodayWithoutChangingOutstandingHolds) {
 TEST_F(PositionHoldsTest, LateFillAfterCancelOnlyConsumesTheNewlyKnownQuantity) {
   Submit(*a, 1, 7);
   service.Run();
-  a->CancelOrder({{1, 1}, 7, 2, 1}, results);
+  a->CancelOrder({{1, 1}, 7, 2, 1});
   service.Run();
   EXPECT_EQ(Position().available_quantity(), 10);
   const TradeInfo late{{1, 1}, {"sim", "day", "late"}, 100, 2};
@@ -253,8 +253,7 @@ TEST_F(PositionHoldsTest, SamePositionKeyInAnotherAccountIsIndependent) {
   second_account.SetInitialState({terms.currency, 100, 90, 10, 0}, {&row, 1});
   service.Run();
   Submit(*a, 1, 7);
-  b->SubmitOrder({{{1, 2}, 8, 3, 42, Side::kSell, Offset::kClose, 100, 1}},
-                 results);
+  b->SubmitOrder({{{1, 2}, 8, 3, 42, Side::kSell, Offset::kClose, 100, 1}});
   service.Run();
   EXPECT_TRUE(results.failures.empty());
   PositionInfo other;

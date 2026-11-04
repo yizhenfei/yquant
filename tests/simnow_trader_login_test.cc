@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "bound_clients.h"
 #include "yquant/strategies/market_maker/market_maker.h"
 #include "simnow_order_tag.h"
 #include "simnow_submissions.h"
@@ -548,13 +549,13 @@ TEST_F(TraderLoginTest, AuthenticatedAccountStillRejectsOrdersBeforeSending) {
   ASSERT_EQ(session->login_status().phase, LoginPhase::kLoggedIn);
   Outcomes outcomes;
   TradingService service;
+  ::yquant::test::BoundClients clients{service};
   ASSERT_TRUE(service.BindAccount(7, *session));
   TradingServiceRegistry registry;
   ASSERT_TRUE(registry.Register(3, service));
   auto client = TradingClientFactory(registry).Create(3);
   ASSERT_TRUE(client);
-  client->SubmitOrder({{{3, 1}, 7, 4, 42, Side::kBuy, Offset::kOpen, 100, 1}},
-                      outcomes);
+  clients.Get(outcomes).SubmitOrder({{{3, 1}, 7, 4, 42, Side::kBuy, Offset::kOpen, 100, 1}});
   EXPECT_TRUE(outcomes.failures.empty());
   service.Run();
   EXPECT_FALSE(service.IsAccountReady(7));
@@ -752,6 +753,7 @@ TEST_F(ContractTermsTest, AppliesDirectionalTermsToAnActualReservation) {
   counter.SetInitialState({model::Currency("CNY"), 1000, 1000, 0, 0}, {});
   Outcomes listener;
   TradingService service;
+  ::yquant::test::BoundClients clients{service};
   ASSERT_TRUE(service.BindAccount(7, counter));
   ASSERT_TRUE(service.ConfigureFundsTerms(7, 42, Side::kBuy, terms.buy));
   TradingServiceRegistry registry;
@@ -759,7 +761,7 @@ TEST_F(ContractTermsTest, AppliesDirectionalTermsToAnActualReservation) {
   auto client = TradingClientFactory(registry).Create(3);
   service.Run();
   SubmitOrderRequest order{{{3, 1}, 7, 4, 42, Side::kBuy, Offset::kOpen, 100, 2}};
-  ASSERT_EQ(client->SubmitOrder(order, listener), RequestResult::kDelivered);
+  ASSERT_EQ(clients.Get(listener).SubmitOrder(order), RequestResult::kDelivered);
   FundsSnapshot funds;
   ASSERT_TRUE(client->QueryFunds({7}, funds));
   // 2 * 100 * 10 * 0.1 + 2 * 4 margin, plus 2000 * 0.001 + 2 * 3 fees.
@@ -1263,6 +1265,7 @@ class RecoveredAccountingTest : public OrderHoldsTest {
   }
   std::unique_ptr<RecoveryReplay> adapter;
   TradingService service;
+  ::yquant::test::BoundClients clients{service};
   std::unique_ptr<TradingClient> client;
 };
 
@@ -1460,7 +1463,12 @@ TEST_F(AccountBoundaryTest, TwoMakersAdoptOnlyTheirOwnLegAndContinueQuoting) {
   probe->account_balance.Available = 10000;
   OrderIdGenerator ids(5);
   strategies::market_maker::MarketMaker first(*client, ids, 7, 31, 42, 1);
-  strategies::market_maker::MarketMaker second(*client, ids, 7, 32, 42, 1);
+  ASSERT_TRUE(client->BindListener(first));
+  TradingServiceRegistry second_registry;
+  ASSERT_TRUE(second_registry.Register(1, service));
+  auto second_client = TradingClientFactory(second_registry).Create(1);
+  strategies::market_maker::MarketMaker second(*second_client, ids, 7, 32, 42, 1);
+  ASSERT_TRUE(second_client->BindListener(second));
   model::Quote quote{42, 100, 102, 1, 1, 1};
   first.OnQuote(quote);
   EXPECT_TRUE(adapter->submits.empty());
@@ -1510,6 +1518,7 @@ TEST_F(AccountBoundaryTest, NeitherAmbiguousLegsNorASecondListenerCanStealOrders
   ASSERT_TRUE(service.IsAccountReady(7));
   OrderIdGenerator ids(5);
   strategies::market_maker::MarketMaker maker(*client, ids, 7, 31, 42, 1);
+  ASSERT_TRUE(client->BindListener(maker));
   maker.OnQuote({42, 100, 102, 1, 1, 1});
   EXPECT_TRUE(adapter->submits.empty());
   const StrategyOrderScope scope{5, 7, 31, 42};
@@ -1518,9 +1527,9 @@ TEST_F(AccountBoundaryTest, NeitherAmbiguousLegsNorASecondListenerCanStealOrders
   ASSERT_TRUE(client->QueryWorkingOrders(scope, active, last));
   ASSERT_EQ(active.size(), 2);
   Outcomes a, b;
-  EXPECT_FALSE(client->AdoptWorkingOrders(scope, std::span(active).first(1), a));
-  EXPECT_TRUE(client->AdoptWorkingOrders(scope, active, b));
-  EXPECT_FALSE(client->AdoptWorkingOrders(scope, active, a));
+  EXPECT_FALSE(clients.Get(a).AdoptWorkingOrders(scope, std::span(active).first(1)));
+  EXPECT_TRUE(clients.Get(b).AdoptWorkingOrders(scope, active));
+  EXPECT_FALSE(clients.Get(a).AdoptWorkingOrders(scope, active));
 }
 
 TEST(AccountBoundaryTimeout, UnstableWindowsShareOneDeadline) {
@@ -1532,6 +1541,7 @@ TEST(AccountBoundaryTimeout, UnstableWindowsShareOneDeadline) {
   probe->automatic = true;
   probe->account_balance.FrozenMargin = probe->account_balance.FrozenCommission = 0;
   TradingService service;
+  ::yquant::test::BoundClients clients{service};
   ASSERT_TRUE(service.BindAccount(1, *session));
   probe->spi->OnFrontConnected();
   probe->on_funds_query = [&] {
@@ -1619,6 +1629,7 @@ class SimNowSubmitTest : public StartupSnapshotTest {
   SubmitOrderRequest bid{{{5, 1}, 7, 11, 42, Side::kBuy, Offset::kOpen, 100, 2}};
   SubmitResults first, second;
   TradingService service;
+  ::yquant::test::BoundClients clients{service};
   std::unique_ptr<TradingClient> client;
 };
 
@@ -1629,7 +1640,7 @@ TEST_F(SimNowSubmitTest, NativeLimitRequestAndDeferredAcceptanceKeepOriginalOwne
     probe->spi->OnRtnOrder(&row);
     EXPECT_TRUE(first.reports.empty());
   };
-  ASSERT_EQ(client->SubmitOrder(bid, first), RequestResult::kDelivered);
+  ASSERT_EQ(clients.Get(first).SubmitOrder(bid), RequestResult::kDelivered);
   ASSERT_EQ(probe->inserts.size(), 1);
   const auto& r = probe->inserts.front();
   EXPECT_STREQ(r.BrokerID, "test");
@@ -1666,8 +1677,8 @@ TEST_F(SimNowSubmitTest, BothEarlyErrorPathsReleaseOnlyTheRejectedOrdersHold) {
   ask.order.order_id = {8, 1};
   ask.order.strategy_id = 12;
   ask.order.side = Side::kSell;
-  client->SubmitOrder(bid, first);
-  client->SubmitOrder(ask, second);
+  clients.Get(first).SubmitOrder(bid);
+  clients.Get(second).SubmitOrder(ask);
   ASSERT_EQ(probe->inserts.size(), 2);
   auto& a = probe->inserts[0];
   auto& b = probe->inserts[1];
@@ -1698,7 +1709,7 @@ TEST_F(SimNowSubmitTest, BothEarlyErrorPathsReleaseOnlyTheRejectedOrdersHold) {
 
 TEST_F(SimNowSubmitTest, NativeNonzeroReturnAndFundsCheckNeverRetry) {
   probe->insert_rc = -3;
-  client->SubmitOrder(bid, first);
+  clients.Get(first).SubmitOrder(bid);
   ASSERT_EQ(probe->inserts.size(), 1);
   EXPECT_EQ(Funds().reserved, 0);
   EXPECT_TRUE(first.failures.empty());
@@ -1709,14 +1720,14 @@ TEST_F(SimNowSubmitTest, NativeNonzeroReturnAndFundsCheckNeverRetry) {
   EXPECT_EQ(snapshot.state, OrderState::kSendFailed);
   bid.order.order_id.sequence++;
   bid.order.quantity = 100000;
-  client->SubmitOrder(bid, second);
+  clients.Get(second).SubmitOrder(bid);
   service.Run();
   EXPECT_EQ(second.failures, std::vector{FailureReason::kInsufficientFunds});
   EXPECT_EQ(probe->inserts.size(), 1);
 }
 
 TEST_F(SimNowSubmitTest, ExchangeIdentityRoutesLaterUpdatesAndFill) {
-  client->SubmitOrder(bid, first);
+  clients.Get(first).SubmitOrder(bid);
   auto row = Accepted(probe->inserts.at(0));
   probe->spi->OnRtnOrder(&row);
   service.Run();
@@ -1754,7 +1765,7 @@ TEST_F(SimNowSubmitTest, ExchangeIdentityRoutesLaterUpdatesAndFill) {
 }
 
 TEST_F(SimNowSubmitTest, InsertRejectedOrderNotificationWithoutSystemIdIsARejection) {
-  client->SubmitOrder(bid, first);
+  clients.Get(first).SubmitOrder(bid);
   auto row = Accepted(probe->inserts.at(0));
   row.OrderSysID[0] = row.TradingDay[0] = 0;
   row.OrderSubmitStatus = THOST_FTDC_OSS_InsertRejected;
@@ -1767,7 +1778,7 @@ TEST_F(SimNowSubmitTest, InsertRejectedOrderNotificationWithoutSystemIdIsAReject
 }
 
 TEST_F(SimNowSubmitTest, GenericFrontErrorOnlyRejectsItsOwnRequestId) {
-  client->SubmitOrder(bid, first);
+  clients.Get(first).SubmitOrder(bid);
   ASSERT_EQ(probe->inserts.size(), 1);
   CThostFtdcRspInfoField error{};
   error.ErrorID = 7;
@@ -1784,7 +1795,7 @@ TEST_F(SimNowSubmitTest, GenericFrontErrorOnlyRejectsItsOwnRequestId) {
 
 TEST_F(SimNowSubmitTest, PendingDisconnectStopsInsertBeforeSdkCall) {
   probe->spi->OnFrontDisconnected(4097);
-  client->SubmitOrder(bid, first);
+  clients.Get(first).SubmitOrder(bid);
   EXPECT_TRUE(probe->inserts.empty());
   EXPECT_EQ(Funds().reserved, 0);
   service.Run();
@@ -1847,7 +1858,7 @@ class SimNowCancelTest : public SimNowSubmitTest {
     return p;
   }
   void Cancel(std::uint64_t attempt, SubmitResults& listener) {
-    ASSERT_EQ(client->CancelOrder({bid.order.order_id, 7, 11, attempt}, listener),
+    ASSERT_EQ(clients.Get(listener).CancelOrder({bid.order.order_id, 7, 11, attempt}),
               RequestResult::kDelivered);
   }
   void Reject(CThostFtdcInputOrderActionField action, int id) {
@@ -1861,7 +1872,7 @@ TEST_F(SimNowCancelTest, AllPendingAttemptsReceiveTerminalOutcomeOnce) {
   bid.order.side = Side::kSell;
   bid.order.offset = Offset::kCloseYesterday;
   bid.order.quantity = 5;
-  ASSERT_EQ(client->SubmitOrder(bid, first), RequestResult::kDelivered);
+  ASSERT_EQ(clients.Get(first).SubmitOrder(bid), RequestResult::kDelivered);
   auto order = Accepted(probe->inserts.at(0));
   std::strcpy(order.OrderSysID, "    123");
   probe->spi->OnRtnOrder(&order);
@@ -1949,7 +1960,7 @@ TEST_F(SimNowCancelTest, AllPendingAttemptsReceiveTerminalOutcomeOnce) {
 }
 
 TEST_F(SimNowCancelTest, SendFailureRetainsHoldAndNewAttemptCanSucceed) {
-  client->SubmitOrder(bid, first);
+  clients.Get(first).SubmitOrder(bid);
   probe->action_rc = -3;
   Cancel(4, second);  // No exchange ID yet: use the original session and ref.
   ASSERT_EQ(probe->actions.size(), 1);
@@ -1972,7 +1983,7 @@ TEST_F(SimNowCancelTest, SendFailureRetainsHoldAndNewAttemptCanSucceed) {
 }
 
 TEST_F(SimNowCancelTest, PrivateRejectionChecksIssuerTargetAndActionReference) {
-  client->SubmitOrder(bid, first);
+  clients.Get(first).SubmitOrder(bid);
   Cancel(1, second);
   auto action = probe->actions.at(0);
   CThostFtdcOrderActionField error_action{};
@@ -1996,15 +2007,15 @@ TEST_F(SimNowCancelTest, PrivateRejectionChecksIssuerTargetAndActionReference) {
 }
 
 TEST_F(SimNowCancelTest, RejectionAndTerminalOnDifferentOrdersStayIndependent) {
-  client->SubmitOrder(bid, first);
+  clients.Get(first).SubmitOrder(bid);
   auto ask = bid;
   ask.order.order_id = {8, 1};
   ask.order.strategy_id = 12;
   ask.order.side = Side::kSell;
-  client->SubmitOrder(ask, second);
+  clients.Get(second).SubmitOrder(ask);
   SubmitResults cancel_bid, cancel_ask;
   Cancel(10, cancel_bid);
-  client->CancelOrder({ask.order.order_id, 7, 12, 10}, cancel_ask);
+  clients.Get(cancel_ask).CancelOrder({ask.order.order_id, 7, 12, 10});
   ASSERT_EQ(probe->actions.size(), 2);
   auto wrong = probe->actions[0];
   Reject(wrong, probe->actions[1].RequestID);
@@ -2033,6 +2044,7 @@ class SimNowCancelRecoveredTest : public OrderHoldsTest {};
 TEST_F(SimNowCancelRecoveredTest, UsesOriginalOrderSessionAndNewActionIssuer) {
   probe->automatic = true;
   TradingService service;
+  ::yquant::test::BoundClients clients{service};
   ASSERT_TRUE(service.BindAccount(7, *session));
   TradingServiceRegistry registry;
   ASSERT_TRUE(registry.Register(3, service));
@@ -2040,7 +2052,7 @@ TEST_F(SimNowCancelRecoveredTest, UsesOriginalOrderSessionAndNewActionIssuer) {
   for (int i = 0; i < 150; ++i) service.Run();
   ASSERT_TRUE(service.IsAccountReady(7));
   SubmitResults results;
-  client->CancelOrder({{5,11},7,31,9}, results);
+  clients.Get(results).CancelOrder({{5,11},7,31,9});
   ASSERT_EQ(probe->actions.size(), 1);
   const auto& a = probe->actions[0];
   const auto& original = probe->history_orders[0];
@@ -2086,11 +2098,11 @@ class SimNowFillsTest : public SimNowSubmitTest {
 TEST_F(SimNowFillsTest, BuffersEarlyTradesInSourceOrderAndBooksEachExecutionOnce) {
   std::vector<OrderId> delivered;
   first.on_trade = second.on_trade = [&](const TradeInfo& f) { delivered.push_back(f.order_id); };
-  client->SubmitOrder(bid, first);
+  clients.Get(first).SubmitOrder(bid);
   auto other = bid;
   other.order.order_id = {8,1};
   other.order.strategy_id = 12;
-  client->SubmitOrder(other, second);
+  clients.Get(second).SubmitOrder(other);
   auto a = Accepted(probe->inserts.at(0));
   auto b = Accepted(probe->inserts.at(1));
   std::strcpy(b.OrderSysID, "456");
@@ -2110,7 +2122,7 @@ TEST_F(SimNowFillsTest, BuffersEarlyTradesInSourceOrderAndBooksEachExecutionOnce
   EXPECT_TRUE(second.trades.empty());
   auto blocked = bid;
   blocked.order.order_id.sequence = 3;
-  client->SubmitOrder(blocked, first);
+  clients.Get(first).SubmitOrder(blocked);
   Run();
   EXPECT_EQ(probe->inserts.size(), 2);
   a.OrderStatus = THOST_FTDC_OST_PartTradedQueueing;
@@ -2153,11 +2165,11 @@ TEST_F(SimNowFillsTest, BuffersEarlyTradesInSourceOrderAndBooksEachExecutionOnce
 }
 
 TEST_F(SimNowFillsTest, CancelRetainsOnlyLateUnpricedFillThenReleasesExactlyOnce) {
-  client->SubmitOrder(bid, first);
+  clients.Get(first).SubmitOrder(bid);
   auto row = Accepted(probe->inserts.at(0));
   probe->spi->OnRtnOrder(&row);
   Run();
-  client->CancelOrder({bid.order.order_id,7,11,1}, second);
+  clients.Get(second).CancelOrder({bid.order.order_id,7,11,1});
   row.OrderStatus = THOST_FTDC_OST_Canceled;
   row.VolumeTraded = 1;
   probe->spi->OnRtnOrder(&row);
@@ -2189,6 +2201,7 @@ TEST(SimNowFillsSettlement, TradingModeRequiresMatchingSettlementSuccess) {
     probe->account_balance.FrozenMargin = probe->account_balance.FrozenCommission = 0;
     probe->settlement_error = error;
     TradingService service;
+  ::yquant::test::BoundClients clients{service};
     ASSERT_TRUE(service.BindAccount(1, *adapter));
     probe->spi->OnFrontConnected();
     for (int i = 0; i < 150; ++i) service.Run();

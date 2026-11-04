@@ -37,6 +37,10 @@ class MarketService final : public container::Service {
   // Removes listener's subscription to instrument_id if one exists.
   void Unsubscribe(std::uint32_t instrument_id, QuoteListener& listener);
 
+  // Removes every subscription for listener; returns false during Run.
+  bool DetachListener(QuoteListener& listener);
+  bool CanDetachListeners() const { return !running_; }
+
   // container::Service implementation.
   // Reads and dispatches quotes on the calling thread.
   // Stops when TryRead returns false or the per-call read limit is reached.

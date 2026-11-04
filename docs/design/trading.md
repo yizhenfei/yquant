@@ -169,10 +169,11 @@ adapter 的 `CancelOrder` 与 `SubmitOrder` 都不得在调用期间触发 Callb
 关键签名：
 
 ```cpp
-RequestResult SubmitOrder(const SubmitOrderRequest& request,
-                          TradingListener& listener);
-RequestResult CancelOrder(const CancelOrderRequest& request,
-                          TradingListener& listener);
+bool BindListener(TradingListener& listener);
+bool CanClose() const;
+bool Close();
+RequestResult SubmitOrder(const SubmitOrderRequest& request);
+RequestResult CancelOrder(const CancelOrderRequest& request);
 bool QueryOrder(const QueryOrderRequest& query, OrderSnapshot& snapshot) const;
 bool QueryFunds(const QueryFundsRequest& query, FundsSnapshot& snapshot) const;
 bool QueryPositions(const QueryPositionsRequest& query,
@@ -181,9 +182,13 @@ bool QueryPosition(const QueryPositionRequest& query,
                    PositionInfo& position) const;
 ```
 
+factory 可直接创建已绑定 listener 的 client，也可先创建未绑定 client，待策略实例创建后通过 `BindListener` 完成一次绑定。绑定后不能更换接收者；未绑定的 client 只支持查询。
+
+`Close()` 解除该 client 的订单、撤单及排队通知关联，成功后不再交付回调，也不接受新请求或查询。重复关闭成功。如果清理会打断正在进行的交付，则返回 false，不改变绑定；调用方应在本轮回调结束后重试。尚未注册回调关系的 client 可以直接关闭。正常销毁 client 会执行同样的清理，宿主必须在销毁策略实例前完成关闭。
+
 `RequestResult` 表达请求是否进入当前调用路径：
 
-- 未交付：调用方立即得到失败原因，本次请求不再产生回调。当前本地 client 在实例标识或调用序号耗尽时返回 `kIdExhausted`，不复用旧标识。
+- 未交付：调用方立即得到失败原因，本次请求不再产生回调。未绑定接收者或已关闭的 client 返回 `kUnavailable`；实例标识或调用序号耗尽时返回 `kIdExhausted`，不复用旧标识。
 - 已交付（`kDelivered`）：后续处理结果通过回报交付，包括服务校验失败、柜台发送失败、柜台接受或拒绝。
 
 本地路径将请求交给 service，跨进程路径将请求交给消息通道；成功返回均不代表柜台已经接受委托。服务侧处理失败由错误码表达原因；柜台拒绝通过委托回报交付。
@@ -205,13 +210,13 @@ void OnCancelReport(const CancelReport& report);
 void OnTradeReport(const TradeReport& report);
 ```
 
-各次请求失败交付给对应调用的 listener。`SubmitOrder` 的 listener 接收该订单的委托和成交回报；`CancelOrder` 的 listener 接收该次撤单请求的结果。撤单导致订单状态变化时，订单 listener 同时收到相应的订单回报。
+请求失败和业务回报通过发起请求的 client 交付给固定接收者。报单 client 接收该订单的委托和成交回报，撤单 client 接收该次撤单结果。不同 client 可以操作同一订单；撤单导致订单状态变化时，原报单 client 同时收到订单回报。service 内部保存 client 的回调对象，client 再转发给接收者。
 
 服务校验失败或确定未发送通过 `OnRequestFailure` 通知；柜台接受或拒绝委托通过 `OnOrderReport` 通知。已经建立订单后确定发送失败时，失败回报同时携带对应状态快照，供 client 更新查询视图。账户可用性的通知与查询表达随对应功能节点细化。
 
 回调前先更新订单状态。回调中可以提交新请求或查询订单；请求调用、回报交付或 `TradingService::Run()` 正在执行时，再次调用 `Run()` 直接返回。当前回调使用独立快照，回调内操作其他请求不会改变正在读取的回报内容。查询读取最近已处理的状态，可能比延迟交付的回报快照更新。
 
-当前静态组装下，listener 的生命周期覆盖 service 的整个运行期。订单进入终态后仍可能交付此前成交的明细，listener 不以某一条终态回报作为销毁依据。
+销毁接收者前必须关闭绑定到它的 client。订单进入终态不自动结束回调交付；client 关闭后，迟到成交仍由交易服务记账，但不会再调用旧接收者。通过新 client 接管活动订单后，后续订单回报交给新接收者。
 
 ### TradingService 与账户绑定
 
@@ -315,9 +320,9 @@ virtual void OnPositionsReport(const AdapterPositionsReport& report) = 0;
 
 待通知队列保存 service 产生的请求失败结果，以及因请求调用或同一订单仍有待通知回报而需要延迟交付的业务回报。需要排队时，保存该次通知内容和当时状态快照，连续产生的接受、成交等通知保持原顺序。交付已保存通知时不重复更新订单状态。
 
-### 停止 listener
+### 关闭 client
 
-组装层在业务线程、service 调用之外执行 `TradingClient::DetachListener(listener)`。成功时清除该 listener 在订单、撤单尝试及待通知队列中的引用，允许随后销毁策略实例。订单状态、成交去重和账户记账继续维护。请求、调度或回调执行期间调用会返回 false，保留原绑定。策略动态库的卸载顺序见[实例生命周期](strategy.md#实例生命周期)。
+组装层通过 `TradingClient::Close()` 统一清理回调，关闭契约见 [TradingClient](#tradingclient)。本地 client 以自身作为 service 的 listener，因此多个 client 即使绑定同一个业务接收者，也能独立关闭。策略动态库的卸载顺序见[实例生命周期](strategy.md#实例生命周期)。
 
 ### 账户资金
 

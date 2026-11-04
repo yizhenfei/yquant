@@ -47,7 +47,7 @@ bool MarketMaker::AdoptWorkingOrders() {
     leg.phase = Phase::kWorking;
     leg.price = order.price;
   }
-  if (!client_.AdoptWorkingOrders(scope, orders, *this)) return false;
+  if (!client_.AdoptWorkingOrders(scope, orders)) return false;
   ids_.AdvancePast(last);
   bid_ = bid;
   ask_ = ask;
@@ -65,8 +65,7 @@ void MarketMaker::Advance(Leg& leg, const Leg& opposite, Side side) {
   if (leg.phase == Phase::kWorking && leg.price != leg.target) {
     if (leg.cancel_id == std::numeric_limits<std::uint64_t>::max()) return;
     leg.cancel_target = leg.target;
-    if (client_.CancelOrder({leg.id, account_, strategy_, ++leg.cancel_id},
-                            *this) == RequestResult::kDelivered) {
+    if (client_.CancelOrder({leg.id, account_, strategy_, ++leg.cancel_id}) == RequestResult::kDelivered) {
       leg.phase = Phase::kCanceling;
     } else {
       leg.failed_target = leg.target;
@@ -88,8 +87,7 @@ void MarketMaker::Advance(Leg& leg, const Leg& opposite, Side side) {
   leg.price = leg.target;
   leg.phase = Phase::kSubmitting;
   if (client_.SubmitOrder({{*id, account_, strategy_, instrument_, side,
-                            trading::Offset::kOpen, leg.price, quantity_}},
-                          *this) != RequestResult::kDelivered) {
+                            trading::Offset::kOpen, leg.price, quantity_}}) != RequestResult::kDelivered) {
     Retire(leg, leg.price);
   }
 }

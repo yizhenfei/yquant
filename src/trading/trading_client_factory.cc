@@ -12,8 +12,15 @@ namespace yquant::trading {
 std::unique_ptr<TradingClient> TradingClientFactory::Create(
     std::uint64_t service_id) const {
   auto* service = registry_.Find(service_id);
-  return service == nullptr ? nullptr
-                            : std::make_unique<LocalTradingClient>(*service);
+  if (!service) return nullptr;
+  return std::make_unique<LocalTradingClient>(*service);
+}
+
+std::unique_ptr<TradingClient> TradingClientFactory::Create(
+    std::uint64_t service_id, TradingListener& listener) const {
+  auto client = Create(service_id);
+  if (client) client->BindListener(listener);
+  return client;
 }
 
 }  // namespace yquant::trading

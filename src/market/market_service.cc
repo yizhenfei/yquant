@@ -37,6 +37,16 @@ void MarketService::Unsubscribe(std::uint32_t instrument_id,
   }
 }
 
+bool MarketService::DetachListener(QuoteListener& listener) {
+  if (!CanDetachListeners()) return false;
+  for (auto it = subscriptions_.begin(); it != subscriptions_.end();) {
+    std::erase(it->second, &listener);
+    if (it->second.empty()) it = subscriptions_.erase(it);
+    else ++it;
+  }
+  return true;
+}
+
 void MarketService::Run() {
   if (running_) {
     return;

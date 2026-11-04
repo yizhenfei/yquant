@@ -53,18 +53,18 @@ TEST(MarketClientFactoryTest, RoutesIdsToTheirRegisteredServices) {
   test::QuoteSourceStub second_source;
   MarketService first_service(first_source);
   MarketService second_service(second_source);
+  RecordQuote first(first_source);
+  RecordQuote second(second_source);
   MarketServiceRegistry local_services;
   MarketClientFactory factory(local_services);
   ASSERT_TRUE(local_services.Register(11, first_service));
   ASSERT_TRUE(local_services.Register(22, second_service));
-  auto first_client = factory.Create(11);
-  auto second_client = factory.Create(22);
+  auto first_client = factory.Create(11, first);
+  auto second_client = factory.Create(22, second);
   ASSERT_NE(first_client, nullptr);
   ASSERT_NE(second_client, nullptr);
-  RecordQuote first(first_source);
-  RecordQuote second(second_source);
-  first_client->Subscribe(17, first);
-  second_client->Subscribe(17, second);
+  first_client->Subscribe(17);
+  second_client->Subscribe(17);
 
   const model::Quote first_quote{17, 201.5, 202.25, 13, 29, 7};
   const model::Quote second_quote{17, 98.75, 99.25, 5, 8, 12};
@@ -81,8 +81,8 @@ TEST(MarketClientFactoryTest, RoutesIdsToTheirRegisteredServices) {
   ExpectQuote(second.quote, second_quote);
   EXPECT_EQ(second.thread, std::this_thread::get_id());
 
-  first_client->Unsubscribe(17, first);
-  second_client->Unsubscribe(17, second);
+  first_client->Unsubscribe(17);
+  second_client->Unsubscribe(17);
   first_source.SetQuote(first_quote);
   second_source.SetQuote(second_quote);
   first_service.Run();
@@ -96,20 +96,20 @@ TEST(MarketClientFactoryTest, FactoriesUseTheirInjectedRegistries) {
   test::QuoteSourceStub second_source;
   MarketService first_service(first_source);
   MarketService second_service(second_source);
+  RecordQuote first(first_source);
+  RecordQuote second(second_source);
   MarketServiceRegistry first_registry;
   MarketServiceRegistry second_registry;
   ASSERT_TRUE(first_registry.Register(11, first_service));
   ASSERT_TRUE(second_registry.Register(11, second_service));
   MarketClientFactory first_factory(first_registry);
   MarketClientFactory second_factory(second_registry);
-  auto first_client = first_factory.Create(11);
-  auto second_client = second_factory.Create(11);
+  auto first_client = first_factory.Create(11, first);
+  auto second_client = second_factory.Create(11, second);
   ASSERT_NE(first_client, nullptr);
   ASSERT_NE(second_client, nullptr);
-  RecordQuote first(first_source);
-  RecordQuote second(second_source);
-  first_client->Subscribe(17, first);
-  second_client->Subscribe(17, second);
+  first_client->Subscribe(17);
+  second_client->Subscribe(17);
 
   first_source.SetQuote({17, 201.5, 202.25, 13, 29, 7});
   first_service.Run();
@@ -121,8 +121,8 @@ TEST(MarketClientFactoryTest, FactoriesUseTheirInjectedRegistries) {
   EXPECT_EQ(second.count, 1);
   EXPECT_EQ(first.quote.sequence, 7U);
   EXPECT_EQ(second.quote.sequence, 12U);
-  first_client->Unsubscribe(17, first);
-  second_client->Unsubscribe(17, second);
+  first_client->Unsubscribe(17);
+  second_client->Unsubscribe(17);
 }
 
 TEST(MarketClientFactoryTest, DuplicateIdPreservesTheOriginalBinding) {
@@ -130,15 +130,15 @@ TEST(MarketClientFactoryTest, DuplicateIdPreservesTheOriginalBinding) {
   test::QuoteSourceStub replacement_source;
   MarketService original(original_source);
   MarketService replacement(replacement_source);
+  RecordQuote listener(original_source);
   MarketServiceRegistry local_services;
   MarketClientFactory factory(local_services);
   ASSERT_TRUE(local_services.Register(7, original));
   EXPECT_FALSE(local_services.Register(7, original));
   EXPECT_FALSE(local_services.Register(7, replacement));
-  auto client = factory.Create(7);
+  auto client = factory.Create(7, listener);
   ASSERT_NE(client, nullptr);
-  RecordQuote listener(original_source);
-  client->Subscribe(17, listener);
+  client->Subscribe(17);
 
   const model::Quote quote{17, 201.5, 202.25, 13, 29, 7};
   replacement_source.SetQuote(quote);
@@ -148,7 +148,7 @@ TEST(MarketClientFactoryTest, DuplicateIdPreservesTheOriginalBinding) {
   original.Run();
   EXPECT_EQ(listener.count, 1);
   ExpectQuote(listener.quote, quote);
-  client->Unsubscribe(17, listener);
+  client->Unsubscribe(17);
 }
 
 TEST(MarketClientFactoryTest, MissingIdReturnsNullAndCanBeRegisteredLater) {
@@ -156,73 +156,73 @@ TEST(MarketClientFactoryTest, MissingIdReturnsNullAndCanBeRegisteredLater) {
   test::QuoteSourceStub source;
   MarketService existing_service(existing_source);
   MarketService service(source);
+  RecordQuote listener(source);
   MarketServiceRegistry local_services;
   MarketClientFactory factory(local_services);
-  EXPECT_EQ(factory.Create(77), nullptr);
+  EXPECT_EQ(factory.Create(77, listener), nullptr);
   ASSERT_TRUE(local_services.Register(11, existing_service));
-  EXPECT_EQ(factory.Create(77), nullptr);
+  EXPECT_EQ(factory.Create(77, listener), nullptr);
   ASSERT_TRUE(local_services.Register(77, service));
-  auto client = factory.Create(77);
+  auto client = factory.Create(77, listener);
   ASSERT_NE(client, nullptr);
-  RecordQuote listener(source);
-  client->Subscribe(17, listener);
+  client->Subscribe(17);
   const model::Quote quote{17, 201.5, 202.25, 13, 29, 7};
   source.SetQuote(quote);
   service.Run();
   EXPECT_EQ(listener.count, 1);
   ExpectQuote(listener.quote, quote);
-  client->Unsubscribe(17, listener);
+  client->Unsubscribe(17);
 }
 
 TEST(MarketClientFactoryTest,
      ClientRemainsUsableAfterFactoryAndRegistryDestruction) {
   test::QuoteSourceStub source;
   MarketService service(source);
+  RecordQuote listener(source);
   std::unique_ptr<MarketClient> client;
   {
     MarketServiceRegistry local_services;
     MarketClientFactory factory(local_services);
     ASSERT_TRUE(local_services.Register(31, service));
-    client = factory.Create(31);
+    client = factory.Create(31, listener);
   }
   ASSERT_NE(client, nullptr);
-  RecordQuote listener(source);
-  client->Subscribe(17, listener);
+  client->Subscribe(17);
   const model::Quote quote{17, 201.5, 202.25, 13, 29, 7};
   source.SetQuote(quote);
   service.Run();
   EXPECT_EQ(listener.count, 1);
   ExpectQuote(listener.quote, quote);
-  client->Unsubscribe(17, listener);
+  client->Unsubscribe(17);
 }
 
 TEST(MarketClientFactoryTest, ClientsForSameIdSupportDifferentListeners) {
   test::QuoteSourceStub source;
   MarketService service(source);
+  RecordQuote first(source);
+  RecordQuote second(source);
   MarketServiceRegistry local_services;
   MarketClientFactory factory(local_services);
   ASSERT_TRUE(local_services.Register(5, service));
-  auto first_client = factory.Create(5);
-  auto second_client = factory.Create(5);
+  auto first_client = factory.Create(5, first);
+  auto second_client = factory.Create(5, second);
   ASSERT_NE(first_client, nullptr);
   ASSERT_NE(second_client, nullptr);
-  RecordQuote first(source);
-  RecordQuote second(source);
-  first_client->Subscribe(17, first);
-  second_client->Subscribe(17, second);
+  first_client->Subscribe(17);
+  second_client->Subscribe(17);
   const model::Quote quote{17, 201.5, 202.25, 13, 29, 7};
   source.SetQuote(quote);
   service.Run();
   EXPECT_EQ(first.count, 1);
   EXPECT_EQ(second.count, 1);
 
-  first_client->Unsubscribe(17, first);
+  first_client->Unsubscribe(17);
   first_client.reset();
   source.SetQuote(quote);
   service.Run();
   EXPECT_EQ(first.count, 1);
   EXPECT_EQ(second.count, 2);
-  second_client->Unsubscribe(17, second);
+  second_client->Unsubscribe(17);
 }
 
 }  // namespace

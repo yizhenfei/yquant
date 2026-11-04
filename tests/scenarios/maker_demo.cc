@@ -149,17 +149,19 @@ bool VerifyMaker() {
   }
   counter.counter.SetInitialState({terms.currency, 1000, 1000, 0, 0}, {});
   trading_service.Run();
-  auto market = market::MarketClientFactory(markets).Create(1);
   auto trader = trading::TradingClientFactory(traders).Create(3);
-  if (!market || !trader || !trading_service.IsAccountReady(7)) return false;
+  if (!trader || !trading_service.IsAccountReady(7)) return false;
   trading::OrderIdGenerator ids(100);
   strategies::market_maker::MarketMaker maker(*trader, ids, 7, 2, 42, 2);
-  market->Subscribe(42, maker);
+  if (!trader->BindListener(maker)) return false;
+  auto market = market::MarketClientFactory(markets).Create(1, maker);
+  if (!market) return false;
+  market->Subscribe(42);
   container::Container container;
   const bool ran = container.Register(market_service) &&
                    container.Register(trading_service) &&
                    container.Run([&feed] { return feed.done; });
-  market->Unsubscribe(42, maker);
+  market->Unsubscribe(42);
   trading::OrderSnapshot bid, ask;
   if (!ran || !counter.valid || counter.samples != kSamples ||
       counter.replacements != kSamples || counter.submits != kQuotes ||

@@ -28,10 +28,11 @@ class RecordQuotes final : public QuoteListener {
 TEST(MarketSubscriptionTest, FiltersInterleavedInstrumentsAndKeepsSnapshots) {
   test::QuoteSourceStub source;
   MarketService service(source);
-  LocalMarketClient local_client(service);
-  MarketClient& client = local_client;
   RecordQuotes listener;
-  client.Subscribe(17, listener);
+  LocalMarketClient local_client(service);
+  ASSERT_TRUE(local_client.BindListener(listener));
+  MarketClient& client = local_client;
+  client.Subscribe(17);
   source.SetQuote({17, 201.5, 202.25, 13, 29, 1});
   service.Run();
   source.SetQuote({81, 98.75, 99.25, 5, 8, 2});
@@ -53,7 +54,7 @@ TEST(MarketSubscriptionTest, FiltersInterleavedInstrumentsAndKeepsSnapshots) {
   EXPECT_EQ(listener.quotes[1].bid_quantity, 7);
   EXPECT_EQ(listener.quotes[1].ask_quantity, 9);
 
-  client.Unsubscribe(17, listener);
+  client.Unsubscribe(17);
   source.SetQuote({17, 203, 204, 2, 4, 4});
   service.Run();
   EXPECT_EQ(listener.count, 2U);
@@ -62,43 +63,45 @@ TEST(MarketSubscriptionTest, FiltersInterleavedInstrumentsAndKeepsSnapshots) {
 TEST(MarketSubscriptionTest, RepeatedOperationsAreIdempotent) {
   test::QuoteSourceStub source;
   MarketService service(source);
-  LocalMarketClient client(service);
   RecordQuotes listener;
+  LocalMarketClient client(service);
+  ASSERT_TRUE(client.BindListener(listener));
   source.SetQuote({17, 201.5, 202.25, 13, 29, 1});
   service.Run();
-  client.Unsubscribe(17, listener);
+  client.Unsubscribe(17);
   EXPECT_EQ(listener.count, 0U);
 
-  client.Subscribe(17, listener);
-  client.Subscribe(17, listener);
+  client.Subscribe(17);
+  client.Subscribe(17);
   source.SetQuote({17, 201.5, 202.25, 13, 29, 1});
   service.Run();
   EXPECT_EQ(listener.count, 1U);
-  client.Unsubscribe(17, listener);
-  client.Unsubscribe(17, listener);
+  client.Unsubscribe(17);
+  client.Unsubscribe(17);
   source.SetQuote({17, 201.5, 202.25, 13, 29, 1});
   service.Run();
   EXPECT_EQ(listener.count, 1U);
 
-  client.Subscribe(17, listener);
+  client.Subscribe(17);
   source.SetQuote({17, 201.5, 202.25, 13, 29, 1});
   service.Run();
   EXPECT_EQ(listener.count, 2U);
-  client.Unsubscribe(17, listener);
+  client.Unsubscribe(17);
 }
 
 TEST(MarketSubscriptionTest, RemovingOneInstrumentKeepsOtherSubscriptions) {
   test::QuoteSourceStub source;
   MarketService service(source);
-  LocalMarketClient client(service);
   RecordQuotes listener;
-  client.Subscribe(17, listener);
-  client.Subscribe(81, listener);
+  LocalMarketClient client(service);
+  ASSERT_TRUE(client.BindListener(listener));
+  client.Subscribe(17);
+  client.Subscribe(81);
   source.SetQuote({17, 201.5, 202.25, 13, 29, 1});
   service.Run();
   source.SetQuote({81, 98.75, 99.25, 5, 8, 2});
   service.Run();
-  client.Unsubscribe(17, listener);
+  client.Unsubscribe(17);
   source.SetQuote({17, 202, 202.5, 7, 9, 3});
   service.Run();
   source.SetQuote({81, 99, 99.5, 6, 9, 4});
@@ -109,7 +112,7 @@ TEST(MarketSubscriptionTest, RemovingOneInstrumentKeepsOtherSubscriptions) {
   EXPECT_EQ(listener.quotes[1].sequence, 2U);
   EXPECT_EQ(listener.quotes[2].instrument_id, 81U);
   EXPECT_EQ(listener.quotes[2].sequence, 4U);
-  client.Unsubscribe(81, listener);
+  client.Unsubscribe(81);
   source.SetQuote({81, 99, 99.5, 6, 9, 5});
   service.Run();
   EXPECT_EQ(listener.count, 3U);
@@ -118,30 +121,32 @@ TEST(MarketSubscriptionTest, RemovingOneInstrumentKeepsOtherSubscriptions) {
 TEST(MarketSubscriptionTest, RemovingOneListenerKeepsOtherListeners) {
   test::QuoteSourceStub source;
   MarketService service(source);
-  LocalMarketClient first_client(service);
-  LocalMarketClient second_client(service);
   RecordQuotes first;
   RecordQuotes second;
-  first_client.Subscribe(17, first);
-  second_client.Subscribe(17, second);
+  LocalMarketClient first_client(service);
+  ASSERT_TRUE(first_client.BindListener(first));
+  LocalMarketClient second_client(service);
+  ASSERT_TRUE(second_client.BindListener(second));
+  first_client.Subscribe(17);
+  second_client.Subscribe(17);
   source.SetQuote({17, 201.5, 202.25, 13, 29, 1});
   service.Run();
   EXPECT_EQ(first.count, 1U);
   EXPECT_EQ(second.count, 1U);
 
-  first_client.Unsubscribe(17, first);
-  first_client.Unsubscribe(81, second);
+  first_client.Unsubscribe(17);
+  first_client.Unsubscribe(81);
   source.SetQuote({17, 201.5, 202.25, 13, 29, 1});
   service.Run();
   EXPECT_EQ(first.count, 1U);
   EXPECT_EQ(second.count, 2U);
-  first_client.Subscribe(17, first);
+  first_client.Subscribe(17);
   source.SetQuote({17, 201.5, 202.25, 13, 29, 1});
   service.Run();
   EXPECT_EQ(first.count, 2U);
   EXPECT_EQ(second.count, 3U);
-  first_client.Unsubscribe(17, first);
-  second_client.Unsubscribe(17, second);
+  first_client.Unsubscribe(17);
+  second_client.Unsubscribe(17);
 }
 
 }  // namespace

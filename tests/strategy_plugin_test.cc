@@ -70,7 +70,6 @@ class PluginTest : public ::testing::Test {
     counter.simulated.SetInitialState({terms.currency, 1000, 1000, 0, 0}, {});
     trading.Run();
     ASSERT_TRUE(markets.Register(1, market));
-    market_client = market::MarketClientFactory(markets).Create(1);
     ASSERT_TRUE(traders.Register(2, trading));
     trading_client = trading::TradingClientFactory(traders).Create(2);
   }
@@ -84,7 +83,9 @@ class PluginTest : public ::testing::Test {
     return file.string();
   }
   auto Load(const std::string& path) {
-    return LoadedStrategy::Load(path, *market_client, *trading_client, ids, error);
+    auto loaded = LoadedStrategy::Load(path, market_factory, 1, trading_factory, 2, ids, error);
+    if (loaded && !loaded->Start()) return decltype(loaded){};
+    return loaded;
   }
   void Quote(double bid = 100) {
     input.pending = model::Quote{42, bid, 102, 1, 1, 1};
@@ -103,7 +104,8 @@ class PluginTest : public ::testing::Test {
   trading::TradingService trading;
   trading::TradingServiceRegistry traders;
   trading::OrderIdGenerator ids{10};
-  std::unique_ptr<market::MarketClient> market_client;
+  market::MarketClientFactory market_factory{markets};
+  trading::TradingClientFactory trading_factory{traders};
   std::unique_ptr<trading::TradingClient> trading_client;
   std::string error;
 };

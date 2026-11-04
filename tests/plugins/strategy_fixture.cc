@@ -34,7 +34,7 @@ class FixedPrice final : public Strategy {
     if (!sent_.insert(quote.instrument_id).second) return;
     auto id = ids_.Next();
     if (id) client_.SubmitOrder({{*id, config_.account_id, config_.strategy_id,
-        quote.instrument_id, trading::Side::kBuy, trading::Offset::kOpen, price_, 1}}, *this);
+        quote.instrument_id, trading::Side::kBuy, trading::Offset::kOpen, price_, 1}});
   }
 
   // trading::TradingListener implementation.

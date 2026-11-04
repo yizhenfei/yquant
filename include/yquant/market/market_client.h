@@ -7,17 +7,20 @@
 
 namespace yquant::market {
 
-// Provides an interface for subscribing to market quotes.
-// Change subscriptions between quote deliveries, outside OnQuote callbacks.
+// Subscribes to market quotes for one fixed callback receiver.
 class MarketClient {
  public:
   virtual ~MarketClient() = default;
-  // Subscribes listener to instrument_id. Repeating this pair has no effect.
-  virtual void Subscribe(std::uint32_t instrument_id,
-                         QuoteListener& listener) = 0;
-  // Stops sending instrument_id to listener. Does nothing if not subscribed.
-  virtual void Unsubscribe(std::uint32_t instrument_id,
-                           QuoteListener& listener) = 0;
+  // Binds the only callback receiver. Returns false if already bound or closed.
+  virtual bool BindListener(QuoteListener& listener) = 0;
+  // Returns false if unbound, closed or subscriptions cannot change during delivery.
+  virtual bool Subscribe(std::uint32_t instrument_id) = 0;
+  virtual bool Unsubscribe(std::uint32_t instrument_id) = 0;
+  // Reports whether Close can complete now without interrupting a callback.
+  virtual bool CanClose() const = 0;
+  // Removes all subscriptions. Returns false if cleanup would interrupt delivery.
+  // Repeated Close succeeds. Destroy the receiver only after Close succeeds.
+  virtual bool Close() = 0;
 };
 
 }  // namespace yquant::market

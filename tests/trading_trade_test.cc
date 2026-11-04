@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "bound_clients.h"
 #include "trading_test_support.h"
 #include "yquant/trading/order.h"
 #include "yquant/trading/simulated_trading_adapter.h"
@@ -77,9 +78,8 @@ class TradeTest : public ::testing::Test {
   }
   void Submit(OrderId id, std::uint64_t account, TradeResults& listener,
               std::int32_t quantity = 5) {
-    EXPECT_EQ(client->SubmitOrder(
-        {{id, account, 2, 42, Side::kBuy, Offset::kOpen, 100, quantity}},
-        listener), RequestResult::kDelivered);
+    EXPECT_EQ(clients.Get(listener).SubmitOrder(
+        {{id, account, 2, 42, Side::kBuy, Offset::kOpen, 100, quantity}}), RequestResult::kDelivered);
   }
   TradeInfo Trade(const char* value, std::int32_t quantity = 2) {
     return {{100, 1}, {"sim", "day-1", value}, 100.25, quantity};
@@ -95,6 +95,7 @@ class TradeTest : public ::testing::Test {
   TradeResults results;
   TradeResults foreign;
   TradingService service;
+  ::yquant::test::BoundClients clients{service};
   TradingServiceRegistry registry;
   std::unique_ptr<TradingClient> client;
 };
@@ -120,7 +121,7 @@ TEST_F(TradeTest, DeliversPartialAndFullTradesThroughSubsequentRun) {
   EXPECT_EQ(Snapshot().filled_quantity, 5);
   EXPECT_EQ(results.trades[0].snapshot.filled_quantity, 2);
   EXPECT_FALSE(first.Fill(Trade("3", 1)));
-  EXPECT_EQ(client->CancelOrder({{100, 1}, 7, 2, 1}, results),
+  EXPECT_EQ(clients.Get(results).CancelOrder({{100, 1}, 7, 2, 1}),
             RequestResult::kDelivered);
   service.Run();
   ASSERT_EQ(results.failures.size(), 1U);
@@ -268,7 +269,7 @@ TEST_F(TradeTest, OverfillAdditionCannotOverflowOrConsumeTheTradeId) {
 TEST_F(TradeTest, CancelAndLateFillsRetainConfirmedFacts) {
   service.Run();
   first.EmitTrade(Trade("1"));
-  EXPECT_EQ(client->CancelOrder({{100, 1}, 7, 2, 1}, results),
+  EXPECT_EQ(clients.Get(results).CancelOrder({{100, 1}, 7, 2, 1}),
             RequestResult::kDelivered);
   service.Run();
   EXPECT_EQ(Snapshot().state, OrderState::kCanceled);
@@ -299,9 +300,8 @@ TEST_F(TradeTest, CallbackRequestsAndNestedRunKeepBorrowedReportIntact) {
       for (std::uint64_t id = 2; id <= 300; ++id) {
         Submit({100, id}, 7, foreign);
       }
-      EXPECT_EQ(client->SubmitOrder(
-          {{{100, 1}, 7, 2, 42, Side::kBuy, Offset::kOpen, 100, 5}},
-          foreign), RequestResult::kDelivered);
+      EXPECT_EQ(clients.Get(foreign).SubmitOrder(
+          {{{100, 1}, 7, 2, 42, Side::kBuy, Offset::kOpen, 100, 5}}), RequestResult::kDelivered);
     }
     EXPECT_EQ(report.trade, saved.trade);
     EXPECT_EQ(report.snapshot.version, saved.snapshot.version);
@@ -319,7 +319,7 @@ TEST_F(TradeTest, CallbackRequestsAndNestedRunKeepBorrowedReportIntact) {
 TEST_F(TradeTest,
        FullFillBeforeCancelResultCompletesTheAttemptWithoutRollback) {
   service.Run();
-  EXPECT_EQ(client->CancelOrder({{100, 1}, 7, 2, 1}, results),
+  EXPECT_EQ(clients.Get(results).CancelOrder({{100, 1}, 7, 2, 1}),
             RequestResult::kDelivered);
   ASSERT_TRUE(first.Fill(Trade("1", 5)));
   service.Run();
@@ -393,7 +393,7 @@ TEST_F(TradeTest, SimulatedBookRejectsInvalidAndRepeatedFillsWithoutCallbacks) {
   service.Run();
   ASSERT_EQ(results.trades.size(), 1U);
   EXPECT_EQ(Snapshot().filled_quantity, 2);
-  EXPECT_EQ(client->CancelOrder({{100, 1}, 7, 2, 1}, results),
+  EXPECT_EQ(clients.Get(results).CancelOrder({{100, 1}, 7, 2, 1}),
             RequestResult::kDelivered);
   service.Run();
   EXPECT_FALSE(first.Fill(Trade("2", 1)));

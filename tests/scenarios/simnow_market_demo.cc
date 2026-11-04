@@ -102,21 +102,21 @@ int RunSimNowMarket(int argc, const char* const* argv,
   Verification output(*source, argv[1], count);
   market::MarketService market_service(output);
   market::MarketServiceRegistry registry;
+  examples::QuoteStrategy strategy(output);
   auto client = registry.Register(1, market_service)
-      ? market::MarketClientFactory(registry).Create(1) : nullptr;
+      ? market::MarketClientFactory(registry).Create(1, strategy) : nullptr;
   if (!client) {
     std::fprintf(stderr, "Failed to create SimNow market client\n");
     return 1;
   }
-  examples::QuoteStrategy strategy(output);
-  client->Subscribe(kInstrument, strategy);
+  client->Subscribe(kInstrument);
   container::Container container;
   const bool ran = container.Register(market_service) &&
       container.Run([&] {
         return output.done() || source->failed() ||
                std::chrono::steady_clock::now() >= deadline;
       });
-  client->Unsubscribe(kInstrument, strategy);
+  client->Unsubscribe(kInstrument);
   if (!ran) {
     std::fprintf(stderr, "Failed to run SimNow market service\n");
     return 1;

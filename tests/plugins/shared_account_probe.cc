@@ -37,11 +37,11 @@ class AccountProbe final : public Strategy {
       client_.SubmitOrder({{last_, config_.account_id, config_.strategy_id,
           instrument_, close ? trading::Side::kSell : trading::Side::kBuy,
           close ? trading::Offset::kCloseToday : trading::Offset::kOpen,
-          quote.bid_price, std::stoi(config_.parameters.at("quantity"))}}, *this);
+          quote.bid_price, std::stoi(config_.parameters.at("quantity"))}});
     }
     for (auto sequence : cancels_) {
       if (quote.sequence == sequence) {
-        client_.CancelOrder({last_, config_.account_id, config_.strategy_id, ++cancel_id_}, *this);
+        client_.CancelOrder({last_, config_.account_id, config_.strategy_id, ++cancel_id_});
       }
     }
     trading::FundsSnapshot funds;

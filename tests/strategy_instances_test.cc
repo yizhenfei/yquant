@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "yquant/market/local_market_client.h"
+#include "yquant/market/market_client_factory.h"
 #include "yquant/market/market_service.h"
 #include "yquant/trading/simulated_trading_adapter.h"
 #include "yquant/trading/trading_client_factory.h"
@@ -28,23 +28,6 @@ class Source final : public market::QuoteSource {
     if (index == quotes.size()) return false;
     q = quotes[index++];
     return true;
-  }
-};
-
-// Counts actual upstream bindings while using the production dispatch code.
-class Market final : public market::MarketClient {
- public:
-  explicit Market(market::MarketService& service) : client(service) {}
-  market::LocalMarketClient client;
-  int subscribed = 0, unsubscribed = 0;
-  // market::MarketClient implementation.
-  void Subscribe(std::uint32_t id, market::QuoteListener& listener) override {
-    ++subscribed;
-    client.Subscribe(id, listener);
-  }
-  void Unsubscribe(std::uint32_t id, market::QuoteListener& listener) override {
-    ++unsubscribed;
-    client.Unsubscribe(id, listener);
   }
 };
 
@@ -84,9 +67,8 @@ class StrategyInstancesTest : public ::testing::Test {
     }
     counter.sim.SetInitialState({terms.currency,1000,1000,0,0}, {});
     trading.Run();
-    trading::TradingServiceRegistry registry;
     ASSERT_TRUE(registry.Register(1,trading));
-    trader = trading::TradingClientFactory(registry).Create(1);
+    ASSERT_TRUE(markets.Register(1, market));
   }
   void TearDown() override { std::filesystem::remove_all(root); }
   StrategyConfig Config(std::uint64_t id, std::uint32_t instrument = 42) {
@@ -106,18 +88,19 @@ class StrategyInstancesTest : public ::testing::Test {
   std::filesystem::path root;
   Source source;
   market::MarketService market{source};
-  Market quotes{market};
   Counter counter;
   trading::TradingService trading;
-  std::unique_ptr<trading::TradingClient> trader;
+  market::MarketServiceRegistry markets;
+  trading::TradingServiceRegistry registry;
+  market::MarketClientFactory market_factory{markets};
+  trading::TradingClientFactory trading_factory{registry};
   std::string error;
 };
 
 TEST_F(StrategyInstancesTest, SameAndDifferentInstrumentsShareOnlyTheServiceSequence) {
-  StrategyService group(10,quotes,*trader);
+  StrategyService group(10,market_factory,1,trading_factory,1);
   const std::vector configs{Config(11),Config(12),Config(13,81)};
   ASSERT_TRUE(group.Load(configs,error)) << error;
-  EXPECT_EQ(quotes.subscribed,2);
   Publish(99);
   EXPECT_TRUE(counter.orders.empty());
   Publish(42);
@@ -135,7 +118,6 @@ TEST_F(StrategyInstancesTest, SameAndDifferentInstrumentsShareOnlyTheServiceSequ
   EXPECT_EQ(Reports(12),"12 10 2\n");
   EXPECT_EQ(Reports(13),"13 10 3\n");
   ASSERT_TRUE(group.Stop());
-  EXPECT_EQ(quotes.unsubscribed,2);
   for (int id : {11,12,13}) EXPECT_TRUE(std::filesystem::exists(Marker(id)));
   ASSERT_TRUE(counter.sim.Fill({counter.orders[0].order_id,{"TEST","day","late"},91,1}));
   trading.Run();
@@ -148,11 +130,10 @@ TEST_F(StrategyInstancesTest, SameAndDifferentInstrumentsShareOnlyTheServiceSequ
 }
 
 TEST_F(StrategyInstancesTest, OneInstanceDeclaresMultipleSubscriptionsAndCleansUpAll) {
-  StrategyService group(10, quotes, *trader);
+  StrategyService group(10, market_factory, 1, trading_factory, 1);
   auto multi = Config(11);
   multi.parameters["instrument_id"] = "42 81";
   ASSERT_TRUE(group.Load(std::vector{multi, Config(12, 81)}, error)) << error;
-  EXPECT_EQ(quotes.subscribed, 2);
   Publish(42);
   Publish(81);
   trading.Run();
@@ -163,42 +144,38 @@ TEST_F(StrategyInstancesTest, OneInstanceDeclaresMultipleSubscriptionsAndCleansU
   EXPECT_EQ(counter.orders[1].instrument_id, 81);
   EXPECT_EQ(counter.orders[2].strategy_id, 12);
   ASSERT_TRUE(group.Stop());
-  EXPECT_EQ(quotes.unsubscribed, 2);
   Publish(42);
   Publish(81);
   EXPECT_EQ(counter.orders.size(), 3);
 }
 
 TEST_F(StrategyInstancesTest, EmptySubscriptionListIsValidAndInvalidListsRollBack) {
-  StrategyService group(10, quotes, *trader);
+  StrategyService group(10, market_factory, 1, trading_factory, 1);
   auto config = Config(11);
   config.parameters.erase("instrument_id");
   ASSERT_TRUE(group.Load(std::vector{config}, error)) << error;
-  EXPECT_EQ(quotes.subscribed, 0);
   ASSERT_TRUE(group.Stop());
   for (const auto* invalid : {"0", "42 42"}) {
     config.parameters["instrument_id"] = invalid;
     EXPECT_FALSE(group.Load(std::vector{Config(12), config}, error));
-    EXPECT_EQ(quotes.subscribed, 0);
+
     Publish(42);
     EXPECT_TRUE(counter.orders.empty());
   }
 }
 
 TEST_F(StrategyInstancesTest, GroupFailureRollsBackBeforeAnyUpstreamSubscription) {
-  StrategyService group(10,quotes,*trader);
+  StrategyService group(10,market_factory,1,trading_factory,1);
   auto broken = Config(12);
   broken.library = FAIL_PLUGIN;
   EXPECT_FALSE(group.Load(std::vector{Config(11),broken,Config(13)},error));
   EXPECT_FALSE(error.empty());
-  EXPECT_EQ(quotes.subscribed,0);
   EXPECT_TRUE(std::filesystem::exists(Marker(11)));
   EXPECT_TRUE(std::filesystem::exists(Marker(12)));
   EXPECT_FALSE(std::filesystem::exists(Marker(13)));
   Publish(42);
   EXPECT_TRUE(counter.orders.empty());
   EXPECT_FALSE(group.Load(std::vector{Config(11),Config(11,81)},error));
-  EXPECT_EQ(quotes.subscribed,0);
   ASSERT_TRUE(group.Load(std::vector{Config(14)},error));
   EXPECT_FALSE(group.Load(std::vector{Config(15)},error));
   Publish(42);
@@ -207,12 +184,11 @@ TEST_F(StrategyInstancesTest, GroupFailureRollsBackBeforeAnyUpstreamSubscription
 }
 
 TEST_F(StrategyInstancesTest, StopInsideQuoteFailsWithoutInterruptingOtherInstances) {
-  StrategyService group(10,quotes,*trader);
+  StrategyService group(10,market_factory,1,trading_factory,1);
   ASSERT_TRUE(group.Load(std::vector{Config(11),Config(12)},error));
   counter.on_submit = [&] { EXPECT_FALSE(group.Stop()); };
   Publish(42);
   EXPECT_EQ(counter.orders.size(),2);
-  EXPECT_EQ(quotes.unsubscribed,0);
   counter.on_submit = {};
   ASSERT_TRUE(group.Stop());  // Detaches queued accepts before the plugin libraries unload.
   trading.Run();
@@ -220,8 +196,27 @@ TEST_F(StrategyInstancesTest, StopInsideQuoteFailsWithoutInterruptingOtherInstan
   EXPECT_EQ(Reports(12),"");
 }
 
+TEST_F(StrategyInstancesTest, LoadingDuringCallbacksFailsWithoutLeavingClientsOrPlugins) {
+  StrategyService running(10, market_factory, 1, trading_factory, 1);
+  ASSERT_TRUE(running.Load(std::vector{Config(11)}, error));
+  counter.on_submit = [&] {
+    StrategyService attempted(20, market_factory, 1, trading_factory, 1);
+    EXPECT_FALSE(attempted.Load(std::vector{Config(12)}, error));
+    EXPECT_TRUE(std::filesystem::exists(Marker(12)));
+    EXPECT_TRUE(Reports(12).empty());
+  };
+  Publish(42);
+  counter.on_submit = {};
+  EXPECT_EQ(counter.orders.size(), 1);
+  EXPECT_TRUE(running.Stop());
+  StrategyService valid(20, market_factory, 1, trading_factory, 1);
+  ASSERT_TRUE(valid.Load(std::vector{Config(12)}, error));
+  Publish(42);
+  EXPECT_EQ(counter.orders.size(), 2);
+}
+
 TEST_F(StrategyInstancesTest, TwoServicesCanReuseInstanceIdsWithDifferentCallers) {
-  StrategyService a(10,quotes,*trader), b(20,quotes,*trader);
+  StrategyService a(10,market_factory,1,trading_factory,1), b(20,market_factory,1,trading_factory,1);
   ASSERT_TRUE(a.Load(std::vector{Config(11)},error));
   ASSERT_TRUE(b.Load(std::vector{Config(11)},error));
   Publish(42);

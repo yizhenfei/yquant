@@ -8,28 +8,31 @@
 
 namespace yquant::market {
 
-// Forwards subscription changes directly to a same-process service.
-// The service must outlive this client. Destroying the client leaves its
-// subscriptions active; remove them before destroying the listeners.
-class LocalMarketClient final : public MarketClient {
+// Connects one receiver to a local market service. Closing this client removes
+// only its subscriptions, even when other clients use the same receiver.
+// Destroy between service calls; the service must still be available.
+class LocalMarketClient final : public MarketClient, private QuoteListener {
  public:
   explicit LocalMarketClient(MarketService& service) : service_(service) {}
+  ~LocalMarketClient() override;
   LocalMarketClient(const LocalMarketClient&) = delete;
   LocalMarketClient& operator=(const LocalMarketClient&) = delete;
 
   // MarketClient implementation.
-  void Subscribe(std::uint32_t instrument_id,
-                 QuoteListener& listener) override {
-    service_.Subscribe(instrument_id, listener);
-  }
-
-  void Unsubscribe(std::uint32_t instrument_id,
-                   QuoteListener& listener) override {
-    service_.Unsubscribe(instrument_id, listener);
-  }
+  bool BindListener(QuoteListener& listener) override;
+  bool Subscribe(std::uint32_t instrument_id) override;
+  bool Unsubscribe(std::uint32_t instrument_id) override;
+  bool CanClose() const override;
+  bool Close() override;
 
  private:
+  // QuoteListener implementation.
+  void OnQuote(const model::Quote& quote) override;
+
   MarketService& service_;
+  QuoteListener* listener_ = nullptr;
+  bool closed_ = false;
+  bool registered_ = false;
 };
 
 }  // namespace yquant::market

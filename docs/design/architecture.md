@@ -68,6 +68,8 @@ service 调用均通过 service client 进行，分为两类：
 
 service client factory 根据目标 service ID 和拓扑判断目标是否属于本进程。对于本进程中的目标，从对应类型的本地实例表取得具体服务指针，创建进程内 client；对于其他进程中的目标，创建通过 message bus 通信的跨进程 client。使用方在初始化时通过 factory 获取 client，后续通过该接口调用服务。
 
+一个行情或交易 client 只绑定一个回调接收者，业务方法不再逐次接收 listener。两类 client 均支持先创建再通过 `BindListener` 完成一次绑定，绑定后不可更换接收者，关闭后不可重新绑定。不同接收者使用独立 client，可共用 service、账户和底层传输资源。宿主持有策略实例的 client，并在销毁实例前统一关闭。关闭清理该 client 的订阅和回调关联，不取消订单或停止账户记账。
+
 接口可以使用 C++ 纯虚类表达。两种实现遵循上述调用契约，调用方不依赖某一种部署方式的执行细节。参数生命周期、具体回调时机及各接口的数据语义在接口设计中细化。
 
 ### service server

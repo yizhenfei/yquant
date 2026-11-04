@@ -52,11 +52,11 @@ class CumulativeTest : public ::testing::Test {
     test::PrepareTradingAccount(service, 7, adapter);
     test::PrepareTradingAccount(service, 8, other);
     ASSERT_TRUE(registry.Register(3, service));
-    client = TradingClientFactory(registry).Create(3);
+    client = TradingClientFactory(registry).Create(3, results);
     ASSERT_NE(client, nullptr);
     results.client = client.get();
     ASSERT_EQ(client->SubmitOrder(
-        {{{100, 1}, 7, 2, 42, Side::kBuy, Offset::kOpen, 100, 5}}, results),
+        {{{100, 1}, 7, 2, 42, Side::kBuy, Offset::kOpen, 100, 5}}),
         RequestResult::kDelivered);
     service.Run();
   }
@@ -102,7 +102,7 @@ TEST_F(CumulativeTest,
 
 TEST_F(CumulativeTest, PartialOrderCanCancelAndLateFillsPreserveCancelFact) {
   adapter.Emit({{100, 1}, AdapterOrderState::kAccepted, 2});
-  ASSERT_EQ(client->CancelOrder({{100, 1}, 7, 2, 1}, results),
+  ASSERT_EQ(client->CancelOrder({{100, 1}, 7, 2, 1}),
             RequestResult::kDelivered);
   service.Run();
   ASSERT_EQ(results.cancels.size(), 1U);
@@ -118,7 +118,7 @@ TEST_F(CumulativeTest, PartialOrderCanCancelAndLateFillsPreserveCancelFact) {
 
 TEST_F(CumulativeTest, FullFillWhileCancelPendingCannotBeRolledBack) {
   adapter.SetNextCancel({SendResult::kSent, std::nullopt});
-  ASSERT_EQ(client->CancelOrder({{100, 1}, 7, 2, 1}, results),
+  ASSERT_EQ(client->CancelOrder({{100, 1}, 7, 2, 1}),
             RequestResult::kDelivered);
   adapter.Emit({{100, 1}, AdapterOrderState::kAccepted, 5});
   const auto version = Snapshot().version;
@@ -126,7 +126,7 @@ TEST_F(CumulativeTest, FullFillWhileCancelPendingCannotBeRolledBack) {
   ASSERT_EQ(results.cancels.size(), 1U);
   EXPECT_EQ(results.cancels[0].snapshot.state, OrderState::kFilled);
   EXPECT_EQ(Snapshot().version, version);
-  EXPECT_EQ(client->CancelOrder({{100, 1}, 7, 2, 2}, results),
+  EXPECT_EQ(client->CancelOrder({{100, 1}, 7, 2, 2}),
             RequestResult::kDelivered);
   service.Run();
   ASSERT_EQ(results.failures.size(), 1U);
@@ -137,7 +137,7 @@ TEST_F(CumulativeTest,
        FillBeforeAcceptanceEstablishesStateAndRejectsBadReports) {
   adapter.SetNextSubmit({SendResult::kSent, std::nullopt});
   ASSERT_EQ(client->SubmitOrder(
-      {{{100, 2}, 7, 2, 42, Side::kBuy, Offset::kOpen, 100, 5}}, results),
+      {{{100, 2}, 7, 2, 42, Side::kBuy, Offset::kOpen, 100, 5}}),
       RequestResult::kDelivered);
   OrderSnapshot snapshot;
   adapter.Emit({{100, 2}, AdapterOrderState::kRejected, 1});
@@ -154,7 +154,7 @@ TEST_F(CumulativeTest,
        RejectionCannotAcquireFillsAndSendFailureRemainsQueryable) {
   adapter.SetNextSubmit({SendResult::kSent, AdapterOrderState::kRejected});
   ASSERT_EQ(client->SubmitOrder(
-      {{{100, 2}, 7, 2, 42, Side::kBuy, Offset::kOpen, 100, 5}}, results),
+      {{{100, 2}, 7, 2, 42, Side::kBuy, Offset::kOpen, 100, 5}}),
       RequestResult::kDelivered);
   service.Run();
   OrderSnapshot snapshot;
@@ -168,7 +168,7 @@ TEST_F(CumulativeTest,
   EXPECT_EQ(snapshot.filled_quantity, 0);
   adapter.SetNextSubmit({SendResult::kNotSent, std::nullopt});
   ASSERT_EQ(client->SubmitOrder(
-      {{{100, 3}, 7, 2, 42, Side::kBuy, Offset::kOpen, 100, 5}}, results),
+      {{{100, 3}, 7, 2, 42, Side::kBuy, Offset::kOpen, 100, 5}}),
       RequestResult::kDelivered);
   ASSERT_TRUE(client->QueryOrder({{100, 3}, 7, 2}, snapshot));
   EXPECT_EQ(snapshot.state, OrderState::kSendFailed);

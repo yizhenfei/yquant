@@ -49,12 +49,13 @@ TEST(OrderQueryTest, ReadsTheOrderBeforeAndAfterItsCounterReport) {
   ASSERT_TRUE(service.BindAccount(7, adapter));
   test::PrepareTradingAccount(service, 7, adapter);
   auto client = MakeClient(service);
+  ASSERT_TRUE(client->BindListener(listener));
   ASSERT_NE(client, nullptr);
   const SubmitOrderRequest request{
       {{100, 1}, 7, 2, 42, Side::kBuy, Offset::kOpen, 100.5, 5}};
   OrderSnapshot snapshot;
   EXPECT_FALSE(client->QueryOrder({request.order.order_id, 7, 2}, snapshot));
-  EXPECT_EQ(client->SubmitOrder(request, listener), RequestResult::kDelivered);
+  EXPECT_EQ(client->SubmitOrder(request), RequestResult::kDelivered);
   ASSERT_TRUE(client->QueryOrder({request.order.order_id, 7, 2}, snapshot));
   EXPECT_EQ(snapshot.order, request.order);
   EXPECT_EQ(snapshot.state, OrderState::kSent);
@@ -74,10 +75,10 @@ TEST(OrderQueryTest, FailedQueriesPreserveTheEntireOutputValue) {
   ASSERT_TRUE(service.BindAccount(7, adapter));
   test::PrepareTradingAccount(service, 7, adapter);
   auto client = MakeClient(service);
+  ASSERT_TRUE(client->BindListener(listener));
   ASSERT_NE(client, nullptr);
   EXPECT_EQ(client->SubmitOrder(
-                {{{100, 1}, 7, 2, 42, Side::kBuy, Offset::kOpen, 100, 5}},
-                listener), RequestResult::kDelivered);
+                {{{100, 1}, 7, 2, 42, Side::kBuy, Offset::kOpen, 100, 5}}), RequestResult::kDelivered);
   const OrderSnapshot original{
       {{200, 99}, 8, 3, 81, Side::kSell, Offset::kClose, 9, 7},
       OrderState::kCanceled, 4, 88};

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "bound_clients.h"
 #include "trading_test_support.h"
 #include "yquant/trading/order.h"
 #include "yquant/trading/simulated_trading_adapter.h"
@@ -100,7 +101,7 @@ class CancellationTest : public ::testing::Test {
     ASSERT_NE(client, nullptr);
   }
   void Open() {
-    ASSERT_EQ(client->SubmitOrder(submit, owner), RequestResult::kDelivered);
+    ASSERT_EQ(clients.Get(owner).SubmitOrder(submit), RequestResult::kDelivered);
     service.Run();
     ASSERT_EQ(owner.orders.size(), 1U);
   }
@@ -109,7 +110,7 @@ class CancellationTest : public ::testing::Test {
   }
   void Cancel(const CancelOrderRequest& request, Results& listener) {
     listener.in_request = true;
-    EXPECT_EQ(client->CancelOrder(request, listener),
+    EXPECT_EQ(clients.Get(listener).CancelOrder(request),
               RequestResult::kDelivered);
     listener.in_request = false;
   }
@@ -120,6 +121,7 @@ class CancellationTest : public ::testing::Test {
   Results other;
   Results failures;
   TradingService service;
+  ::yquant::test::BoundClients clients{service};
   TradingServiceRegistry registry;
   std::unique_ptr<TradingClient> client;
   SubmitOrderRequest submit{{{100, 1}, 7, 2, 42, Side::kBuy,
@@ -239,7 +241,7 @@ TEST_F(CancellationTest, InactiveOrdersCannotBeCanceled) {
   auto failed = submit;
   failed.order.order_id.sequence = 2;
   first.counter.SetNextSubmit({SendResult::kNotSent, std::nullopt});
-  EXPECT_EQ(client->SubmitOrder(failed, owner), RequestResult::kDelivered);
+  EXPECT_EQ(clients.Get(owner).SubmitOrder(failed), RequestResult::kDelivered);
   service.Run();
   auto request = Request(2);
   request.order_id = failed.order.order_id;
@@ -255,7 +257,7 @@ TEST_F(CancellationTest, CallerIdsCanRepeatAcrossAccountsAndOrders) {
   auto another = submit;
   another.order.order_id.sequence = 2;
   another.order.account_id = 8;
-  EXPECT_EQ(client->SubmitOrder(another, owner), RequestResult::kDelivered);
+  EXPECT_EQ(clients.Get(owner).SubmitOrder(another), RequestResult::kDelivered);
   service.Run();
   Cancel(Request(1), attempt);
   Cancel({another.order.order_id, 8, 2, 1}, other);
@@ -342,7 +344,7 @@ TEST_F(CancellationTest, LateSuccessPreservesTheEarlierFailureSnapshot) {
 
 TEST_F(CancellationTest, LateAcceptanceCannotRestoreACanceledOrder) {
   first.counter.SetNextSubmit({SendResult::kSent, std::nullopt});
-  EXPECT_EQ(client->SubmitOrder(submit, owner), RequestResult::kDelivered);
+  EXPECT_EQ(clients.Get(owner).SubmitOrder(submit), RequestResult::kDelivered);
   Cancel(Request(1), attempt);
   service.Run();
   ASSERT_EQ(owner.orders.size(), 1U);
@@ -360,7 +362,7 @@ TEST_F(CancellationTest, LateAcceptanceCannotRestoreACanceledOrder) {
 TEST_F(CancellationTest, PendingOrderRejectionAlsoRejectsTheCancellation) {
   first.counter.SetNextSubmit(
       {SendResult::kSent, AdapterOrderState::kRejected});
-  EXPECT_EQ(client->SubmitOrder(submit, owner), RequestResult::kDelivered);
+  EXPECT_EQ(clients.Get(owner).SubmitOrder(submit), RequestResult::kDelivered);
   Cancel(Request(1), attempt);
   service.Run();
   ASSERT_EQ(owner.orders.size(), 1U);
@@ -416,7 +418,7 @@ TEST_F(CancellationTest, CounterResultWaitsBehindQueuedFailureNotification) {
 
 TEST_F(CancellationTest, ARejectedOrderCannotBeChangedByACancelSuccess) {
   first.counter.SetNextSubmit({SendResult::kSent, std::nullopt});
-  EXPECT_EQ(client->SubmitOrder(submit, owner), RequestResult::kDelivered);
+  EXPECT_EQ(clients.Get(owner).SubmitOrder(submit), RequestResult::kDelivered);
   first.counter.SetNextCancel({SendResult::kSent, std::nullopt});
   Cancel(Request(1), attempt);
   first.counter.Emit({submit.order.order_id, AdapterOrderState::kRejected});

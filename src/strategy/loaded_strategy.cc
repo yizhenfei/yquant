@@ -8,21 +8,23 @@
 namespace yquant::strategy {
 
 std::unique_ptr<LoadedStrategy> LoadedStrategy::Load(const std::string& config_path,
-    market::MarketClient& market, trading::TradingClient& trading,
+    const market::MarketClientFactory& markets, std::uint64_t market_id,
+    const trading::TradingClientFactory& traders, std::uint64_t trading_id,
     trading::OrderIdGenerator& ids, std::string& error) {
   StrategyConfig config;
   if (!ReadStrategyConfig(config_path, config, error)) return nullptr;
-  return Load(config, market, trading, ids, error);
+  return Load(config, markets, market_id, traders, trading_id, ids, error);
 }
 
 std::unique_ptr<LoadedStrategy> LoadedStrategy::Load(const StrategyConfig& config,
-    market::MarketClient& market, trading::TradingClient& trading,
+    const market::MarketClientFactory& markets, std::uint64_t market_id,
+    const trading::TradingClientFactory& traders, std::uint64_t trading_id,
     trading::OrderIdGenerator& ids, std::string& error) {
   if (config.library.empty() || !config.strategy_id || !config.account_id) {
     error = "Incomplete strategy configuration";
     return nullptr;
   }
-  auto loaded = std::unique_ptr<LoadedStrategy>(new LoadedStrategy(market, trading));
+  auto loaded = std::unique_ptr<LoadedStrategy>(new LoadedStrategy());
   loaded->config_ = config;
   loaded->library_ = dlopen(loaded->config_.library.c_str(), RTLD_NOW | RTLD_LOCAL);
   if (!loaded->library_) { error = dlerror(); return nullptr; }
@@ -36,7 +38,11 @@ std::unique_ptr<LoadedStrategy> LoadedStrategy::Load(const StrategyConfig& confi
     error = "Incompatible strategy plugin interface: " + loaded->config_.library;
     return nullptr;
   }
-  loaded->instance_ = api->create(loaded->config_, trading, ids, error);
+  loaded->market_ = markets.Create(market_id);
+  if (!loaded->market_) { error = "Market service is unavailable for client creation"; return nullptr; }
+  loaded->trading_ = traders.Create(trading_id);
+  if (!loaded->trading_) { error = "Trading service is unavailable for client creation"; return nullptr; }
+  loaded->instance_ = api->create(loaded->config_, *loaded->trading_, ids, error);
   if (!loaded->instance_) {
     if (error.empty()) error = "Strategy creation failed: " + loaded->config_.library;
     return nullptr;
@@ -50,7 +56,11 @@ std::unique_ptr<LoadedStrategy> LoadedStrategy::Load(const StrategyConfig& confi
     }
   }
   loaded->subscriptions_.assign(subscriptions.begin(), subscriptions.end());
-  for (auto instrument : loaded->subscriptions_) market.Subscribe(instrument, *loaded);
+  if (!loaded->market_->BindListener(*loaded->instance_) ||
+      !loaded->trading_->BindListener(*loaded->instance_)) {
+    error = "Strategy must not bind its own trading listener";
+    return nullptr;
+  }
   error.clear();
   return loaded;
 }
@@ -59,12 +69,23 @@ LoadedStrategy::~LoadedStrategy() {
   if (!Stop()) std::abort();  // Destruction during callbacks violates the lifetime contract.
 }
 
+bool LoadedStrategy::Start() {
+  if (!instance_ || detached_) return false;
+  for (auto instrument : subscriptions_) {
+    if (!market_->Subscribe(instrument)) return false;
+  }
+  return true;
+}
+
+bool LoadedStrategy::CanStop() const {
+  return (!market_ || market_->CanClose()) && (!trading_ || trading_->CanClose());
+}
+
 bool LoadedStrategy::Detach() {
   if (detached_) return true;
-  if (dispatching_) return false;
-  if (instance_ && !trading_.DetachListener(*instance_)) return false;
-  for (auto instrument : subscriptions_) market_.Unsubscribe(instrument, *this);
-  subscriptions_.clear();
+  if (!CanStop()) return false;
+  if (market_ && !market_->Close()) return false;
+  if (trading_ && !trading_->Close()) return false;
   detached_ = true;
   return true;
 }
@@ -81,13 +102,6 @@ bool LoadedStrategy::Stop() {
     plugin_ = nullptr;
   }
   return true;
-}
-
-void LoadedStrategy::OnQuote(const model::Quote& quote) {
-  if (!instance_ || detached_ || dispatching_) return;
-  dispatching_ = true;
-  instance_->OnQuote(quote);
-  dispatching_ = false;
 }
 
 }  // namespace yquant::strategy

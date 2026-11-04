@@ -1,90 +1,60 @@
 #include "yquant/strategy/strategy_service.h"
 
-#include <algorithm>
 #include <cstdlib>
 #include <unordered_set>
 #include <utility>
 
-#include "yquant/strategy/loaded_strategy.h"
-
 namespace yquant::strategy {
 
-StrategyService::StrategyService(std::uint64_t caller, market::MarketClient& market,
-                                 trading::TradingClient& trading)
-    : market_(market), trading_(trading), ids_(caller), subscription_client_(*this) {}
+StrategyService::StrategyService(std::uint64_t caller,
+    const market::MarketClientFactory& markets, std::uint64_t market_id,
+    const trading::TradingClientFactory& traders, std::uint64_t trading_id)
+    : markets_(markets), traders_(traders), market_id_(market_id),
+      trading_id_(trading_id), ids_(caller) {}
 
 StrategyService::~StrategyService() {
   if (!Stop()) std::abort();
 }
 
-void StrategyService::AddListener(std::uint32_t instrument,
-                                  market::QuoteListener& listener) {
-  auto& subscribers = listeners_[instrument];
-  if (std::find(subscribers.begin(), subscribers.end(), &listener) == subscribers.end()) {
-    subscribers.push_back(&listener);
-  }
-}
-
-void StrategyService::RemoveListener(std::uint32_t instrument,
-                                     market::QuoteListener& listener) {
-  const auto it = listeners_.find(instrument);
-  if (it == listeners_.end()) return;
-  std::erase(it->second, &listener);
-  if (it->second.empty()) {
-    if (active_) market_.Unsubscribe(instrument, *this);
-    listeners_.erase(it);
-  }
-}
-
 bool StrategyService::Load(std::span<const StrategyConfig> configs, std::string& error) {
-  if (active_ || dispatching_ || configs.empty()) {
+  if (!strategies_.empty() || configs.empty()) {
     error = "Strategy service cannot load this group";
     return false;
   }
   std::unordered_set<std::uint64_t> ids;
   for (const auto& config : configs) {
     if (!config.strategy_id || !ids.insert(config.strategy_id).second) {
-      error = "Invalid or duplicate strategy ID: " + std::to_string(config.strategy_id);
+      error = "Invalid or duplicate strategy ID";
       return false;
     }
   }
-  listeners_.reserve(configs.size());
+  std::unordered_set<std::uint32_t> instruments;
   strategies_.reserve(configs.size());
   for (const auto& config : configs) {
-    auto strategy = LoadedStrategy::Load(config, subscription_client_, trading_, ids_, error);
-    if (!strategy) {
-      strategies_.clear();
-      return false;
+    auto strategy = LoadedStrategy::Load(config, markets_, market_id_, traders_, trading_id_, ids_, error);
+    if (!strategy) { Stop(); return false; }
+    for (auto instrument : strategy->subscriptions()) {
+      if (instruments.insert(instrument).second) subscriptions_.push_back(instrument);
     }
     strategies_.push_back(std::move(strategy));
   }
-  for (const auto& [instrument, unused] : listeners_) {
-    market_.Subscribe(instrument, *this);
+  for (const auto& strategy : strategies_) {
+    if (!strategy->Start()) {
+      error = "Could not start strategy subscriptions";
+      Stop();
+      return false;
+    }
   }
-  active_ = true;
   error.clear();
   return true;
 }
 
 bool StrategyService::Stop() {
-  if (dispatching_) return false;
-  // Every instance shares one trading client. On the single business thread,
-  // a busy client rejects the first detach before any binding is changed.
-  for (const auto& strategy : strategies_) {
-    if (!strategy->Detach()) return false;
-  }
-  active_ = false;
+  for (const auto& strategy : strategies_) if (!strategy->CanStop()) return false;
+  for (const auto& strategy : strategies_) if (!strategy->Detach()) return false;
   strategies_.clear();
+  subscriptions_.clear();
   return true;
-}
-
-void StrategyService::OnQuote(const model::Quote& quote) {
-  if (!active_ || dispatching_) return;
-  const auto found = listeners_.find(quote.instrument_id);
-  if (found == listeners_.end()) return;
-  dispatching_ = true;
-  for (auto* listener : found->second) listener->OnQuote(quote);
-  dispatching_ = false;
 }
 
 }  // namespace yquant::strategy

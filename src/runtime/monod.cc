@@ -70,7 +70,7 @@ class ShutdownListener final : public trading::TradingListener {
       // Duplicate IDs are rejected locally before reaching the adapter. Preserve
       // this order's account and strategy when trying the next request ID.
       ++it->second.cancel_request_id;
-      if (client->CancelOrder(it->second, *this) == trading::RequestResult::kDelivered) return;
+      if (client->CancelOrder(it->second) == trading::RequestResult::kDelivered) return;
     }
     pending.erase(it);
   }
@@ -94,30 +94,6 @@ class ShutdownListener final : public trading::TradingListener {
   std::size_t canceled = 0;
 };
 
-// Checks declared subscriptions against deployment mappings before scheduling.
-class ConfiguredMarketClient final : public market::MarketClient {
- public:
-  ConfiguredMarketClient(market::MarketClient& client, const trading::SimNowInstruments& mappings)
-      : client_(client) {
-    for (const auto& [native, binding] : mappings) instruments_.insert(binding.instrument_id);
-  }
-  bool valid() const { return valid_; }
-
-  // market::MarketClient implementation.
-  void Subscribe(std::uint32_t instrument, market::QuoteListener& listener) override {
-    if (!instruments_.contains(instrument)) { valid_ = false; return; }
-    client_.Subscribe(instrument, listener);
-  }
-  void Unsubscribe(std::uint32_t instrument, market::QuoteListener& listener) override {
-    client_.Unsubscribe(instrument, listener);
-  }
-
- private:
-  market::MarketClient& client_;
-  std::unordered_set<std::uint32_t> instruments_;
-  bool valid_ = true;
-};
-
 bool Disconnected(const trading::SimNowTradingAdapter& adapter) {
   const auto phase = adapter.login_status().phase;
   return phase == trading::LoginPhase::kFailed || phase == trading::LoginPhase::kDisconnected;
@@ -136,18 +112,22 @@ int RunMonod(const MonodConfig& c, market::SimNowQuoteSource& source,
   market::MarketServiceRegistry markets;
   if (!trading.BindAccount(c.account_id, adapter) || !traders.Register(1, trading) ||
       !markets.Register(1, market)) { error = "Service assembly failed"; return 1; }
-  auto trader = trading::TradingClientFactory(traders).Create(1);
-  auto quotes = market::MarketClientFactory(markets).Create(1);
-  ConfiguredMarketClient configured_quotes(*quotes, c.instruments);
+  trading::TradingClientFactory trader_factory(traders);
+  market::MarketClientFactory market_factory(markets);
+  auto trader = trader_factory.Create(1, shutdown);
+  std::unordered_set<std::uint32_t> instruments;
+  for (const auto& [native, binding] : c.instruments) instruments.insert(binding.instrument_id);
   std::vector<std::unique_ptr<strategy::StrategyService>> services;
   std::vector<trading::StrategyOrderScope> scopes;
   services.reserve(c.services.size());
   for (const auto& group : c.services) {
-    auto service = std::make_unique<strategy::StrategyService>(group.caller_service_id, configured_quotes, *trader);
+    auto service = std::make_unique<strategy::StrategyService>(group.caller_service_id, market_factory, 1, trader_factory, 1);
     if (!service->Load(group.instances, error)) return 1;
-    if (!configured_quotes.valid()) {
-      error = "Strategy subscription has no deployment instrument mapping";
-      return 1;
+    for (auto instrument : service->subscriptions()) {
+      if (!instruments.contains(instrument)) {
+        error = "Strategy subscription has no deployment instrument mapping";
+        return 1;
+      }
     }
     services.push_back(std::move(service));
     for (const auto& instance : group.instances) {
@@ -198,7 +178,7 @@ int RunMonod(const MonodConfig& c, market::SimNowQuoteSource& source,
   for (const auto& snapshot : active) {
     const auto& order = snapshot.order;
     const trading::CancelOrderRequest request{order.order_id, order.account_id, order.strategy_id, 1};
-    if (trader->CancelOrder(request, shutdown) == trading::RequestResult::kDelivered) {
+    if (trader->CancelOrder(request) == trading::RequestResult::kDelivered) {
       shutdown.pending.emplace(order.order_id, request);
     }
   }

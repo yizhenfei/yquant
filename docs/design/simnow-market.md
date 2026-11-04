@@ -31,6 +31,8 @@ cmake --build build
 
 SDK 回调不执行策略代码。回调将值写入预分配的 1,024 条环形缓冲；业务线程通过 `TryRead` 尝试取数，读到行情时返回 `true`；锁繁忙或暂时无数据时立即返回 `false`，输出参数保持不变。行情 service 在本线程按已有订阅分发，验证策略通过普通行情 client 的订阅收到数据。回调参数的指针不离开回调。
 
+行情 factory 通过 `Create(service_id)` 创建未绑定 client，再调用一次 `BindListener(listener)` 绑定接收者；也可使用 `Create(service_id, listener)` 一次完成创建和绑定。绑定后不能更换接收者，关闭后不能重新绑定，与交易 client 保持一致。`Subscribe(instrument_id)` 和 `Unsubscribe(instrument_id)` 不再传入 listener；未绑定时返回 false，重复订阅不会重复交付。`Close()` 统一退订该 client 的全部合约，正常销毁 client 也执行清理。其他 client 的订阅不受影响。交付过程中不能修改已有订阅，关闭失败时保留原有关系，待本轮回调结束后重试。
+
 登录或订阅失败、断连、序号耗尽和队列满均终止本次会话，诊断写入 stderr；未读行情不再交付。超时未收到要求条数时验收失败。销毁接入对象时先注销 SPI，再释放 API，回调存储保留至 Release 返回。重试需重新建立连接与订阅。
 
 ## 多合约订阅

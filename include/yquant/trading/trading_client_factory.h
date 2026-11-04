@@ -20,8 +20,12 @@ class TradingClientFactory {
   TradingClientFactory(const TradingClientFactory&) = delete;
   TradingClientFactory& operator=(const TradingClientFactory&) = delete;
 
-  // Returns a local client for service_id, or nullptr for an unregistered ID.
+  // Returns a local client, or nullptr if the service is unregistered.
+  // Without a receiver, the client supports queries until BindListener succeeds.
   std::unique_ptr<TradingClient> Create(std::uint64_t service_id) const;
+  // Creates the client with its only callback receiver already bound.
+  std::unique_ptr<TradingClient> Create(std::uint64_t service_id,
+                                        TradingListener& listener) const;
 
  private:
   const TradingServiceRegistry& registry_;

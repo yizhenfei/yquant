@@ -26,9 +26,8 @@ bool ReadStrategyConfig(const std::string& path, StrategyConfig& output,
                         std::string& error);
 
 // Defines the quote and trading callbacks implemented by a strategy plugin.
-// Submit requests only during business callbacks, using this instance as the
-// sole trading listener so the host can detach all callbacks before unloading.
-// Creation/destruction must not subscribe or register additional listeners.
+// The host binds this instance to its clients. Submit requests only during
+// business callbacks; do not bind listeners or submit during creation/destruction.
 class Strategy : public market::QuoteListener, public trading::TradingListener {
  public:
   ~Strategy() override = default;
@@ -38,7 +37,7 @@ class Strategy : public market::QuoteListener, public trading::TradingListener {
   virtual std::span<const std::uint32_t> Subscriptions() const = 0;
 };
 
-inline constexpr std::uint32_t kStrategyPluginVersion = 2;
+inline constexpr std::uint32_t kStrategyPluginVersion = 4;
 
 // Defines the plugin version and the functions the host uses to create and
 // destroy strategy instances. Host and plugin must use compatible headers,

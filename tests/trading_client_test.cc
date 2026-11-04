@@ -57,7 +57,7 @@ TEST(TradingClientTest, RegistryAndFactoryUseInjectedConcreteServices) {
   EXPECT_EQ(other.Create(1), nullptr);
 }
 
-TEST(TradingClientTest, ClientAndReportsOutliveFactoryRegistryAndClient) {
+TEST(TradingClientTest, ClosingClientDropsQueuedReportsButRetainsOrderState) {
   SimulatedTradingAdapter adapter;
   ClientListener listener;
   TradingService service;
@@ -69,7 +69,7 @@ TEST(TradingClientTest, ClientAndReportsOutliveFactoryRegistryAndClient) {
     TradingServiceRegistry registry;
     ASSERT_TRUE(registry.Register(3, service));
     TradingClientFactory factory(registry);
-    client = factory.Create(3);
+    client = factory.Create(3, listener);
   }
   ASSERT_NE(client, nullptr);
   SubmitOrderRequest request{{{100, 1}, 7, 2, 42, Side::kSell,
@@ -78,14 +78,17 @@ TEST(TradingClientTest, ClientAndReportsOutliveFactoryRegistryAndClient) {
   adapter.SetNextSubmit(
       {SendResult::kSent, AdapterOrderState::kAccepted});
   listener.in_request = true;
-  EXPECT_EQ(client->SubmitOrder(request, listener), RequestResult::kDelivered);
+  EXPECT_EQ(client->SubmitOrder(request), RequestResult::kDelivered);
   listener.in_request = false;
   EXPECT_TRUE(listener.reports.empty());
   request.order.price = 999;
   client.reset();
   service.Run();
-  ASSERT_EQ(listener.reports.size(), 1U);
-  EXPECT_EQ(listener.reports[0].snapshot.order, original);
+  EXPECT_TRUE(listener.reports.empty());
+  OrderSnapshot state;
+  ASSERT_TRUE(service.QueryOrder({original.order_id, 7, 2}, state));
+  EXPECT_EQ(state.order, original);
+  EXPECT_EQ(state.state, OrderState::kAccepted);
 }
 
 TEST(TradingClientTest, SharedGeneratorCoversStrategiesAccountsAndTargets) {
@@ -106,8 +109,8 @@ TEST(TradingClientTest, SharedGeneratorCoversStrategiesAccountsAndTargets) {
   ASSERT_TRUE(registry.Register(1, first));
   ASSERT_TRUE(registry.Register(2, second));
   TradingClientFactory factory(registry);
-  auto first_client = factory.Create(1);
-  auto second_client = factory.Create(2);
+  auto first_client = factory.Create(1, listener);
+  auto second_client = factory.Create(2, listener);
   ASSERT_NE(first_client, nullptr);
   ASSERT_NE(second_client, nullptr);
   OrderIdGenerator ids(100);
@@ -116,14 +119,11 @@ TEST(TradingClientTest, SharedGeneratorCoversStrategiesAccountsAndTargets) {
   const auto third_id = ids.Next();
   ASSERT_TRUE(first_id && second_id && third_id);
   EXPECT_EQ(first_client->SubmitOrder(
-                {{*first_id, 7, 2, 42, Side::kBuy, Offset::kOpen, 100, 1}},
-                listener), RequestResult::kDelivered);
+                {{*first_id, 7, 2, 42, Side::kBuy, Offset::kOpen, 100, 1}}), RequestResult::kDelivered);
   EXPECT_EQ(first_client->SubmitOrder(
-                {{*second_id, 8, 3, 81, Side::kSell, Offset::kClose, 200, 2}},
-                listener), RequestResult::kDelivered);
+                {{*second_id, 8, 3, 81, Side::kSell, Offset::kClose, 200, 2}}), RequestResult::kDelivered);
   EXPECT_EQ(second_client->SubmitOrder(
-                {{*third_id, 7, 4, 42, Side::kSell, Offset::kOpen, 101, 3}},
-                listener), RequestResult::kDelivered);
+                {{*third_id, 7, 4, 42, Side::kSell, Offset::kOpen, 101, 3}}), RequestResult::kDelivered);
   first.Run();
   second.Run();
   ASSERT_EQ(listener.reports.size(), 3U);
@@ -148,15 +148,16 @@ TEST(TradingClientTest, DuplicateInvocationDoesNotReplaceOriginalListener) {
   TradingServiceRegistry registry;
   ASSERT_TRUE(registry.Register(1, service));
   TradingClientFactory factory(registry);
-  auto client = factory.Create(1);
-  auto other_client = factory.Create(1);
+  auto client = factory.Create(1, original);
+  auto duplicate_client = factory.Create(1, duplicate);
+  auto other_client = factory.Create(1, other_duplicate);
   ASSERT_NE(client, nullptr);
   ASSERT_NE(other_client, nullptr);
   SubmitOrderRequest request{{{100, 1}, 7, 2, 42, Side::kBuy,
                              Offset::kOpen, 100, 1}};
-  EXPECT_EQ(client->SubmitOrder(request, original), RequestResult::kDelivered);
-  EXPECT_EQ(client->SubmitOrder(request, duplicate), RequestResult::kDelivered);
-  EXPECT_EQ(other_client->SubmitOrder(request, other_duplicate),
+  EXPECT_EQ(client->SubmitOrder(request), RequestResult::kDelivered);
+  EXPECT_EQ(duplicate_client->SubmitOrder(request), RequestResult::kDelivered);
+  EXPECT_EQ(other_client->SubmitOrder(request),
             RequestResult::kDelivered);
   service.Run();
   ASSERT_EQ(original.reports.size(), 1U);

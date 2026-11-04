@@ -225,8 +225,9 @@ TEST(ContainerTest, PublishesFiniteInputsBeforeRunReturns) {
     TraceSource traced(source);
     market::MarketService market(traced);
     market::LocalMarketClient client(market);
-    client.Subscribe(17, strategy);
-    client.Subscribe(81, strategy);
+    ASSERT_TRUE(client.BindListener(strategy));
+    client.Subscribe(17);
+    client.Subscribe(81);
     container::Container runner;
     ASSERT_TRUE(runner.Register(market));
     ASSERT_TRUE(runner.Run([&source] { return source.exhausted(); }));
@@ -245,8 +246,8 @@ TEST(ContainerTest, PublishesFiniteInputsBeforeRunReturns) {
     EXPECT_TRUE(runner.Run([&source] { return source.exhausted(); }));
     EXPECT_EQ(output.count, length);
     EXPECT_EQ(traced.count, length == 0 ? 0 : length + 1);
-    client.Unsubscribe(17, strategy);
-    client.Unsubscribe(81, strategy);
+    client.Unsubscribe(17);
+    client.Unsubscribe(81);
   }
 }
 

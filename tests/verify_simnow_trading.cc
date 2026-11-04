@@ -86,7 +86,7 @@ int SendAndCancel(const SimNowTraderConfig& config, OrderInfo order, LocalResult
   TradingService service;
   TradingServiceRegistry registry;
   if (!adapter || !service.BindAccount(kAccount, *adapter) || !registry.Register(1, service)) return 1;
-  auto client = TradingClientFactory(registry).Create(1);
+  auto client = TradingClientFactory(registry).Create(1, result);
   const auto startup_deadline = Clock::now() + 65s;
   while (!service.IsAccountReady(kAccount)) {
     service.Run();
@@ -108,7 +108,7 @@ int SendAndCancel(const SimNowTraderConfig& config, OrderInfo order, LocalResult
       static_cast<unsigned long long>(id->caller_service_id),
       static_cast<unsigned long long>(id->sequence), order.price, order.quantity);
   std::fflush(stdout);
-  if (client->SubmitOrder({order}, result) != RequestResult::kDelivered) return 1;
+  if (client->SubmitOrder({order}) != RequestResult::kDelivered) return 1;
   const auto start = Clock::now();
   bool cancel_sent = false;
   const QueryOrderRequest key{*id, kAccount, kStrategy};
@@ -129,7 +129,7 @@ int SendAndCancel(const SimNowTraderConfig& config, OrderInfo order, LocalResult
       } else if (!cancel_sent && (state.state == OrderState::kAccepted ||
                  state.state == OrderState::kPartiallyFilled || Clock::now() - start > 10s)) {
         cancel_sent = true;
-        if (client->CancelOrder({*id,kAccount,kStrategy,1}, result) != RequestResult::kDelivered) return 1;
+        if (client->CancelOrder({*id,kAccount,kStrategy,1}) != RequestResult::kDelivered) return 1;
         std::puts("cancel_requested");
         std::fflush(stdout);
       }

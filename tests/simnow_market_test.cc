@@ -70,13 +70,15 @@ TEST_F(MarketSessionTest, WorkerCallbacksReachSubscribedStrategyOnBusinessThread
   MarketService service(*source);
   MarketServiceRegistry registry;
   ASSERT_TRUE(registry.Register(7, service));
-  auto client = MarketClientFactory(registry).Create(7);
-  ASSERT_NE(client, nullptr);
   Capture seen, other;
   examples::QuoteStrategy strategy(seen);
-  client->Subscribe(42, seen);
-  client->Subscribe(42, strategy);
-  client->Subscribe(99, other);
+  auto client = MarketClientFactory(registry).Create(7, seen);
+  auto strategy_client = MarketClientFactory(registry).Create(7, strategy);
+  auto other_client = MarketClientFactory(registry).Create(7, other);
+  ASSERT_TRUE(client && strategy_client && other_client);
+  client->Subscribe(42);
+  strategy_client->Subscribe(42);
+  other_client->Subscribe(99);
   std::thread([&] {
     api.Tick("IFtest");  // Before subscription confirmation.
     api.SubReply("IFtest");
@@ -106,9 +108,9 @@ TEST_F(MarketSessionTest, WorkerCallbacksReachSubscribedStrategyOnBusinessThread
     EXPECT_DOUBLE_EQ(seen.intents[i].bid_price, seen.quotes[i].bid_price);
     EXPECT_DOUBLE_EQ(seen.intents[i].ask_price, seen.quotes[i].ask_price);
   }
-  client->Unsubscribe(42, strategy);
-  client->Unsubscribe(42, seen);
-  client->Unsubscribe(99, other);
+  strategy_client->Unsubscribe(42);
+  client->Unsubscribe(42);
+  other_client->Unsubscribe(99);
 }
 
 TEST_F(MarketSessionTest, LoginFailureIsTerminal) {

@@ -67,6 +67,7 @@ class SharedAccountTest : public ::testing::TestWithParam<bool> {
     }
     ASSERT_TRUE(registry.Register(1, trading));
     client = TradingClientFactory(registry).Create(1);
+    ASSERT_TRUE(markets.Register(1, market));
     other.SetInitialState({terms.currency, 1000, 1000, 0, 0}, {});
     deployment = "market_front=tcp://fixture:1\ntrading_front=tcp://fixture:2\n"
         "instrument.42=TEST first\ninstrument.81=TEST second\n";
@@ -94,7 +95,7 @@ class SharedAccountTest : public ::testing::TestWithParam<bool> {
     MonodConfig config;
     ASSERT_TRUE(ReadMonodConfig((root / "runtime.conf").string(), config, error)) << error;
     for (const auto& group : config.services) {
-      auto service = std::make_unique<strategy::StrategyService>(group.caller_service_id, quotes, *client);
+      auto service = std::make_unique<strategy::StrategyService>(group.caller_service_id, market_factory, 1, trading_factory, 1);
       ASSERT_TRUE(service->Load(group.instances, error)) << error;
       groups.push_back(std::move(service));
     }
@@ -149,10 +150,12 @@ class SharedAccountTest : public ::testing::TestWithParam<bool> {
   std::vector<std::string> names;
   Source source;
   market::MarketService market{source};
-  market::LocalMarketClient quotes{market};
   SimulatedTradingAdapter counter, other;
   TradingService trading;
   TradingServiceRegistry registry;
+  market::MarketServiceRegistry markets;
+  market::MarketClientFactory market_factory{markets};
+  TradingClientFactory trading_factory{registry};
   std::unique_ptr<TradingClient> client;
   std::vector<std::unique_ptr<strategy::StrategyService>> groups;
 };
@@ -210,7 +213,8 @@ TEST_P(SharedAccountTest, FundsCompetitionReleaseAndIndependentOtherAccount) {
     void OnCancelReport(const CancelReport&) override {}
     void OnTradeReport(const TradeReport&) override {}
   } listener;
-  client->SubmitOrder({{{99, 1}, 8, 1, 81, Side::kBuy, Offset::kOpen, 100, 2}}, listener);
+  ASSERT_TRUE(client->BindListener(listener));
+  client->SubmitOrder({{{99, 1}, 8, 1, 81, Side::kBuy, Offset::kOpen, 100, 2}});
   trading.Run();
   ASSERT_TRUE(other.Fill({{99, 1}, {"TEST", "day", "other"}, 100, 2}));
   trading.Run();
@@ -219,7 +223,7 @@ TEST_P(SharedAccountTest, FundsCompetitionReleaseAndIndependentOtherAccount) {
   FundsSnapshot isolated;
   ASSERT_TRUE(client->QueryFunds({8}, isolated));
   EXPECT_DOUBLE_EQ(isolated.available_for_orders(), 978);
-  EXPECT_TRUE(client->DetachListener(listener));
+  EXPECT_TRUE(client->Close());
 }
 
 TEST_P(SharedAccountTest, CloseCompetitionFillAndCancelReleaseOneSharedPosition) {

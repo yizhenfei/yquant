@@ -12,25 +12,27 @@ namespace yquant::trading {
 class TradingClient {
  public:
   virtual ~TradingClient() = default;
-  // Removes all references to listener, including pending notifications.
-  // Call between service operations. Returns false during a service callback
-  // or request; success permits destroying the listener. Orders remain tracked.
-  virtual bool DetachListener(TradingListener& listener) = 0;
+  // Binds the only callback receiver. Returns false if already bound or closed.
+  // Bind before submitting requests; an unbound client may only query state.
+  virtual bool BindListener(TradingListener& listener) = 0;
+  // Reports whether Close can finish now without interrupting delivery.
+  virtual bool CanClose() const = 0;
+  // Detaches all callbacks, including queued notifications, without canceling
+  // orders. Returns false if cleanup would interrupt delivery. Repeated Close succeeds.
+  virtual bool Close() = 0;
   // Queries active orders and the caller's highest sequence; see TradingService.
   virtual bool QueryWorkingOrders(StrategyOrderScope scope, std::vector<OrderSnapshot>& orders,
                           std::uint64_t& last_sequence) const = 0;
-  // Registers listener for the queried orders; see TradingService for validation.
-  virtual bool AdoptWorkingOrders(StrategyOrderScope scope, std::span<const OrderSnapshot> orders,
-                          TradingListener& listener) = 0;
+  // Routes the queried orders to this client; see TradingService for validation.
+  virtual bool AdoptWorkingOrders(StrategyOrderScope scope, std::span<const OrderSnapshot> orders) = 0;
   // kDelivered means the service received the request, including requests that
   // fail validation. Outcomes arrive after return through listener callbacks.
-  // kIdExhausted means no delivery and no callback for this invocation.
-  virtual RequestResult SubmitOrder(const SubmitOrderRequest& request,
-                                    TradingListener& listener) = 0;
+  // kIdExhausted or kUnavailable means no delivery and no callback.
+  // Requests are unavailable until a listener is bound and after Close.
+  virtual RequestResult SubmitOrder(const SubmitOrderRequest& request) = 0;
   // Requires a new cancel_request_id for each attempt on an order.
   // Delivery results follow SubmitOrder; counter results use OnCancelReport.
-  virtual RequestResult CancelOrder(const CancelOrderRequest& request,
-                                    TradingListener& listener) = 0;
+  virtual RequestResult CancelOrder(const CancelOrderRequest& request) = 0;
   // Returns the current snapshot for a matching order, account and strategy.
   // Returns false and leaves snapshot unchanged if no matching state is ready.
   virtual bool QueryOrder(const QueryOrderRequest& query,

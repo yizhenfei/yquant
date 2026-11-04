@@ -21,6 +21,7 @@ target_include_directories(yquant_container PUBLIC include)
 target_link_libraries(yquant_container PUBLIC yquant_options)
 
 add_library(yquant_market
+  src/market/local_market_client.cc
   src/market/market_client_factory.cc
   src/market/market_service.cc
   src/market/market_service_registry.cc)
@@ -198,7 +199,7 @@ if(BUILD_TESTING)
       target_link_options(strategy_${fixture} PRIVATE "LINKER:--exclude-libs,ALL")
     endif()
   endforeach()
-  target_compile_definitions(strategy_bad_version PRIVATE TEST_VERSION=1)
+  target_compile_definitions(strategy_bad_version PRIVATE TEST_VERSION=3)
   target_compile_definitions(strategy_fail_create PRIVATE FAIL_CREATE)
   add_library(strategy_no_entry MODULE tests/plugins/no_entry.cc)
   add_executable(strategy_plugin_test tests/strategy_plugin_test.cc)
@@ -245,6 +246,11 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/monod_verifier_test.py
     ${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify_simnow_monod)
   set_tests_properties(v1_07_multi_verifier PROPERTIES TIMEOUT 15 LABELS v1_07_multi_strategy)
+
+  add_executable(client_lifecycle_test tests/client_lifecycle_test.cc)
+  target_link_libraries(client_lifecycle_test PRIVATE yquant_market yquant_trading GTest::gtest_main)
+  add_test(NAME v1_07_client_lifecycle COMMAND client_lifecycle_test)
+  set_tests_properties(v1_07_client_lifecycle PROPERTIES TIMEOUT 10 LABELS v1_07_multi_strategy)
 
   add_executable(monod_runtime_test tests/monod_runtime_test.cc)
   target_link_libraries(monod_runtime_test PRIVATE yquant_runtime GTest::gtest_main)

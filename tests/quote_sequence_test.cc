@@ -75,8 +75,9 @@ TEST(QuoteSequenceTest, RetainsSnapshotsAndIntentsAcrossBufferReuse) {
     examples::FixedQuoteSource source(input);
     market::MarketService market(source);
     market::LocalMarketClient client(market);
-    client.Subscribe(17, receiver);
-    client.Subscribe(81, receiver);
+    ASSERT_TRUE(client.BindListener(receiver));
+    client.Subscribe(17);
+    client.Subscribe(81);
     EXPECT_FALSE(source.exhausted());
     market.Run();
     EXPECT_EQ(receiver.count, input.size());
@@ -96,8 +97,8 @@ TEST(QuoteSequenceTest, RetainsSnapshotsAndIntentsAcrossBufferReuse) {
       EXPECT_DOUBLE_EQ(output.intents[i].bid_price, input[i].bid_price);
       EXPECT_DOUBLE_EQ(output.intents[i].ask_price, input[i].ask_price);
     }
-    client.Unsubscribe(17, receiver);
-    client.Unsubscribe(81, receiver);
+    client.Unsubscribe(17);
+    client.Unsubscribe(81);
   }
 }
 

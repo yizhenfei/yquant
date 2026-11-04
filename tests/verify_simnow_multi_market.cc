@@ -68,15 +68,15 @@ int main(int argc, char** argv) {
   yquant::market::MarketService market(*source);
   yquant::market::MarketServiceRegistry registry;
   registry.Register(1,market);
-  auto client = yquant::market::MarketClientFactory(registry).Create(1);
-  for (const auto& sub : config.subscriptions) client->Subscribe(sub.instrument_id,capture);
+  auto client = yquant::market::MarketClientFactory(registry).Create(1,capture);
+  for (const auto& sub : config.subscriptions) client->Subscribe(sub.instrument_id);
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
   while (!source->failed() && !capture.complete() && capture.valid &&
          std::chrono::steady_clock::now() < deadline) {
     market.Run();
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
-  for (const auto& sub : config.subscriptions) client->Unsubscribe(sub.instrument_id,capture);
+  for (const auto& sub : config.subscriptions) client->Unsubscribe(sub.instrument_id);
   if (!source->ready() || !capture.complete() || !capture.valid) {
     std::fputs("Multi-market subscription failed or timed out\n",stderr);
     return 1;

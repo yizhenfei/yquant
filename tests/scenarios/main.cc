@@ -101,20 +101,20 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   yquant::market::MarketClientFactory factory(local_services);
-  auto client = factory.Create(kMarketServiceId);
+  yquant::examples::QuoteStrategy strategy(output);
+  auto client = factory.Create(kMarketServiceId, strategy);
   if (!client) {
     std::fprintf(stderr,
                  "Failed to create client for market service %" PRIu64 "\n",
                  kMarketServiceId);
     return 1;
   }
-  yquant::examples::QuoteStrategy strategy(output);
-  client->Subscribe(kStrategyInstrumentId, strategy);
+  client->Subscribe(kStrategyInstrumentId);
   yquant::container::Container container;
   const bool completed =
       container.Register(market) &&
       container.Run([&source] { return source.exhausted(); });
-  client->Unsubscribe(kStrategyInstrumentId, strategy);
+  client->Unsubscribe(kStrategyInstrumentId);
   if (!completed) {
     std::fprintf(stderr, "Failed to run the market service\n");
     return 1;

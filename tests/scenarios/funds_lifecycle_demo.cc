@@ -61,24 +61,24 @@ bool VerifyFundsLifecycle() {
   for (auto side : {trading::Side::kBuy, trading::Side::kSell}) {
     if (!service.ConfigureFundsTerms(7, 42, side, terms)) return false;
   }
-  auto client = trading::TradingClientFactory(registry).Create(3);
+  auto client = trading::TradingClientFactory(registry).Create(3, results);
   if (!client) return false;
   adapter.SetInitialState({terms.currency, 1000, 1000, 0, 0}, {});
   service.Run();
   trading::SubmitOrderRequest request{{{100, 1}, 7, 2, 42, trading::Side::kBuy,
                                       trading::Offset::kOpen, 100, 2}};
-  client->SubmitOrder(request, results);
+  client->SubmitOrder(request);
   service.Run();
   if (!PrintFunds(*client, "submitted", 978, 22, 0, 0, 0) ||
       !adapter.Fill({{100, 1}, {"sim", "day", "open"}, 90, 1})) return false;
   service.Run();
   if (!PrintFunds(*client, "partial", 979, 11, 9, 1, 0)) return false;
-  client->CancelOrder({{100, 1}, 7, 2, 1}, results);
+  client->CancelOrder({{100, 1}, 7, 2, 1});
   service.Run();
   if (!PrintFunds(*client, "canceled", 990, 0, 9, 1, 0)) return false;
   request.order = {{100, 2}, 7, 2, 42, trading::Side::kSell,
                     trading::Offset::kCloseToday, 110, 1};
-  client->SubmitOrder(request, results);
+  client->SubmitOrder(request);
   service.Run();
   if (!adapter.Fill({{100, 2}, {"sim", "day", "close"}, 110, 1})) return false;
   service.Run();

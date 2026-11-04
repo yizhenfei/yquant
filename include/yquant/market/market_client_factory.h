@@ -20,9 +20,12 @@ class MarketClientFactory {
   MarketClientFactory(const MarketClientFactory&) = delete;
   MarketClientFactory& operator=(const MarketClientFactory&) = delete;
 
-  // Creates a client for the service registered under service_id.
-  // Returns nullptr if the ID is not registered.
+  // Creates an unbound client, or nullptr if the service is unregistered.
+  // Call BindListener before subscribing.
   std::unique_ptr<MarketClient> Create(std::uint64_t service_id) const;
+  // Creates the client with its only callback receiver already bound.
+  std::unique_ptr<MarketClient> Create(std::uint64_t service_id,
+                                     QuoteListener& listener) const;
 
  private:
   const MarketServiceRegistry& local_services_;

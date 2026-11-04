@@ -67,7 +67,7 @@ struct QueryPositionRequest {
   PositionKey key;
 };
 
-enum class RequestResult { kDelivered, kIdExhausted };
+enum class RequestResult { kDelivered, kIdExhausted, kUnavailable };
 enum class FailureReason {
   kUnknownAccount,
   kAccountNotReady,
@@ -148,6 +148,7 @@ class TradingService final : public container::Service {
   // Returns false during Run, a request or a callback; otherwise returns true.
   // After success the listener may be destroyed; orders continue to be tracked.
   bool DetachListener(TradingListener& listener);
+  bool CanDetachListeners() const { return !running_ && !request_depth_ && !callback_depth_; }
   // Reports startup completion; unknown accounts return false.
   // QueryFunds separately reports runtime accounting availability.
   bool IsAccountReady(std::uint64_t account_id) const;

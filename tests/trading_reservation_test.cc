@@ -81,8 +81,8 @@ class ReservationTest : public ::testing::Test {
     ASSERT_TRUE(service.BindAccount(8, second));
     TradingServiceRegistry registry;
     ASSERT_TRUE(registry.Register(3, service));
-    client = TradingClientFactory(registry).Create(3);
-    other = TradingClientFactory(registry).Create(3);
+    client = TradingClientFactory(registry).Create(3, results);
+    other = TradingClientFactory(registry).Create(3, results);
     ASSERT_NE(client, nullptr);
     ASSERT_NE(other, nullptr);
     terms.currency = model::Currency("CNY");
@@ -110,7 +110,7 @@ class ReservationTest : public ::testing::Test {
   }
   void Submit(const SubmitOrderRequest& request) {
     results.in_request = true;
-    EXPECT_EQ(client->SubmitOrder(request, results), RequestResult::kDelivered);
+    EXPECT_EQ(client->SubmitOrder(request), RequestResult::kDelivered);
     results.in_request = false;
   }
   FundsSnapshot Funds(std::uint64_t account = 7) {
@@ -146,7 +146,7 @@ TEST_F(ReservationTest, ReservesBeforeAdapterAndSharesTheAccountAcrossClients) {
   EXPECT_TRUE(results.failures.empty());
   auto next = Request(2);
   next.order.strategy_id = 3;
-  EXPECT_EQ(other->SubmitOrder(next, results), RequestResult::kDelivered);
+  EXPECT_EQ(other->SubmitOrder(next), RequestResult::kDelivered);
   ExpectFailure(FailureReason::kInsufficientFunds, 1);
   EXPECT_FALSE(results.failures.back().snapshot);
   EXPECT_EQ(first.counter.FindOrder({100, 2}), nullptr);

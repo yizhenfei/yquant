@@ -45,6 +45,7 @@ class MakerTest : public ::testing::Test {
     client = TradingClientFactory(registry).Create(3);
     ASSERT_NE(client, nullptr);
     maker = std::make_unique<MarketMaker>(*client, ids, 7, 2, 42, 2);
+    ASSERT_TRUE(client->BindListener(*maker));
     FundsTerms terms;
     terms.currency = model::Currency("CNY");
     terms.contract_multiplier = 1;
@@ -238,7 +239,9 @@ TEST_F(MakerTest, LatePricedFillOnCanceledOrderLeavesReplacementIntact) {
 
 TEST_F(MakerTest, ExhaustedSharedGeneratorDoesNotReuseAnOrderId) {
   OrderIdGenerator limited(101, std::numeric_limits<std::uint64_t>::max() - 1);
-  MarketMaker last(*client, limited, 7, 3, 42, 1);
+  auto last_client = TradingClientFactory(registry).Create(3);
+  MarketMaker last(*last_client, limited, 7, 3, 42, 1);
+  ASSERT_TRUE(last_client->BindListener(last));
   last.OnQuote({42, 100, 102, 1, 1, 1});
   service.Run();
   last.OnQuote({42, 100, 103, 1, 1, 2});

@@ -48,10 +48,11 @@ TEST(SingleQuoteTest, ClientDeliversUnchangedQuoteWithoutCopyOnCallerThread) {
   test::QuoteSourceStub source;
   source.SetQuote({17, 203.5, 204.25, 13, 29});
   market::MarketService service(source);
-  market::LocalMarketClient local_client(service);
-  market::MarketClient& client = local_client;
   RecordQuote listener;
-  client.Subscribe(17, listener);
+  market::LocalMarketClient local_client(service);
+  ASSERT_TRUE(local_client.BindListener(listener));
+  market::MarketClient& client = local_client;
+  client.Subscribe(17);
   service.Run();
 
   EXPECT_EQ(listener.count, 1);
@@ -62,7 +63,7 @@ TEST(SingleQuoteTest, ClientDeliversUnchangedQuoteWithoutCopyOnCallerThread) {
   EXPECT_DOUBLE_EQ(listener.quote.ask_price, 204.25);
   EXPECT_EQ(listener.quote.bid_quantity, 13);
   EXPECT_EQ(listener.quote.ask_quantity, 29);
-  client.Unsubscribe(17, listener);
+  client.Unsubscribe(17);
 }
 
 TEST(SingleQuoteTest, StrategyProducesOneIntentFromReceivedPrices) {
@@ -70,9 +71,10 @@ TEST(SingleQuoteTest, StrategyProducesOneIntentFromReceivedPrices) {
   test::QuoteSourceStub source;
   source.SetQuote({81, 98.75, 99.25, 5, 8});
   market::MarketService service(source);
-  market::LocalMarketClient client(service);
   examples::QuoteStrategy strategy(output);
-  client.Subscribe(81, strategy);
+  market::LocalMarketClient client(service);
+  ASSERT_TRUE(client.BindListener(strategy));
+  client.Subscribe(81);
   service.Run();
 
   EXPECT_EQ(output.count, 1);
@@ -80,7 +82,7 @@ TEST(SingleQuoteTest, StrategyProducesOneIntentFromReceivedPrices) {
   EXPECT_EQ(output.intent.instrument_id, 81U);
   EXPECT_DOUBLE_EQ(output.intent.bid_price, 98.75);
   EXPECT_DOUBLE_EQ(output.intent.ask_price, 99.25);
-  client.Unsubscribe(81, strategy);
+  client.Unsubscribe(81);
 }
 
 }  // namespace

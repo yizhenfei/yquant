@@ -66,26 +66,26 @@ bool VerifyClose() {
   adapter.SetInitialState({terms.currency, 1000, 900, 100, 0}, rows);
   service.Run();
   trading::TradingClientFactory factory(registry);
-  auto first = factory.Create(3);
-  auto second = factory.Create(3);
+  auto first = factory.Create(3, results);
+  auto second = factory.Create(3, results);
   if (!first || !second) return false;
   trading::SubmitOrderRequest request{{{100, 1}, 7, 2, 42, trading::Side::kSell,
                                       trading::Offset::kClose, 100, 7}};
-  first->SubmitOrder(request, results);
+  first->SubmitOrder(request);
   request.order.order_id.sequence = 2;
   request.order.strategy_id = 3;
-  second->SubmitOrder(request, results);
+  second->SubmitOrder(request);
   service.Run();
   if (results.refused != 1 || adapter.FindOrder({100, 2}) ||
       !CheckPosition(*second, "submitted", 10, 7)) return false;
   if (!adapter.Fill({{100, 1}, {"sim", "day", "partial"}, 100, 3})) return false;
   service.Run();
   if (!CheckPosition(*second, "partial", 7, 4)) return false;
-  first->CancelOrder({{100, 1}, 7, 2, 1}, results);
+  first->CancelOrder({{100, 1}, 7, 2, 1});
   service.Run();
   if (!CheckPosition(*second, "canceled", 7, 0)) return false;
   request.order.order_id.sequence = 3;
-  second->SubmitOrder(request, results);
+  second->SubmitOrder(request);
   service.Run();
   return !results.unexpected && CheckPosition(*first, "reused", 7, 7);
 }

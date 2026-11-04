@@ -81,8 +81,8 @@ int RunReservationDemo() {
     return 1;
   }
   trading::TradingClientFactory factory(registry);
-  auto first = factory.Create(3);
-  auto second = factory.Create(3);
+  auto first = factory.Create(3, output);
+  auto second = factory.Create(3, output);
   if (!first || !second) {
     std::fprintf(stderr, "Failed to create reservation clients\n");
     return 1;
@@ -91,10 +91,10 @@ int RunReservationDemo() {
   service.Run();
   trading::SubmitOrderRequest request{{{100, 1}, 7, 2, 42,
       trading::Side::kBuy, trading::Offset::kOpen, 100, 1}};
-  first->SubmitOrder(request, output);
+  first->SubmitOrder(request);
   request.order.order_id.sequence = 2;
   request.order.strategy_id = 3;
-  second->SubmitOrder(request, output);
+  second->SubmitOrder(request);
   service.Run();
   if (!PrintFunds(*first, 70)) {
     std::fprintf(stderr, "Incorrect shared-account reservation\n");
@@ -103,7 +103,7 @@ int RunReservationDemo() {
   request.order.order_id.sequence = 3;
   request.order.price = 20;
   adapter.SetNextSubmit({trading::SendResult::kNotSent, std::nullopt});
-  first->SubmitOrder(request, output);
+  first->SubmitOrder(request);
   service.Run();
   if (!PrintFunds(*second, 70)) {
     std::fprintf(stderr, "Send failure did not restore available funds\n");
@@ -111,7 +111,7 @@ int RunReservationDemo() {
   }
   request.order.order_id.sequence = 4;
   request.order.price = 30;
-  second->SubmitOrder(request, output);
+  second->SubmitOrder(request);
   service.Run();
   if (!PrintFunds(*first, 91) || output.sent != 2 || output.insufficient != 1 ||
       output.send_failed != 1 || output.unexpected != 0) {

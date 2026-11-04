@@ -164,7 +164,7 @@ int RunTradingDemo(TradingScenario scenario) {
     return 1;
   }
   trading::TradingClientFactory factory(registry);
-  auto client = factory.Create(3);
+  auto client = factory.Create(3, output);
   if (!client) {
     std::fprintf(stderr, "Failed to create trading client\n");
     return 1;
@@ -188,7 +188,7 @@ int RunTradingDemo(TradingScenario scenario) {
     const auto id = ids.Next();
     if (!id || client->SubmitOrder(
                    {{*id, use_first ? 7U : 8U, 2, 42, trading::Side::kBuy,
-                     trading::Offset::kOpen, 100.5, 3}}, output) !=
+                     trading::Offset::kOpen, 100.5, 3}}) !=
                    trading::RequestResult::kDelivered) {
       std::fprintf(stderr, "Failed to deliver trading request\n");
       return 1;
@@ -204,9 +204,9 @@ int RunTradingDemo(TradingScenario scenario) {
   if (cancel_orders) {
     second.SetNextCancel(
         {trading::SendResult::kSent, trading::CancelResult::kRejected});
-    if (client->CancelOrder({{100, 1}, 7, 2, 1}, output) !=
+    if (client->CancelOrder({{100, 1}, 7, 2, 1}) !=
             trading::RequestResult::kDelivered ||
-        client->CancelOrder({{100, 4}, 8, 2, 1}, output) !=
+        client->CancelOrder({{100, 4}, 8, 2, 1}) !=
             trading::RequestResult::kDelivered ||
         !container.Register(service) ||
         !container.Run([&output] { return output.cancels == 2; })) {
