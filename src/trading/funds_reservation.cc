@@ -108,7 +108,7 @@ bool TradingService::ConfigureFundsTerms(std::uint64_t account_id,
 std::optional<FailureReason> TradingService::CheckFunds(
     const AccountContext& account, const OrderInfo& order,
     internal::OrderCost& cost) const {
-  if (!account.funds_available || account.unpriced_orders != 0) {
+  if (!account.CanReadBook()) {
     return FailureReason::kFundsUnavailable;
   }
   const auto* configured = FindFundsTerms(account, order);

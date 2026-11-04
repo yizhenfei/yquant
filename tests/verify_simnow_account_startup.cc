@@ -55,7 +55,7 @@ int main(int argc, char** argv) {
     auto login = adapter->login_status();
     auto query = adapter->snapshot_status();
     if (login.phase == LoginPhase::kFailed || login.phase == LoginPhase::kDisconnected ||
-        query.phase == SnapshotPhase::kFailed) {
+        query.phase == SnapshotPhase::kFailed || service.AccountSyncFailed(1)) {
       std::fprintf(stderr, "startup_failed login=%s code=%d snapshot=%s\n",
                    login.reason, login.code, query.reason);
       return 1;

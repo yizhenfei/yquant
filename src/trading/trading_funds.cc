@@ -34,7 +34,7 @@ bool TradingService::QueryFunds(const QueryFundsRequest& query,
   const auto found = account_index_.find(query.account_id);
   if (found == account_index_.end() ||
       found->second->sync_state != SyncState::kReady ||
-      !found->second->funds_available || found->second->unpriced_orders != 0) {
+      !found->second->CanReadBook()) {
     return false;
   }
   snapshot = found->second->funds;

@@ -18,6 +18,14 @@ struct SimNowTraderConfig {
   std::string_view system_info{};
   std::chrono::milliseconds timeout{30000};
   SimNowInstruments instruments{};
+  // Trading sessions can confirm daily settlement before startup queries.
+  bool confirm_settlement = false;
+};
+
+// Identifies an order in a subsequent account query for the same trading day.
+struct SimNowNativeOrderKey {
+  int front, session;
+  std::string ref, exchange, system_id;
 };
 
 enum class LoginPhase {
@@ -49,6 +57,9 @@ class SimNowTradingAdapter : public ITradingAdapter {
   virtual bool StartSnapshot(std::string_view symbol = {}) = 0;
   // Drive Run to advance the queries. Both accessors use the business thread.
   virtual SnapshotStatus snapshot_status() const = 0;
+  // Copies the native identity bound to an order submitted by this session.
+  // Before exchange acceptance system_id can be empty.
+  virtual std::optional<SimNowNativeOrderKey> NativeKey(OrderId order) const = 0;
   // Returns a borrowed raw snapshot once collected. Check holds_error before
   // using holds. A retry or a processed disconnect invalidates the snapshot.
   virtual const SimNowStartupSnapshot* snapshot() const = 0;

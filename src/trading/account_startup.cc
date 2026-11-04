@@ -15,6 +15,11 @@ bool TradingService::IsAccountReady(std::uint64_t account_id) const {
          found->second->sync_state == SyncState::kReady;
 }
 
+bool TradingService::AccountSyncFailed(std::uint64_t account_id) const {
+  const auto found = account_index_.find(account_id);
+  return found != account_index_.end() && found->second->sync_state == SyncState::kFailed;
+}
+
 bool TradingService::RetryAccountSync(std::uint64_t account_id) {
   const auto found = account_index_.find(account_id);
   if (running_ || request_depth_ || callback_depth_ ||
@@ -31,6 +36,7 @@ void TradingService::StartAccountSync(AccountContext& account) {
   account.recovery.reset();
   ++account.sync_id;
   account.sync_state = SyncState::kPending;
+  account.fill_routing_pending = false;
   account.funds_available = false;
   account.positions_available = false;
   account.funds_refresh_pending = false;

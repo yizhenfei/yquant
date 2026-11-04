@@ -143,6 +143,8 @@ class TradingService final : public container::Service {
   // Reports startup completion; unknown accounts return false.
   // QueryFunds separately reports runtime accounting availability.
   bool IsAccountReady(std::uint64_t account_id) const;
+  // Reports a failed startup attempt so supervisors can stop or explicitly retry.
+  bool AccountSyncFailed(std::uint64_t account_id) const;
   // Schedules another attempt after a failed initialization. Returns false
   // for unknown, pending or ready accounts, or from requests/Run/callbacks.
   // The next Run sends the request; this call does not invoke the adapter.
@@ -220,6 +222,7 @@ class TradingService final : public container::Service {
     void OnCancelReport(const AdapterCancelReport& report) override;
     void OnTradeReport(const TradeInfo& trade) override;
     void OnAccountRecovery(std::uint64_t sync_id, AccountRecovery baseline) override;
+    void OnFillRoutingPending(bool pending) override { fill_routing_pending = pending; }
     void OnRecoveredEvent(const RecoveredEvent& event) override;
     void OnAccountSyncReport(const AdapterAccountSyncReport& report) override;
     void OnFundsReport(const AdapterFundsReport& report) override;
@@ -244,6 +247,10 @@ class TradingService final : public container::Service {
     std::uint64_t funds_refresh_id = 0;
     bool funds_refresh_pending = false;
     bool funds_available = false;
+    bool fill_routing_pending = false;
+    bool CanReadBook() const {
+      return funds_available && !fill_routing_pending && unpriced_orders == 0;
+    }
     PositionsBook positions;
     PositionsBook positions_staging;
     std::uint64_t positions_refresh_id = 0;

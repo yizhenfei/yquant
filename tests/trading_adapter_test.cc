@@ -24,6 +24,7 @@ class AdapterListener final : public ITradingAdapterCallback {
     ADD_FAILURE() << "Unexpected positions report";
   }
   void OnAccountRecovery(std::uint64_t, AccountRecovery) override {}
+  void OnFillRoutingPending(bool) override {}
   void OnRecoveredEvent(const RecoveredEvent&) override {}
   void OnAccountSyncReport(const AdapterAccountSyncReport&) override {}
   void OnFundsReport(const AdapterFundsReport&) override {

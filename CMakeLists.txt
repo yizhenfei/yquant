@@ -138,6 +138,8 @@ if(BUILD_TESTING)
     GIT_TAG 6910c9d9165801d8827d628cb72eb7ea9dd538c5)
   FetchContent_MakeAvailable(googletest)
 
+  add_executable(verify_simnow_trading tests/verify_simnow_trading.cc)
+  target_link_libraries(verify_simnow_trading PRIVATE yquant_simnow_trading Threads::Threads)
   add_executable(verify_simnow_account_startup tests/verify_simnow_account_startup.cc)
   target_link_libraries(verify_simnow_account_startup PRIVATE yquant_simnow_trading Threads::Threads)
 
@@ -150,7 +152,7 @@ if(BUILD_TESTING)
   target_link_libraries(simnow_trader_login_test PRIVATE yquant_simnow_trading yquant_strategy
     yquant_ctp_td GTest::gtest_main Threads::Threads)
   add_test(NAME v1_05_trader_login COMMAND simnow_trader_login_test
-    --gtest_filter=-StartupSnapshot*:ContractTerms*:OrderHistory*:PositionCosts*:OrderHolds*:RecoveredAccounting*:AccountBoundary*:SimNowSubmit*:SimNowCancel*)
+    --gtest_filter=-StartupSnapshot*:ContractTerms*:OrderHistory*:PositionCosts*:OrderHolds*:RecoveredAccounting*:AccountBoundary*:SimNowSubmit*:SimNowCancel*:SimNowFills*)
   add_test(NAME v1_05_startup_snapshot COMMAND simnow_trader_login_test
     --gtest_filter=StartupSnapshot*)
   add_test(NAME v1_05_contract_terms COMMAND simnow_trader_login_test
@@ -169,7 +171,9 @@ if(BUILD_TESTING)
     --gtest_filter=SimNowSubmit*)
   add_test(NAME v1_05_cancel COMMAND simnow_trader_login_test
     --gtest_filter=SimNowCancel*)
-  set_tests_properties(v1_05_cancel v1_05_submit v1_05_account_startup v1_05_recovered_accounting v1_05_order_holds v1_05_trader_login v1_05_order_history v1_05_position_costs v1_05_startup_snapshot
+  add_test(NAME v1_05_fills COMMAND simnow_trader_login_test
+    --gtest_filter=SimNowFills*)
+  set_tests_properties(v1_05_fills v1_05_cancel v1_05_submit v1_05_account_startup v1_05_recovered_accounting v1_05_order_holds v1_05_trader_login v1_05_order_history v1_05_position_costs v1_05_startup_snapshot
     v1_05_contract_terms PROPERTIES TIMEOUT 10
     LABELS v1_05_simnow_trading ENVIRONMENT
     "YQUANT_CTP_BROKER_ID=test;YQUANT_CTP_USER_ID=test;YQUANT_CTP_PASSWORD=test;YQUANT_CTP_APP_ID=test;YQUANT_CTP_AUTH_CODE=test")

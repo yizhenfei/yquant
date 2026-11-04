@@ -35,7 +35,7 @@ using internal::NativeId;
 
 enum class Kind {
   kConnect, kDisconnect, kAuth, kLogin, kError, kFunds, kPositions, kDetails, kOrders, kTrades, kTerms,
-  kLiveOrder, kLiveTrade, kInsertError, kActionError
+  kLiveOrder, kLiveTrade, kInsertError, kActionError, kSettlement
 };
 
 bool IsControlEvent(Kind kind) {
@@ -92,7 +92,7 @@ auto PositionIdentity(const SimNowPosition& row) {
 class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
  public:
   explicit Session(const SimNowTraderConfig& c)
-      : front_(c.front), broker_(c.broker), user_(c.user), timeout_(c.timeout), instruments_(c.instruments), submissions_(instruments_) {}
+      : front_(c.front), broker_(c.broker), user_(c.user), timeout_(c.timeout), instruments_(c.instruments), submissions_(instruments_), confirm_settlement_(c.confirm_settlement) {}
   ~Session() override {
     if (api_) {
       api_->RegisterSpi(nullptr);
@@ -141,6 +141,8 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
         symbol.find('\0') != symbol.npos) return false;
     late_system_ids_.clear();
     late_refs_.clear();
+    waiting_fills_.clear();
+    fill_queue_failed_ = false;
     hold_rates_.clear();
     fetching_hold_rate_ = false;
     contract_.reset();
@@ -155,6 +157,12 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
     return true;
   }
   SnapshotStatus snapshot_status() const override { return query_; }
+  std::optional<SimNowNativeOrderKey> NativeKey(OrderId id) const override {
+    CThostFtdcInputOrderActionField target{};
+    if (!submissions_.SetCancelTarget(id, target)) return std::nullopt;
+    return SimNowNativeOrderKey{target.FrontID, target.SessionID, NativeId(target.OrderRef),
+                               std::string(Field(target.ExchangeID)), NativeId(target.OrderSysID)};
+  }
   const SimNowStartupSnapshot* snapshot() const override {
     return query_.phase == SnapshotPhase::kComplete ? &snapshot_ : nullptr;
   }
@@ -167,6 +175,7 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
     }
     sync_id_ = id;
     sync_started_ = false;
+    settlement_request_ = 0;
     staged_ = false;
     return true;
   }
@@ -200,6 +209,7 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
   void Run() override {
     AdvanceSession();
     if (sync_id_) AdvanceAccountSync();
+    if (staged_ && !fill_queue_failed_ && !waiting_fills_.empty()) DrainFills();
   }
 
  private:
@@ -233,6 +243,21 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
       return;
     }
     if (status_.phase != LoginPhase::kLoggedIn || staged_) return;
+    if (confirm_settlement_ && settled_day_ != status_.trading_day) {
+      if (!settlement_request_) {
+        if (!NextRequest()) return;
+        settlement_request_ = id_;
+        settlement_deadline_ = Clock::now() + timeout_;
+        CThostFtdcSettlementInfoConfirmField r{};
+        Copy(r.BrokerID, broker_);
+        Copy(r.InvestorID, user_);
+        const int rc = api_->ReqSettlementInfoConfirm(&r, id_);
+        if (rc) Fail("settlement_request", rc);
+      } else if (Clock::now() >= settlement_deadline_) {
+        Fail("settlement_timeout", 0);
+      }
+      return;
+    }
     if (!sync_started_) {
       if (observation_day_ != status_.trading_day) {
         observation_day_ = status_.trading_day;
@@ -390,6 +415,14 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
       status_.phase = LoginPhase::kAuthenticating;
       const int rc = api_->ReqAuthenticate(&auth_, id_);
       if (rc) Fail("auth_request", rc);
+    } else if (settlement_request_ && event.id == settlement_request_ &&
+               (event.kind == Kind::kSettlement || event.kind == Kind::kError)) {
+      if (event.code || !event.valid || event.kind == Kind::kError) {
+        Fail("settlement_confirmation", event.code);
+      } else if (event.last) {
+        settled_day_ = status_.trading_day;
+        settlement_request_ = 0;
+      }
     } else if (staged_ && event.kind == Kind::kActionError) {
       if (event.valid) cancellations_.Reject(event.id, std::get<internal::ActionError>(event.row),
                                               *callback_);
@@ -441,6 +474,11 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
     Push({Kind::kError, id, e ? e->ErrorID : -1, e != nullptr, last});
   }
 
+  void OnRspSettlementInfoConfirm(CThostFtdcSettlementInfoConfirmField* r,
+      CThostFtdcRspInfoField* error, int id, bool last) override {
+    Push({Kind::kSettlement, id, error ? error->ErrorID : 0,
+          r && Field(r->BrokerID) == broker_ && Field(r->InvestorID) == user_, last});
+  }
   void OnRspQryTradingAccount(CThostFtdcTradingAccountField* r,
                               CThostFtdcRspInfoField* error, int id,
                               bool last) override {
@@ -695,6 +733,58 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
     return true;
   }
 
+  bool KnowsFillOrder(const HistoryFill& f) const {
+    return submissions_.ByExchange(f.id.venue, f.system_id) ||
+           FindSystemOrder(f.id.venue, f.system_id);
+  }
+  // A trade does not carry the original front/session. Wait for the exchange
+  // ID binding instead of guessing from a ref shared by multiple sessions.
+  bool DeliverFill(const HistoryFill& f) {
+    if (const auto* entry = submissions_.ByExchange(f.id.venue, f.system_id)) {
+      if (submissions_.MatchesInstrument(*entry, f.id.venue, f.symbol) &&
+          submissions_.MatchesTrade(*entry, f.direction, f.offset, f.hedge)) {
+        callback_->OnTradeReport({entry->order.order_id, f.id, f.price, f.quantity});
+      } else {
+        callback_->OnRecoveredEvent(RecoveryRoutingFailure{});
+      }
+      return true;
+    }
+    const auto* original = FindSystemOrder(f.id.venue, f.system_id);
+    if (!original) return false;
+    const auto& history = snapshot_.history;
+    const auto key = static_cast<std::size_t>(original - history.orders().data());
+    if (original->symbol != f.symbol || original->direction != f.direction ||
+        original->offset != f.offset || original->hedge != f.hedge) {
+      callback_->OnRecoveredEvent(RecoveryRoutingFailure{});
+    } else if (original->status == THOST_FTDC_OST_NoTradeQueueing ||
+               original->status == THOST_FTDC_OST_PartTradedQueueing) {
+      callback_->OnRecoveredEvent(RecoveredFill{key, f.id, f.price, f.quantity});
+    } else {
+      const auto old = history.fills().find(f.id);
+      if (old == history.fills().end() || old->second.price != f.price ||
+          old->second.quantity != f.quantity || old->second.order_index != key) {
+        callback_->OnRecoveredEvent(RecoveryRoutingFailure{});
+      }
+    }
+    return true;
+  }
+  void DrainFills() {
+    for (int i = 0; i < 64 && !waiting_fills_.empty(); ++i) {
+      const auto& fill = waiting_fills_.front();
+      if (!KnowsFillOrder(fill)) {
+        if (Clock::now() >= fill_deadline_) FailFillQueue("fill_binding_timeout");
+        return;
+      }
+      if (waiting_fills_.size() == 1) callback_->OnFillRoutingPending(false);
+      DeliverFill(fill);
+      waiting_fills_.pop_front();
+    }
+  }
+  void FailFillQueue(const char* reason) {
+    std::fprintf(stderr, "simnow %s queued=%zu\n", reason, waiting_fills_.size());
+    fill_queue_failed_ = true;
+    callback_->OnRecoveredEvent(RecoveryRoutingFailure{});
+  }
   void DeliverLive(const Event& e) {
     if (!e.valid) return;
     if (Field(e.day) != snapshot_.trading_day) {
@@ -710,19 +800,24 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
     const auto* update = std::get_if<SimNowOrder>(&e.row);
     const SimNowOrder* original = nullptr;
     if (fill) {
-      if (const auto* entry = submissions_.ByExchange(fill->id.venue, fill->system_id)) {
-        if (submissions_.MatchesInstrument(*entry, fill->id.venue, fill->symbol) &&
-            submissions_.MatchesTrade(*entry, fill->direction, fill->offset, fill->hedge)) {
-          callback_->OnTradeReport({entry->order.order_id, fill->id, fill->price, fill->quantity});
-        } else {
-          callback_->OnRecoveredEvent(RecoveryRoutingFailure{});
-        }
+      if (fill_queue_failed_) return;
+      if (fill->system_id.empty() || fill->id.venue.empty() || fill->id.value.empty() ||
+          !Amount(fill->price) || fill->price <= 0 || fill->quantity <= 0) {
+        FailFillQueue("invalid_live_fill");
         return;
       }
-      original = FindSystemOrder(fill->id.venue, fill->system_id);
-      if (original && (original->symbol != fill->symbol ||
-          original->direction != fill->direction || original->hedge != fill->hedge ||
-          original->offset != fill->offset)) original = nullptr;
+      if (!waiting_fills_.empty() || !DeliverFill(*fill)) {
+        if (waiting_fills_.size() >= 4096) {
+          FailFillQueue("fill_queue_overflow");
+          return;
+        }
+        if (waiting_fills_.empty()) {
+          callback_->OnFillRoutingPending(true);
+          fill_deadline_ = Clock::now() + timeout_;
+        }
+        waiting_fills_.push_back(*fill);
+      }
+      return;
     } else if (update) {
       if (DeliverSubmittedOrder(*update)) return;
       original = ResolveOrder(*update);
@@ -733,20 +828,10 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
     }
     if (original->status != THOST_FTDC_OST_NoTradeQueueing &&
         original->status != THOST_FTDC_OST_PartTradedQueueing) {
-      if (fill) {
-        const auto old = history.fills().find(fill->id);
-        if (old == history.fills().end() || old->second.price != fill->price ||
-            old->second.quantity != fill->quantity ||
-            &history.orders()[old->second.order_index] != original) {
-          callback_->OnRecoveredEvent(RecoveryRoutingFailure{});
-        }
-      }
       return;
     }
     const auto key = static_cast<std::size_t>(original - history.orders().data());
-    if (fill) {
-      callback_->OnRecoveredEvent(RecoveredFill{key, fill->id, fill->price, fill->quantity});
-    } else if (update->status == THOST_FTDC_OST_Canceled ||
+    if (update->status == THOST_FTDC_OST_Canceled ||
                update->status == THOST_FTDC_OST_PartTradedNotQueueing ||
                update->status == THOST_FTDC_OST_NoTradeNotQueueing) {
       if (!original->owner || !CompleteCancellations(original->owner->order_id,
@@ -961,12 +1046,15 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
       return;
     }
     if (multiplier) {
-      if (e.terms_row && !position_costs_.SetMultiplier(
-              std::get<CThostFtdcInstrumentField>(*e.terms_row))) {
-        FailSnapshot("invalid_position_multiplier", 0);
-        return;
+      if (e.terms_row) {
+        const auto& instrument = std::get<CThostFtdcInstrumentField>(*e.terms_row);
+        if (Field(instrument.InstrumentID) == position_costs_.contract().symbol &&
+            !position_costs_.SetMultiplier(instrument)) {
+          FailSnapshot("invalid_position_multiplier", 0);
+          return;
+        }
       }
-      if (!e.terms_row && (!e.last || !position_costs_.has_multiplier())) {
+      if ((!e.terms_row && !e.last) || (e.last && !position_costs_.has_multiplier())) {
         FailSnapshot("missing_position_multiplier", 0);
         return;
       }
@@ -1156,6 +1244,10 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
   std::size_t control_events_ = 0;
   const SimNowInstruments instruments_;
   internal::SimNowSubmissions submissions_;
+  bool confirm_settlement_;
+  int settlement_request_ = 0;
+  Clock::time_point settlement_deadline_;
+  std::string settled_day_;
   internal::SimNowCancellations cancellations_;
   std::uint64_t login_generation_ = 0;
   std::map<std::pair<std::string, std::string>, std::size_t> late_system_ids_;
@@ -1168,6 +1260,9 @@ class Session final : public SimNowTradingAdapter, private CThostFtdcTraderSpi {
   Clock::time_point sync_deadline_;
   SimNowOrderHistory before_;
   std::vector<Event> observed_;
+  std::deque<HistoryFill> waiting_fills_;
+  Clock::time_point fill_deadline_;
+  bool fill_queue_failed_ = false;
   std::string observation_day_;
   SnapshotStatus query_;
   internal::SimNowPositionCosts position_costs_;

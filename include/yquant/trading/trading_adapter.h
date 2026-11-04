@@ -102,6 +102,9 @@ class ITradingAdapterCallback {
   // Preserve source order for distinct fills; duplicate and delayed reports
   // may repeat an existing trade ID without applying its cash impact again.
   virtual void OnTradeReport(const TradeInfo& trade) = 0;
+  // Keeps balances and positions unavailable while a received fill is waiting
+  // for its native order identity. Clear only when ordered delivery resumes.
+  virtual void OnFillRoutingPending(bool pending) = 0;
   // Stages a complete baseline instead of the separate funds/positions streams.
   // Only kComplete for the same sync_id may publish it.
   virtual void OnAccountRecovery(std::uint64_t sync_id, AccountRecovery baseline) = 0;

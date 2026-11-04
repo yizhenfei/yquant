@@ -1,6 +1,7 @@
 #include "simnow_contract_query.h"
 
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <utility>
 
@@ -83,13 +84,26 @@ int SimNowContractQuery::Send(CThostFtdcTraderApi& api,
 }
 
 bool SimNowContractQuery::Receive(const TermsRow* row, bool last) {
+  // Some fronts return a family of prefix matches (e.g. ag2612 and its
+  // options). The final marker applies to the entire response stream.
+  bool relevant = row != nullptr;
   if (row) {
-    if (received_ || !std::visit([this](const auto& r) { return Apply(r); },
-                                 *row)) return false;
-    received_ = true;
+    if (const auto* r = std::get_if<CThostFtdcInstrumentField>(row)) {
+      relevant = Field(r->InstrumentID) == terms.symbol;
+    } else if (const auto* r = std::get_if<CThostFtdcProductField>(row)) {
+      relevant = Field(r->ProductID) == product_;
+    }
+    if (relevant) {
+      if (received_ || !std::visit([this](const auto& r) { return Apply(r); }, *row)) return false;
+      received_ = true;
+    }
   }
   if (!last) return row != nullptr;
-  if (!received_) return false;
+  if (!received_) {
+    std::fprintf(stderr, "simnow missing_query_row symbol=%s field=%s\n",
+                 terms.symbol.c_str(), field_name());
+    return false;
+  }
   received_ = false;
   switch (field) {
     case TermsField::kInstrument: field = TermsField::kProduct; break;
