@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc"><title id="title">规划：单机三种进程</title><desc id="desc">同一主机运行 marketd、strategyd 和 tradingd 三种进程。strategyd 可部署多个进程实例，共用行情和交易服务；图中展开一个策略进程，其内部可以承载多个策略实例。每个进程有自己的 container 和单业务线程，每个策略进程使用独立通信通道。</desc>
+<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto-start-reverse"><path d="M0 0 L9 4.5 L0 9 Z" fill="#112D4E"/></marker></defs>
+<rect width="1600" height="1000" fill="white"/>
+<g font-family="Arial,PingFang SC,Heiti SC,sans-serif" fill="#112D4E">
+<text x="40" y="47" text-anchor="start" font-size="34" fill="#112D4E" font-weight="600">未来规划 · 单机三种进程</text>
+<rect x="40" y="85" width="1520" height="705" rx="0" fill="#F8F9FA" stroke="#868E96" stroke-width="2" stroke-dasharray="9 7"/>
+<text x="800" y="126" text-anchor="middle" font-size="25" fill="#112D4E" font-weight="600">同一台主机 · 进程分别调度，分别承担故障边界</text>
+<text x="800" y="160" text-anchor="middle" font-size="20" fill="#64748B">展开一个策略进程；可部署多个，各自使用独立通信通道</text>
+<rect x="90" y="175" width="300" height="565" rx="0" fill="#FFFFFF" stroke="#3F72AF" stroke-width="2"/>
+<rect x="90" y="175" width="300" height="55" rx="0" fill="#3F72AF" stroke="#3F72AF" stroke-width="2"/>
+<text x="240.0" y="212" text-anchor="middle" font-size="30" fill="#F9F7F7" font-weight="600">marketd</text>
+<rect x="590" y="175" width="420" height="565" rx="0" fill="#FFFFFF" stroke="#3F72AF" stroke-width="2"/>
+<rect x="590" y="175" width="420" height="55" rx="0" fill="#3F72AF" stroke="#3F72AF" stroke-width="2"/>
+<text x="800.0" y="212" text-anchor="middle" font-size="30" fill="#F9F7F7" font-weight="600">strategyd 1 … M</text>
+<rect x="1210" y="175" width="300" height="565" rx="0" fill="#FFFFFF" stroke="#3F72AF" stroke-width="2"/>
+<rect x="1210" y="175" width="300" height="55" rx="0" fill="#3F72AF" stroke="#3F72AF" stroke-width="2"/>
+<text x="1360.0" y="212" text-anchor="middle" font-size="30" fill="#F9F7F7" font-weight="600">tradingd</text>
+<rect x="120" y="260" width="240" height="90" rx="8" fill="#DBE2EF" stroke="#112D4E" stroke-width="2"/>
+<text x="240.0" y="295" text-anchor="middle" font-size="24" fill="#112D4E" font-weight="600">MarketService</text>
+<text x="240.0" y="325" text-anchor="middle" font-size="21" fill="#112D4E" font-weight="400">行情接入与分发</text>
+<rect x="620" y="260" width="360" height="90" rx="8" fill="#DBE2EF" stroke="#112D4E" stroke-width="2"/>
+<text x="800.0" y="295" text-anchor="middle" font-size="24" fill="#112D4E" font-weight="600">StrategyService</text>
+<text x="800.0" y="325" text-anchor="middle" font-size="21" fill="#112D4E" font-weight="400">动态策略实例 1 … N</text>
+<rect x="1240" y="260" width="240" height="90" rx="8" fill="#DBE2EF" stroke="#112D4E" stroke-width="2"/>
+<text x="1360.0" y="295" text-anchor="middle" font-size="24" fill="#112D4E" font-weight="600">TradingService</text>
+<text x="1360.0" y="325" text-anchor="middle" font-size="21" fill="#112D4E" font-weight="400">共享账户与交易状态</text>
+<rect x="120" y="420" width="240" height="80" rx="8" fill="#DBE2EF" stroke="#112D4E" stroke-width="2"/>
+<text x="240.0" y="469.0" text-anchor="middle" font-size="24" fill="#112D4E" font-weight="600">MarketServer</text>
+<rect x="620" y="420" width="160" height="80" rx="8" fill="#DBE2EF" stroke="#112D4E" stroke-width="2"/>
+<text x="700.0" y="469.0" text-anchor="middle" font-size="21" fill="#112D4E" font-weight="600">MarketClient</text>
+<rect x="820" y="420" width="160" height="80" rx="8" fill="#DBE2EF" stroke="#112D4E" stroke-width="2"/>
+<text x="900.0" y="469.0" text-anchor="middle" font-size="21" fill="#112D4E" font-weight="600">TradingClient</text>
+<rect x="1240" y="420" width="240" height="80" rx="8" fill="#DBE2EF" stroke="#112D4E" stroke-width="2"/>
+<text x="1360.0" y="469.0" text-anchor="middle" font-size="24" fill="#112D4E" font-weight="600">TradingServer</text>
+<polyline points="240,350 240,420" fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<polyline points="700,420 700,350" fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="900,350 900,420" fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<polyline points="1360,420 1360,350" fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<rect x="120" y="570" width="240" height="65" rx="8" fill="#F9F7F7" stroke="#112D4E" stroke-width="2"/>
+<text x="240.0" y="611.5" text-anchor="middle" font-size="24" fill="#112D4E" font-weight="600">Message bus</text>
+<text x="240.0" y="693" text-anchor="middle" font-size="21" fill="#112D4E" font-weight="400">Container · 单业务线程</text>
+<rect x="620" y="570" width="360" height="65" rx="8" fill="#F9F7F7" stroke="#112D4E" stroke-width="2"/>
+<text x="800.0" y="611.5" text-anchor="middle" font-size="24" fill="#112D4E" font-weight="600">Message bus</text>
+<text x="800.0" y="693" text-anchor="middle" font-size="21" fill="#112D4E" font-weight="400">Container · 单业务线程</text>
+<rect x="1240" y="570" width="240" height="65" rx="8" fill="#F9F7F7" stroke="#112D4E" stroke-width="2"/>
+<text x="1360.0" y="611.5" text-anchor="middle" font-size="24" fill="#112D4E" font-weight="600">Message bus</text>
+<text x="1360.0" y="693" text-anchor="middle" font-size="21" fill="#112D4E" font-weight="400">Container · 单业务线程</text>
+<polyline points="240,500 240,570" fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<polyline points="700,570 700,500" fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<polyline points="900,500 900,570" fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<polyline points="1360,570 1360,500" fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<polyline points="360,602 620,602" fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<polyline points="980,602 1240,602" fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<rect x="415" y="578" width="150" height="49" rx="0" fill="#F9F7F7" stroke="#868E96" stroke-width="2"/>
+<rect x="428" y="589" width="20" height="26" rx="0" fill="#DBE2EF" stroke="#868E96" stroke-width="2"/>
+<rect x="453" y="589" width="20" height="26" rx="0" fill="#DBE2EF" stroke="#868E96" stroke-width="2"/>
+<rect x="478" y="589" width="20" height="26" rx="0" fill="#DBE2EF" stroke="#868E96" stroke-width="2"/>
+<rect x="503" y="589" width="20" height="26" rx="0" fill="#DBE2EF" stroke="#868E96" stroke-width="2"/>
+<rect x="528" y="589" width="20" height="26" rx="0" fill="#DBE2EF" stroke="#868E96" stroke-width="2"/>
+<text x="490" y="550" text-anchor="middle" font-size="24" fill="#112D4E" font-weight="600">行情通道</text>
+<text x="490" y="655" text-anchor="middle" font-size="22" fill="#112D4E" font-weight="400">共享内存</text>
+<text x="490" y="684" text-anchor="middle" font-size="18" fill="#112D4E" font-weight="400">每方向一条 SPSC</text>
+<rect x="1035" y="578" width="150" height="49" rx="0" fill="#F9F7F7" stroke="#868E96" stroke-width="2"/>
+<rect x="1048" y="589" width="20" height="26" rx="0" fill="#DBE2EF" stroke="#868E96" stroke-width="2"/>
+<rect x="1073" y="589" width="20" height="26" rx="0" fill="#DBE2EF" stroke="#868E96" stroke-width="2"/>
+<rect x="1098" y="589" width="20" height="26" rx="0" fill="#DBE2EF" stroke="#868E96" stroke-width="2"/>
+<rect x="1123" y="589" width="20" height="26" rx="0" fill="#DBE2EF" stroke="#868E96" stroke-width="2"/>
+<rect x="1148" y="589" width="20" height="26" rx="0" fill="#DBE2EF" stroke="#868E96" stroke-width="2"/>
+<text x="1110" y="550" text-anchor="middle" font-size="24" fill="#112D4E" font-weight="600">交易通道</text>
+<text x="1110" y="655" text-anchor="middle" font-size="22" fill="#112D4E" font-weight="400">共享内存</text>
+<text x="1110" y="684" text-anchor="middle" font-size="18" fill="#112D4E" font-weight="400">每方向一条 SPSC</text>
+<rect x="90" y="845" width="300" height="90" rx="8" fill="#FFFFFF" stroke="#112D4E" stroke-width="2"/>
+<text x="240.0" y="880" text-anchor="middle" font-size="26" fill="#112D4E" font-weight="600">SimNow 行情源</text>
+<text x="240.0" y="910" text-anchor="middle" font-size="21" fill="#112D4E" font-weight="400">CTP 行情接入</text>
+<rect x="1210" y="845" width="300" height="90" rx="8" fill="#FFFFFF" stroke="#112D4E" stroke-width="2"/>
+<text x="1360.0" y="880" text-anchor="middle" font-size="26" fill="#112D4E" font-weight="600">SimNow 交易柜台</text>
+<text x="1360.0" y="910" text-anchor="middle" font-size="21" fill="#112D4E" font-weight="400">CTP 交易接入</text>
+<polyline points="240,845 240,740" fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="1360,740 1360,845" fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<text x="800" y="835" text-anchor="middle" font-size="23" fill="#112D4E" font-weight="400">行情链路：订阅请求 / 行情事件</text>
+<text x="800" y="874" text-anchor="middle" font-size="23" fill="#112D4E" font-weight="400">交易链路：报单、撤单 / 回报与账户更新</text>
+<text x="800" y="913" text-anchor="middle" font-size="21" fill="#64748B" font-weight="400">远端 TradingClient 查询本地缓存，不等待跨进程往返</text>
+<text x="800" y="968" text-anchor="middle" font-size="22" fill="#112D4E" font-weight="400">N8：跨进程行情 · N9：跨进程交易 · N10：在此基础上扩展单机行情广播</text>
+</g></svg>

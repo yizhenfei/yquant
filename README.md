@@ -1,93 +1,38 @@
 # YQuant
 
-YQuant 是使用 C++ 编写的多策略、低延迟量化交易系统。
+YQuant 是使用 C++ 编写的多策略、低延迟量化交易系统。首版以 SimNow 做市策略跑通交易闭环为目标，支持多个策略共用同一个交易账户。
 
-## 目标平台
+当前已实现单进程 `monod`，按配置加载策略动态库，接收 SimNow 行情并完成交易及账户记账。
 
-| 用途 | 操作系统 | CPU 架构 |
-| --- | --- | --- |
-| 运行与验收环境 | Linux | x86_64 |
-| 开发环境 | macOS | arm64、x86_64 |
+## 系统架构
 
-Linux 执行正式构建、功能及并发验收；macOS 支持本机构建、功能测试和调试。
+### 当前：monod 单进程
 
-## 构建与验证
+行情、策略和交易服务运行在同一个 `monod` 进程中。
 
-使用支持 C++20 的编译器、CMake 3.20 或更高版本，以及与目标平台匹配的 CTP 行情和交易 SDK。Linux 和 macOS 的行情、交易接入组件均使用厂商动态库。先按[SDK 安装说明](docs/design/simnow-market.md#构建依赖)准备 `vendor/ctp/`，或在配置时指定 `-DYQUANT_CTP_SDK_ROOT=/path/to/sdk`：
+![当前 monod 进程内架构](docs/images/monod-architecture.png)
 
-```sh
-cmake -S . -B build -DBUILD_TESTING=ON
-cmake --build build
-ctest --test-dir build --output-on-failure
-./build/yquant_scenarios
-```
+- 行情服务统一接收行情，按订阅分发给策略。
+- 策略服务承载多个策略实例，根据行情和交易回报生成交易指令。一个进程可运行多个策略服务，共用行情和交易服务。
+- 交易服务对接柜台，统一维护共享账户的订单、资金和持仓，并将回报交给对应策略。
 
-`yquant_scenarios` 在 `main` 中将行情 service 按 ID 注册到本地实例表，再把实例表注入 factory，取得行情 client。container 调度行情 service，由 service 内部接收两个品种交错的五条固定行情，只为订阅品种输出报价意图。`main` 向 container 提供退出条件，固定行情处理完成后结束运行，随后退订并退出。固定行情源位于 `examples/market/`，验证策略位于 `examples/strategies/`。
+所有业务逻辑在单个线程上执行，策略接口见[策略设计](docs/design/strategy.md)。
 
-运行 `ctest --test-dir build -L v1_04_simnow_market --output-on-failure` 验证可控行情接入。使用有效 SimNow 行情前置和账户时，按[真实连接验收说明](docs/design/simnow-market.md#验收)运行 `scripts/verify_simnow_market`，逐条比较接收的买卖价与策略输出。
+### 规划：单机三种进程
 
-多合约行情接入使用 `SimNowMarketConfig::subscriptions`。可控验收运行 `ctest --test-dir build -R v1_07_multi_market --output-on-failure`，真实只读程序见[多合约订阅](docs/design/simnow-market.md#多合约订阅)。
+后续在同一台机器上部署行情进程 `marketd`、策略进程 `strategyd` 和交易进程 `tradingd`。其中 `strategyd` 可以运行多个进程实例，共用行情和交易服务；每个策略进程又可以承载多个策略实例。各进程以独立业务线程获得并行处理能力和进程隔离。
 
-独立测试程序中，个人 SimNow 交易账户的登录入口是 `simnow_trader_probe FRONT [SECONDS]`。查询启动资金、持仓和当日订单与成交使用 `simnow_trader_probe --snapshot FRONT [SECONDS [SYMBOL]]`。指定合约后也返回合约乘数和费率。两者复用同一组登录参数，见[交易前置登录](docs/design/trading.md#交易前置登录)。
+![规划中的单机多进程架构](docs/images/single-host-deployment.png)
 
-运行交易验证场景：
+| 进程类型 | 职责 |
+| --- | --- |
+| `marketd` | 接入行情，按订阅向策略进程分发。 |
+| `strategyd` | 可部署多个进程，各自加载策略实例，共用行情和交易服务。 |
+| `tradingd` | 接入交易柜台，统一处理交易并维护共享账户状态。 |
 
-```sh
-./build/yquant_scenarios --maker
-./build/yquant_scenarios --orders
-./build/yquant_scenarios --cancel
-./build/yquant_scenarios --fills
-./build/yquant_scenarios --funds
-./build/yquant_scenarios --positions
-./build/yquant_scenarios --reserve
-./build/yquant_scenarios --startup
-./build/yquant_scenarios --funds-lifecycle
-./build/yquant_scenarios --positions-lifecycle
-ctest --test-dir build -L v1_02_order --output-on-failure
-```
+跨进程调用经 client、message bus 和 server 适配。每个策略进程与行情、交易进程分别建立通信通道，每个方向使用独立的共享内存 SPSC 队列。远端交易 client 的同步查询读取本地缓存，缓存随收到的状态更新。
 
-`--maker` 在单进程中运行[简单做市策略](docs/design/strategy.md)，输出双边报单、改价撤单、最终挂单及[延迟分位数](docs/benchmarks/maker.md)。
-
-交易场景通过本地 factory 创建 client，向两个模拟账户报单，验证委托接受、柜台拒绝和确定未发送，并验证发送失败后迟到的有效回报能够更新订单状态。委托回报与汇总写入 `stdout`，发送失败及迟到回报诊断写入 `stderr`。
-
-`--cancel` 在已有委托上执行两个账户的撤单，分别验证柜台确认与拒绝，并输出原订单的撤销状态和各次撤单结果。
-
-`--fills` 在两个账户中分别产生部分和全部成交，通过 client 查询两笔订单的最终状态，并输出成交明细和查询结果。
-
-`--funds` 验证两个账户的资金查询，完成一次启动同步后核对各自的币种和金额；零资金与数据尚未就绪分别表达。
-
-`--positions` 验证两个账户的完整及单项持仓查询，覆盖多个品种和有效空持仓，并核对账户间数据独立。
-
-`--reserve` 验证共享账户的资金检查与下单预占：余额 100 时两笔各需 70 的订单只发送一笔；确定未发送的请求释放预占，后续订单可以使用释放的资金。
-
-`--startup` 验证初始化失败、显式重试、资金与持仓共同就绪，以及迟到快照不覆盖本地数据。SimNow 有活动挂单时，执行 `v1_05_account_startup` 验证前后两次历史核对、冻结恢复及策略接管。真实账户的只读验收入口见[启动边界与挂单接管](docs/design/trading.md#启动边界与挂单接管)。
-
-`--funds-lifecycle` 验证部分成交记账、撤单释放剩余预占及平仓盈利，输出保证金、手续费、已实现盈亏和可用资金。初始非空持仓须提供今昨仓成本及保证金；本地按不含浮动盈亏的账面资金口径记账。
-
-`--positions-lifecycle` 验证两个策略向同一账户各申请平仓 7 手，10 手持仓只允许发送一笔；部分成交后撤单，剩余可平量可再次使用。
-
-测试构建获取固定版本的 GoogleTest；离线构建可通过 `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/path/to/googletest` 指定已有源码。
-
-## 生产程序构建
-
-```sh
-cmake -S . -B build-production -DBUILD_TESTING=OFF
-cmake --build build-production --target monod yquant_market_maker
-./build-production/monod --config /absolute/path/monod.conf
-```
-
-构建目录生成 `monod.conf` 和 `market_maker.conf`。复制这两个配置到部署目录，调整库路径、账户及合约映射；凭据通过交易登录环境变量提供。`monod.multi.conf` 和 `market_maker*.conf` 提供两个策略 service、三个实例共用账户的样例。生产运行方式与退出行为见[单进程运行](docs/design/monod.md)。
-
-验证场景在 `tests/scenarios/` 中组装，仅在 `BUILD_TESTING=ON` 时构建。`yquant_scenarios` 运行固定输入与延迟测量，`simnow_market_probe` 和 `simnow_trader_probe` 提供行情、登录与快照探测。既有 CTest 中以 `_monod` 结尾的场景名称保留，执行目标已切换到独立测试程序。
-
-运行动态加载验收：
-
-```sh
-cmake --build build --target strategy_plugin_test
-ctest --test-dir build -R '^v1_06_strategy_plugin$' --output-on-failure
-```
-
-库接口、兼容性和停止顺序见[策略设计](docs/design/strategy.md#配置与动态加载)。多实例 service 的验收入口为 `ctest --test-dir build -R v1_07_strategy_instances --output-on-failure`。
+同机跨进程行情和交易由 N8、N9 实现；N10 在此基础上增加单机行情广播，减少向多个策略进程分发时的重复写入。跨机器部署继续通过 `relayd` 扩展。组件边界与通信设计见[系统架构](docs/design/architecture.md)，开发顺序见[首版计划](docs/plans/v1.md)。
 
 ## 首版目标
 
@@ -119,9 +64,39 @@ ctest --test-dir build -R '^v1_06_strategy_plugin$' --output-on-failure
 - 在同进程、同机跨进程和跨机器部署下，做市策略能够根据行情变化更新报价，完成行情驱动的交易闭环。
 - 单机广播能够向本机多个策略分发行情。
 
+## 目标平台
+
+| 用途 | 操作系统 | CPU 架构 |
+| --- | --- | --- |
+| 运行与验收环境 | Linux | x86_64 |
+| 开发环境 | macOS | arm64、x86_64 |
+
+Linux 执行正式构建、功能及并发验收；macOS 支持本机构建、功能测试和调试。现有验收的平台状态分别记录在开发计划中。
+
+## 构建与运行
+
+需要支持 C++20 的编译器、CMake 3.20 或更高版本，以及匹配平台的 CTP 行情和交易动态库。先按 [SDK 安装说明](docs/design/simnow-market.md#构建依赖)准备 `vendor/ctp/`，或通过 `-DYQUANT_CTP_SDK_ROOT=/path/to/sdk` 指定目录。
+
+```sh
+cmake -S . -B build -DBUILD_TESTING=ON
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+构建目录生成 `monod.conf`、`monod.multi.conf` 和策略配置。调整库路径、账户和合约映射，并准备[交易登录环境变量](docs/design/trading.md#交易前置登录)后运行：
+
+```sh
+./build/monod --config /absolute/path/monod.conf
+```
+
+测试使用 GoogleTest 和 CTest；固定行情、模拟柜台及接入探测位于独立测试程序中。生产构建、离线依赖、各类场景和真实接入命令见[构建与运行说明](docs/development.md)。
+
 ## 项目文档
 
 - [系统架构](docs/design/architecture.md)
-- [交易接口](docs/design/trading.md)
+- [策略接口与动态加载](docs/design/strategy.md)
+- [交易接口与账户记账](docs/design/trading.md)
+- [SimNow 行情接入](docs/design/simnow-market.md)
 - [首版执行计划](docs/plans/v1.md)
+- [架构图制作与维护](docs/architecture-diagrams.md)
 - [项目 TODO](TODO.md)

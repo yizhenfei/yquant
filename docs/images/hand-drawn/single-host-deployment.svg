@@ -1,0 +1,66 @@
+<?xml version='1.0' encoding='utf-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc"><title id="title">规划：单机三种进程</title><desc id="desc">同一主机运行 marketd、strategyd 和 tradingd 三种进程。strategyd 可部署多个进程实例，共用行情和交易服务；图中展开一个策略进程，其内部可以承载多个策略实例。每个进程有自己的 container 和单业务线程，每个策略进程使用独立通信通道。</desc>
+<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto-start-reverse"><path d="M0 0 L9 4.5 L0 9 Z" fill="#112D4E" /></marker></defs>
+<rect width="1600" height="1000" fill="white" />
+<g font-family="Chalkboard SE,Comic Sans MS,PingFang SC,Heiti SC,sans-serif" fill="#112D4E">
+<text x="40" y="47" text-anchor="start" font-size="34" fill="#112D4E" font-weight="600">未来规划 · 单机三种进程</text>
+<path fill="#F8F9FA" stroke="#868E96" stroke-width="2" stroke-dasharray="9 7" d="M 40.0 85.0 C 546.67 83.93, 1053.33 83.93, 1560.0 85.0 C 1560.01 320.00, 1560.01 555.00, 1560.0 790.0 C 1053.33 790.03, 546.67 790.03, 40.0 790.0 C 41.01 555.00, 41.01 320.00, 40.0 85.0 Z" /><text x="800" y="126" text-anchor="middle" font-size="25" fill="#112D4E" font-weight="600">同一台主机 · 进程分别调度，分别承担故障边界</text>
+<text x="800" y="160" text-anchor="middle" font-size="20" fill="#64748B">展开一个策略进程；可部署多个，各自使用独立通信通道</text>
+<path fill="#FFFFFF" stroke="#3F72AF" stroke-width="2" d="M 90.0 175.0 C 190.00 173.89, 290.00 173.89, 390.0 175.0 C 389.23 363.33, 389.23 551.67, 390.0 740.0 C 290.00 740.28, 190.00 740.28, 90.0 740.0 C 90.16 551.67, 90.16 363.33, 90.0 175.0 Z" /><path fill="#3F72AF" stroke="#3F72AF" stroke-width="2" d="M 90.0 175.0 C 190.00 175.79, 290.00 175.79, 390.0 175.0 C 390.13 193.33, 390.13 211.67, 390.0 230.0 C 290.00 230.65, 190.00 230.65, 90.0 230.0 C 90.75 211.67, 90.75 193.33, 90.0 175.0 Z" /><text x="240.0" y="212" text-anchor="middle" font-size="30" fill="#F9F7F7" font-weight="600">marketd</text>
+<path fill="#FFFFFF" stroke="#3F72AF" stroke-width="2" d="M 590.0 175.0 C 730.00 175.70, 870.00 175.70, 1010.0 175.0 C 1010.24 363.33, 1010.24 551.67, 1010.0 740.0 C 870.00 739.27, 730.00 739.27, 590.0 740.0 C 590.32 551.67, 590.32 363.33, 590.0 175.0 Z" /><path fill="#3F72AF" stroke="#3F72AF" stroke-width="2" d="M 590.0 175.0 C 730.00 173.91, 870.00 173.91, 1010.0 175.0 C 1010.89 193.33, 1010.89 211.67, 1010.0 230.0 C 870.00 229.86, 730.00 229.86, 590.0 230.0 C 590.88 211.67, 590.88 193.33, 590.0 175.0 Z" /><text x="800.0" y="212" text-anchor="middle" font-size="30" fill="#F9F7F7" font-weight="600">strategyd 1 … M</text>
+<path fill="#FFFFFF" stroke="#3F72AF" stroke-width="2" d="M 1210.0 175.0 C 1310.00 175.52, 1410.00 175.52, 1510.0 175.0 C 1510.50 363.33, 1510.50 551.67, 1510.0 740.0 C 1410.00 739.19, 1310.00 739.19, 1210.0 740.0 C 1209.30 551.67, 1209.30 363.33, 1210.0 175.0 Z" /><path fill="#3F72AF" stroke="#3F72AF" stroke-width="2" d="M 1210.0 175.0 C 1310.00 176.34, 1410.00 176.34, 1510.0 175.0 C 1511.20 193.33, 1511.20 211.67, 1510.0 230.0 C 1410.00 230.85, 1310.00 230.85, 1210.0 230.0 C 1211.40 211.67, 1211.40 193.33, 1210.0 175.0 Z" /><text x="1360.0" y="212" text-anchor="middle" font-size="30" fill="#F9F7F7" font-weight="600">tradingd</text>
+<rect x="120" y="260" width="240" height="90" rx="8" fill="#DBE2EF" stroke="#112D4E" stroke-width="2" />
+<text x="240.0" y="295" text-anchor="middle" font-size="24" fill="#112D4E" font-weight="600">MarketService</text>
+<text x="240.0" y="325" text-anchor="middle" font-size="21" fill="#112D4E" font-weight="400">行情接入与分发</text>
+<rect x="620" y="260" width="360" height="90" rx="8" fill="#DBE2EF" stroke="#112D4E" stroke-width="2" />
+<text x="800.0" y="295" text-anchor="middle" font-size="24" fill="#112D4E" font-weight="600">StrategyService</text>
+<text x="800.0" y="325" text-anchor="middle" font-size="21" fill="#112D4E" font-weight="400">动态策略实例 1 … N</text>
+<rect x="1240" y="260" width="240" height="90" rx="8" fill="#DBE2EF" stroke="#112D4E" stroke-width="2" />
+<text x="1360.0" y="295" text-anchor="middle" font-size="24" fill="#112D4E" font-weight="600">TradingService</text>
+<text x="1360.0" y="325" text-anchor="middle" font-size="21" fill="#112D4E" font-weight="400">共享账户与交易状态</text>
+<rect x="120" y="420" width="240" height="80" rx="8" fill="#DBE2EF" stroke="#112D4E" stroke-width="2" />
+<text x="240.0" y="469.0" text-anchor="middle" font-size="24" fill="#112D4E" font-weight="600">MarketServer</text>
+<rect x="620" y="420" width="160" height="80" rx="8" fill="#DBE2EF" stroke="#112D4E" stroke-width="2" />
+<text x="700.0" y="469.0" text-anchor="middle" font-size="21" fill="#112D4E" font-weight="600">MarketClient</text>
+<rect x="820" y="420" width="160" height="80" rx="8" fill="#DBE2EF" stroke="#112D4E" stroke-width="2" />
+<text x="900.0" y="469.0" text-anchor="middle" font-size="21" fill="#112D4E" font-weight="600">TradingClient</text>
+<rect x="1240" y="420" width="240" height="80" rx="8" fill="#DBE2EF" stroke="#112D4E" stroke-width="2" />
+<text x="1360.0" y="469.0" text-anchor="middle" font-size="24" fill="#112D4E" font-weight="600">TradingServer</text>
+<path fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)" d="M 240.0 350.0 C 240.04 373.33, 240.04 396.67, 240.0 420.0" />
+<path fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" d="M 700.0 420.0 C 698.81 396.67, 698.81 373.33, 700.0 350.0" />
+<path fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)" d="M 900.0 350.0 C 899.55 373.33, 899.55 396.67, 900.0 420.0" />
+<path fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)" d="M 1360.0 420.0 C 1360.16 396.67, 1360.16 373.33, 1360.0 350.0" />
+<rect x="120" y="570" width="240" height="65" rx="8" fill="#F9F7F7" stroke="#112D4E" stroke-width="2" />
+<text x="240.0" y="611.5" text-anchor="middle" font-size="24" fill="#112D4E" font-weight="600">Message bus</text>
+<text x="240.0" y="693" text-anchor="middle" font-size="21" fill="#112D4E" font-weight="400">Container · 单业务线程</text>
+<rect x="620" y="570" width="360" height="65" rx="8" fill="#F9F7F7" stroke="#112D4E" stroke-width="2" />
+<text x="800.0" y="611.5" text-anchor="middle" font-size="24" fill="#112D4E" font-weight="600">Message bus</text>
+<text x="800.0" y="693" text-anchor="middle" font-size="21" fill="#112D4E" font-weight="400">Container · 单业务线程</text>
+<rect x="1240" y="570" width="240" height="65" rx="8" fill="#F9F7F7" stroke="#112D4E" stroke-width="2" />
+<text x="1360.0" y="611.5" text-anchor="middle" font-size="24" fill="#112D4E" font-weight="600">Message bus</text>
+<text x="1360.0" y="693" text-anchor="middle" font-size="21" fill="#112D4E" font-weight="400">Container · 单业务线程</text>
+<path fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)" d="M 240.0 500.0 C 239.42 523.33, 239.42 546.67, 240.0 570.0" />
+<path fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)" d="M 700.0 570.0 C 699.88 546.67, 699.88 523.33, 700.0 500.0" />
+<path fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)" d="M 900.0 500.0 C 901.05 523.33, 901.05 546.67, 900.0 570.0" />
+<path fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)" d="M 1360.0 570.0 C 1360.57 546.67, 1360.57 523.33, 1360.0 500.0" />
+<path fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)" d="M 360.0 602.0 C 446.67 602.22, 533.33 602.22, 620.0 602.0" />
+<path fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)" d="M 980.0 602.0 C 1066.67 600.67, 1153.33 600.67, 1240.0 602.0" />
+<path fill="#F9F7F7" stroke="#868E96" stroke-width="2" d="M 415.0 578.0 C 465.00 578.59, 515.00 578.59, 565.0 578.0 C 564.62 594.33, 564.62 610.67, 565.0 627.0 C 515.00 626.78, 465.00 626.78, 415.0 627.0 C 414.72 610.67, 414.72 594.33, 415.0 578.0 Z" /><path fill="#DBE2EF" stroke="#868E96" stroke-width="2" d="M 428.0 589.0 C 434.67 589.24, 441.33 589.24, 448.0 589.0 C 448.00 597.67, 448.00 606.33, 448.0 615.0 C 441.33 613.93, 434.67 613.93, 428.0 615.0 C 428.02 606.33, 428.02 597.67, 428.0 589.0 Z" /><path fill="#DBE2EF" stroke="#868E96" stroke-width="2" d="M 453.0 589.0 C 459.67 589.70, 466.33 589.70, 473.0 589.0 C 473.28 597.67, 473.28 606.33, 473.0 615.0 C 466.33 614.97, 459.67 614.97, 453.0 615.0 C 454.17 606.33, 454.17 597.67, 453.0 589.0 Z" /><path fill="#DBE2EF" stroke="#868E96" stroke-width="2" d="M 478.0 589.0 C 484.67 588.32, 491.33 588.32, 498.0 589.0 C 497.78 597.67, 497.78 606.33, 498.0 615.0 C 491.33 616.19, 484.67 616.19, 478.0 615.0 C 477.94 606.33, 477.94 597.67, 478.0 589.0 Z" /><path fill="#DBE2EF" stroke="#868E96" stroke-width="2" d="M 503.0 589.0 C 509.67 589.05, 516.33 589.05, 523.0 589.0 C 521.67 597.67, 521.67 606.33, 523.0 615.0 C 516.33 614.23, 509.67 614.23, 503.0 615.0 C 501.96 606.33, 501.96 597.67, 503.0 589.0 Z" /><path fill="#DBE2EF" stroke="#868E96" stroke-width="2" d="M 528.0 589.0 C 534.67 587.74, 541.33 587.74, 548.0 589.0 C 548.57 597.67, 548.57 606.33, 548.0 615.0 C 541.33 616.08, 534.67 616.08, 528.0 615.0 C 526.89 606.33, 526.89 597.67, 528.0 589.0 Z" /><text x="490" y="550" text-anchor="middle" font-size="24" fill="#112D4E" font-weight="600">行情通道</text>
+<text x="490" y="655" text-anchor="middle" font-size="22" fill="#112D4E" font-weight="400">共享内存</text>
+<text x="490" y="684" text-anchor="middle" font-size="18" fill="#112D4E" font-weight="400">每方向一条 SPSC</text>
+<path fill="#F9F7F7" stroke="#868E96" stroke-width="2" d="M 1035.0 578.0 C 1085.00 578.34, 1135.00 578.34, 1185.0 578.0 C 1184.92 594.33, 1184.92 610.67, 1185.0 627.0 C 1135.00 626.95, 1085.00 626.95, 1035.0 627.0 C 1034.24 610.67, 1034.24 594.33, 1035.0 578.0 Z" /><path fill="#DBE2EF" stroke="#868E96" stroke-width="2" d="M 1048.0 589.0 C 1054.67 590.08, 1061.33 590.08, 1068.0 589.0 C 1068.35 597.67, 1068.35 606.33, 1068.0 615.0 C 1061.33 614.88, 1054.67 614.88, 1048.0 615.0 C 1047.91 606.33, 1047.91 597.67, 1048.0 589.0 Z" /><path fill="#DBE2EF" stroke="#868E96" stroke-width="2" d="M 1073.0 589.0 C 1079.67 590.20, 1086.33 590.20, 1093.0 589.0 C 1094.36 597.67, 1094.36 606.33, 1093.0 615.0 C 1086.33 615.13, 1079.67 615.13, 1073.0 615.0 C 1073.17 606.33, 1073.17 597.67, 1073.0 589.0 Z" /><path fill="#DBE2EF" stroke="#868E96" stroke-width="2" d="M 1098.0 589.0 C 1104.67 589.48, 1111.33 589.48, 1118.0 589.0 C 1117.46 597.67, 1117.46 606.33, 1118.0 615.0 C 1111.33 615.84, 1104.67 615.84, 1098.0 615.0 C 1098.01 606.33, 1098.01 597.67, 1098.0 589.0 Z" /><path fill="#DBE2EF" stroke="#868E96" stroke-width="2" d="M 1123.0 589.0 C 1129.67 588.94, 1136.33 588.94, 1143.0 589.0 C 1144.08 597.67, 1144.08 606.33, 1143.0 615.0 C 1136.33 614.81, 1129.67 614.81, 1123.0 615.0 C 1122.42 606.33, 1122.42 597.67, 1123.0 589.0 Z" /><path fill="#DBE2EF" stroke="#868E96" stroke-width="2" d="M 1148.0 589.0 C 1154.67 588.35, 1161.33 588.35, 1168.0 589.0 C 1166.69 597.67, 1166.69 606.33, 1168.0 615.0 C 1161.33 615.44, 1154.67 615.44, 1148.0 615.0 C 1148.27 606.33, 1148.27 597.67, 1148.0 589.0 Z" /><text x="1110" y="550" text-anchor="middle" font-size="24" fill="#112D4E" font-weight="600">交易通道</text>
+<text x="1110" y="655" text-anchor="middle" font-size="22" fill="#112D4E" font-weight="400">共享内存</text>
+<text x="1110" y="684" text-anchor="middle" font-size="18" fill="#112D4E" font-weight="400">每方向一条 SPSC</text>
+<rect x="90" y="845" width="300" height="90" rx="8" fill="#FFFFFF" stroke="#112D4E" stroke-width="2" />
+<text x="240.0" y="880" text-anchor="middle" font-size="26" fill="#112D4E" font-weight="600">SimNow 行情源</text>
+<text x="240.0" y="910" text-anchor="middle" font-size="21" fill="#112D4E" font-weight="400">CTP 行情接入</text>
+<rect x="1210" y="845" width="300" height="90" rx="8" fill="#FFFFFF" stroke="#112D4E" stroke-width="2" />
+<text x="1360.0" y="880" text-anchor="middle" font-size="26" fill="#112D4E" font-weight="600">SimNow 交易柜台</text>
+<text x="1360.0" y="910" text-anchor="middle" font-size="21" fill="#112D4E" font-weight="400">CTP 交易接入</text>
+<path fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" d="M 240.0 845.0 C 239.88 810.00, 239.88 775.00, 240.0 740.0" />
+<path fill="none" stroke="#112D4E" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)" d="M 1360.0 740.0 C 1360.06 775.00, 1360.06 810.00, 1360.0 845.0" />
+<text x="800" y="835" text-anchor="middle" font-size="23" fill="#112D4E" font-weight="400">行情链路：订阅请求 / 行情事件</text>
+<text x="800" y="874" text-anchor="middle" font-size="23" fill="#112D4E" font-weight="400">交易链路：报单、撤单 / 回报与账户更新</text>
+<text x="800" y="913" text-anchor="middle" font-size="21" fill="#64748B" font-weight="400">远端 TradingClient 查询本地缓存，不等待跨进程往返</text>
+<text x="800" y="968" text-anchor="middle" font-size="22" fill="#112D4E" font-weight="400">N8：跨进程行情 · N9：跨进程交易 · N10：在此基础上扩展单机行情广播</text>
+</g></svg>
